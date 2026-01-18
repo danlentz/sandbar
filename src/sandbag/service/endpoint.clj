@@ -75,8 +75,8 @@
 (defn standard-endpoint [{:keys [route request] :as context}
                          {:keys [handler] :as opts}]
   (let [{:keys [route-name]} route
-        {:keys [ent-store valid-params request-method]} request]
-    (assoc context :response (-> request (handler ent-store valid-params) return))))
+        {:keys [db-conn valid-params request-method]} request]
+    (assoc context :response (-> request (handler db-conn valid-params) return))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Interceptor Definers
@@ -121,7 +121,7 @@
 (defmacro defhandler
   "Define a standard endpoint handler that accepts the REQUEST, ENT-STORE,
    and validated DATA.
-    ex:  (defhandler abc [request ent-store {:keys [filters] :as data}]
+    ex:  (defhandler abc [request db-conn {:keys [filters] :as data}]
            (println :filters filters :data data))"
   [interceptor-name & fdecl]
   (let [impl-name (symbol (str (name interceptor-name) "-impl"))]

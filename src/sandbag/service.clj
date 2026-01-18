@@ -1,45 +1,46 @@
 (ns sandbag.service
-  (:require [io.pedestal.http :as http]
+  (:require [clojure.java.io              :as io :refer [resource]]
+            [clojure.tools.logging        :as log]
+            [io.pedestal.http             :as http]
             [io.pedestal.http.body-params :as body-params]
-            [io.pedestal.http.route :as route]
-            [ring.util.response :as ring-resp]
-            [sandbag.service.endpoint]))
+            [io.pedestal.http.route       :as route]
+            [sandbag.api.status           :as status]
+            [sandbag.service.content      :as content]
+            [sandbag.service.endpoint     :as endpoint :refer [defhandler]]
+            [sandbag.service.params       :as params]
+            [sandbag.util.http-status     :as http-status]))
 
-(defn about-page
-  [request]
-  (ring-resp/response (format "Clojure %s - served from %s"
-                              (clojure-version)
-                              (route/url-for ::about-page))))
+(defn home-page [request]
+  (endpoint/return (str "online: " (java.util.Date.))))
 
-(defn home-page
-  [request]
-  (ring-resp/response "Hello World!"))
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; favicon.ico
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-;; Defines "/" and "/about" routes with their associated :get handlers.
-;; The interceptors defined after the verb map (e.g., {:get home-page}
-;; apply to / and its children (/about).
+(defn favicon []
+  (io/input-stream (io/resource "favicon.ico")))
 
-(def common-interceptors [(body-params/body-params) http/html-body])
+(defhandler favicon-ico [_ _ _]
+  (endpoint/return {"Content-Type" "image/png"} http-status/success (favicon)))
 
-;; Tabular routes
-(def routes #{["/"      :get (conj common-interceptors `home-page)]
-              ["/about" :get (conj common-interceptors `about-page)]})
+;; [(body-params/body-params (content/body-parsers)) params/url-decode-path-params]
 
+(def routes
+  `[[["/" {:get home-page} ^:interceptors [(body-params/body-params (content/body-parsers)) params/url-decode-path-params]
+      ["/favicon.ico" {:get favicon-ico}]
+;      ["/login" {:get identity}]
+;      ["/logout"]
+      ["/api" ^:interceptors [content/data-body
+                              content/log-response
+                              content/accept-content
+                              params/parsed-params
+                              params/validated-params
+                              params/log-params]
+       ["/status" {:get status/status-handler}]
+       ]
 
+      ]]])
 
-;; Map-based routes
-;(def routes `{"/" {:interceptors [(body-params/body-params) http/html-body]
-;                   :get home-page
-;                   "/about" {:get about-page}}})
-
-;; Terse/Vector-based routes
-;(def routes
-;  `[[["/" {:get home-page}
-;      ^:interceptors [(body-params/body-params) http/html-body]
-;      ["/about" {:get about-page}]]]])
-
-
-;; Consumed by sandbag.server/create-server
 ;; See http/default-interceptors for additional options you can configure
 
 (def service {:env :prod
@@ -66,15 +67,10 @@
               ;;                                                          :script-src "'unsafe-inline' 'unsafe-eval' 'strict-dynamic' https: http:"
               ;;                                                          :frame-ancestors "'none'"}}
 
-              ;; Root for resource interceptor that is available by default.
               ::http/resource-path "/public"
-
-              ;; Either :jetty, :immutant or :tomcat (see comments in project.clj)
-              ;;  This can also be your own chain provider/server-fn -- http://pedestal.io/reference/architecture-overview#_chain_provider
               ::http/type :jetty
               ;;::http/host "localhost"
               ::http/port 8080
-              ;; Options to pass to the container (Jetty)
               ::http/container-options {:h2c? true
                                         :h2? false
                                         ;:keystore "test/hp/keystore.jks"
@@ -85,3 +81,10 @@
                                         ;; via the `:io.pedestal.http.jetty/http-configuration` container option.
                                         ;:io.pedestal.http.jetty/http-configuration (org.eclipse.jetty.server.HttpConfiguration.)
                                         }})
+
+
+(comment
+
+  ;; [ring.handler.dump                         :refer [handle-dump]]
+
+  )

@@ -3,15 +3,13 @@
             [cheshire.generate         :as cheshire :refer [add-encoder encode-str]]
             [cheshire.parse            :as parse]
             [cheshire.core             :as json]
-;;            (clojure.data.csv          :as csv)
+            [clojure.data.csv          :as csv]
             [clojure.java.io           :as io]
             [clojure.pprint            :as pp]
-            [clojure.walk              :as walk :refer [postwalk]]
-            )
+            [clojure.walk              :as walk :refer [postwalk]])
   (:import  [java.io OutputStream InputStream ByteArrayOutputStream BufferedOutputStream
              ByteArrayInputStream BufferedInputStream OutputStreamWriter StringReader StringWriter
-             BufferedWriter BufferedReader InputStreamReader File Reader]
-            ))
+             BufferedWriter BufferedReader InputStreamReader File Reader]))
 
 (cheshire/add-encoder clojure.lang.Var encode-str)
 
@@ -123,7 +121,7 @@
   (with-open [writer (buffered-writer output-stream)]
     (print-dup (as-edn body) writer)))
 
-(comment
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; text/csv
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -158,9 +156,15 @@
                      acc (->> v value-fn (assoc acc k))))
                  {} x))))
 
+
+(defn- ensure-seq [x]
+  (if (sequential? x)
+    x
+    (list x)))
+
 (defn clj-csv-xform [data & [opts]]
   (let [xf   (fn [ks row] (map row ks))
-        body (util/ensure-seq data)
+        body (ensure-seq data)
         cols (->> body first keys)
         rows (->> body (map (tabular-row opts)) (map (partial xf cols)))]
     [cols rows]))
@@ -186,4 +190,13 @@
 (defn csv->clj [thing & [opts]]
   (with-open [reader (find-reader thing opts)]
     (csv-clj-xform (->> reader csv/read-csv doall) opts)))
-)
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Tabular: "text/plain"
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defn clj->text-stream [data output-stream & [opts]]
+  (let [rows (->> data ensure-seq (map (tabular-row opts)))]
+    (with-open [writer (buffered-writer output-stream (or (:encoding opts) utf-8))]
+      (binding [*out* writer]
+        (pp/print-table rows)))))

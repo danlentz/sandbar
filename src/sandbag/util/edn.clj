@@ -1,4 +1,4 @@
-(ns sandbag.edn
+(ns sandbag.util.edn
   "generic convenience routines for access to static resources"
   (:refer-clojure :exclude [cat])
   (:require [clojure.java.io       :as io]

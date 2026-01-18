@@ -4,7 +4,7 @@
             [sandbag.server  :as server]
             [sandbag.util.nrepl :as nrepl]
             [sandbag.sys :as sys]
-            [sandbag.edn   :as dedn]
+            [sandbag.util.edn   :as dedn]
             [sandbag.db    :as db]
             [sandbag.db.datatype :as dt]
                                         ;            [sandbag.db.datatype]
