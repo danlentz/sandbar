@@ -103,8 +103,6 @@
     e
     (d/entity (db) e)))
 
-
-
 (defn describe
   "Returns the Concise Bounded Description (CBD) of an entity 'e'"
   [e]
