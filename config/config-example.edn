@@ -1,0 +1,9 @@
+{:db      {:url "datomic:dev://localhost:4334/"
+           :sid "example"}
+ :required-schema [:dt :t :fn :any :sameas :user :twit]
+ :nrepl   {:port 28888}
+ :auth {:twitter
+        {:consumer-key    ""
+         :consumer-secret ""
+         :access-token    ""
+         :access-secret   ""}}}

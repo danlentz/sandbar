@@ -1,0 +1,63 @@
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;;;
+;;;  SameAs Attributes
+;;;
+
+[
+ [
+  {:db/id #db/id[:db.part/db]
+   :db/ident :sameas/uuid
+   :db/valueType :db.type/uuid
+   :db/cardinality :db.cardinality/many
+   :db/index true
+   :db/doc "Unique Identities of Declared Constituents"
+   :db.install/_attribute :db.part/db}
+  ]
+
+;;;
+;;;  SameAs Datatype
+;;;
+
+ [
+  {:db/id #db/id[:db.part/user -1]
+   :db/ident :sameas
+   :dt/dt :dt/dt
+   :dt/parent :t
+   :dt/namespace "model"
+   :dt/name "SameAs"
+   :db/doc "Reified Unification of Unique Identities"
+   :dt/slots [:sameas/uuid]}
+  ]
+
+
+;;;
+;;;  SameAs Aggregates
+;;;
+
+ [
+  {:db/id #db/id[:db.part/user -1]
+   :dt/dt :dt/dt
+   :dt/namespace "model"
+   :dt/name "SameAs[]"
+   :db/ident :sameas*
+   :dt/parent :t*
+   :db/doc "Single-dimensional aggregate of SameAs instances"
+   :dt/component :sameas
+   :dt/_list :sameas
+   :dt/slots []}
+
+  {:db/id #db/id[:db.part/user -2]
+   :dt/dt :dt/dt
+   :dt/namespace "model"
+   :dt/name "SameAs[][]"
+   :db/ident :sameas**
+   :dt/parent :t**
+   :db/doc "Multi-dimensional aggregate of SameAs instances"
+   :dt/component #db/id[:db.part/user -1]
+   :dt/_list #db/id[:db.part/user -1]
+   :dt/slots []}
+  ]
+
+ ]

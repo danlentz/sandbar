@@ -1,0 +1,152 @@
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;;;
+;;;  Twit Attributes
+;;;
+
+[
+ [{:db/id #db/id[:db.part/db]
+   :db/ident :twit/name
+   :db/valueType :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/index true
+   :db/unique :db.unique/identity
+   :db/doc "Unique Twitter Screen Name"
+   :db.install/_attribute :db.part/db}
+
+  {:db/id #db/id[:db.part/db]
+   :db/ident :twit/id
+   :db/valueType :db.type/long
+   :db/cardinality :db.cardinality/one
+   :db/index true
+   :db/unique :db.unique/identity
+   :db/doc "Unique Twitter User ID"
+   :db.install/_attribute :db.part/db}
+
+  {:db/id #db/id[:db.part/db]
+   :db/ident :twit/description
+   :db/valueType :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/doc "Twitter User Description"
+   :db.install/_attribute :db.part/db}
+
+  {:db/id #db/id[:db.part/db]
+   :db/ident :twit/namestring
+   :db/valueType :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/fulltext true
+   :db/doc "Twitter User Descriptive Name"
+   :db.install/_attribute :db.part/db}
+
+  {:db/id #db/id[:db.part/db]
+   :db/ident :twit/image-url
+   :db/valueType :db.type/uri
+   :db/cardinality :db.cardinality/one
+   :db/doc "Twitter User Image URL"
+   :db.install/_attribute :db.part/db}
+
+  {:db/id #db/id[:db.part/db]
+   :db/ident :twit/url
+   :db/valueType :db.type/uri
+   :db/cardinality :db.cardinality/one
+   :db/doc "Twitter User Profile URL"
+   :db.install/_attribute :db.part/db}
+
+  {:db/id #db/id[:db.part/db]
+   :db/ident :twit/location
+   :db/valueType :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/doc "Twitter User Profile Location String"
+   :db.install/_attribute :db.part/db}
+
+  {:db/id #db/id[:db.part/db]
+   :db/ident :twit/lang
+   :db/valueType :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/doc "Twitter User Language Localization Identifier"
+   :db.install/_attribute :db.part/db}
+
+  {:db/id #db/id[:db.part/db]
+   :db/ident :twit/created
+   :db/valueType :db.type/instant
+   :db/cardinality :db.cardinality/one
+   :db/doc "Twitter User Creation Date"
+   :db.install/_attribute :db.part/db}
+
+  {:db/id #db/id[:db.part/db]
+   :db/ident :twit/geo-enabled
+   :db/valueType :db.type/boolean
+   :db/cardinality :db.cardinality/one
+   :db/doc "Twitter User GeoTag Enabled?"
+   :db.install/_attribute :db.part/db}
+
+  {:db/id #db/id[:db.part/db]
+   :db/ident :twit/suspended
+   :db/valueType :db.type/boolean
+   :db/cardinality :db.cardinality/one
+   :db/doc "Twitter User Account Suspended?"
+   :db.install/_attribute :db.part/db}
+
+  {:db/id #db/id[:db.part/db]
+   :db/ident :twit/follows
+   :db/valueType :db.type/ref
+   :db/cardinality :db.cardinality/many
+   :db/doc "Twitter Users Followed"
+   :db.install/_attribute :db.part/db}]
+
+;;;
+;;;  Twit Datatype
+;;;
+
+ [
+  {:db/id #db/id[:db.part/user -1]
+   :db/ident :twit
+   :dt/dt :dt/dt
+   :dt/parent :user
+   :dt/namespace "model"
+   :dt/name "Twit"
+   :db/doc "Twitter User."
+   :dt/slots [:twit/name
+              :twit/id
+              :twit/namestring
+              :twit/description
+              :twit/suspended
+              :twit/url
+              :twit/lang
+              :twit/image-url
+              :twit/location
+              :twit/geo-enabled
+              :twit/follows
+              :twit/created]}
+  ]
+
+;;;
+;;;  Twit Aggregates
+;;;
+
+ [
+  {:db/id #db/id[:db.part/user -1]
+   :dt/dt :dt/dt
+   :dt/namespace "model"
+   :dt/name "Twit[]"
+   :db/ident :twit*
+   :dt/parent :user*
+   :db/doc "Single-dimensional aggregate of Twit datatype instances"
+   :dt/component :twit
+   :dt/_list :twit
+   :dt/slots []}
+
+  {:db/id #db/id[:db.part/user -2]
+   :dt/dt :dt/dt
+   :dt/namespace "model"
+   :dt/name "Twit[][]"
+   :db/ident :twit**
+   :dt/parent :user**
+   :db/doc "Multi-dimensional aggregate of Twit datatype instances"
+   :dt/component #db/id[:db.part/user -1]
+   :dt/_list #db/id[:db.part/user -1]
+   :dt/slots []}
+ ]
+
+]

@@ -1,0 +1,228 @@
+== meta-model
+
+=== Datatype
+
+[source,clojure]
+.Datatype `:dt/dt` Schema
+----
+[
+  {:db/id #db/id[:db.part/db]
+   :db/ident :dt/dt              ;; <1>
+   :db/valueType :db.type/ref
+   :db/cardinality :db.cardinality/one
+   :db/doc "A reference to the data type of an entity. Entities with
+             this attribute are known as 'typed entities'"
+   :db.install/_attribute :db.part/db}
+
+ ...
+
+  {:db/id :dt/dt                 ;; <2>
+   :dt/dt :dt/dt                 ;; <3>
+   :dt/namespace "system"
+   :dt/name "Datatype"
+   :dt/slots [:dt/namespace
+                :dt/name
+                :dt/parent
+                :dt/list
+                :dt/component
+                :dt/slots]}
+]
+----
+<1> Definition of :dt/dt as an _Attribute_
+<2> Definition of :dt/dt as a _Type_
+<3> :dt/dt is the value of the :dt/dt attribute of the :dt/dt entity
+
+=== Bootstrapping the Abstract Superclass
+
+As you can see in the previous listing, there are some peculiatities
+about our implementation of `:dt/dt` so far.  Just as we re
+
+=== Fn Types
+
+Datomic provides models for computations that must occur during the
+course of a transaction called Database Function and Transaction
+Function.  Both represent compiled, clojure code stored in the
+immutable db just as any versioned data and can be queried and used by
+multiple independent clients of the db. Transaction functions also
+happen to be co-transactional, a detail not important here.
+
+This is the datatype Fn, and its aggregates Fn[ ] and Fn[ ][ ], which
+adopts wholesale Datomic's function model into our datatype system in
+a very fundamental way.  In addition to augmenting database functions
+with a little metadata, they become instances of formal types -- which
+themselves are also fully reflective datatypes in our metamodel, as
+are collections of Fn types, so they are cool to hang out with.
+
+A Function datatype is a mapping between two other datatypes in our model.
+
+    F(x): D -> R
+
+where D and R specify the type of the function's domain and range
+respectively.  Incorporation of domain/range type "Properties of
+Properies" ties the graph together in a very specific way that later
+leaves the door open for growth in our conceptual model of Fn in a way
+comparible to models built on RDF such as RDFS or OWL.
+
+In a more immediate sense, it suggests a very structured model to
+represent job-workflow-tasks as first-class versioned entities within
+the database itself rather than relying on (possibly unsynchronized)
+independent copies as may be present on a client at any given time.
+
+Finally, in a more strategic sense, database functions are going to be
+a part of working with datomic and it makes sense to fundamentally
+embrace it into our type system.
+ 
+
+=== The "Any" Model
+
+
+"Any" is a variant datatype used to create references to data that
+abstract over its representation in the storage model. Datomic's data
+model may seem bifurcated into Literal types and a Reference type.
+Every attribute must be declared to take values that are either among
+a small collection of literal data types directly represented in the
+underlying database or that they directly reference some other entity
+in the graph.  It cannot be both.  Further, the literal types must be
+specifically designated as :db.type/long, :db.type/bytes,
+:db.type/uuid, and so forth. In a sense, this is not unlike the
+situation in Java where you have the similar matter of "primitive"
+type.
+
+We have done a good job on the part of "reference" types to implement
+this :dt/dt datatype system for entities, but that still that remains
+fundamentally disjoint from the system of "literal" types such as
+strings and timestamps.  The datatype model we have built so far
+cannot express the notion of Variant type (or the "Any" type).
+
+This Any datatype allows us to (possibly dynamically) reference data
+in the Domain Model that abstracts over literal-type, reference-type,
+and data-type.
+
+It allows us to declare a reference to what might be a typed entity in
+our meta-model, or it might be some other node in the database, or it
+might be a simple piece of literal data.
+
+Its important to say that "Any" does not represent a top datatype from
+which others inherit.  It is not a "top" type it is a "variant"
+type. It might happen to contain data of one type or another at any
+given time. It does not directly relate to other datatypes through the
+:dt/parent hierarchy.
+
+[source,clojure]
+.Introspection of "Any" Datatype's Slots
+----
+crawfish.user> (dt/slot-docs :any)
+----
+
+
+."Any" Datatype's Slots
+|===
+|Attribute |Description
+
+|`:any.value/string`  |A literal string value
+|`:any.value/bigdec`  |Value type for arbitrary precision floating
+                          point numbers. Maps to java.math.BigDecimal
+                          on Java platforms.
+|`:any.value/bytes`   |Value type for binary data. Maps to byte
+                          array on Java platforms.
+|`:any.value/uri`     |Value type for URIs. Maps to java.net.URI
+                          on Java platforms.
+|`:any.value/uuid`    |Value type for UUIDs. Maps to java.util.UUID
+                          on Java platforms.
+|`:any.value/boolean` |A literal boolean value
+|`:any.value/double`  |Floating point value type. Same semantics as
+                          a Java double: double-precision 64-bit
+                          IEEE 754 floating point.
+|`:any.value/ref`     |Value type for references. All references
+                          from one entity to another are through
+                          attributes with this value type. Optionally,
+		  	  the ref'd entity may have :dt/dt attribute that
+                          declares its datatype
+|`:any.value/long`    |Fixed integer value type. Same semantics as
+                          a Java long: 64 bits wide, two's complement
+                          binary representation.
+|`:any.value/float`   |Floating point value type. Same semantics as a
+                          Java float: single-precision 32-bit IEEE 754
+                          floating point.
+|`:any.value/bigint`  |Value type for arbitrary precision integers.
+                          Maps to java.math.BigInteger on Java platforms.
+|`:dt/dt`             |A reference to the data type of an entity.
+                          Entities with this attribute are known as
+			  'typed entities'
+|`:any.value/instant` |Value type for instants in time. Stored
+                          internally as a number of milliseconds since
+			  midnight, January 1, 1970 UTC. Maps to
+                          java.util.Date on Java platforms.
+|===
+
+
+
+
+=== Aggregate References
+
+Aggregate References implement within the metamodel a structured,
+fully reflective means for (possibly dynamic creation of) typed
+references to collections of data. So a datatype Item, for example,
+implies the datatypes Item and Item[ ] of its type. This is powerful
+because we can talk about aggregates of typed data in a very general
+and fundamentally consistent way.
+
+Having a meta-level is nice because it gives us a structured way to
+extend the concepts within our system completely within the system
+itself.  I sought to do exactly this for a mechanism to reference
+aggregates (arrays, channels) of existing datatypes.  So at the
+Datatype layer we create an attribute :dt/list.  For any datatype T,
+the datatype which represents an aggregate of T instances can be found
+by traversing the graph:
+
+[source,clojure]
+--------------------------------------------------
+
+(-> (entity :job) :dt/list)
+
+ ;;   => the datatype "Job[ ]" which we call :job*
+
+(-> (entity :job) :dt/list :dt/list)
+
+ ;;   => the datatype "Job[ ][ ]" which we call :job**
+
+--------------------------------------------------
+
+so one and two dimensional arrays are modeled within the type system
+and become, like other datatypes, a concrete declarative graph model.
+This is very powerful and an extension of the concept of our data
+model that didn't involve any change at all to our existing domain
+model (job, workflow, etc.).  So the meta layer gave us the framework
+in which to express the concept such that we could build on top of
+existing work and not require to change or rewrite anything to take
+advantage.  I went back and watched that clojure/conj video "Building
+a Data Platform on Datomic" frame-by-frame.footnote:[Pun intended.] to
+make sure we did this in a way completely consistent with the model
+they describe. 
+
+
+[source,clojure]
+.Datatype Aggregates
+----
+ [
+  {:db/id #db/id[:db.part/db -1]
+   :dt/dt :dt/dt
+   :dt/namespace "system"
+   :dt/name "Datatype[]"
+   :db/ident :dt/dt*
+   :db/doc "Single-dimensional aggregate of Datatype instances"
+   :dt/component :dt/dt
+   :dt/_list :dt/dt
+   :dt/slots [:dt/items]}
+
+  {:db/id #db/id[:db.part/db]
+   :dt/dt :dt/dt
+   :dt/namespace "system"
+   :dt/name "Datatype[][]"
+   :db/ident :dt/dt**
+   :db/doc "Multi-dimensional aggregate of Datatype instances"
+   :dt/component #db/id[:db.part/db -1]
+   :dt/_list #db/id[:db.part/db -1]
+   :dt/slots [:dt/items]}
+ ]
+----

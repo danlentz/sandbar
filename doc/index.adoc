@@ -1,0 +1,14 @@
+= data-platform 
+Dan Lentz <danlentz@gmail.com>
+2014-08-31
+
+include::meta-model.html[meta-model]
+
+include::computation-model.html[computation-model]
+
+include::data-model.html[data-model]
+
+include::storage-model.html[storage-model]
+
+include::toolchain.html[toolchain]
+

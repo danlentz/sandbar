@@ -1,0 +1,59 @@
+[
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;; Abstract-Superclass "T"
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+
+;;;
+;;;  T Datatype
+;;;
+
+ [
+  {:db/id #db/id[:db.part/user -1]
+   :db/ident :t
+   :dt/dt :dt/dt
+   :dt/namespace "system"
+   :dt/name "T"
+;   :dt/parent
+   :db/doc "T is the abstract superclass of all datatypes"
+   :dt/slots [:dt/dt]}
+
+  ]
+
+ [
+   ;; self referential update
+
+  {:db/ident :t
+   :dt/parent :t}
+  ]
+
+;;;
+;;;  T Aggregates
+;;;
+
+ [
+
+  {:db/id #db/id[:db.part/user -1]
+   :dt/dt :dt/dt
+   :dt/namespace "system"
+   :dt/name "T[]"
+   :db/ident :t*
+   :dt/parent :dt/dt*
+   :db/doc "Single-dimensional aggregate of T instances"
+   :dt/component :t
+   :dt/_list :t
+   :dt/slots [:dt/items]}
+
+  {:db/id #db/id[:db.part/user -2]
+   :dt/dt :dt/dt
+   :dt/namespace "system"
+   :dt/name "T[][]"
+   :db/ident :t**
+   :dt/parent :dt/dt**
+   :db/doc "Multi-dimensional aggregate of T instances"
+   :dt/component #db/id[:db.part/user -1]
+   :dt/_list #db/id[:db.part/user -1]
+   :dt/slots [:dt/items]}
+ ]
+
+]

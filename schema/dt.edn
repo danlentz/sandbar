@@ -1,0 +1,118 @@
+[
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;; Meta Model
+;;;
+;;;  TODO: description of what this is and the purpose it serves
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;;;
+;;; Datatype Attributes
+;;;
+
+ [
+  {:db/id #db/id[:db.part/db]
+   :db/ident :dt/dt
+   :db/valueType :db.type/ref
+   :db/cardinality :db.cardinality/one
+   :db/doc "A reference to the data type of an entity. Entities with
+           this attribute are known as 'typed entities'"
+   :db.install/_attribute :db.part/db}
+
+  {:db/id #db/id[:db.part/db]
+   :db/ident :dt/namespace
+   :db/valueType :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/doc "Data types have qualified names. This is the data type
+           namespace."
+   :db.install/_attribute :db.part/db}
+
+  {:db/id #db/id[:db.part/db]
+   :db/ident :dt/name
+   :db/valueType :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/doc "The local part or unqualified name of a data type."
+   :db.install/_attribute :db.part/db}
+
+  {:db/id #db/id[:db.part/db]
+   :db/ident :dt/parent
+   :db/valueType :db.type/ref
+   :db/cardinality :db.cardinality/many
+   :db/doc "The data type(s) this data type inherits from."
+   :db.install/_attribute :db.part/db}
+
+  {:db/id #db/id[:db.part/db]
+   :db/ident :dt/list
+   :db/valueType :db.type/ref
+   :db/cardinality :db.cardinality/one
+   :db/doc "Dynamically generated reference to a list data type.
+           Provides support for multi-dimensional values."
+   :db.install/_attribute :db.part/db}
+
+  {:db/id #db/id[:db.part/db]
+   :db/ident :dt/items
+   :db/valueType :db.type/ref
+   :db/cardinality :db.cardinality/many
+   :db/doc "References item membership in list."
+   :db.install/_attribute :db.part/db}
+
+  {:db/id #db/id[:db.part/db]
+   :db/ident :dt/component
+   :db/valueType :db.type/ref
+   :db/cardinality :db.cardinality/one
+   :db/doc "Only populated for list data types."
+   :db.install/_attribute :db.part/db}
+
+  {:db/id #db/id[:db.part/db]
+   :db/ident :dt/slots
+   :db/valueType :db.type/ref
+   :db/cardinality :db.cardinality/many
+   :db/doc "References to the data type fields, themselves data types."
+   :db.install/_attribute :db.part/db}
+  ]
+
+;;;
+;;; Datatype Datatype
+;;;
+
+ [
+  {:db/id :dt/dt
+   :dt/dt :dt/dt
+   :dt/parent :dt/dt
+   :dt/namespace "system"
+   :dt/name "Datatype"
+   :dt/slots [:dt/dt
+              :dt/namespace
+               :dt/name
+               :dt/parent
+               :dt/list
+               :dt/component
+               :dt/slots]}
+  ]
+
+;;;
+;;; Datatype Aggregates
+;;;
+
+ [
+  {:db/id #db/id[:db.part/user -1]
+   :dt/dt :dt/dt
+   :dt/namespace "system"
+   :dt/name "Datatype[]"
+   :db/ident :dt/dt*
+   :db/doc "Single-dimensional aggregate of Datatype instances"
+   :dt/component :dt/dt
+   :dt/_list :dt/dt
+   :dt/slots []}
+
+  {:db/id #db/id[:db.part/user -2]
+   :dt/dt :dt/dt
+   :dt/namespace "system"
+   :dt/name "Datatype[][]"
+   :db/ident :dt/dt**
+   :db/doc "Multi-dimensional aggregate of Datatype instances"
+   :dt/component #db/id[:db.part/user -1]
+   :dt/_list #db/id[:db.part/user -1]
+   :dt/slots []}
+ ]
+
+]

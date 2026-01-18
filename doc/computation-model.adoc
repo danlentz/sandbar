@@ -1,0 +1,193 @@
+== computation-model
+
+
+=== rules
+
+
+==== Rule Induction vs. Functional Recursion
+
+So, today I decided to fill in some API around my datomic metamodel.
+To review briefly, we have created a "datatype" `:dt/dt` that is a
+special entity in that it represents the "type" of our standard
+datatype.  So, in other words, all datatypes are instances of `:dt/dt`. 
+
+Now datatype instances describe the types of data in our domain model.
+So the instanceOf relation is as follows: 
+
+[source,clojure]
+.instance-of relation
+----
+:dt/dt  ->  :domain/type  ->  instance
+----
+
+
+At the :domain/type layer, which I will refer to loosely as the
+_"datatype layer"_, the full specification of the datatype is not
+necessarily contained within its specification alone, but may in fact
+be an extension of some other, existing datatype.  This case is
+represented by the structural relation `:dt/parent` within the datatype
+itself. So for an example, say we have three datatypes: 
+
+[source,clojure]
+.Example Parental Hierarchy
+----
+:foo
+  :dt/slots [ :a :b :c ]
+
+:bar
+  :dt/parent :foo
+  :dt/slots [ :d  :e :f ]
+
+:baz
+  :dt/parent :bar
+  :dt/slots [ :g :h :i ]
+----
+
+Conceptually, `:bar` has all of its slots and all of its parent: `[ :a
+:b :c :d :e :f ``.  Likewise, `:baz` incorporates the slots of its
+ancestors: `[ :a :b :c :d :e :f :g :h :i ]`. 
+
+This type of parent/child relationship is common in programming.  It
+can be expressed elegantly using functional clojure code to traverse
+the graph, collecting lists of slots, and returning the aggregate to
+the user.  Such an implementation might look as follows:
+
+
+[source,clojure]
+.Recursive Functional Implementation
+----
+(defn datatype-parents [dt]
+  (:dt/parent (entity dt)))
+
+(defn datatype-ancestors [dt]
+  (let [direct-parents (datatype-parents dt)]
+    (distinct 
+      (concat direct-parents
+        (mapcat datatype-parents direct-parents)))))
+
+(defn datatype-direct-slots [dt]
+  (:dt/slots (entity dt)))
+
+(defn datatype-slots [dt]
+  (into (reduce clojure.set/union
+          (map datatype-direct-slots (datatype-ancestors dt)))
+    (datatype-direct-slots dt)))
+
+----
+
+So,
+
+[source,clojure]
+.Results of Functional Implementation
+----
+(datatype-ancestors :baz)
+   => (:bar :foo)
+
+ (datatype-direct-slots :baz)
+   => #{ :g :h :i }
+
+(datatype-slots :baz)
+   => #{ :a :b :c :d :e :f :g :h :i }
+----
+
+This is a reasonably nice approach and properly functional Clojure
+code.  Its clean, easily understood, and it works well.  So what more
+could we be interested in? 
+
+Well, consider for a moment that returning a list of datatype's
+declared slots is a very common and general operation.  Our
+implementation encodes the solution functionally using Clojure.  In
+fact, using Datomic rules, the same result can be obtained
+declaratively in a reusable, language-independent manner.  Rules are a
+device that allows us, during the course of a query, to infer the
+presence of some data based on the values of other data in the graph.
+How can we apply rules to our problem of determining all effective
+slots of a datatype and its transitive parent relation?  
+
+A rule is a shortcut for a series of matching clauses one might submit
+to a query.  The rule, structurally, contains "arguments" and
+"clauses".  When one invokes a rule, one needn't supply all of the
+arguments as one might expect of a function call.  Instead, parameters
+may be left "unbound" to match and retrieve data from the graph. Let's
+start simply by reimplementing 'datatype-direct-slots' using a
+rule-based approach.
+
+[source,clojure]
+----
+(defrule direct-slot [?dt ?s]
+   [?dt :dt/slots ?i]
+   [?i  :db/ident ?s])
+----
+
+I've taken the liberty to introduce a thin layer of macrology, here.
+The rule specified has literal syntax: 
+
+[source,clojure]
+----
+  [[direct-slot ?dt ?s]
+     [?dt :dt/slots ?i] [?e :db/ident ?dt] [?e :dt/slots ?s]]
+----
+
+Now, when we query the database, we can supply a list of these rules
+(rule base) and query our rule-augmented data:
+
+
+[source,clojure]
+----
+
+(defn datatype-direct-slots [dt]
+   (map first
+      (d/q '[:find ?s :in $ % ?dt :where
+                 (direct-slot ?dt ?s)]
+         (db/db) (get-rulebase) dt))
+
+ (datatype-direct-slots :baz)
+   => #{ :g :h :i }
+----
+
+This is a start -- we are querying the local slots of a datatype using
+a rule form rather than coding the solution directly.  The next
+problem is to extend our implementation to include also the slots of
+the datatype's parent and parent's parent and so forth.  But it turns
+out that rules are also very useful compositionally.  When more than
+one rule of a given name is provided, the result of the query will be
+the union of all results of rules by that name, thus forming a logical
+'or' relationship.  This gives us a nice model to declare the solution
+inductively:
+
+
+[source,clojure]
+.Inductive Rule Implementation
+----
+(defrule effective-slots [?dt ?s]
+  [?dt :dt/slots ?i]
+  [?i  :db/ident ?s])
+
+(defrule effective-slots [?dt ?s]
+  [?dt  :dt/parent ?p]
+  (effective-slots ?p ?s))
+
+(defn datatype-slots [dt]
+   (map first
+      (d/q '[:find ?s :in $ % ?dt :where
+                (effective-slots ?dt ?s)]
+         (db/db) (get-rulebase) dt))
+----
+
+
+Thus, the second form of the 'effective-slots' rule inductively
+invokes the first, following the relations up the parental hierarchy
+and collecting all corresponding slots.  The result produced is the
+same as our functional implementation, but the rule can be reused
+flexibly to build more sophisticated queries. 
+
+
+[source,clojure]
+----
+
+(datatype-slots :baz)
+   => #{ :a :b :c :d :e :f :g :h :i }﻿
+----
+
+   
+=== db/fn

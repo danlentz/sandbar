@@ -1,0 +1,109 @@
+[
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;
+;;; Fn Model
+;;;
+;;; Datomic provides models for computations that must occur during
+;;; the course of a transaction called Database Function and
+;;; Transaction Function.  Both represent compiled, clojure code
+;;; stored in the immutable db just as any versioned data and can be
+;;; queried and used by multiple independent clients of the db.
+;;; Transaction functions also happen to be co-transactional, a detail
+;;; not important here.
+;;;
+;;; This is the datatype Fn, and its aggregates Fn[ ] and Fn[ ][ ], which
+;;; adopts wholesale Datomic's function model into our datatype system
+;;; in a very fundamental way.  In addition to augmenting database
+;;; functions with a little metadata, they become instances of formal
+;;; types -- which themselves are also fully reflective datatypes in
+;;; our metamodel, as are collections of Fn types, so they are cool to
+;;; hang out with.
+;;;
+;;; A Function datatype is a mapping between two other datatypes in
+;;; our model.
+;;;
+;;;    F(x): D -> R
+;;;
+;;; where D and R specify the type of the function's domain and range
+;;; respectively.  Incorporation of domain/range type "Properties of
+;;; Properies" ties the graph together in a very specific way that
+;;; later leaves the door open for growth in our conceptual model of
+;;; Fn in a way comparible to models built on RDF such as RDFS or OWL.
+;;;
+;;; In a more immediate sense, it suggests a very structured model to
+;;; represent tasks as first-class versioned entities
+;;; within the database itself rather than relying on (possibly
+;;; unsynchronized) independent copies as may be present on a client
+;;; at any given time.
+;;;
+;;; Finally, in a more strategic sense, database functions are going
+;;; to be a part of working with datomic and it makes sense to
+;;; fundamentally embrace it into our type system
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;;;
+;;;  Fn Attributes
+;;;
+
+ [
+  {:db/id #db/id[:db.part/db]
+   :db/ident :fn/domain
+   :db/valueType :db.type/ref
+   :db/cardinality :db.cardinality/one
+   :db/doc "A data-function represents a mapping from a set of this type"
+   :db.install/_attribute :db.part/db}
+
+  {:db/id #db/id[:db.part/db]
+   :db/ident :fn/range
+   :db/valueType :db.type/ref
+   :db/cardinality :db.cardinality/one
+   :db/doc "A data-function represents a mapping to a set of this type"
+   :db.install/_attribute :db.part/db}
+  ]
+
+;;;
+;;;  Fn Datatype
+;;;
+
+ [
+  {:db/id #db/id[:db.part/user -1]
+   :db/ident :fn
+   :dt/dt :dt/dt
+;   :dt/parent :t
+   :dt/namespace "system"
+   :dt/name "Fn"
+   :db/doc "A :fn datatype represents a mapping from instances of type referenced by its :fn/domain attribute to instances of type referenced by its :fn/range attribute"
+   :dt/slots [:fn/domain
+              :fn/range]}
+  ]
+
+;;;
+;;;  Fn Aggregates
+;;;
+
+ [
+  {:db/id #db/id[:db.part/user -1]
+   :dt/dt :dt/dt
+   :dt/namespace "system"
+   :dt/name "Fn[]"
+   :db/ident :fn*
+;   :dt/parent :t*
+   :db/doc "Single-dimensional aggregate of Fn instances"
+   :dt/component :fn
+   :dt/_list :fn
+   :dt/slots []}
+
+  {:db/id #db/id[:db.part/user -2]
+   :dt/dt :dt/dt
+   :dt/namespace "system"
+   :dt/name "Fn[][]"
+   :db/ident :fn**
+;   :dt/parent :t**
+   :db/doc "Multi-dimensional aggregate of Fn instances"
+   :dt/component #db/id[:db.part/user -1]
+   :dt/_list #db/id[:db.part/user -1]
+   :dt/slots []}
+ ]
+
+]

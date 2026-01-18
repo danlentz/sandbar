@@ -1,0 +1,81 @@
+== storage-model
+
+
+=== Fressian Tags
+
+Datomic's basic data model, when you build on it, can begin to feel
+bifurcated into the world of literal types (`:db.type/uuid`,
+`:db.type/long`, ...) and the world of references and in particular
+references to nodes built on your (meta) model.
+
+But it is important to remember that the datomic model is just data in
+the graph.  So, poking at :db.type/uuid I was happy to see it was an
+entity like any other:
+
+[source,clojure]
+--------
+    (dt/describe :db.type/uuid)
+    
+      => {:db/ident :db.type/uuid,
+            :fressian/tag :uuid,
+            :db/doc "Value type for UUIDs. Maps to java.util.UUID.",
+            :db/id 56}
+--------
+
+So, cool.  Not only are Datomic's literal value types represented as
+first-class entities in the graph, but they also seem to be
+implemented in an elegant, extensible manner.  The entity that
+represents a literal type is simply one augmented with a Fressian
+codec.  And so easily new literal types can be added by the
+straightforward and fairly well known means of assigning them a new
+`:fressian/tag`.
+
+
+I was curious what were all of the literal types currently encoded in
+my db.  In other words, what were all the `:fressian/tag`'s?
+
+[source,clojure]
+----
+    (map first 
+        (d/q '[:find ?t :in $ :where
+                   [_ :fressian/tag ?t]] (db/db)))
+
+       => (:int :bool :inst :string :double :uri :key :datomic/fn :bigint
+           :bigdec :uuid :ref :bytes :float)
+----
+
+Ah, interesting.  This already gives me ideas for future play.  But
+first, take notice that there is a tag `:ref`.  So it shouldn't be
+surprising to find that `:ref` is the `:fressian/tag` of `:db.type/ref`
+
+[source,clojure]
+----
+    (dt/describe :db.type/ref)
+    
+     => {:db/ident :db.type/ref,
+            :fressian/tag :ref,
+            :db/doc "Value type for references. All references from one
+             entity to another are through attributes with this value type.",
+            :db/id 20}
+----
+
+So, there is no bifurcation at all -- data types in the storage model
+and associated codecs are implemented as fressian tags.  Data types in
+the domain model are represented as first class entities that may be
+poked at, inspected, and enhanced.
+
+Indeed,
+
+[source,clojure]
+----
+    (dt/describe :fressian/tag)
+    
+     => {:db/ident :fressian/tag,
+           :db/valueType :db.type/keyword,
+           :db/cardinality :db.cardinality/one,
+           :db/index true,
+           :db/id 39,
+           :db/doc "Keyword-valued attribute of a value type that
+                     specifies the underlying fressian type used for
+		     serialization."}           
+----
