@@ -3,8 +3,9 @@
             [clojure.tools.logging      :as log]
             [io.pedestal.http.route     :as route]
             [io.pedestal.interceptor.chain :refer [terminate]]
-            [sandbag.service.endpoint  :as endpoint :refer [defbefore defafter defhandler]]
-            [sandbag.util.http-status         :as http-status]))
+            [sandbag.db.datomic         :as db]
+            [sandbag.service.endpoint   :as endpoint :refer [defbefore defafter defhandler]]
+            [sandbag.util.http-status   :as http-status]))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Validator Dispatch
@@ -88,7 +89,7 @@
 (defn- validate-params [{:keys [request route] :as context}]
   (log/info :PARAMS/VALIDATE {:route-name (:route-name route)})
   (let [ent-store  (:ent-store request)
-        validation ((validate (:route-name route)) nil )
+        validation ((validate (:route-name route)) db/*conn* )
         params     (->> request :parsed-params)]
     (log/info :PARAMS/VALIDATING params)
     (if (spec/valid? validation params)
@@ -96,8 +97,6 @@
       (-> context
           (assoc :response (endpoint/bad-request (with-out-str (spec/explain validation params))))
           terminate))))
-
-;(((validate :sandbag.api.status/status-handler ) nil) 5)
 
 (def validated-params
   {:name ::validated-params

@@ -1,7 +1,7 @@
 (ns sandbag.diff
   "map differencing and patching"
   (:refer-clojure :exclude [cat])
-  (:require [sandbag.util :as utx]))
+  (:require [sandbag.util.common :as utx]))
 
 ;(:require [print.foo :as foo :refer :all]))
 

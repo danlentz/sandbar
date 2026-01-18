@@ -3,7 +3,7 @@
   (:require [clojure.pprint :as pp]
             [clojure.tools.logging :as log]
             [datomic.api :as d]
-            [sandbag.util :as util]))
+            [sandbag.util.common :as util]))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Fn, Fn, Fn.

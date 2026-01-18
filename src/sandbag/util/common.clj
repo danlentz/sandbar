@@ -1,10 +1,7 @@
-(ns sandbag.util
+(ns sandbag.util.common
   (:require [clojure.pprint :as pp]
             [clojure.repl]
-            [sandbag.util.codec]
-
-            ))
-
+            [sandbag.util.codec]))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Control Flow

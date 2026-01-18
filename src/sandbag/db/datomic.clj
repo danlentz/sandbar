@@ -1,11 +1,11 @@
-(ns sandbag.db
+(ns sandbag.db.datomic
   (:require [clojure.string       :as string]
             [clojure.tools.logging :as log]
             [com.stuartsierra.component :as component]
             [datomic.api          :as d]
             [sandbag.db.fn      :as fn]
             [sandbag.db.rules   :as rules]
-            [sandbag.util       :as util]
+            [sandbag.util.common       :as util]
             [sandbag.util.edn        :as dedn]))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;

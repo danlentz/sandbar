@@ -7,7 +7,7 @@
             [io.pedestal.interceptor.chain :refer [terminate]]
             [io.pedestal.http.body-params  :as body-params]
             [sandbag.service.endpoint :as endpoint :refer [defbefore defafter]]
-            [sandbag.util             :as util]
+            [sandbag.util.common      :as util]
             [sandbag.util.codec       :as codec]
             [ring.util.response        :as ring-response])
   (:import [java.io EOFException InputStream InputStreamReader]))

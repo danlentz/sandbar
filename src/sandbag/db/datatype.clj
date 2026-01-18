@@ -2,12 +2,10 @@
   "Datatype Metamodel API"
   (:refer-clojure :exclude [cat])
   (:require [datomic.api        :as    d]
-;;            [datomic.db         :as  ddb]
-;;            [datomic.common     :as  dcm]
             [clojure.pprint     :as   pp]
-            [sandbag.db.rules :refer [defrule clear-rulebase! all-rules] :as rule]
-            [sandbag.db.fn    :refer [defdbfn dbfn clear-fnbase! all-dbfn] :as fn]
-            [sandbag.db       :refer [entity describe] :as db]))
+            [sandbag.db.rules   :refer [defrule clear-rulebase! all-rules] :as rule]
+            [sandbag.db.fn      :refer [defdbfn dbfn clear-fnbase! all-dbfn] :as fn]
+            [sandbag.db.datomic :refer [entity describe] :as db]))
 
 (defn all-datatypes []
   (map first

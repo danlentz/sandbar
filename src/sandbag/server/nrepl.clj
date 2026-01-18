@@ -1,4 +1,4 @@
-(ns sandbag.util.nrepl
+(ns sandbag.server.nrepl
   (:require [nrepl.server :as nrepl-server]
             [clojure.tools.logging      :as log]
             [com.stuartsierra.component :as component]

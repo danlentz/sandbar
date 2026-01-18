@@ -1,23 +1,22 @@
 (ns sandbag.core
   (:gen-class)
   (:require [com.stuartsierra.component :as component]
-            [sandbag.server  :as server]
-            [sandbag.util.nrepl :as nrepl]
-            [sandbag.sys :as sys]
-            [sandbag.util.edn   :as dedn]
-            [sandbag.db    :as db]
             [sandbag.db.datatype :as dt]
-                                        ;            [sandbag.db.datatype]
-                                        ;            [sandbag.db.schema]
-            [sandbag.util  :as util]))
+            [sandbag.db.datomic    :as db]
+            [sandbag.server.nrepl :as nrepl]
+            [sandbag.server.pedestal  :as pedestal]
+            [sandbag.sys :as sys]
+            [sandbag.util.common  :as util]
+            [sandbag.util.edn   :as edn]))
 
 (defn make-system
   ([]
    (make-system :config))
   ([configuraton-designator]
-   (let [config (dedn/resource-value configuraton-designator nil)]
+   (let [config (edn/resource-value configuraton-designator nil)]
      (component/system-map
-       :pedestal (server/make-pedestal-server :dev)
+       :config   config
+       :pedestal (pedestal/make-pedestal-server :dev)
        :datomic  (db/make-datomic-peer (db/db-spec))
        :nrepl    (nrepl/make-nrepl-server config)
        ))))
@@ -36,8 +35,7 @@
 (defn stop
   "Shuts down and destroys the current development system."
   []
-  (alter-var-root #'sys/system (fn [s]
-                             (when s (component/stop s)))))
+  (alter-var-root #'sys/system (fn [s] (when s (component/stop s)))))
 
 (defn go
   "Initializes and starts the current development system."
@@ -48,12 +46,3 @@
 
 (defn -main []
   (go))
-
-
-(comment
-
-  (stop)
-  (go)
-
-
-  )
