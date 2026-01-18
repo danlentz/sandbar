@@ -5,12 +5,13 @@
             :url "http://www.eclipse.org/legal/epl-v10.html"}
   :dependencies [[org.clojure/clojure "1.12.4"]
                  [org.clojure/core.async "1.8.741"]
+                 [org.clojure/core.logic "1.1.1"]
+                 [org.clojure/core.match "1.1.1"]
+                 [org.clojure/data.codec "0.2.1"]
                  [org.clojure/data.csv "1.1.1"]
-                 [com.dean/interval-tree "0.1.2"]
-              ;;   [geheimtur "0.3.3"]
-
-
+                 [org.clojure/data.fressian "1.1.1"]
                  [org.clojure/tools.logging "1.3.1"]
+                 [org.clojure/tools.namespace "1.5.1"]
 
                  [nrepl "1.6.0-alpha2"]
                  [cider/cider-nrepl "0.58.0"]
@@ -19,13 +20,18 @@
                  ;; [com.datomic/local "1.0.291"]
                  [com.datomic/peer "1.0.7482"]
 
+
+                 [clj-http "3.13.1"]
+
                  [cheshire "6.1.0"]
                  [danlentz/clj-uuid "0.2.0"]
-                 [dco-dev/interval-tree "0.1.2"]
 
                  [com.stuartsierra/component "1.2.0"]
+
                  [io.pedestal/pedestal.service "0.8.1"]
                  [io.pedestal/pedestal.jetty "0.8.1"]
+                 [ring/ring-core "1.15.3"]
+
                  [com.taoensso/sente "1.21.0"]
 ;                 [com.taoensso/telemere "1.2.1"]
 
@@ -48,6 +54,5 @@
   :profiles {:dev {:aliases {"run-dev" ["trampoline" "run" "-m" "sandbag.core/go"]}
                    :dependencies [[io.pedestal/pedestal.service-tools "0.7.2"]]}
              :uberjar {:aot [sandbag.core] }}
-  :main ^{:skip-aot true} sandbag.core
 
-  )
+  :main ^{:skip-aot true} sandbag.core)
