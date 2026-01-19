@@ -68,9 +68,9 @@
 
  [
   {:db/id #db/id[:db.part/user -1]
-   :db/ident :fn
+   :db/ident :Fn
    :dt/dt :dt/dt
-;   :dt/parent :t
+   :dt/parent :T
    :dt/namespace "system"
    :dt/name "Fn"
    :db/doc "A :fn datatype represents a mapping from instances of type referenced by its :fn/domain attribute to instances of type referenced by its :fn/range attribute"
@@ -87,18 +87,18 @@
    :dt/dt :dt/dt
    :dt/namespace "system"
    :dt/name "Fn[]"
-   :db/ident :fn*
-;   :dt/parent :t*
+   :db/ident :Fn*
+   :dt/parent :T*
    :db/doc "Single-dimensional aggregate of Fn instances"
-   :dt/component :fn
-   :dt/_list :fn
+   :dt/component :Fn
+   :dt/_list :Fn
    :dt/slots []}
 
   {:db/id #db/id[:db.part/user -2]
    :dt/dt :dt/dt
    :dt/namespace "system"
    :dt/name "Fn[][]"
-   :db/ident :fn**
+   :db/ident :n**
 ;   :dt/parent :t**
    :db/doc "Multi-dimensional aggregate of Fn instances"
    :dt/component #db/id[:db.part/user -1]

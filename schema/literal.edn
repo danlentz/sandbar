@@ -1,0 +1,95 @@
+[
+
+ [
+  {:db/ident :Literal
+   :dt/dt :dt/dt
+   :dt/parent :t
+   :dt/namespace "system"
+   :dt/name "Literal"
+   :db/doc "Abstract superclass of literal/scalar types"}
+  ]
+
+ [
+  {:db/ident :db.type/string
+   :dt/dt :dt/dt
+   :dt/parent :Literal
+   :dt/name "String"}
+
+  {:db/ident :db.type/uuid
+   :dt/dt :dt/dt
+   :dt/parent :Literal
+   :dt/name "UUID"}
+
+  {:db/ident :db.type/boolean
+   :dt/dt :dt/dt
+   :dt/parent :Literal
+   :dt/name "Boolean"}
+
+  {:db/ident :db.type/uri
+   :dt/dt :dt/dt
+   :dt/parent :Literal
+   :dt/name "URI"}
+
+  {:db/ident :db.type/instant
+   :dt/dt :dt/dt
+   :dt/parent :Literal
+   :dt/name "Instant"}
+
+  {:db/ident :db.type/long
+   :dt/dt :dt/dt
+   :dt/parent :Literal
+   :dt/name "Long"}
+
+  {:db/ident :db.type/float
+   :dt/dt :dt/dt
+   :dt/parent :Literal
+   :dt/name "Float"}
+
+  {:db/ident :db.type/double
+   :dt/dt :dt/dt
+   :dt/parent :Literal
+   :dt/name "Double"}
+
+  {:db/ident :db.type/bigint
+   :dt/dt :dt/dt
+   :dt/parent :Literal
+   :dt/name "BigInt"}
+
+  {:db/ident :db.type/bigdec
+   :dt/dt :dt/dt
+   :dt/parent :Literal
+   :dt/name "BigDec"}
+
+  {:db/ident :db.type/bytes
+   :dt/dt :dt/dt
+   :dt/parent :Literal
+   :dt/name "Bytes"}
+
+  {:db/ident :db.type/keyword
+   :dt/dt :dt/dt
+   :dt/parent :Literal
+   :dt/name "Keyword"}
+
+  {:db/ident :db.type/symbol
+   :dt/dt :dt/dt
+   :dt/parent :Literal
+   :dt/name "Symbol"}
+
+  {:db/ident :db.type/fn
+   :dt/dt :dt/dt
+   :dt/parent :Literal
+   :dt/name "Function"}
+
+  {:db/ident :db.type/tuple
+   :dt/dt :dt/dt
+   :dt/parent :Literal
+   :dt/name ""ouple}
+
+  {:db/ident :db.type/double
+   :dt/dt :dt/dt
+   :dt/parent :Literal
+   :dt/name "Double"}
+
+  ]
+
+ ]

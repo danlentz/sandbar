@@ -151,4 +151,7 @@
 ;;  (ensure-db! (db-uri))
   (initialize-db! (db-uri))
 
+  (load-schema :literal)
+
+
   )

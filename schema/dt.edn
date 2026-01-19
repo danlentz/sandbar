@@ -10,6 +10,27 @@
 ;;;
 
  [
+
+  {:db/ident :Property
+   :db/doc "An attribute"}
+
+  {:db/id #db/id[:db.part/db]
+   :db/ident :dt/domain
+   :db/valueType :db.type/ref
+   :db/cardinality :db.cardinality/one
+   :db/doc "The datatype that may have a given property"
+   :db.install/_attribute :db.part/db}
+
+  {:db/id #db/id[:db.part/db]
+   :db/ident :dt/range
+   :db/valueType :db.type/ref
+   :db/cardinality :db.cardinality/one
+   :db/doc "The datatype of a property's value"
+   :db.install/_attribute :db.part/db}
+
+
+  ]
+ [
   {:db/id #db/id[:db.part/db]
    :db/ident :dt/dt
    :db/valueType :db.type/ref
@@ -68,7 +89,19 @@
    :db/cardinality :db.cardinality/many
    :db/doc "References to the data type fields, themselves data types."
    :db.install/_attribute :db.part/db}
+
+  ;; maybe?
+
+  {:db/id #db/id[:db.part/db]
+   :db/ident :dt/subproperty-of
+   :db/valueType :db.type/ref
+   :db/cardinality :db.cardinality/many
+   :db/doc "Defines parent attributes."
+   :db.install/_attribute :db.part/db}
+
+
   ]
+
 
 ;;;
 ;;; Datatype Datatype
@@ -77,7 +110,7 @@
  [
   {:db/id :dt/dt
    :dt/dt :dt/dt
-   :dt/parent :dt/dt
+;   :dt/parent :dt/dt
    :dt/namespace "system"
    :dt/name "Datatype"
    :dt/slots [:dt/dt
@@ -87,6 +120,13 @@
                :dt/list
                :dt/component
                :dt/slots]}
+
+  {:db/ident :Property
+   :dt/dt :dt/dt
+   :dt/name "Property"
+   :dt/namespace "system"
+   :dt/slots [:dt/domain :dt/range]}
+
   ]
 
 ;;;

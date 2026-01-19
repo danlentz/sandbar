@@ -62,7 +62,6 @@
              (effective-slot ?dt ?s)]
         (db/db) (all-rules) dt))))
 
-
 (defn slot-valuetype [dt slot]
   (ffirst
     (d/q '[:find ?t :in $ ?dt ?s :where
@@ -142,10 +141,47 @@
   (datatype-slots (entity-datatype e)))
 
 
-;; (db/db)
-;; (all-datatypes)
-;; (describe :dt/dt)
-;; (describe :user)
+(comment
+
+  (all-datatypes)
+
+  ;;  =>( :fn** :any** :user** :dt/dt :fn :t :t** :user* :user :fn* :t* :any* :dt/dt** :dt/dt* :any)
+
+  (describe :dt/dt)
+
+  ;; {:dt/list      :dt/dt*,
+  ;;  :db/valueType :db.type/ref,
+  ;;  :dt/namespace "system",
+  ;;  :db/cardinality :db.cardinality/one,
+  ;;  :dt/parent #{:dt/dt},
+  ;;  :db/doc "A reference to the data type of an entity. Entities with\n
+  ;;          this attribute are known as 'typed entities'",
+  ;;  :dt/slots #{:dt/list :dt/namespace :dt/parent :dt/slots :dt/name :dt/dt :dt/component},
+  ;;  :db/id 72,
+  ;;  :db/ident :dt/dt,
+  ;;  :dt/name "Datatype",
+  ;;  :dt/dt :dt/dt}
+
+  (datatype-slots :user)
+
+  ;; => #{:user/uuid :user/login :dt/dt :user/secret}
+
+  (describe :user)
+
+  {:dt/list :user*,
+   :dt/namespace "model",
+   :dt/parent #{:t},
+   :db/doc "Superclass of all users.",
+   :dt/slots #{:user/uuid :user/login :user/secret},
+   :db/id 17592186045441,
+   :db/ident :user,
+   :dt/name "User",
+   :dt/dt :dt/dt}
+
+
+
 ;; (datatype-slots :user)
 ;; (entity-datatype :dt/dt)
 ;; (datatype-slots :any)
+
+)

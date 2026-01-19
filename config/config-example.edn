@@ -1,6 +1,6 @@
 {:db      {:url "datomic:dev://localhost:4334/"
            :sid "example"}
- :required-schema [:dt :t :fn :any :sameas :user :twit]
+ :required-schema [:dt :t :literal :fn :any :sameas :user :twit]
  :nrepl   {:port 28888}
  :auth {:twitter
         {:consumer-key    ""

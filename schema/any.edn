@@ -113,6 +113,7 @@
    :db/ident :any.value/string
    :db/valueType :db.type/string
    :db/cardinality :db.cardinality/one
+   :dt/range :db.type/string
    :db/doc "A literal string value"
    :db.install/_attribute :db.part/db}
 
@@ -201,9 +202,9 @@
 
  [
   {:db/id #db/id[:db.part/user -1]
-   :db/ident :any
+   :db/ident :Any
    :dt/dt :dt/dt
-   :dt/parent :t
+   :dt/parent :T
    :dt/namespace "system"
    :dt/name "Any"
    :db/doc "Any is a variant datatype used to create references to data that abstracts over its representation in the storage model."
@@ -230,19 +231,19 @@
    :dt/dt :dt/dt
    :dt/namespace "system"
    :dt/name "Any[]"
-   :db/ident :any*
-   :dt/parent :t*
+   :db/ident :Any*
+   :dt/parent :T*
    :db/doc "Single-dimensional aggregate of Any datatype instances"
-   :dt/component :any
-   :dt/_list :any
+   :dt/component :Any
+   :dt/_list :Any
    :dt/slots []}
 
   {:db/id #db/id[:db.part/user -2]
    :dt/dt :dt/dt
    :dt/namespace "system"
    :dt/name "Any[][]"
-   :db/ident :any**
-   :dt/parent :t**
+   :db/ident :Any**
+   :dt/parent :T**
    :db/doc "Multi-dimensional aggregate of Any datatype instances"
    :dt/component #db/id[:db.part/user -1]
    :dt/_list #db/id[:db.part/user -1]

@@ -9,6 +9,7 @@
  [
   {:db/id #db/id[:db.part/db]
    :db/ident :user/uuid
+   :dt/range :db.type/uuid
    :db/valueType :db.type/uuid
    :db/cardinality :db.cardinality/one
    :db/doc "Unique Identity"
@@ -18,6 +19,7 @@
   {:db/id #db/id[:db.part/db]
    :db/ident :user/login
    :db/valueType :db.type/string
+   :dt/range :db.type/string
    :db/cardinality :db.cardinality/one
    :db/doc "Login Identity"
    :db/unique :db.unique/value
@@ -26,6 +28,7 @@
   {:db/id #db/id[:db.part/db]
    :db/ident :user/secret
    :db/valueType :db.type/string
+   :dt/range     :db.type/string
    :db/cardinality :db.cardinality/one
    :db/doc "Secret Hash"
    :db.install/_attribute :db.part/db}
@@ -38,9 +41,9 @@
 
  [
   {:db/id #db/id[:db.part/user -1]
-   :db/ident :user
+   :db/ident :User
    :dt/dt :dt/dt
-   :dt/parent :t
+   :dt/parent :T
    :dt/namespace "model"
    :dt/name "User"
    :db/doc "Superclass of all users."
@@ -59,19 +62,19 @@
    :dt/dt :dt/dt
    :dt/namespace "model"
    :dt/name "User[]"
-   :db/ident :user*
-   :dt/parent :t*
+   :db/ident :User*
+   :dt/parent :T*
    :db/doc "Single-dimensional aggregate of concrete User subclass instances"
-   :dt/component :user
-   :dt/_list :user
+   :dt/component :User
+   :dt/_list :User
    :dt/slots []}
 
   {:db/id #db/id[:db.part/user -2]
    :dt/dt :dt/dt
    :dt/namespace "model"
    :dt/name "User[][]"
-   :db/ident :user**
-   :dt/parent :t**
+   :db/ident :User**
+   :dt/parent :T**
    :db/doc "Multi-dimensional aggregate of concrete User subclass instances"
    :dt/component #db/id[:db.part/user -1]
    :dt/_list #db/id[:db.part/user -1]

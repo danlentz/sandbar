@@ -24,7 +24,7 @@
   {:db/id #db/id[:db.part/user -1]
    :db/ident :sameas
    :dt/dt :dt/dt
-   :dt/parent :t
+   :dt/parent: :T
    :dt/namespace "model"
    :dt/name "SameAs"
    :db/doc "Reified Unification of Unique Identities"
