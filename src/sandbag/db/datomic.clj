@@ -116,7 +116,6 @@
     (associative? e) (:db/id e)
     true             nil #_(util/exception IllegalArgumentException :entity e)))
 
-
 (defn excise-entity [e-or-eid]
   @(d/transact (conn)
      [{:db/id #db/id[db.part/user]
