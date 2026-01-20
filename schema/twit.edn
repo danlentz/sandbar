@@ -5,6 +5,8 @@
 ;;;  Twit Attributes
 ;;;
 
+(comment
+
 [
  [{:db/id #db/id[:db.part/db]
    :db/ident :twit/name
@@ -101,13 +103,13 @@
 
  [
   {:db/id #db/id[:db.part/user -1]
-   :db/ident :twit
-   :dt/dt :dt/dt
-   :dt/parent :user
-   :dt/namespace "model"
-   :dt/name "Twit"
+   :db/ident :Twit
+   :type :type
+   :subclass-of :User
+   :namespace "model"
+   :name "Twit"
    :db/doc "Twitter User."
-   :dt/slots [:twit/name
+   :slots [:twit/name
               :twit/id
               :twit/namestring
               :twit/description
@@ -127,26 +129,28 @@
 
  [
   {:db/id #db/id[:db.part/user -1]
-   :dt/dt :dt/dt
-   :dt/namespace "model"
-   :dt/name "Twit[]"
-   :db/ident :twit*
-   :dt/parent :user*
+   :type :type
+   :namespace "model"
+   :name "Twit[]"
+   :ident :Twit*
+   :subclass-of :User*
    :db/doc "Single-dimensional aggregate of Twit datatype instances"
-   :dt/component :twit
-   :dt/_list :twit
-   :dt/slots []}
+   :component :Twit
+   :_list :Twit
+   :slots []}
 
   {:db/id #db/id[:db.part/user -2]
-   :dt/dt :dt/dt
-   :dt/namespace "model"
-   :dt/name "Twit[][]"
-   :db/ident :twit**
-   :dt/parent :user**
+   :type :type
+   :namespace "model"
+   :name "Twit[][]"
+   :db/ident :Twit**
+   :subclass-of :User**
    :db/doc "Multi-dimensional aggregate of Twit datatype instances"
-   :dt/component #db/id[:db.part/user -1]
-   :dt/_list #db/id[:db.part/user -1]
-   :dt/slots []}
+   :component #db/id[:db.part/user -1]
+   :_list #db/id[:db.part/user -1]
+   :slots []}
  ]
 
 ]
+
+)

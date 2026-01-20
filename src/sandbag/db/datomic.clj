@@ -54,9 +54,12 @@
   ([uri schema-designator]
    (log/info :DB/SCHEMA (str "Load " schema-designator))
    (doseq [stmt (schema-value schema-designator)]
-     (-> uri conn (d/transact stmt) deref))))
+     (do
+       (log/info :DB/STMT stmt)
+       (-> uri conn (d/transact stmt) deref)))))
 
-;(schema-value :dt)
+;(schema-value :literal)
+;(schema-value :resource)
 
 (defn load-all-schema! [uri]
   (doseq [sd (required-schema)]
@@ -143,6 +146,35 @@
 
   (log/enabled? :info)
 
+
+  (describe :dt/Resource)
+
+  (describe :dt/domain)
+
+  (describe :dt/User)
+
+
+
+
+  ;; {:db/id 17592186045419,
+  ;;  :db/ident :dt/Resource,
+  ;;  :db/doc "Resource is the abstract superclass of all classes",
+  ;;  :dt/type :dt/Class,
+  ;;  :dt/namespace "system",
+  ;;  :dt/name "Resource",
+  ;;  :dt/list :dt/Resource*,
+  ;;  :dt/slots #{:dt/type}}
+
+  (describe :dt/Literal)
+
+  ;; {:db/id 17592186045439,
+  ;;  :db/ident :dt/Literal,
+  ;;  :db/doc "Abstract superclass of literal/scalar types",
+  ;;  :dt/type :dt/Class,
+  ;;  :dt/namespace "system",
+  ;;  :dt/name "Literal",
+  ;;  :dt/subclass-of #{:dt/Resource}}
+
   (sandbag.core/stop)
   (delete!)
   (sandbag.core/go)
@@ -151,7 +183,19 @@
 ;;  (ensure-db! (db-uri))
   (initialize-db! (db-uri))
 
+  (load-schema :meta)
+  (load-schema :resource)
   (load-schema :literal)
+  (load-schema :ref)
+  (load-schema :fn)
+  (load-schema :any)
+  (load-schema :user)
+
+  (defn tx [x]
+    @(d/transact (conn) x))
+
+
+(delete!)
 
 
   )

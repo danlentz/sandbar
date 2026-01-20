@@ -10,23 +10,37 @@
 (defn all-datatypes []
   (map first
     (d/q '[:find ?dt :in $ :where
-           [?e :dt/dt :dt/dt]
+           [?e :dt/type :dt/Class]
            [?e :db/ident ?dt]]
       (db/db))))
 
 (defrule instance-of [?dt ?e]
-  [?e :dt/dt ?dt])
+  [?e :dt/type ?dt])
 
 (defrule instance-of [?dt ?e]
-  [?i  :dt/parent ?dt]
+  [?i  :dt/subclass-of ?dt]
   [?i  :db/ident  ?p]
   (instance-of ?p ?e))
 
 (defn all-instances [dt]
-   (map first
+   (map (comp db/entity first)
         (d/q '[:find ?e :in $ % ?dt :where
                (instance-of ?dt ?e)]
              (db/db) (all-rules) dt)))
+
+(comment
+
+  (all-datatypes)
+
+  (count (all-instances :dt/Resource))
+  (map db/describe (all-instances :dt/Class))
+  (map db/describe (all-instances :dt/Property))
+
+
+
+  )
+
+
 
 (defn datatype-doc [dt]
   (:db/doc (entity dt)))

@@ -53,9 +53,9 @@
 (defmulti resource-value (fn [_ arg] (type arg)))
 
 (defmethod resource-value nil [designator _]
-  (util/ignore-exceptions
+                                        ; (util/ignore-exceptions
     (read-string
-     (slurp (edn-file designator)))))
+     (slurp (edn-file designator))))   ;)
 
 (defmethod resource-value clojure.lang.Keyword [designator config-key]
   (get (resource-value designator nil) config-key))
@@ -65,11 +65,16 @@
    (get-in (resource-value designator nil) config-path)))
 
 ;; (edn-file :config)
-;; (edn-file :dt)
+;; (edn-file :literal)
+;; (slurp (edn-file :literal))
+
 ;; (resource-value :config nil)
 ;; (resource-value :config db)
 ;; (resource-value :config [:db :sid])
-;; (resource-value :dt nil)
+;; (resource-value :literal nil)
+;; (resource-value :fn nil)
+
+;(type :literal)
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Configuration

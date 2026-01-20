@@ -1,94 +1,106 @@
 [
 
  [
-  {:db/ident :Literal
-   :dt/dt :dt/dt
-   :dt/parent :t
+  {:db/ident :dt/Literal
+   :dt/type :dt/Class
+   :dt/subclass-of :dt/Resource
    :dt/namespace "system"
-   :dt/name "Literal"
+   :dt/label "Literal"
+   :dt/slots []
    :db/doc "Abstract superclass of literal/scalar types"}
   ]
 
  [
   {:db/ident :db.type/string
-   :dt/dt :dt/dt
-   :dt/parent :Literal
-   :dt/name "String"}
+   :dt/type :dt/Class
+   :dt/subclass-of :dt/Literal
+   :dt/namespace "datomic"
+   :dt/label "String"}
 
   {:db/ident :db.type/uuid
-   :dt/dt :dt/dt
-   :dt/parent :Literal
-   :dt/name "UUID"}
+   :dt/type :dt/Class
+   :dt/subclass-of :dt/Literal
+   :dt/namespace "datomic"
+   :dt/label "UUID"}
 
   {:db/ident :db.type/boolean
-   :dt/dt :dt/dt
-   :dt/parent :Literal
-   :dt/name "Boolean"}
+   :dt/type :dt/Class
+   :dt/subclass-of :dt/Literal
+   :dt/namespace "datomic"
+   :dt/label "Boolean"}
 
   {:db/ident :db.type/uri
-   :dt/dt :dt/dt
-   :dt/parent :Literal
-   :dt/name "URI"}
+   :dt/type :dt/Class
+   :dt/subclass-of :dt/Literal
+   :dt/namespace "datomic"
+   :dt/label "URI"}
 
   {:db/ident :db.type/instant
-   :dt/dt :dt/dt
-   :dt/parent :Literal
-   :dt/name "Instant"}
+   :dt/type :dt/Class
+   :dt/subclass-of :dt/Literal
+   :dt/namespace "datomic"
+   :dt/label "Instant"}
 
   {:db/ident :db.type/long
-   :dt/dt :dt/dt
-   :dt/parent :Literal
-   :dt/name "Long"}
+   :dt/type :dt/Class
+   :dt/subclass-of :dt/Literal
+   :dt/namespace "datomic"
+   :dt/label "Long"}
 
   {:db/ident :db.type/float
-   :dt/dt :dt/dt
-   :dt/parent :Literal
-   :dt/name "Float"}
+   :dt/type :dt/Class
+   :dt/subclass-of :dt/Literal
+   :dt/namespace "datomic"
+   :dt/label "Float"}
 
   {:db/ident :db.type/double
-   :dt/dt :dt/dt
-   :dt/parent :Literal
-   :dt/name "Double"}
+   :dt/type :dt/Class
+   :dt/subclass-of :dt/Literal
+   :dt/namespace "datomic"
+   :dt/label "Double"}
 
   {:db/ident :db.type/bigint
-   :dt/dt :dt/dt
-   :dt/parent :Literal
-   :dt/name "BigInt"}
+   :dt/type :dt/Class
+   :dt/subclass-of :dt/Literal
+   :dt/namespace "datomic"
+   :dt/label "BigInt"}
 
   {:db/ident :db.type/bigdec
-   :dt/dt :dt/dt
-   :dt/parent :Literal
-   :dt/name "BigDec"}
+   :dt/type :dt/Class
+   :dt/subclass-of :dt/Literal
+   :dt/namespace "datomic"
+   :dt/label "BigDec"}
 
   {:db/ident :db.type/bytes
-   :dt/dt :dt/dt
-   :dt/parent :Literal
-   :dt/name "Bytes"}
+   :dt/type :dt/Class
+   :dt/subclass-of :dt/Literal
+   :dt/namespace "datomic"
+   :dt/label "Bytes"}
 
   {:db/ident :db.type/keyword
-   :dt/dt :dt/dt
-   :dt/parent :Literal
-   :dt/name "Keyword"}
+   :dt/type :dt/Class
+   :dt/subclass-of :dt/Literal
+   :dt/namespace "datomic"
+   :dt/label "Keyword"}
 
   {:db/ident :db.type/symbol
-   :dt/dt :dt/dt
-   :dt/parent :Literal
-   :dt/name "Symbol"}
+   :dt/type :dt/Class
+   :dt/subclass-of :dt/Literal
+   :dt/namespace "datomic"
+   :dt/label "Symbol"}
 
   {:db/ident :db.type/fn
-   :dt/dt :dt/dt
-   :dt/parent :Literal
-   :dt/name "Function"}
+   :dt/type :dt/Class
+   :dt/subclass-of :dt/Literal
+   :dt/namespace "datomic"
+   :dt/label "Function"}
 
   {:db/ident :db.type/tuple
-   :dt/dt :dt/dt
-   :dt/parent :Literal
-   :dt/name ""ouple}
+   :dt/type :dt/Class
+   :dt/subclass-of :dt/Literal
+   :dt/namespace "datomic"
+   :dt/label "Tuple"}
 
-  {:db/ident :db.type/double
-   :dt/dt :dt/dt
-   :dt/parent :Literal
-   :dt/name "Double"}
 
   ]
 

@@ -104,6 +104,11 @@
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
+ [
+  {:db/id #db/id[:db.part/user -1]
+   :db/ident :dt/Any}
+  ]
+
 ;;;
 ;;;  Any Attributes
 ;;;
@@ -113,13 +118,18 @@
    :db/ident :any.value/string
    :db/valueType :db.type/string
    :db/cardinality :db.cardinality/one
+   :dt/type :dt/Property
    :dt/range :db.type/string
+   :dt/domain :dt/Any
    :db/doc "A literal string value"
    :db.install/_attribute :db.part/db}
 
   {:db/id #db/id[:db.part/db]
    :db/ident :any.value/boolean
    :db/valueType :db.type/boolean
+   :dt/type :dt/Property
+   :dt/domain :dt/Any
+   :dt/range :db.type/boolean
    :db/cardinality :db.cardinality/one
    :db/doc "A literal boolean value"
    :db.install/_attribute :db.part/db}
@@ -127,13 +137,19 @@
   {:db/id #db/id[:db.part/db]
    :db/ident :any.value/long
    :db/valueType :db.type/long
+   :dt/domain :dt/Any
+   :dt/range :db.type/long
+   :dt/type :dt/Property
    :db/cardinality :db.cardinality/one
    :db/doc "Fixed integer value type. Same semantics as a Java long: 64 bits wide, two's complement binary representation."
    :db.install/_attribute :db.part/db}
 
   {:db/id #db/id[:db.part/db]
    :db/ident :any.value/bigint
+   :dt/domain :dt/Any
+   :dt/range :db.type/bigint
    :db/valueType :db.type/bigint
+   :dt/type :dt/Property
    :db/cardinality :db.cardinality/one
    :db/doc "Value type for arbitrary precision integers. Maps to java.math.BigInteger on Java platforms."
    :db.install/_attribute :db.part/db}
@@ -141,19 +157,28 @@
   {:db/id #db/id[:db.part/db]
    :db/ident :any.value/float
    :db/valueType :db.type/float
+   :dt/domain :dt/Any
+   :dt/range :db.type/float
+   :dt/type :dt/Property
    :db/cardinality :db.cardinality/one
    :db/doc "Floating point value type. Same semantics as a Java float: single-precision 32-bit IEEE 754 floating point."
    :db.install/_attribute :db.part/db}
 
   {:db/id #db/id[:db.part/db]
+   :dt/type :dt/Property
    :db/ident :any.value/double
    :db/valueType :db.type/double
+   :dt/domain :dt/Any
+   :dt/range :db.type/double
    :db/cardinality :db.cardinality/one
    :db/doc "Floating point value type. Same semantics as a Java double: double-precision 64-bit IEEE 754 floating point."
    :db.install/_attribute :db.part/db}
 
   {:db/id #db/id[:db.part/db]
    :db/ident :any.value/bigdec
+   :dt/type :dt/Property
+   :dt/domain :dt/Any
+   :dt/range :db.type/bigdec
    :db/valueType :db.type/bigdec
    :db/cardinality :db.cardinality/one
    :db/doc "Value type for arbitrary precision floating point numbers. Maps to java.math.BigDecimal on Java platforms."
@@ -162,13 +187,19 @@
   {:db/id #db/id[:db.part/db]
    :db/ident :any.value/ref
    :db/valueType :db.type/ref
+   :dt/type :dt/Property
+   :dt/domain :dt/Any
+   :dt/range :db.type/ref
    :db/cardinality :db.cardinality/one
-   :db/doc "Value type for references. All references from one entity to another are through attributes with this value type. Optionally, the ref'd entity may have :dt/dt attribute that declares its datatype"
+   :db/doc "Value type for references. All references from one entity to another are through attributes with this value type. Optionally, the ref'd entity may have :dt/type attribute that declares its class"
    :db.install/_attribute :db.part/db}
 
   {:db/id #db/id[:db.part/db]
    :db/ident :any.value/instant
    :db/valueType :db.type/instant
+   :dt/domain :dt/Any
+   :dt/range :db.type/instant
+   :dt/type :dt/Property
    :db/cardinality :db.cardinality/one
    :db/doc "Value type for instants in time. Stored internally as a number of milliseconds since midnight, January 1, 1970 UTC. Maps to java.util.Date on Java platforms."
    :db.install/_attribute :db.part/db}
@@ -176,6 +207,9 @@
   {:db/id #db/id[:db.part/db]
    :db/ident :any.value/uuid
    :db/valueType :db.type/uuid
+   :dt/type :dt/Property
+   :dt/domain :dt/Any
+   :dt/range :db.type/uuid
    :db/cardinality :db.cardinality/one
    :db/doc "Value type for UUIDs. Maps to java.util.UUID on Java platforms."
    :db.install/_attribute :db.part/db}
@@ -183,6 +217,9 @@
   {:db/id #db/id[:db.part/db]
    :db/ident :any.value/uri
    :db/valueType :db.type/uri
+   :dt/type :dt/Property
+   :dt/domain :dt/Any
+   :dt/range :db.type/uri
    :db/cardinality :db.cardinality/one
    :db/doc "Value type for URIs. Maps to java.net.URI on Java platforms."
    :db.install/_attribute :db.part/db}
@@ -190,6 +227,9 @@
   {:db/id #db/id[:db.part/db]
    :db/ident :any.value/bytes
    :db/valueType :db.type/bytes
+   :dt/type :dt/Property
+   :dt/domain :dt/Any
+   :dt/range :db.type/bytes
    :db/cardinality :db.cardinality/one
    :db/doc "Value type for binary data. Maps to byte array on Java platforms."
    :db.install/_attribute :db.part/db}
@@ -201,12 +241,12 @@
 ;;;
 
  [
-  {:db/id #db/id[:db.part/user -1]
-   :db/ident :Any
-   :dt/dt :dt/dt
-   :dt/parent :T
+  {;:db/id #db/id[:db.part/user -1]
+   :db/ident :dt/Any
+   :dt/type :dt/Class
+   :dt/subclass-of :dt/Ref
    :dt/namespace "system"
-   :dt/name "Any"
+   :dt/label "Any"
    :db/doc "Any is a variant datatype used to create references to data that abstracts over its representation in the storage model."
    :dt/slots [:any.value/string
               :any.value/boolean
@@ -228,22 +268,22 @@
 
  [
   {:db/id #db/id[:db.part/user -1]
-   :dt/dt :dt/dt
+   :dt/type :dt/Class
    :dt/namespace "system"
-   :dt/name "Any[]"
-   :db/ident :Any*
-   :dt/parent :T*
+   :dt/label "Any[]"
+   :db/ident :dt/Any*
+   :dt/subclass-of :dt/Resource*
    :db/doc "Single-dimensional aggregate of Any datatype instances"
-   :dt/component :Any
-   :dt/_list :Any
+   :dt/component :dt/Any
+   :dt/_list :dt/Any
    :dt/slots []}
 
   {:db/id #db/id[:db.part/user -2]
-   :dt/dt :dt/dt
+   :dt/type :dt/Class
    :dt/namespace "system"
-   :dt/name "Any[][]"
-   :db/ident :Any**
-   :dt/parent :T**
+   :dt/label "Any[][]"
+   :db/ident :dt/Any**
+   :dt/subclass-of :dt/Resource**
    :db/doc "Multi-dimensional aggregate of Any datatype instances"
    :dt/component #db/id[:db.part/user -1]
    :dt/_list #db/id[:db.part/user -1]

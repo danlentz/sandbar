@@ -1,0 +1,135 @@
+[
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;; Abstract-Superclass "Resource"
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+
+;;;
+;;; Resource Datatype
+;;;
+
+ [
+  { :db/id #db/id[:db.part/user -1]
+   :db/ident :dt/Resource
+   :dt/type  :dt/Class
+   :dt/namespace "system"
+   :dt/label "Resource"
+   :db/doc "Resource is the abstract superclass of all classes"
+   :dt/slots [:db/doc :db/ident :dt/label :dt/type #_:dt/component #_:dt/slots]}
+
+  ]
+
+ [   ;; self referential update
+
+  {:db/ident :dt/Class
+   :dt/type :dt/Class
+   :dt/subclass-of :dt/Resource}
+
+  {:db/ident :dt/Property
+   :dt/type :dt/Class
+   :dt/subclass-of :dt/Resource}
+
+  ]
+
+ [
+  {:db/ident :db/doc
+   :dt/type :dt/Property
+   :dt/domain :dt/Resource
+   :dt/range :db.type/string}
+
+  {:db/ident :db/ident
+   :dt/type :dt/Property
+   :dt/domain :dt/Resource
+   :dt/range :db.type/keyword}
+
+ {:db/ident :dt/type
+  :dt/type :dt/Property
+  :dt/domain :dt/Resource
+  :dt/range :dt/Class}
+
+ {:db/ident :dt/slots
+  :dt/type :dt/Property
+  :dt/domain :dt/Class
+  :dt/range :dt/Property}
+
+ {:db/ident :dt/label
+  :dt/type :dt/Property
+  :dt/domain :dt/Resource
+  :dt/range :db.type/string}
+
+ {:db/ident :dt/namespace
+  :dt/type :dt/Property
+  :dt/domain :dt/Class
+  :dt/range :db.type/string}
+
+ {:db/ident :dt/subclass-of
+  :dt/type :dt/Property
+  :dt/domain :dt/Resource
+  :dt/range :dt/Resource}
+
+ {:db/ident :dt/subproperty-of
+  :dt/type :dt/Property
+  :dt/domain :dt/Property
+  :dt/range :dt/Property}
+
+ {:db/ident :dt/domain
+  :dt/type :dt/Property
+  :dt/domain :dt/Property
+  :dt/range :dt/Class}
+
+ {:db/ident :dt/range
+  :dt/type :dt/Property
+  :dt/domain :dt/Property
+  :dt/range :dt/Resource}
+
+ {:db/ident :dt/TransitiveProperty
+  :dt/type :dt/Class
+  :dt/subclass-of :dt/Property
+  :dt/namespace "system"
+  :dt/slots []
+  :dt/label "TransitiveProperty"
+  :db/doc "A property whose value chain is transitive"}
+
+]
+;;;
+;;;  Resource Aggregates
+;;;
+
+
+ [
+  {:db/id #db/id[:db.part/user -1]
+   :dt/type :dt/Class
+   :dt/namespace "system"
+   :dt/label "Resource[]"
+   :db/ident :dt/Resource*
+   :dt/subclass-of :dt/Resource
+   :db/doc "Single-dimensional aggregate of Resource instances"
+   :dt/component :dt/Resource
+   :dt/_list :dt/Resource
+   :dt/slots [:dt/items]}
+
+  {:db/id #db/id[:db.part/user -2]
+   :dt/type :dt/Class
+   :dt/namespace "system"
+   :dt/label "Resource[][]"
+   :db/ident :dt/Resource**
+   :dt/subclass-of :dt/Resource
+   :db/doc "Multi-dimensional aggregate of Resource instances"
+   :dt/component #db/id[:db.part/user -1]
+   :dt/_list #db/id[:db.part/user -1]
+   :dt/slots [:dt/items]}
+ ]
+
+ [
+  {:db/ident :dt/Class*
+   :dt/subclass-of :dt/Resource*}
+
+  {:db/ident :dt/Class**
+   :dt/subclass-of :dt/Resource**}
+
+
+  ]
+
+
+
+]

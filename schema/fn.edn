@@ -46,16 +46,26 @@
 ;;;  Fn Attributes
 ;;;
 
+
+ [  {:db/id #db/id[:db.part/user -1]
+     :db/ident :dt/Fn}
+  ]
  [
   {:db/id #db/id[:db.part/db]
    :db/ident :fn/domain
    :db/valueType :db.type/ref
+   :dt/domain :dt/Fn
+   :dt/range  :dt/Resource
+   :dt/type :dt/Property
    :db/cardinality :db.cardinality/one
    :db/doc "A data-function represents a mapping from a set of this type"
    :db.install/_attribute :db.part/db}
 
   {:db/id #db/id[:db.part/db]
    :db/ident :fn/range
+   :dt/domain :dt/Fn
+   :dt/range  :dt/Resource
+   :dt/type :dt/Property
    :db/valueType :db.type/ref
    :db/cardinality :db.cardinality/one
    :db/doc "A data-function represents a mapping to a set of this type"
@@ -67,15 +77,14 @@
 ;;;
 
  [
-  {:db/id #db/id[:db.part/user -1]
-   :db/ident :Fn
-   :dt/dt :dt/dt
-   :dt/parent :T
+  {;:db/id #db/id[:db.part/user -1]
+   :db/ident :dt/Fn
+   :dt/type :dt/Class
+   :dt/subclass-of :dt/Ref
    :dt/namespace "system"
-   :dt/name "Fn"
+   :dt/label "Fn"
    :db/doc "A :fn datatype represents a mapping from instances of type referenced by its :fn/domain attribute to instances of type referenced by its :fn/range attribute"
-   :dt/slots [:fn/domain
-              :fn/range]}
+   :dt/slots [:fn/domain :fn/range]}
   ]
 
 ;;;
@@ -84,22 +93,22 @@
 
  [
   {:db/id #db/id[:db.part/user -1]
-   :dt/dt :dt/dt
+   :dt/type :dt/Class
    :dt/namespace "system"
-   :dt/name "Fn[]"
-   :db/ident :Fn*
-   :dt/parent :T*
+   :dt/label "Fn[]"
+   :db/ident :dt/Fn*
+   :dt/subclass-of :dt/Resource*
    :db/doc "Single-dimensional aggregate of Fn instances"
-   :dt/component :Fn
-   :dt/_list :Fn
+   :dt/component :dt/Fn
+   :dt/_list :dt/Fn
    :dt/slots []}
 
   {:db/id #db/id[:db.part/user -2]
-   :dt/dt :dt/dt
+   :dt/type :dt/Class
    :dt/namespace "system"
-   :dt/name "Fn[][]"
-   :db/ident :n**
-;   :dt/parent :t**
+   :dt/label "Fn[][]"
+   :db/ident :dt/Fn**
+   :dt/subclass-of :dt/Resource**
    :db/doc "Multi-dimensional aggregate of Fn instances"
    :dt/component #db/id[:db.part/user -1]
    :dt/_list #db/id[:db.part/user -1]

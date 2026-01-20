@@ -5,6 +5,8 @@
 ;;;  SameAs Attributes
 ;;;
 
+(comment
+
 [
  [
   {:db/id #db/id[:db.part/db]
@@ -61,3 +63,4 @@
   ]
 
  ]
+)

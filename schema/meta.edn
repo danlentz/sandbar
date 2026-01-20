@@ -5,17 +5,35 @@
 ;;;  TODO: description of what this is and the purpose it serves
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-;;;
-;;; Datatype Attributes
-;;;
+ [
+  {:db/id #db/id[:db.part/db]
+   :db/ident :dt/type
+   :db/valueType :db.type/ref
+   :db/cardinality :db.cardinality/one
+   :db/doc "A reference to the class of an entity. Entities with
+           this attribute are known as 'typed entities'"
+   :db.install/_attribute :db.part/db}
+
+  ]
 
  [
 
-  {:db/ident :Property
+  {:db/id #db/id[:db.part/user]
+   :db/ident :dt/Property
    :db/doc "An attribute"}
 
+  {:db/id #db/id[:db.part/user]
+   :db/ident :dt/Resource
+   :db/doc "A thing"}
+
+  {:db/id #db/id[:db.part/user]
+   :db/ident :dt/Class
+   :db/doc "A type"} ]
+
+ [
   {:db/id #db/id[:db.part/db]
    :db/ident :dt/domain
+   :dt/type  :dt/Property
    :db/valueType :db.type/ref
    :db/cardinality :db.cardinality/one
    :db/doc "The datatype that may have a given property"
@@ -23,24 +41,31 @@
 
   {:db/id #db/id[:db.part/db]
    :db/ident :dt/range
+   :dt/type  :dt/Property
    :db/valueType :db.type/ref
    :db/cardinality :db.cardinality/one
    :db/doc "The datatype of a property's value"
    :db.install/_attribute :db.part/db}
+  ]
 
+ [
+  {:db/ident :dt/range
+   :dt/domain :dt/Class
+   :dt/range :dt/Class}
+
+  {:db/ident :dt/domain
+   :dt/domain :dt/Class
+   :dt/range :dt/Class}
 
   ]
+
  [
-  {:db/id #db/id[:db.part/db]
-   :db/ident :dt/dt
-   :db/valueType :db.type/ref
-   :db/cardinality :db.cardinality/one
-   :db/doc "A reference to the data type of an entity. Entities with
-           this attribute are known as 'typed entities'"
-   :db.install/_attribute :db.part/db}
 
   {:db/id #db/id[:db.part/db]
    :db/ident :dt/namespace
+   :dt/type  :dt/Property
+   :dt/domain :dt/Class
+   :dt/range :db.type/string
    :db/valueType :db.type/string
    :db/cardinality :db.cardinality/one
    :db/doc "Data types have qualified names. This is the data type
@@ -48,14 +73,20 @@
    :db.install/_attribute :db.part/db}
 
   {:db/id #db/id[:db.part/db]
-   :db/ident :dt/name
+   :db/ident :dt/label
+   :dt/type  :dt/Property
+   :dt/domain :dt/Resource
+   :dt/range :db.type/string
    :db/valueType :db.type/string
    :db/cardinality :db.cardinality/one
    :db/doc "The local part or unqualified name of a data type."
    :db.install/_attribute :db.part/db}
 
   {:db/id #db/id[:db.part/db]
-   :db/ident :dt/parent
+   :db/ident :dt/subclass-of
+   :dt/type  :dt/Property
+   :dt/domain :dt/Class
+   :dt/range :dt/Class
    :db/valueType :db.type/ref
    :db/cardinality :db.cardinality/many
    :db/doc "The data type(s) this data type inherits from."
@@ -63,6 +94,9 @@
 
   {:db/id #db/id[:db.part/db]
    :db/ident :dt/list
+   :dt/type  :dt/Property
+   :dt/domain :dt/Class
+   :dt/range :dt/Class
    :db/valueType :db.type/ref
    :db/cardinality :db.cardinality/one
    :db/doc "Dynamically generated reference to a list data type.
@@ -71,6 +105,10 @@
 
   {:db/id #db/id[:db.part/db]
    :db/ident :dt/items
+   :dt/type  :dt/Property
+   :dt/domain :dt/Class
+   :dt/range :dt/Resource
+
    :db/valueType :db.type/ref
    :db/cardinality :db.cardinality/many
    :db/doc "References item membership in list."
@@ -78,6 +116,9 @@
 
   {:db/id #db/id[:db.part/db]
    :db/ident :dt/component
+   :dt/type  :dt/Property
+   :dt/domain :dt/Class
+   :dt/range :dt/Class
    :db/valueType :db.type/ref
    :db/cardinality :db.cardinality/one
    :db/doc "Only populated for list data types."
@@ -85,15 +126,19 @@
 
   {:db/id #db/id[:db.part/db]
    :db/ident :dt/slots
+   :dt/type  :dt/Property
    :db/valueType :db.type/ref
+   :dt/domain :dt/Class
+   :dt/range :dt/Property
    :db/cardinality :db.cardinality/many
    :db/doc "References to the data type fields, themselves data types."
    :db.install/_attribute :db.part/db}
 
-  ;; maybe?
-
   {:db/id #db/id[:db.part/db]
    :db/ident :dt/subproperty-of
+   :dt/type  :dt/Property
+   :dt/domain :dt/Property
+   :dt/range :dt/Property
    :db/valueType :db.type/ref
    :db/cardinality :db.cardinality/many
    :db/doc "Defines parent attributes."
@@ -103,29 +148,24 @@
   ]
 
 
-;;;
-;;; Datatype Datatype
-;;;
-
  [
-  {:db/id :dt/dt
-   :dt/dt :dt/dt
-;   :dt/parent :dt/dt
-   :dt/namespace "system"
-   :dt/name "Datatype"
-   :dt/slots [:dt/dt
-              :dt/namespace
-               :dt/name
-               :dt/parent
-               :dt/list
-               :dt/component
-               :dt/slots]}
+  ;; {:db/ident :dt/Resource
 
-  {:db/ident :Property
-   :dt/dt :dt/dt
-   :dt/name "Property"
+  ;;  :dt/label "Resource"
+  ;;  :dt/slots [:dt/type :dt/namespace :dt/label]}
+
+
+  {:db/ident :dt/Class
+   :dt/type :dt/Class
    :dt/namespace "system"
-   :dt/slots [:dt/domain :dt/range]}
+   :dt/label "Class"
+   :dt/slots [:dt/subclass-of :dt/list :dt/component :dt/slots]}
+
+  {:db/ident :dt/Property
+   :dt/type :dt/Class
+   :dt/label "Property"
+   :dt/namespace "system"
+   :dt/slots [:dt/domain :dt/range :dt/subproperty-of]}
 
   ]
 
@@ -135,21 +175,21 @@
 
  [
   {:db/id #db/id[:db.part/user -1]
-   :dt/dt :dt/dt
+   :dt/type :dt/Class
    :dt/namespace "system"
-   :dt/name "Datatype[]"
-   :db/ident :dt/dt*
-   :db/doc "Single-dimensional aggregate of Datatype instances"
-   :dt/component :dt/dt
-   :dt/_list :dt/dt
+   :dt/label "Class[]"
+   :db/ident :dt/Class*
+   :db/doc "Single-dimensional aggregate of Class instances"
+   :dt/component :dt/Class
+   :dt/_list :dt/Class
    :dt/slots []}
 
   {:db/id #db/id[:db.part/user -2]
-   :dt/dt :dt/dt
+   :dt/type :dt/Class
    :dt/namespace "system"
-   :dt/name "Datatype[][]"
-   :db/ident :dt/dt**
-   :db/doc "Multi-dimensional aggregate of Datatype instances"
+   :dt/label "Class[][]"
+   :db/ident :dt/Class**
+   :db/doc "Multi-dimensional aggregate of Class instances"
    :dt/component #db/id[:db.part/user -1]
    :dt/_list #db/id[:db.part/user -1]
    :dt/slots []}

@@ -1,0 +1,43 @@
+[
+
+
+ [
+  {:db/id #db/id[:db.part/user -1]
+   :dt/type :dt/Class
+   :dt/namespace "system"
+   :dt/label "Ref"
+   :db/ident :dt/Ref
+   :dt/subclass-of :dt/Resource
+   :db/doc "Reference (entity) Types"
+   :dt/slots [:dt/items]}
+
+]
+
+ ;; Ref Aggregates
+
+  [
+  {:db/id #db/id[:db.part/user -1]
+   :dt/type :dt/Class
+   :dt/namespace "system"
+   :dt/label "Ref[]"
+   :db/ident :dt/Ref*
+   :dt/subclass-of :dt/Resource*
+   :db/doc "Single-dimensional aggregate of Reference datatype instances"
+   :dt/component :dt/Ref
+   :dt/_list :dt/Ref
+   :dt/slots []}
+
+  {:db/id #db/id[:db.part/user -2]
+   :dt/type :dt/Class
+   :dt/namespace "system"
+   :dt/label "Ref[][]"
+   :db/ident :dt/Ref**
+   :dt/subclass-of :dt/Resource**
+   :db/doc "Multi-dimensional aggregate of Reference datatype instances"
+   :dt/component #db/id[:db.part/user -1]
+   :dt/_list #db/id[:db.part/user -1]
+   :dt/slots []}
+ ]
+
+
+ ]
