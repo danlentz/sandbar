@@ -1,6 +1,44 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; Meta Model
+;; Metamodel
 ;;
+;; An RDFS-inspired type system layered on top of Datomic. While Datomic
+;; provides a powerful schema for attributes (valueType, cardinality, etc.),
+;; it does not natively support the notion of "classes" or typed instances.
+;; This metamodel fills that gap.
+;;
+;; Core Concepts:
+;;
+;;   Resource  - The root of all things (like rdfs:Resource)
+;;   Class     - A type definition that can have instances (like rdfs:Class)
+;;   Property  - An attribute with domain and range (like rdf:Property)
+;;   List      - An ordered collection via cons cells (like rdf:List)
+;;
+;; Key Properties:
+;;
+;;   :dt/type        - Links an instance to its class (like rdf:type)
+;;   :dt/subclass-of - Defines class inheritance (like rdfs:subClassOf)
+;;   :dt/domain      - Restricts which classes may have a property
+;;   :dt/range       - Specifies the type of a property's values
+;;   :dt/slots       - Declares which properties belong to a class
+;;
+;; Integration with Datomic:
+;;
+;; The metamodel complements rather than replaces Datomic's schema. Each
+;; :dt/Property is also a Datomic attribute with :db/valueType and
+;; :db/cardinality. Native Datomic attributes like :db/doc and :db/ident
+;; are incorporated as properties with appropriate domain/range constraints.
+;;
+;; This layering enables:
+;;   - Class-based typing via :dt/type
+;;   - Inheritance hierarchies via :dt/subclass-of
+;;   - Slot inheritance (classes inherit parent slots)
+;;   - Validation against class definitions
+;;   - Introspection of the type system itself
+;;
+;; The schema is bootstrapped carefully: forward declarations establish
+;; idents, then properties are defined, then classes reference those
+;; properties. Some entities are defined twice - first as placeholders,
+;; then augmented with full metadata.
 ;;
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
@@ -194,7 +232,23 @@
    :dt/range :db.type/boolean
    :db/valueType :db.type/boolean
    :db/cardinality :db.cardinality/one
-   :db/doc "Abstract classes should not be directly instantiated."}]
+   :db/doc "Abstract classes should not be directly instantiated."}
+
+  {:db/ident :dt/required?
+   :dt/type  :dt/Property
+   :dt/domain :dt/Property
+   :dt/range :db.type/boolean
+   :db/valueType :db.type/boolean
+   :db/cardinality :db.cardinality/one
+   :db/doc "If true, instances must provide a value for this slot."}
+
+  {:db/ident :dt/validator
+   :dt/type  :dt/Property
+   :dt/domain :dt/Class
+   :dt/range :db.type/symbol
+   :db/valueType :db.type/symbol
+   :db/cardinality :db.cardinality/one
+   :db/doc "Fully-qualified symbol of a custom validator function (fn [entity] -> nil | error-map)."}]
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Fundamental Classes
@@ -212,7 +266,7 @@
    :dt/namespace "meta"
    :dt/subclass-of :dt/Resource
    :dt/label "Class"
-   :dt/slots [:dt/subclass-of :dt/abstract? :dt/list :dt/component :dt/slots]}
+   :dt/slots [:dt/subclass-of :dt/abstract? :dt/list :dt/component :dt/slots :dt/validator]}
 
   {:db/ident :dt/Property
    :dt/type :dt/Class
@@ -220,7 +274,7 @@
    :dt/label "Property"
    :dt/namespace "meta"
    :dt/slots [:db/cardinality :db/unique :db/fulltext
-              :dt/domain :dt/range :dt/subproperty-of]}
+              :dt/domain :dt/range :dt/subproperty-of :dt/required?]}
 
   {:db/ident :dt/List
    :dt/type :dt/Class

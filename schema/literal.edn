@@ -9,6 +9,7 @@
    :dt/subclass-of :dt/Resource
    :dt/namespace "system"
    :dt/label "Literal"
+   :dt/abstract? true
    :dt/slots []
    :db/doc "Abstract superclass of literal/scalar types"}]
 
