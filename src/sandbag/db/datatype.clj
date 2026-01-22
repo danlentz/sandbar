@@ -95,7 +95,11 @@
   (some? ((set (subclasses-of dt)) c)))
 
 (defn instance-of? [dt e]
-  (subclass-of? dt  (-> e entity :dt/type)))
+  (let [t (-> e entity :dt/type)]
+    (or (= dt t) (subclass-of? dt t))))
+
+(defn abstract? [dt]
+  (:dt/abstract? (entity dt)))
 
 (defrule direct-slot [?dt ?s]
   [?dt :dt/slots ?i]
