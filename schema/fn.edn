@@ -48,9 +48,19 @@
 
 
  [  {:db/id #db/id[:db.part/user -1]
-     :db/ident :dt/Fn}
+     :db/ident :dt/Fn
+     :db/doc "A Database Function"}
   ]
+
  [
+
+  {:db/ident :db/code
+   :db/valueType :db.type/string
+   :dt/domain :dt/Fn
+   :dt/range  :db.type/string
+   :dt/type :dt/Property
+   :db/cardinality :db.cardinality/one}
+
   {:db/id #db/id[:db.part/db]
    :db/ident :fn/domain
    :db/valueType :db.type/ref

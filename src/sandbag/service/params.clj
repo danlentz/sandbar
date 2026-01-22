@@ -89,7 +89,7 @@
 (defn- validate-params [{:keys [request route] :as context}]
   (log/info :PARAMS/VALIDATE {:route-name (:route-name route)})
   (let [ent-store  (:ent-store request)
-        validation ((validate (:route-name route)) db/*conn* )
+        validation ((validate (:route-name route)) (db/conn) )
         params     (->> request :parsed-params)]
     (log/info :PARAMS/VALIDATING params)
     (if (spec/valid? validation params)

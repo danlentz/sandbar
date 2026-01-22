@@ -115,7 +115,7 @@
 
  [
   {:db/id #db/id[:db.part/db]
-   :db/ident :any.value/string
+   :db/ident :value/string
    :db/valueType :db.type/string
    :db/cardinality :db.cardinality/one
    :dt/type :dt/Property
@@ -125,7 +125,7 @@
    :db.install/_attribute :db.part/db}
 
   {:db/id #db/id[:db.part/db]
-   :db/ident :any.value/boolean
+   :db/ident :value/boolean
    :db/valueType :db.type/boolean
    :dt/type :dt/Property
    :dt/domain :dt/Any
@@ -135,7 +135,7 @@
    :db.install/_attribute :db.part/db}
 
   {:db/id #db/id[:db.part/db]
-   :db/ident :any.value/long
+   :db/ident :value/long
    :db/valueType :db.type/long
    :dt/domain :dt/Any
    :dt/range :db.type/long
@@ -145,7 +145,7 @@
    :db.install/_attribute :db.part/db}
 
   {:db/id #db/id[:db.part/db]
-   :db/ident :any.value/bigint
+   :db/ident :value/bigint
    :dt/domain :dt/Any
    :dt/range :db.type/bigint
    :db/valueType :db.type/bigint
@@ -155,7 +155,7 @@
    :db.install/_attribute :db.part/db}
 
   {:db/id #db/id[:db.part/db]
-   :db/ident :any.value/float
+   :db/ident :value/float
    :db/valueType :db.type/float
    :dt/domain :dt/Any
    :dt/range :db.type/float
@@ -166,7 +166,7 @@
 
   {:db/id #db/id[:db.part/db]
    :dt/type :dt/Property
-   :db/ident :any.value/double
+   :db/ident :value/double
    :db/valueType :db.type/double
    :dt/domain :dt/Any
    :dt/range :db.type/double
@@ -175,7 +175,7 @@
    :db.install/_attribute :db.part/db}
 
   {:db/id #db/id[:db.part/db]
-   :db/ident :any.value/bigdec
+   :db/ident :value/bigdec
    :dt/type :dt/Property
    :dt/domain :dt/Any
    :dt/range :db.type/bigdec
@@ -185,7 +185,7 @@
    :db.install/_attribute :db.part/db}
 
   {:db/id #db/id[:db.part/db]
-   :db/ident :any.value/ref
+   :db/ident :value/ref
    :db/valueType :db.type/ref
    :dt/type :dt/Property
    :dt/domain :dt/Any
@@ -195,7 +195,7 @@
    :db.install/_attribute :db.part/db}
 
   {:db/id #db/id[:db.part/db]
-   :db/ident :any.value/instant
+   :db/ident :value/instant
    :db/valueType :db.type/instant
    :dt/domain :dt/Any
    :dt/range :db.type/instant
@@ -205,7 +205,7 @@
    :db.install/_attribute :db.part/db}
 
   {:db/id #db/id[:db.part/db]
-   :db/ident :any.value/uuid
+   :db/ident :value/uuid
    :db/valueType :db.type/uuid
    :dt/type :dt/Property
    :dt/domain :dt/Any
@@ -215,7 +215,7 @@
    :db.install/_attribute :db.part/db}
 
   {:db/id #db/id[:db.part/db]
-   :db/ident :any.value/uri
+   :db/ident :value/uri
    :db/valueType :db.type/uri
    :dt/type :dt/Property
    :dt/domain :dt/Any
@@ -225,7 +225,7 @@
    :db.install/_attribute :db.part/db}
 
   {:db/id #db/id[:db.part/db]
-   :db/ident :any.value/bytes
+   :db/ident :value/bytes
    :db/valueType :db.type/bytes
    :dt/type :dt/Property
    :dt/domain :dt/Any
@@ -248,18 +248,18 @@
    :dt/namespace "system"
    :dt/label "Any"
    :db/doc "Any is a variant datatype used to create references to data that abstracts over its representation in the storage model."
-   :dt/slots [:any.value/string
-              :any.value/boolean
-              :any.value/long
-              :any.value/bigint
-              :any.value/float
-              :any.value/double
-              :any.value/bigdec
-              :any.value/ref
-              :any.value/instant
-              :any.value/uuid
-              :any.value/uri
-              :any.value/bytes]}
+   :dt/slots [:value/string
+              :value/boolean
+              :value/long
+              :value/bigint
+              :value/float
+              :value/double
+              :value/bigdec
+              :value/ref
+              :value/instant
+              :value/uuid
+              :value/uri
+              :value/bytes]}
   ]
 
 ;;;

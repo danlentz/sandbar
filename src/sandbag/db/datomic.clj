@@ -14,7 +14,7 @@
 
 ;; (def ^:dynamic *db*   nil)
 
-(def ^:dynamic *conn*   nil)
+(def ^:dynamic **conn*   (atom nil))
 
 (defn db-spec []
   (dedn/config-value :db))
@@ -24,7 +24,7 @@
   ([spec] (apply str  ((juxt :url :sid) spec))))
 
 (defn conn
-   ([]     (or *conn* (conn (db-uri))))
+   ([]     (or @**conn* (conn (db-uri))))
    ([uri] (d/connect uri)))
 
 (defn ensure-db! [uri]
@@ -74,6 +74,7 @@
     (fn/load-all-dbfn  uri)
     (log/info :DB/INIT :uri uri)))
 
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Peer Component
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -84,13 +85,13 @@
   (start [self]
     (initialize-db! uri)
     (let [t-con (conn uri)]
-      (alter-var-root #'*conn* (constantly t-con))
+      (reset! **conn* t-con)
       (log/info "Datomic Peer started @" uri)
       (assoc self :c t-con)))
 
   (stop [self]
     (when c
-      (alter-var-root #'*conn* (constantly nil))
+      (reset! **conn* nil)
       (log/info "Datomic Peer stopped")
       (assoc self :c nil))))
 
@@ -117,7 +118,8 @@
   (cond
     (number? e)      (long e)
     (associative? e) (:db/id e)
-    true             nil #_(util/exception IllegalArgumentException :entity e)))
+    (keyword? e)     (entity-id (entity e))
+    true             nil))
 
 (defn excise-entity [e-or-eid]
   @(d/transact (conn)
@@ -137,12 +139,20 @@
   (log/warn :DB/DELETE :uri uri)
   (d/delete-database uri))
 
+;; TODO: clean up
+
 (defn delete! []
   (delete-db (db-uri)))
 
+(defn refresh! []
+  (delete!)
+  (initialize-db! (db-uri))
+  (reset! **conn* (conn (db-uri))))
 
 
 (comment
+
+  (refresh!)
 
   (log/enabled? :info)
 
@@ -151,7 +161,7 @@
 
   (describe :dt/domain)
 
-  (describe :dt/User)
+  (describe :User)
 
 
 

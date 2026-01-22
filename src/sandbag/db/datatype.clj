@@ -14,6 +14,9 @@
            [?e :db/ident ?dt]]
       (db/db))))
 
+(defrule direct-instance-of [?dt ?e]
+  [?e :dt/type ?dt])
+
 (defrule instance-of [?dt ?e]
   [?e :dt/type ?dt])
 
@@ -22,43 +25,83 @@
   [?i  :db/ident  ?p]
   (instance-of ?p ?e))
 
-(defn all-instances [dt]
+(defn direct-instances-of [dt]
+   (map (comp db/entity first)
+        (d/q '[:find ?e :in $ % ?dt :where
+               (direct-instance-of ?dt ?e)]
+             (db/db) (all-rules) dt)))
+
+(defn all-instances-of [dt]
    (map (comp db/entity first)
         (d/q '[:find ?e :in $ % ?dt :where
                (instance-of ?dt ?e)]
              (db/db) (all-rules) dt)))
 
-(comment
+(defn all-named-instances-of [dt]
+   (map first
+        (d/q '[:find ?ident :in $ % ?dt :where
+               [?e :db/ident ?ident]
+               (instance-of ?dt ?e)]
+             (db/db) (all-rules) dt)))
 
-  (all-datatypes)
+(defn all-classes []
+  (all-named-instances-of :dt/Class))
 
-  (count (all-instances :dt/Resource))
-  (map db/describe (all-instances :dt/Class))
-  (map db/describe (all-instances :dt/Property))
+(defn all-properties []
+  (all-named-instances-of :dt/Property))
 
+(defn make* "simple unchecked thing maker"
+  ([dt] (make* dt {}))
+  ([dt props]
+   (let [row (merge props {:dt/type dt})
+         result   @(d/transact (db/conn) [row])]
+     (-> result :tempids vals first entity))))
 
+(defn class-of [e]
+  (-> e entity :dt/type))
 
-  )
+(defn parents-of [dt]
+  (:dt/subclass-of (entity dt)))
 
-
-
-(defn datatype-doc [dt]
-  (:db/doc (entity dt)))
-
-(defn datatype-parents [dt]
-  (:dt/parent (entity dt)))
-
-(defn datatype-ancestors [dt]
-  (let [direct-parents (datatype-parents dt)]
+(defn ancestors-of [dt]
+  (let [direct-parents (parents-of dt)]
     (distinct
       (concat direct-parents
-        (mapcat datatype-parents direct-parents)))))
+              (mapcat ancestors-of direct-parents)))))
+
+(defn direct-subclasses-of [dt]
+  (d/q '[:find ?t :in $ ?dt :where
+         [?e :dt/subclass-of ?dt]
+         [?e :db/ident ?t]]
+       (db/db) dt))
+
+(defrule subclass-of [?dt ?s]
+  [?e  :dt/subclass-of ?dt]
+  [?e  :db/ident ?s])
+
+(defrule subclass-of [?dt ?c]
+  [?e :dt/subclass-of ?dt]
+  (subclass-of ?e ?s)
+  [?s :db/ident ?c])
+
+(defn subclasses-of [dt]
+  (mapv first
+        (d/q '[:find ?c :in $ % ?dt :where
+               [?t :db/ident  ?c]
+               (subclass-of ?dt ?c)]
+             (db/db) (all-rules) dt)))
+
+(defn subclass-of? [dt c]
+  (some? ((set (subclasses-of dt)) c)))
+
+(defn instance-of? [dt e]
+  (subclass-of? dt  (-> e entity :dt/type)))
 
 (defrule direct-slot [?dt ?s]
   [?dt :dt/slots ?i]
   [?i  :db/ident ?s])
 
-(defn datatype-direct-slots [dt]
+(defn direct-slots-of [dt]
   (:dt/slots (entity dt)))
 
 (defrule effective-slot [?dt ?s]
@@ -66,131 +109,159 @@
   [?i  :db/ident ?s])
 
 (defrule effective-slot [?dt ?s]
-  [?dt  :dt/parent ?p]
+  [?dt  :dt/subclass-of ?p]
   (effective-slot ?p ?s))
 
-(defn datatype-slots [dt]
+(defn slots-of [dt]
   (set
     (map first
       (d/q '[:find ?s :in $ % ?dt :where
              (effective-slot ?dt ?s)]
-        (db/db) (all-rules) dt))))
+           (db/db) (all-rules) dt))))
 
-(defn slot-valuetype [dt slot]
-  (ffirst
-    (d/q '[:find ?t :in $ ?dt ?s :where
-           [?e :dt/dt    :dt/dt]
-           [?e :db/ident    ?dt]
-           [?i :db/ident     ?s]
-           [?e :dt/slots     ?i]
-           [?i :db/valueType ?v]
-           [?v :db/ident     ?t]]
-      (db/db) dt slot)))
 
-(defn slot-doc [dt slot]
-  (ffirst
-    (d/q '[:find ?d :in $ ?dt ?s :where
-           [?e :dt/dt    :dt/dt]
-           [?e :db/ident    ?dt]
-           [?i :db/ident     ?s]
-           [?e :dt/slots     ?i]
-           [?i :db/doc      ?d]]
-      (db/db) dt slot)))
+;; (defn map-slots [f e]
+;;   (map (partial f dt) (datatype-slots dt)))
 
-(defn slot-cardinality [dt slot]
-  (ffirst
-    (d/q '[:find ?c :in $ ?dt ?s :where
-           [?e :dt/dt      :dt/dt]
-           [?e :db/ident      ?dt]
-           [?i :db/ident       ?s]
-           [?e :dt/slots       ?i]
-           [?i :db/cardinality ?v]
-           [?v :db/ident       ?c]]
-      (db/db) dt slot)))
+;; (defn slotwise [f dt]
+;;   (let [slots (datatype-slots dt)
+;;         vals  (map-datatype-slots f dt)]
+;;   (zipmap slots vals)))
 
-(defn slot-uniqueness [dt slot]
-  (ffirst
-    (d/q '[:find ?u :in $ ?dt ?s :where
-           [?e :dt/dt      :dt/dt]
-           [?e :db/ident      ?dt]
-           [?i :db/ident       ?s]
-           [?e :dt/slots       ?i]
-           [?i :db/unique      ?v]
-           [?v :db/ident       ?u]]
-      (db/db) dt slot)))
 
-;; TODO: change of semantics from metaclass to class?
+;; (defn about [dt]
+;;   ;; TODO: do
+;;   )
 
-(defn map-datatype-slots [f dt]
-  (map (partial f dt) (datatype-slots dt)))
 
-(defn slotwise [f dt]
-  (let [slots (datatype-slots dt)
-        vals  (map-datatype-slots f dt)]
-  (zipmap slots vals)))
+;; (defn entity-datatype [e]
+;;   (:dt/type (entity e)))
 
-(defn slot-valuetypes [dt]
-  (slotwise slot-valuetype dt))
+;; (defn entity-slots [e]
+;;   (datatype-slots (entity-datatype e)))
 
-(defn slot-docs [dt]
-  (slotwise slot-doc dt))
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Property Queries
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-(defn slot-cardinalities [dt]
-  (slotwise slot-cardinality dt))
+;; NOTE: subtly different from effective-slots
 
-(defn slot-uniquenesses [dt]
-  (slotwise slot-uniqueness dt))
+;; (defn domain-properties []  )
 
-(defn about [dt]
-  ;; TODO: do
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Notes
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(comment
+
+
+  (all-datatypes)
+  (all-classes)
+  (all-properties)
+
+  (count (all-instances :dt/Resource))
+  (map db/describe (all-instances :dt/Class))
+  (map db/describe (all-instances :dt/Property))
+
+  (describe :dt/Number)
+
+  (d/touch (entity :dt/Number))
+
+  ;; {:db/id 17592186045446, :db/ident :dt/Number,
+  ;;  :db/doc "Numeric value type",
+  ;;  :dt/type :dt/Class,
+  ;;  :dt/namespace "system",
+  ;;  :dt/label "Number",
+  ;;  :dt/subclass-of #{:dt/Literal}}
+
+
+
+  (all-named-instances-of-type :User)
+
+  (datatype-parents :Twit)
+  (datatype-ancestors :Twit)
+
+  (:dt/type (make* :dt/Resource))
+
+  ;; => :dt/Resource
+
+  (describe (make* :User {:dt/label "test" :user/login "dan"}))
+  (describe (make* :User {:dt/label "test" :user/login "jill"}))
+  (describe (make* :User {:dt/label "test" :user/login "dexter"}))
+
+  (all-instances-of :User)
+
+  ;; => (#:db{:id 17592186045490} #:db{:id 17592186045492} #:db{:id 17592186045494} )
+
+  (map :user/login (all-instances-of :User))
+
+  ;; => ("dan" "dexter" jill)
+
+  (class-of :dt/Property)
+
+;; => :dt/Class
+
+
+
+(datatype-subclasses :dt/Literal)
+
+;; => [:db.type/instant :db.type/uri :db.type/keyword :db.type/bytes :db.type/fn :db.type/bigdec
+;;     :db.type/long :db.type/uuid :db.type/bigint :db.type/float :db.type/tuple :db.type/symbol
+;;     :db.type/boolean :dt/Number :db.type/string :db.type/double]
+
+(datatype-subclasses :dt/Ref)
+
+;; => [:dt/Fn :Twit :dt/Any :User]
+
+(instance? :dt/Resource :dt/Literal)
+
+;; =>true
+
+  (subclass? :dt/Resource :dt/Literal)
+
+
+  (datatype-slots :dt/Resource)
+  ;; => #{:dt/label :dt/namespace :db/doc :db/ident :dt/type}
+
+  (datatype-slots :dt/Class)
+
+  ;; => #{:dt/list :dt/label :dt/namespace :dt/abstract? :db/doc :dt/slots :db/ident
+  ;;      :dt/subclass-of :dt/type :dt/component}
+
+  (datatype-slots :dt/Property)
+
+  ;; => #{:db/unique :dt/label :dt/domain :dt/namespace :dt/range :db/fulltext :db/cardinality
+  ;;       :db/doc :db/ident :dt/subproperty-of :dt/type}
+
+
+  (describe :db/cardinality)
+
+  ;; {:db/id 41,
+  ;;  :db/ident :db/cardinality,
+  ;;  :db/valueType :db.type/ref,
+  ;;  :db/cardinality :db.cardinality/one,
+  ;;  :db/doc "Property of an attribute. Two possible values: :db.cardinality/one for single-valued attributes, and :db.cardinality/many for many-valued attributes. Defaults to :db.cardinality/one.",
+  ;;  :dt/type :dt/Property,
+  ;;  :dt/domain :dt/Property,
+  ;;  :dt/range :db.type/ref}
+
+  (describe :dt/Property)
+
+  (:dt/range (entity :dt/domain))
+
+
+  (datatype-direct-subclasses :dt/Resource)
+
+  ;; => #{[:dt/Ref] [:dt/Literal] [:dt/Resource**] [:dt/Property] [:dt/Resource*] [:dt/List] [:dt/Class]}
+
   )
 
 
 
 
-(defn entity-datatype [e]
-  (:dt/dt (entity e)))
+;; TODO: change of semantics from metaclass to class?
 
-(defn entity-slots [e]
-  (datatype-slots (entity-datatype e)))
-
-
-(comment
-
-  (all-datatypes)
-
-  ;;  =>( :fn** :any** :user** :dt/dt :fn :t :t** :user* :user :fn* :t* :any* :dt/dt** :dt/dt* :any)
-
-  (describe :dt/dt)
-
-  ;; {:dt/list      :dt/dt*,
-  ;;  :db/valueType :db.type/ref,
-  ;;  :dt/namespace "system",
-  ;;  :db/cardinality :db.cardinality/one,
-  ;;  :dt/parent #{:dt/dt},
-  ;;  :db/doc "A reference to the data type of an entity. Entities with\n
-  ;;          this attribute are known as 'typed entities'",
-  ;;  :dt/slots #{:dt/list :dt/namespace :dt/parent :dt/slots :dt/name :dt/dt :dt/component},
-  ;;  :db/id 72,
-  ;;  :db/ident :dt/dt,
-  ;;  :dt/name "Datatype",
-  ;;  :dt/dt :dt/dt}
-
-  (datatype-slots :user)
-
-  ;; => #{:user/uuid :user/login :dt/dt :user/secret}
-
-  (describe :user)
-
-  {:dt/list :user*,
-   :dt/namespace "model",
-   :dt/parent #{:t},
-   :db/doc "Superclass of all users.",
-   :dt/slots #{:user/uuid :user/login :user/secret},
-   :db/id 17592186045441,
-   :db/ident :user,
-   :dt/name "User",
-   :dt/dt :dt/dt}
 
 
 
@@ -198,4 +269,10 @@
 ;; (entity-datatype :dt/dt)
 ;; (datatype-slots :any)
 
-)
+
+
+  ;; (def x (make* :List {:dt/first (entity (make* :User))}))
+
+  ;;               :dt/rest (make* :List {:dt/first (make* :User)
+  ;;                                      :dt/rest (make* :List
+  ;;                                                      {:dt/first (make* :User)})})

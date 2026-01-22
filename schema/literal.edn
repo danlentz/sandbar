@@ -1,17 +1,30 @@
-[
 
- [
-  {:db/ident :dt/Literal
+[
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Literal Types -- Class definitions for built-in Datomic valueTypes
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident :dt/Literal
    :dt/type :dt/Class
    :dt/subclass-of :dt/Resource
    :dt/namespace "system"
    :dt/label "Literal"
    :dt/slots []
-   :db/doc "Abstract superclass of literal/scalar types"}
-  ]
+   :db/doc "Abstract superclass of literal/scalar types"}]
 
- [
-  {:db/ident :db.type/string
+ [{:db/ident :dt/Number
+   :dt/type :dt/Class
+   :dt/subclass-of :dt/Literal
+   :dt/namespace "system"
+   :dt/label "Number"
+   :dt/slots []
+   :db/doc "Numeric value type"}]
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Literal Instances -- Class definitions for built-in Datomic valueTypes
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident :db.type/string
    :dt/type :dt/Class
    :dt/subclass-of :dt/Literal
    :dt/namespace "datomic"
@@ -43,31 +56,31 @@
 
   {:db/ident :db.type/long
    :dt/type :dt/Class
-   :dt/subclass-of :dt/Literal
+   :dt/subclass-of :dt/Number
    :dt/namespace "datomic"
    :dt/label "Long"}
 
   {:db/ident :db.type/float
    :dt/type :dt/Class
-   :dt/subclass-of :dt/Literal
+   :dt/subclass-of :dt/Number
    :dt/namespace "datomic"
    :dt/label "Float"}
 
   {:db/ident :db.type/double
    :dt/type :dt/Class
-   :dt/subclass-of :dt/Literal
+   :dt/subclass-of :dt/Number
    :dt/namespace "datomic"
    :dt/label "Double"}
 
   {:db/ident :db.type/bigint
    :dt/type :dt/Class
-   :dt/subclass-of :dt/Literal
+   :dt/subclass-of :dt/Number
    :dt/namespace "datomic"
    :dt/label "BigInt"}
 
   {:db/ident :db.type/bigdec
    :dt/type :dt/Class
-   :dt/subclass-of :dt/Literal
+   :dt/subclass-of :dt/Number
    :dt/namespace "datomic"
    :dt/label "BigDec"}
 
@@ -99,9 +112,32 @@
    :dt/type :dt/Class
    :dt/subclass-of :dt/Literal
    :dt/namespace "datomic"
-   :dt/label "Tuple"}
+   :dt/label "Tuple"}]
 
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Literal Aggregates (WIP/unnecessary?)
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-  ]
+  [{:db/id #db/id[:db.part/user -1]
+   :dt/type :dt/Class
+   :dt/namespace "system"
+   :dt/label "Literal[]"
+   :db/ident :dt/Literal*
+   :dt/subclass-of :dt/Resource*
+   :db/doc "Single-dimensional aggregate of Literal instances"
+   :dt/component :dt/Literal
+   :dt/_list :dt/Literal
+   :dt/slots []}
+
+  {:db/id #db/id[:db.part/user -2]
+   :dt/type :dt/Class
+   :dt/namespace "system"
+   :dt/label "Literal[][]"
+   :db/ident :dt/Literal**
+   :dt/subclass-of :dt/Resource**
+   :db/doc "Multi-dimensional aggregate of Literal instances"
+   :dt/component #db/id[:db.part/user -1]
+   :dt/_list #db/id[:db.part/user -1]
+   :dt/slots []}]
 
  ]

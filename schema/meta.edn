@@ -1,182 +1,305 @@
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Meta Model
+;;
+;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+
 [
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;;; Meta Model
-;;;
-;;;  TODO: description of what this is and the purpose it serves
+;; Forward Declarations
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
- [
-  {:db/id #db/id[:db.part/db]
-   :db/ident :dt/type
-   :db/valueType :db.type/ref
+ [{:db/ident :dt/Resource
+   :db/doc   "A thing"}
+
+  {:db/ident :dt/Property
+   :db/doc   "An attribute of a thing"}
+
+  {:db/ident :dt/Class
+   :db/doc   "A general type of thing"}
+
+  {:db/ident :dt/List
+   :db/doc   "An ad-hoc ordered collection"}
+
+  {:db/ident       :dt/type
+   :db/valueType   :db.type/ref
    :db/cardinality :db.cardinality/one
-   :db/doc "A reference to the class of an entity. Entities with
-           this attribute are known as 'typed entities'"
-   :db.install/_attribute :db.part/db}
+   :db/doc "A reference to the classes of a Resource"}]
 
-  ]
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Early Property Attributes
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
- [
-
-  {:db/id #db/id[:db.part/user]
-   :db/ident :dt/Property
-   :db/doc "An attribute"}
-
-  {:db/id #db/id[:db.part/user]
-   :db/ident :dt/Resource
-   :db/doc "A thing"}
-
-  {:db/id #db/id[:db.part/user]
-   :db/ident :dt/Class
-   :db/doc "A type"} ]
-
- [
-  {:db/id #db/id[:db.part/db]
-   :db/ident :dt/domain
+ [{:db/ident :dt/domain
    :dt/type  :dt/Property
    :db/valueType :db.type/ref
    :db/cardinality :db.cardinality/one
-   :db/doc "The datatype that may have a given property"
-   :db.install/_attribute :db.part/db}
+   :db/doc "The datatype that may have a given property"}
 
-  {:db/id #db/id[:db.part/db]
-   :db/ident :dt/range
-   :dt/type  :dt/Property
-   :db/valueType :db.type/ref
+  {:db/ident       :dt/range
+   :dt/type        :dt/Property
+   :db/valueType   :db.type/ref
    :db/cardinality :db.cardinality/one
-   :db/doc "The datatype of a property's value"
-   :db.install/_attribute :db.part/db}
-  ]
+   :db/doc "The datatype of a property's value"}]
 
- [
-  {:db/ident :dt/range
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Early Attributes Fixup
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident  :dt/range
    :dt/domain :dt/Class
-   :dt/range :dt/Class}
+   :dt/range  :dt/Class}
 
-  {:db/ident :dt/domain
+  {:db/ident  :dt/domain
    :dt/domain :dt/Class
-   :dt/range :dt/Class}
+   :dt/range  :dt/Class}
 
-  ]
+  {:db/ident  :dt/type
+   :dt/type   :dt/Property
+   :dt/domain :dt/Resource
+   :dt/range  :dt/Class}]
 
- [
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Native Properties
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-  {:db/id #db/id[:db.part/db]
-   :db/ident :dt/namespace
-   :dt/type  :dt/Property
-   :dt/domain :dt/Class
-   :dt/range :db.type/string
-   :db/valueType :db.type/string
-   :db/cardinality :db.cardinality/one
-   :db/doc "Data types have qualified names. This is the data type
-           namespace."
-   :db.install/_attribute :db.part/db}
+ [{:db/ident  :db/cardinality
+   :dt/type   :dt/Property
+   :dt/domain :dt/Property
+   :dt/range  :db.type/ref}  ;; TODO: first class cardinality types
 
-  {:db/id #db/id[:db.part/db]
-   :db/ident :dt/label
+  {:db/ident  :db/unique
+   :dt/type   :dt/Property
+   :dt/domain :dt/Property
+   :dt/range  :db.type/ref}  ;; TODO: (as above)
+
+  {:db/ident  :db/fulltext
+   :dt/type   :dt/Property
+   :dt/domain :dt/Property
+   :dt/range  :db.type/boolean}
+
+  {:db/ident  :db/doc
+   :dt/type   :dt/Property
+   :dt/domain :dt/Resource
+   :dt/range  :db.type/string}
+
+  {:db/ident  :db/valueType
+   :dt/type   :dt/Property
+   :dt/domain :dt/Property
+   :dt/range  :dt/Class}
+
+  {:db/ident  :db/ident
+   :dt/type   :dt/Property
+   :dt/domain :dt/Resource
+   :dt/range  :db.type/keyword}]
+
+  ;; NOTE: "boot datoms" cannot be altered (?)
+
+  ;; {:db/ident  :db/valueType
+  ;;  :dt/type   :dt/Property
+  ;;  :dt/domain :dt/Property
+  ;;  :dt/range  :db.type/ref}
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Fundamental Properties
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident :dt/namespace ;; TODO: -> dt/context; first class context
    :dt/type  :dt/Property
    :dt/domain :dt/Resource
    :dt/range :db.type/string
    :db/valueType :db.type/string
    :db/cardinality :db.cardinality/one
-   :db/doc "The local part or unqualified name of a data type."
-   :db.install/_attribute :db.part/db}
+   :db/doc "Resources have qualified names. This designates the namespace."}
 
-  {:db/id #db/id[:db.part/db]
-   :db/ident :dt/subclass-of
+  {:db/ident :dt/label
+   :dt/type  :dt/Property
+   :dt/domain :dt/Resource
+   :dt/range :db.type/string
+   :db/valueType :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/doc "The local part or unqualified name of a Resource"}
+
+  {:db/ident :dt/subclass-of
    :dt/type  :dt/Property
    :dt/domain :dt/Class
    :dt/range :dt/Class
    :db/valueType :db.type/ref
    :db/cardinality :db.cardinality/many
-   :db/doc "The data type(s) this data type inherits from."
-   :db.install/_attribute :db.part/db}
+   :db/doc "The data type(s) this data type inherits from."}
 
-  {:db/id #db/id[:db.part/db]
-   :db/ident :dt/list
+  {:db/ident :dt/first
+   :dt/type  :dt/Property
+   :dt/domain :dt/List
+   :dt/range :dt/Resource
+   :db/valueType :db.type/ref
+   :db/cardinality :db.cardinality/one
+   :db/doc "First item in List"}
+
+  {:db/ident :dt/rest
+   :dt/type  :dt/Property
+   :dt/domain :dt/List
+   :dt/range :dt/List
+   :db/valueType :db.type/ref
+   :db/cardinality :db.cardinality/one
+   :db/doc "Remaining items in List"}
+
+  ;; MAYBE: still deciding how to handle aggregates
+
+  {:db/ident :dt/list
    :dt/type  :dt/Property
    :dt/domain :dt/Class
    :dt/range :dt/Class
    :db/valueType :db.type/ref
    :db/cardinality :db.cardinality/one
    :db/doc "Dynamically generated reference to a list data type.
-           Provides support for multi-dimensional values."
-   :db.install/_attribute :db.part/db}
+           Provides support for multi-dimensional values."}
 
-  {:db/id #db/id[:db.part/db]
-   :db/ident :dt/items
+  {:db/ident :dt/items
    :dt/type  :dt/Property
    :dt/domain :dt/Class
    :dt/range :dt/Resource
-
    :db/valueType :db.type/ref
    :db/cardinality :db.cardinality/many
-   :db/doc "References item membership in list."
-   :db.install/_attribute :db.part/db}
+   :db/doc "References item membership in list."}
 
-  {:db/id #db/id[:db.part/db]
-   :db/ident :dt/component
+  {:db/ident :dt/component
    :dt/type  :dt/Property
    :dt/domain :dt/Class
    :dt/range :dt/Class
    :db/valueType :db.type/ref
    :db/cardinality :db.cardinality/one
-   :db/doc "Only populated for list data types."
-   :db.install/_attribute :db.part/db}
+   :db/doc "Only populated for list data types."}
 
-  {:db/id #db/id[:db.part/db]
-   :db/ident :dt/slots
+  {:db/ident :dt/slots
    :dt/type  :dt/Property
    :db/valueType :db.type/ref
    :dt/domain :dt/Class
    :dt/range :dt/Property
    :db/cardinality :db.cardinality/many
-   :db/doc "References to the data type fields, themselves data types."
-   :db.install/_attribute :db.part/db}
+   :db/doc "References to the data type fields, themselves data types."}
 
-  {:db/id #db/id[:db.part/db]
-   :db/ident :dt/subproperty-of
+  {:db/ident :dt/subproperty-of
    :dt/type  :dt/Property
    :dt/domain :dt/Property
    :dt/range :dt/Property
    :db/valueType :db.type/ref
    :db/cardinality :db.cardinality/many
-   :db/doc "Defines parent attributes."
-   :db.install/_attribute :db.part/db}
+   :db/doc "Defines parent attributes."}
 
+  {:db/ident :dt/abstract?
+   :dt/type  :dt/Property
+   :dt/domain :dt/Class
+   :dt/range :db.type/boolean
+   :db/valueType :db.type/boolean
+   :db/cardinality :db.cardinality/one
+   :db/doc "Abstract classes should not be directly instantiated."}]
 
-  ]
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Fundamental Classes
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-
- [
-  ;; {:db/ident :dt/Resource
-
-  ;;  :dt/label "Resource"
-  ;;  :dt/slots [:dt/type :dt/namespace :dt/label]}
-
+ [{:db/ident :dt/Resource
+   :dt/type  :dt/Class
+   :dt/namespace "meta"
+   :dt/label "Resource"
+   :db/doc "Resource is the abstract superclass of all classes"
+   :dt/slots [:db/doc :db/ident :dt/namespace :dt/label :dt/type]}
 
   {:db/ident :dt/Class
    :dt/type :dt/Class
-   :dt/namespace "system"
+   :dt/namespace "meta"
+   :dt/subclass-of :dt/Resource
    :dt/label "Class"
-   :dt/slots [:dt/subclass-of :dt/list :dt/component :dt/slots]}
+   :dt/slots [:dt/subclass-of :dt/abstract? :dt/list :dt/component :dt/slots]}
 
   {:db/ident :dt/Property
    :dt/type :dt/Class
+   :dt/subclass-of :dt/Resource
    :dt/label "Property"
-   :dt/namespace "system"
-   :dt/slots [:dt/domain :dt/range :dt/subproperty-of]}
+   :dt/namespace "meta"
+   :dt/slots [:db/cardinality :db/unique :db/fulltext
+              :dt/domain :dt/range :dt/subproperty-of]}
 
-  ]
-
-;;;
-;;; Datatype Aggregates
-;;;
-
- [
-  {:db/id #db/id[:db.part/user -1]
+  {:db/ident :dt/List
    :dt/type :dt/Class
-   :dt/namespace "system"
+   :dt/subclass-of :dt/Resource
+   :dt/label "List"
+   :dt/namespace "meta"
+   :dt/slots [:dt/first :dt/rest]}]
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; nil maybe, maybe not
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident :nil
+   :dt/type  :dt/List
+   :dt/label "nil"
+   :dt/namespace "meta"}]
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Extended Property Types (WIP)
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident :dt/TransitiveProperty
+   :dt/type :dt/Class
+   :dt/subclass-of :dt/Property
+   :dt/namespace "meta"
+   :dt/slots []
+   :dt/label "TransitiveProperty"
+   :db/doc "A property whose value chain is transitive"}
+
+  {:db/ident :dt/ReflexiveProperty
+   :dt/type :dt/Class
+   :dt/subclass-of :dt/Property
+   :dt/namespace "meta"
+   :dt/slots []
+   :dt/label "Reflexive Property"
+   :db/doc "A property whose value is self-referential"}
+
+  {:db/ident :dt/InverseProperty
+   :dt/type :dt/Class
+   :dt/subclass-of :dt/Property
+   :dt/namespace "meta"
+   :dt/slots []
+   :dt/label "Inverse Property"
+   :db/doc "A property which allows reverse linking"}]
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Aggregates (WIP/Unnecessary?)
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ ;; Resource*
+
+ [{:db/id #db/id[:db.part/user -1]
+   :dt/type :dt/Class
+   :dt/namespace "meta"
+   :dt/label "Resource[]"
+   :db/ident :dt/Resource*
+   :dt/subclass-of :dt/Resource
+   :db/doc "Single-dimensional aggregate of Resource instances"
+   :dt/component :dt/Resource
+   :dt/_list :dt/Resource
+   :dt/slots [:dt/items]}
+
+  {:db/id #db/id[:db.part/user -2]
+   :dt/type :dt/Class
+   :dt/namespace "meta"
+   :dt/label "Resource[][]"
+   :db/ident :dt/Resource**
+   :dt/subclass-of :dt/Resource
+   :db/doc "Multi-dimensional aggregate of Resource instances"
+   :dt/component #db/id[:db.part/user -1]
+   :dt/_list #db/id[:db.part/user -1]
+   :dt/slots [:dt/items]}]
+
+ ;; Class*
+
+ [{:db/id #db/id[:db.part/user -1]
+   :dt/type :dt/Class
+   :dt/subclass-of :dt/Resource*
+   :dt/namespace "meta"
    :dt/label "Class[]"
    :db/ident :dt/Class*
    :db/doc "Single-dimensional aggregate of Class instances"
@@ -186,13 +309,13 @@
 
   {:db/id #db/id[:db.part/user -2]
    :dt/type :dt/Class
-   :dt/namespace "system"
+   :dt/subclass-of :dt/Resource**
+   :dt/namespace "meta"
    :dt/label "Class[][]"
    :db/ident :dt/Class**
    :db/doc "Multi-dimensional aggregate of Class instances"
    :dt/component #db/id[:db.part/user -1]
    :dt/_list #db/id[:db.part/user -1]
-   :dt/slots []}
- ]
+   :dt/slots []}]
 
 ]

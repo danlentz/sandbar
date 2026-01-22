@@ -1,24 +1,26 @@
 [
 
 
- [
-  {:db/id #db/id[:db.part/user -1]
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Ref Type
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/id #db/id[:db.part/user -1]
    :dt/type :dt/Class
-   :dt/namespace "system"
+   :dt/namespace "meta"
    :dt/label "Ref"
    :db/ident :dt/Ref
    :dt/subclass-of :dt/Resource
    :db/doc "Reference (entity) Types"
-   :dt/slots [:dt/items]}
+   :dt/slots []}]
 
-]
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Ref Aggregates
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
- ;; Ref Aggregates
-
-  [
-  {:db/id #db/id[:db.part/user -1]
+ [{:db/id #db/id[:db.part/user -1]
    :dt/type :dt/Class
-   :dt/namespace "system"
+   :dt/namespace "meta"
    :dt/label "Ref[]"
    :db/ident :dt/Ref*
    :dt/subclass-of :dt/Resource*
@@ -29,15 +31,13 @@
 
   {:db/id #db/id[:db.part/user -2]
    :dt/type :dt/Class
-   :dt/namespace "system"
+   :dt/namespace "meta"
    :dt/label "Ref[][]"
    :db/ident :dt/Ref**
    :dt/subclass-of :dt/Resource**
    :db/doc "Multi-dimensional aggregate of Reference datatype instances"
    :dt/component #db/id[:db.part/user -1]
    :dt/_list #db/id[:db.part/user -1]
-   :dt/slots []}
- ]
-
+   :dt/slots []}]
 
  ]
