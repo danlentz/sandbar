@@ -25,6 +25,7 @@
 
                  [cheshire "6.1.0"]
                  [danlentz/clj-uuid "0.2.0"]
+                 [rm-hull/table "0.7.1"]
 
                  [com.stuartsierra/component "1.2.0"]
 
