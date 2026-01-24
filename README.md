@@ -184,6 +184,36 @@ The `sandbar.db.datatype` namespace provides the core metamodel operations:
 
 Sandbar exposes the metamodel through a REST API at `http://localhost:8080/api/store`.
 
+### Endpoint Reference
+
+| Category | Endpoint | Description |
+|----------|----------|-------------|
+| Status | `GET /api/status` | System status and version info |
+| Schema | `GET /api/store/schema` | Schema overview (class/property counts and lists) |
+| Classes | `GET /api/store/classes` | List all classes |
+| | `GET /api/store/classes/:class` | Full class description (slots, hierarchy, instance count, abstract?) |
+| | `GET /api/store/classes/:class/instances` | All instances (including subclass instances) |
+| | `GET /api/store/classes/:class/instances/direct` | Direct instances only |
+| | `GET /api/store/classes/:class/slots` | All effective slots with domain/range/cardinality |
+| | `GET /api/store/classes/:class/slots/direct` | Direct slots only (not inherited) |
+| | `GET /api/store/classes/:class/slots/required` | Required slots only |
+| | `GET /api/store/classes/:class/hierarchy` | Full hierarchy (parents, ancestors, subclasses) |
+| | `GET /api/store/classes/:class/subclasses` | All transitive subclasses |
+| | `GET /api/store/classes/:class/subclasses/direct` | Direct subclasses only |
+| | `GET /api/store/classes/:class/ancestors` | All ancestor classes |
+| | `GET /api/store/classes/:class/parents` | Direct parent classes |
+| Properties | `GET /api/store/properties` | List all properties |
+| | `GET /api/store/properties/:prop` | Full property description (domain, range, cardinality, required?) |
+| | `GET /api/store/properties/:prop/domain` | Property's domain class |
+| | `GET /api/store/properties/:prop/range` | Property's range type |
+| Entities | `GET /api/store/entities/:id` | Get entity by db/ident |
+| | `GET /api/store/entities/:id/validate` | Validate entity against its class |
+| | `GET /api/store/entities/:id/class` | Get entity's class |
+| Type Predicates | `GET /api/store/types/instance-of/:class/:entity` | Check if entity is instance of class |
+| | `GET /api/store/types/subclass-of/:parent/:child` | Check if child is subclass of parent |
+
+### Examples
+
 ### Classes
 
 ```bash
