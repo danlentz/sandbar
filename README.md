@@ -2,19 +2,63 @@
 
 **Classes for your Clojure data.** Sandbar adds RDFS-style typing, inheritance, and validation to Datomic — because sometimes "it's just a map" isn't enough.
 
+## Meet Zorp
+
+Zorp is an alien sneaker salesman on Pluto. Business is booming — beings from across the galaxy need footwear rated for vacuum, variable gravity, and tentacles. But Zorp has a problem: his inventory system is a mess of untyped maps.
+
 ```clojure
-;; Define a class with properties
-{:db/ident :model/User
- :dt/type :dt/Class
- :dt/subclass-of :dt/Ref
- :dt/slots [:user/login :user/email]}
-
-;; Create validated instances
-(dt/make :model/User {:user/login "zorp" :user/email "zorp@pluto.net"})
-
-;; Query your type system like any other data
-(d/q '[:find ?class :where [?class :dt/subclass-of :dt/Ref]] (db))
+;; Zorp's old code (bad)
+{:name "Moon Boot Pro"
+ :price 299.99
+ :tentacles 4}  ; Wait, is this required? What type is price? Can boots have tentacles?
 ```
+
+With Sandbar, Zorp defines a proper type hierarchy:
+
+```
+                  zorp/Footwear [abstract]
+          ________________|________________
+         |                |                |
+    zorp/Sneaker     zorp/Boot       zorp/Sandal
+    _____|_____       ____|____          |
+   |           |     |         |    zorp/FlipFlop
+zorp/HighTop  zorp/LowTop     |
+                    zorp/SpaceBoot
+```
+
+Now Zorp's code is type-safe:
+
+```clojure
+;; Define the Boot class (inherits from Footwear)
+{:db/ident :zorp/Boot
+ :dt/type :dt/Class
+ :dt/subclass-of :zorp/Footwear
+ :dt/slots [:boot/vacuum-rated? :boot/temperature-range]}
+
+;; Create a validated instance
+(dt/make :zorp/SpaceBoot
+  {:footwear/name "Moon Boot Pro"
+   :footwear/price 299.99M
+   :footwear/tentacle-count 4
+   :boot/vacuum-rated? true})
+;; => Works! Returns entity with :dt/type :zorp/SpaceBoot
+
+;; Try to instantiate the abstract class
+(dt/make :zorp/Footwear {:footwear/name "Generic"})
+;; => Throws! "Cannot instantiate abstract class"
+
+;; Query: "What slots does a SpaceBoot have?"
+(dt/slots-of :zorp/SpaceBoot)
+;; => #{:footwear/name :footwear/price :footwear/tentacle-count
+;;      :boot/vacuum-rated? :boot/temperature-range ...}
+```
+
+Zorp's inventory is now self-documenting, validated, and queryable. His customers are happy. His accountant is happy. The sentient footwear is... still plotting something, but that's a separate issue.
+
+**Learn more:**
+- **[doc/zorp-example.md](doc/zorp-example.md)** — Full tutorial with Zorp
+- **[test/sandbar/zorp_test.clj](test/sandbar/zorp_test.clj)** — Executable examples
+- **[schema/zorp.edn](schema/zorp.edn)** — The complete footwear ontology
 
 ## Quick Start
 
@@ -44,26 +88,6 @@ Datomic gives you flexible, schema-on-read attributes. Sandbar groups them into 
 | "Create a User with validation" | `(dt/make :model/User {...})` |
 
 The metamodel is itself stored as Datomic entities. It's turtles all the way down.
-
-## The Zorp Tutorial
-
-The best way to learn Sandbar is through Zorp, an alien sneaker salesman on Pluto who needs to manage his galactic footwear inventory.
-
-```
-                  zorp/Footwear [abstract]
-          ________________|________________
-         |                |                |
-    zorp/Sneaker     zorp/Boot       zorp/Sandal
-    _____|_____       ____|____          |
-   |           |     |         |    zorp/FlipFlop
-zorp/HighTop  zorp/LowTop     |
-                    zorp/SpaceBoot
-```
-
-Zorp's ontology demonstrates class hierarchies, property inheritance, abstract classes, and validation — all while selling vacuum-rated moon boots to beings with variable tentacle counts.
-
-- **[doc/zorp-example.md](doc/zorp-example.md)** — Full walkthrough
-- **[test/sandbar/zorp_test.clj](test/sandbar/zorp_test.clj)** — Executable examples
 
 ## Core API
 
