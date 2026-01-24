@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Project Metrics Script
-# Provides comprehensive statistics for the sandbag codebase
+# Provides comprehensive statistics for the sandbar codebase
 
 set -e
 
@@ -75,7 +75,7 @@ echo ""
 echo "================================================================================"
 echo "NAMESPACES BY DIRECTORY"
 echo "================================================================================"
-for dir in src/sandbag/*/; do
+for dir in src/sandbar/*/; do
   if [ -d "$dir" ]; then
     name=$(basename "$dir")
     count=$(find "$dir" -name "*.clj" -type f | xargs cat 2>/dev/null | wc -l)
@@ -84,8 +84,8 @@ for dir in src/sandbag/*/; do
   fi
 done
 # Top-level src files
-top_count=$(find src/sandbag -maxdepth 1 -name "*.clj" -type f | xargs cat 2>/dev/null | wc -l)
-top_files=$(find src/sandbag -maxdepth 1 -name "*.clj" -type f | wc -l)
+top_count=$(find src/sandbar -maxdepth 1 -name "*.clj" -type f | xargs cat 2>/dev/null | wc -l)
+top_files=$(find src/sandbar -maxdepth 1 -name "*.clj" -type f | wc -l)
 if [ "$top_files" -gt 0 ]; then
   printf "  %-20s %5d lines  (%d files)\n" "(top-level)" "$top_count" "$top_files"
 fi
