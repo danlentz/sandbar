@@ -189,6 +189,16 @@ Sandbar exposes the metamodel through a REST API at `http://localhost:8080/api/s
 | Category | Endpoint | Description |
 |----------|----------|-------------|
 | Status | `GET /api/status` | System status and version info |
+| Events | `GET /api/events` | List events (filters: type, level, status, since, until, limit) |
+| | `GET /api/events/:id` | Get event by database ID |
+| | `GET /api/events/correlation/:uuid` | Get events by correlation ID |
+| | `POST /api/events` | Create event (type in body as :dt/type) |
+| | `POST /api/events/server` | Create ServerEvent |
+| | `POST /api/events/user` | Create UserEvent |
+| | `POST /api/events/system` | Create SystemEvent |
+| | `POST /api/events/http` | Create HttpRequest event |
+| | `POST /api/events/api` | Create ApiCall event |
+| | `POST /api/events/transaction` | Create Transaction event |
 | Schema | `GET /api/store/schema` | Schema overview (class/property counts and lists) |
 | Classes | `GET /api/store/classes` | List all classes |
 | | `GET /api/store/classes/:class` | Full class description (slots, hierarchy, instance count, abstract?) |
@@ -272,11 +282,29 @@ GET /api/store/entities/model/User/validate
 ```bash
 # Check instance-of relationship
 GET /api/store/types/instance-of/dt/Class/model/User
-# => {"class": "dt/Class", "entity": "model/User", "instance-of?": true}
+# => {:class :dt/Class, :entity :model/User, :instance-of? true}
 
 # Check subclass-of relationship
 GET /api/store/types/subclass-of/dt/Resource/model/User
-# => {"parent": "dt/Resource", "child": "model/User", "subclass-of?": true}
+# => {:parent :dt/Resource, :child :model/User, :subclass-of? true}
+```
+
+### JSON Example
+
+```bash
+# Request JSON format with Accept header
+curl -H "Accept: application/json" http://localhost:8080/api/store/classes/dt/Resource
+```
+
+```json
+{
+  "class": "dt/Resource",
+  "abstract?": false,
+  "slots": ["db/doc", "db/ident", "dt/label", "dt/namespace", "dt/type"],
+  "parents": [],
+  "subclasses": ["dt/Class", "dt/List", "dt/Literal", "dt/Property", "dt/Ref"],
+  "instance-count": 85
+}
 ```
 
 ### Content Negotiation

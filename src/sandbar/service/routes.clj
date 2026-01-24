@@ -3,11 +3,13 @@
             [clojure.tools.logging        :as log]
             [io.pedestal.http.body-params :as body-params]
             [io.pedestal.http.route       :as route]
+            [sandbar.api.event            :as event]
             [sandbar.api.status           :as status]
             [sandbar.api.store            :as store]
             [sandbar.service.content      :as content]
             [sandbar.service.endpoint     :as endpoint :refer [defhandler]]
             [sandbar.service.params       :as params]
+            [sandbar.util.event           :as event-util]
             [sandbar.util.http-status     :as http-status]))
 
 (defn home-page [request]
@@ -29,13 +31,23 @@
       ["/favicon.ico" {:get favicon-ico}]
 ;      ["/login" {:get identity}]
 ;      ["/logout"]
-      ["/api" ^:interceptors [content/data-body
+      ["/api" ^:interceptors [event-util/log-request
+                              content/data-body
                               content/log-response
                               content/accept-content
                               params/parsed-params
                               params/validated-params
                               params/log-params]
        ["/status" {:get status/status-handler}]
+       ["/events" {:get event/list-events :post event/create-event}
+        ["/server" {:post event/create-server-event}]
+        ["/user" {:post event/create-user-event}]
+        ["/system" {:post event/create-system-event}]
+        ["/http" {:post event/create-http-event}]
+        ["/api" {:post event/create-api-event}]
+        ["/transaction" {:post event/create-transaction-event}]
+        ["/correlation/:uuid" {:get event/get-by-correlation}]
+        ["/:id" {:get event/get-event}]]
        ["/store"
         ["/schema" {:get store/schema-overview}]
         ["/classes" {:get store/list-classes}
