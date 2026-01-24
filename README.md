@@ -1,4 +1,4 @@
-# Sandbag
+# Sandbar
 
 A metamodel layer for Datomic that brings RDFS-style typing, inheritance, and validation to your domain models.
 
@@ -12,7 +12,7 @@ Datomic is a powerful immutable database with a flexible, schema-on-read data mo
 - **Introspection**: Query the schema itself - "What properties does a User have?"
 - **Documentation**: Self-describing types that encode domain knowledge
 
-Sandbag provides these capabilities while preserving Datomic's flexibility. It's complementary, not replacement - your Datomic attributes remain first-class, and the metamodel is itself stored as Datomic data.
+Sandbar provides these capabilities while preserving Datomic's flexibility. It's complementary, not replacement - your Datomic attributes remain first-class, and the metamodel is itself stored as Datomic data.
 
 ## The Approach
 
@@ -48,14 +48,14 @@ This self-describing approach means you can query your type system with the same
 
 # Clone and install dependencies
 git clone <repository-url>
-cd sandbag
+cd sandbar
 lein deps
 
 # Start the REPL
 lein repl
 
 # In the REPL
-(require '[sandbag.core :refer [go stop]])
+(require '[sandbar.core :refer [go stop]])
 (go)  ; Starts HTTP server on :8080, nREPL on :28888
 ```
 
@@ -64,7 +64,7 @@ lein repl
 The best way to understand the metamodel is through example. See the complete tutorial featuring Zorp, an alien sneaker salesman on Pluto:
 
 - **[doc/zorp-example.adoc](doc/zorp-example.adoc)** - Full walkthrough with ontology design, `dt/make` examples, and REST API queries
-- **[test/sandbag/zorp_test.clj](test/sandbag/zorp_test.clj)** - Comprehensive test suite demonstrating all features
+- **[test/sandbar/zorp_test.clj](test/sandbar/zorp_test.clj)** - Comprehensive test suite demonstrating all features
 
 The footwear ontology illustrates class hierarchies, property inheritance, and type-safe instance creation:
 
@@ -81,12 +81,12 @@ zorp/HighTop  zorp/LowTop  |    |
 
 ## Datatype API
 
-The `sandbag.db.datatype` namespace provides the core metamodel operations:
+The `sandbar.db.datatype` namespace provides the core metamodel operations:
 
 ### Class Introspection
 
 ```clojure
-(require '[sandbag.db.datatype :as dt])
+(require '[sandbar.db.datatype :as dt])
 
 ;; List all classes
 (dt/all-classes)
@@ -182,7 +182,7 @@ The `sandbag.db.datatype` namespace provides the core metamodel operations:
 
 ## REST API
 
-Sandbag exposes the metamodel through a REST API at `http://localhost:8080/api/store`.
+Sandbar exposes the metamodel through a REST API at `http://localhost:8080/api/store`.
 
 ### Classes
 
@@ -252,8 +252,8 @@ GET /api/store/types/subclass-of/dt/Resource/model/User
 ### Content Negotiation
 
 The API supports multiple formats via the `Accept` header:
-- `application/json` (default)
-- `application/edn`
+- `application/edn` (default)
+- `application/json`
 - `application/transit+json`
 
 ## Documentation
@@ -270,7 +270,7 @@ The API supports multiple formats via the `Accept` header:
 ## Project Structure
 
 ```
-sandbag/
+sandbar/
 ├── config/           # EDN configuration
 ├── doc/              # AsciiDoc documentation
 ├── schema/           # Metamodel schema definitions
@@ -279,7 +279,7 @@ sandbag/
 │   ├── ref.edn       # Reference types
 │   ├── user.edn      # Example domain model
 │   └── zorp.edn      # Zorp's Footwear Emporium (example)
-├── src/sandbag/
+├── src/sandbar/
 │   ├── api/          # REST API handlers
 │   ├── db/
 │   │   ├── datatype.clj  # Metamodel API (dt/make, dt/slots-of, etc.)
@@ -287,8 +287,8 @@ sandbag/
 │   ├── server/       # HTTP and nREPL servers
 │   └── service/      # Routing and interceptors
 └── test/
-    ├── sandbag/datatype_test.clj  # Core API tests
-    └── sandbag/zorp_test.clj      # Example ontology tests
+    ├── sandbar/datatype_test.clj  # Core API tests
+    └── sandbar/zorp_test.clj      # Example ontology tests
 ```
 
 ## Running Tests
@@ -298,10 +298,10 @@ sandbag/
 lein test
 
 # Run specific test namespace
-lein test sandbag.zorp-test
+lein test sandbar.zorp-test
 
 # Run with pattern matching
-lein test :only sandbag.datatype-test/slots-of-test
+lein test :only sandbar.datatype-test/slots-of-test
 ```
 
 ## License

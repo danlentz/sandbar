@@ -1,0 +1,521 @@
+# Metamodel Reference
+
+Complete reference for the Sandbar type system and metamodel.
+
+## Introduction
+
+Sandbar implements an RDFS-inspired type system layered on top of Datomic. While Datomic provides a powerful schema for attributes (valueType, cardinality, etc.), it does not natively support the notion of "classes" or typed instances. This metamodel fills that gap.
+
+### Design Philosophy
+
+The metamodel is inspired by the Resource Description Framework Schema (RDFS), adapted for Clojure and Datomic:
+
+| RDFS Concept | Sandbar Equivalent | Description |
+|--------------|-------------------|-------------|
+| `rdfs:Resource` | `:dt/Resource` | The root of all things |
+| `rdfs:Class` | `:dt/Class` | Type definitions |
+| `rdf:Property` | `:dt/Property` | Attribute definitions |
+| `rdf:type` | `:dt/type` | Links instance to class |
+| `rdfs:subClassOf` | `:dt/subclass-of` | Class inheritance |
+| `rdfs:domain` | `:dt/domain` | Property applicability |
+| `rdfs:range` | `:dt/range` | Property value type |
+| `rdf:List` | `:dt/List` | Ordered collections |
+
+### Core Concepts
+
+* **Resource** - The root of all things; every entity is a Resource
+* **Class** - A type definition that can have instances
+* **Property** - An attribute with domain (where it applies) and range (value type)
+* **Slot** - A property that belongs to a class (declared via `:dt/slots`)
+* **Instance** - An entity that has a `:dt/type` pointing to a Class
+
+### Key Properties
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `:dt/type` | ref → Class | Links an instance to its class (like `rdf:type`) |
+| `:dt/subclass-of` | ref → Class (many) | Defines class inheritance (like `rdfs:subClassOf`) |
+| `:dt/domain` | ref → Class | Restricts which classes may have this property |
+| `:dt/range` | ref → Class | Specifies the type of the property's values |
+| `:dt/slots` | ref → Property (many) | Declares which properties belong to a class |
+| `:dt/abstract?` | boolean | If true, class cannot be directly instantiated |
+| `:dt/required?` | boolean | If true on a property, instances must provide a value |
+| `:dt/validator` | symbol | Fully-qualified symbol of a custom validator function |
+
+## Complete Class Hierarchy
+
+The following tree shows the complete inheritance hierarchy of all classes in the metamodel.
+
+```
+dt/Resource                          # Root of all things
+ │
+ ├── dt/Class                        # Type definitions
+ │
+ ├── dt/Property                     # Attribute definitions
+ │    │
+ │    ├── dt/TransitiveProperty      # Transitive relationships
+ │    ├── dt/ReflexiveProperty       # Self-referential properties
+ │    └── dt/InverseProperty         # Reverse-linking properties
+ │
+ ├── dt/List                         # Ordered collections (cons cells)
+ │
+ ├── dt/Literal [abstract]           # Scalar/primitive types
+ │    │
+ │    ├── dt/Number                  # Numeric types
+ │    │    │
+ │    │    ├── db.type/long          # 64-bit integer
+ │    │    ├── db.type/float         # 32-bit IEEE 754
+ │    │    ├── db.type/double        # 64-bit IEEE 754
+ │    │    ├── db.type/bigint        # Arbitrary precision integer
+ │    │    └── db.type/bigdec        # Arbitrary precision decimal
+ │    │
+ │    ├── db.type/string             # Text
+ │    ├── db.type/boolean            # True/false
+ │    ├── db.type/uuid               # Universally unique identifier
+ │    ├── db.type/uri                # Uniform resource identifier
+ │    ├── db.type/instant            # Point in time
+ │    ├── db.type/bytes              # Binary data
+ │    ├── db.type/keyword            # Clojure keyword
+ │    ├── db.type/symbol             # Clojure symbol
+ │    ├── db.type/fn                 # Datomic function
+ │    └── db.type/tuple              # Composite value
+ │
+ ├── dt/Ref                          # Reference (entity) types
+ │    │
+ │    ├── dt/Fn                      # Database functions (D → R mapping)
+ │    ├── dt/Any                     # Variant type (abstracts over storage)
+ │    ├── model/User                 # Application user
+ │    └── model/Twit                 # Twitter user
+ │
+ ├── dt/Resource*                    # 1D aggregate of Resources
+ │    │
+ │    ├── dt/Class*                  # 1D aggregate of Classes
+ │    ├── dt/Literal*                # 1D aggregate of Literals
+ │    ├── dt/Ref*                    # 1D aggregate of Refs
+ │    │    │
+ │    │    └── model/Twit*           # 1D aggregate of Twits
+ │    │
+ │    ├── dt/Fn*                     # 1D aggregate of Functions
+ │    ├── dt/Any*                    # 1D aggregate of Any
+ │    └── model/User*                # 1D aggregate of Users
+ │
+ └── dt/Resource**                   # 2D aggregate of Resources
+      │
+      ├── dt/Class**                 # 2D aggregate of Classes
+      ├── dt/Literal**               # 2D aggregate of Literals
+      ├── dt/Ref**                   # 2D aggregate of Refs
+      │    │
+      │    └── model/Twit**          # 2D aggregate of Twits
+      │
+      ├── dt/Fn**                    # 2D aggregate of Functions
+      ├── dt/Any**                   # 2D aggregate of Any
+      └── model/User**               # 2D aggregate of Users
+```
+
+## Metamodel Classes
+
+### dt/Resource
+
+The superclass of all classes. Every entity in the typed metamodel is ultimately a Resource.
+
+| Property | Value |
+|----------|-------|
+| Namespace | `meta` |
+| Abstract | No |
+| Parent | *(none - root class)* |
+| Slots | `:db/doc`, `:db/ident`, `:dt/namespace`, `:dt/label`, `:dt/type` |
+
+### dt/Class
+
+A type definition. Classes define the structure of instances via slots and can form inheritance hierarchies via `:dt/subclass-of`.
+
+| Property | Value |
+|----------|-------|
+| Namespace | `meta` |
+| Parent | `dt/Resource` |
+| Slots | `:dt/subclass-of`, `:dt/abstract?`, `:dt/list`, `:dt/component`, `:dt/slots`, `:dt/validator` |
+
+**Example Class Definition:**
+
+```clojure
+{:db/ident :model/User
+ :dt/type :dt/Class
+ :dt/subclass-of :dt/Ref
+ :dt/namespace "model"
+ :dt/label "User"
+ :db/doc "Application user accounts"
+ :dt/slots [:user/uuid :user/login :user/secret]}
+```
+
+### dt/Property
+
+An attribute definition with domain and range constraints. Properties are both Datomic attributes (with `:db/valueType`, `:db/cardinality`) and metamodel entities.
+
+| Property | Value |
+|----------|-------|
+| Namespace | `meta` |
+| Parent | `dt/Resource` |
+| Slots | `:db/cardinality`, `:db/unique`, `:db/fulltext`, `:dt/domain`, `:dt/range`, `:dt/subproperty-of`, `:dt/required?` |
+
+**Example Property Definition:**
+
+```clojure
+{:db/ident :user/login
+ :db/valueType :db.type/string
+ :db/cardinality :db.cardinality/one
+ :db/unique :db.unique/value
+ :dt/type :dt/Property
+ :dt/domain :model/User
+ :dt/range :db.type/string
+ :db/doc "User login identifier"}
+```
+
+#### Extended Property Types
+
+| Class | Description |
+|-------|-------------|
+| `dt/TransitiveProperty` | A property whose value chain is transitive (if A→B and B→C, then A→C) |
+| `dt/ReflexiveProperty` | A property that always relates an entity to itself |
+| `dt/InverseProperty` | A property that allows reverse linking |
+
+### dt/List
+
+An ordered collection implemented as cons cells (like Lisp lists).
+
+| Property | Value |
+|----------|-------|
+| Namespace | `meta` |
+| Parent | `dt/Resource` |
+| Slots | `:dt/first`, `:dt/rest` |
+
+## Type System Classes
+
+### dt/Literal
+
+Abstract superclass of scalar/primitive types. Corresponds to Datomic's literal value types.
+
+| Property | Value |
+|----------|-------|
+| Namespace | `system` |
+| Parent | `dt/Resource` |
+| Abstract | Yes |
+
+**Important:** `dt/Literal` is abstract and cannot be directly instantiated.
+
+#### Numeric Types
+
+| Class | Java Type | Description |
+|-------|-----------|-------------|
+| `dt/Number` | *(abstract)* | Abstract numeric superclass |
+| `db.type/long` | `long` | 64-bit signed integer |
+| `db.type/float` | `float` | 32-bit IEEE 754 floating point |
+| `db.type/double` | `double` | 64-bit IEEE 754 floating point |
+| `db.type/bigint` | `java.math.BigInteger` | Arbitrary precision integer |
+| `db.type/bigdec` | `java.math.BigDecimal` | Arbitrary precision decimal |
+
+#### Other Literal Types
+
+| Class | Java Type | Description |
+|-------|-----------|-------------|
+| `db.type/string` | `String` | Unicode text |
+| `db.type/boolean` | `boolean` | True or false |
+| `db.type/uuid` | `java.util.UUID` | Universally unique identifier |
+| `db.type/uri` | `java.net.URI` | Uniform resource identifier |
+| `db.type/instant` | `java.util.Date` | Point in time (milliseconds since epoch) |
+| `db.type/bytes` | `byte[]` | Binary data |
+| `db.type/keyword` | `clojure.lang.Keyword` | Clojure keyword |
+| `db.type/symbol` | `clojure.lang.Symbol` | Clojure symbol |
+| `db.type/fn` | *(Datomic function)* | Database function |
+| `db.type/tuple` | `clojure.lang.PersistentVector` | Composite value (heterogeneous vector) |
+
+### dt/Ref
+
+Superclass of reference (entity) types. Instances are first-class entities in the database graph.
+
+| Property | Value |
+|----------|-------|
+| Namespace | `meta` |
+| Parent | `dt/Resource` |
+
+### dt/Fn
+
+Database functions representing mappings between types: `F(x): D → R`
+
+| Property | Value |
+|----------|-------|
+| Namespace | `system` |
+| Parent | `dt/Ref` |
+| Slots | `:fn/domain`, `:fn/range` |
+
+A Function datatype has:
+
+* `:fn/domain` - The input type
+* `:fn/range` - The output type
+
+### dt/Any
+
+A variant type that abstracts over storage representation. Can hold any literal value or entity reference.
+
+| Property | Value |
+|----------|-------|
+| Namespace | `system` |
+| Parent | `dt/Ref` |
+| Slots | `:value/string`, `:value/boolean`, `:value/long`, `:value/bigint`, `:value/float`, `:value/double`, `:value/bigdec`, `:value/ref`, `:value/instant`, `:value/uuid`, `:value/uri`, `:value/bytes` |
+
+**Note:** `dt/Any` is a *variant* type, not a *top* type. It does not participate in the inheritance hierarchy in the way that `dt/Resource` does.
+
+## Domain Classes
+
+### model/User
+
+Application user accounts.
+
+| Property | Value |
+|----------|-------|
+| Namespace | `model` |
+| Parent | `dt/Ref` |
+| Slots | `:user/uuid`, `:user/login`, `:user/secret` |
+
+### model/Twit
+
+Twitter user profiles.
+
+| Property | Value |
+|----------|-------|
+| Namespace | `model` |
+| Parent | `dt/Ref` |
+| Slots | `:twit/name`, `:twit/id`, `:twit/namestring`, `:twit/description`, `:twit/suspended`, `:twit/url`, `:twit/lang`, `:twit/image-url`, `:twit/location`, `:twit/geo-enabled`, `:twit/follows`, `:twit/created` |
+
+## Aggregate Classes
+
+For any class `T`, the metamodel automatically provides:
+
+* `T*` - A 1-dimensional aggregate (array) of `T` instances
+* `T**` - A 2-dimensional aggregate (matrix) of `T` instances
+
+Aggregates are accessed via the `:dt/list` property:
+
+```clojure
+(-> (entity :model/User) :dt/list)           ;; => :model/User*
+(-> (entity :model/User) :dt/list :dt/list)  ;; => :model/User**
+```
+
+| Class | Parent | Description |
+|-------|--------|-------------|
+| `dt/Resource*` | `dt/Resource` | 1D aggregate of Resources |
+| `dt/Resource**` | `dt/Resource` | 2D aggregate of Resources |
+| `dt/Class*` | `dt/Resource*` | 1D aggregate of Classes |
+| `dt/Class**` | `dt/Resource**` | 2D aggregate of Classes |
+| `dt/Ref*` | `dt/Resource*` | 1D aggregate of Refs |
+| `dt/Ref**` | `dt/Resource**` | 2D aggregate of Refs |
+| `dt/Literal*` | `dt/Resource*` | 1D aggregate of Literals |
+| `dt/Literal**` | `dt/Resource**` | 2D aggregate of Literals |
+| `model/User*` | `dt/Resource*` | 1D aggregate of Users |
+| `model/User**` | `dt/Resource**` | 2D aggregate of Users |
+| `model/Twit*` | `dt/Ref*` | 1D aggregate of Twits |
+| `model/Twit**` | `dt/Ref**` | 2D aggregate of Twits |
+
+## Validation
+
+The metamodel provides validation for typed entities.
+
+### Validation Rules
+
+1. **Type Required** - Every typed entity must have a `:dt/type` attribute
+2. **Abstract Classes** - Cannot instantiate abstract classes (`:dt/abstract? true`)
+3. **Required Slots** - Properties with `:dt/required? true` must have values
+4. **Type Checking** - Slot values must match the property's `:dt/range`
+
+### Validation API
+
+```clojure
+(require '[sandbar.db.datatype :as dt])
+
+;; Validate an entity
+(dt/validate some-entity)
+;; => nil (valid) or {:entity id :errors [...]}
+
+;; Check validity
+(dt/valid? some-entity)
+;; => true or false
+
+;; Validate before creating
+(dt/validate-data :model/User {:user/login "alice"})
+;; => nil (valid) or {:errors [...]}
+
+;; Create with validation (throws on error)
+(dt/make :model/User {:user/login "alice"})
+
+;; Create without validation
+(dt/make* :model/User {:user/login "alice"})
+```
+
+### Error Types
+
+| Error Type | Description |
+|------------|-------------|
+| `:no-class` | Entity has no `:dt/type` attribute |
+| `:abstract-class` | Attempted to instantiate an abstract class |
+| `:missing-required` | Required slot has no value |
+| `:invalid-type` | Slot value doesn't match expected range |
+
+## Programmatic Access
+
+### Class Introspection
+
+```clojure
+(require '[sandbar.db.datatype :as dt])
+
+;; List all classes
+(dt/all-classes)
+;; => (:dt/Class :dt/Property :dt/Resource :model/User ...)
+
+;; List all properties
+(dt/all-properties)
+;; => (:db/doc :db/ident :dt/domain :dt/range :dt/type ...)
+
+;; Get class of an entity
+(dt/class-of :dt/Resource)
+;; => :dt/Class
+```
+
+### Hierarchy Navigation
+
+```clojure
+;; Parents (direct)
+(dt/parents-of :model/User)
+;; => #{:dt/Ref}
+
+;; Ancestors (transitive)
+(dt/ancestors-of :model/User)
+;; => (:dt/Ref :dt/Resource)
+
+;; Direct subclasses
+(dt/direct-subclasses-of :dt/Ref)
+;; => (:dt/Fn :dt/Any :model/User :model/Twit)
+
+;; All subclasses (transitive)
+(dt/subclasses-of :dt/Resource)
+;; => (:dt/Class :dt/Property :dt/List :dt/Literal :dt/Ref ...)
+```
+
+### Slot Queries
+
+```clojure
+;; All effective slots (inherited + direct)
+(dt/slots-of :model/User)
+;; => #{:db/doc :db/ident :dt/label :dt/namespace :dt/type
+;;      :user/login :user/secret :user/uuid}
+
+;; Direct slots only
+(dt/direct-slots-of :model/User)
+;; => ({:db/ident :user/uuid ...} {:db/ident :user/login ...} ...)
+
+;; Required slots
+(dt/required-slots-of :model/User)
+;; => ()
+
+;; Check if abstract
+(dt/abstract? :dt/Literal)
+;; => true
+```
+
+### Property Queries
+
+```clojure
+;; Get domain
+(dt/domain-of :user/login)
+;; => :model/User
+
+;; Get range
+(dt/range-of :user/login)
+;; => :db.type/string
+
+;; Get cardinality
+(dt/cardinality-of :user/login)
+;; => :db.cardinality/one
+
+;; Check cardinality
+(dt/cardinality-one? :user/login)
+;; => true
+
+(dt/cardinality-many? :dt/slots)
+;; => true
+
+;; Check if required
+(dt/required? :user/login)
+;; => false
+```
+
+### Type Predicates
+
+```clojure
+;; Check instance-of (entity is instance of class)
+(dt/instance-of? :dt/Class :model/User)
+;; => true (User is an instance of Class)
+
+;; Check subclass-of (child is subclass of parent)
+(dt/subclass-of? :dt/Resource :model/User)
+;; => true (User is a subclass of Resource)
+```
+
+### Creating Instances
+
+```clojure
+;; Create with validation
+(dt/make :model/User {:user/login "alice"
+                       :user/secret "hash123"})
+
+;; Create without validation
+(dt/make* :model/User {:user/login "bob"})
+
+;; Create with options
+(dt/make :model/User {:user/login "carol"} {:validate? false})
+```
+
+## Schema Files
+
+The metamodel is defined in EDN schema files in the `schema/` directory:
+
+| File | Contents |
+|------|----------|
+| `schema/meta.edn` | Core metamodel: Resource, Class, Property, List |
+| `schema/literal.edn` | Literal types: Number, String, Boolean, etc. |
+| `schema/ref.edn` | Reference type superclass |
+| `schema/fn.edn` | Function type for database functions |
+| `schema/any.edn` | Variant type for polymorphic values |
+| `schema/user.edn` | User domain class |
+| `schema/twit.edn` | Twitter user domain class |
+
+### Schema Loading
+
+Schema files are loaded based on `:required-schema` in `config/config.edn`:
+
+```clojure
+{:required-schema [:meta :literal :ref :fn :any :user :twit]}
+```
+
+## REST API
+
+The metamodel is fully queryable via the Store REST API at `/api/store/`.
+
+See [REST API Reference](api.md) for complete documentation.
+
+### Quick Examples
+
+```bash
+# List all classes
+curl http://localhost:8080/api/store/classes
+
+# Get class details
+curl http://localhost:8080/api/store/classes/model/User
+
+# Get class hierarchy
+curl http://localhost:8080/api/store/classes/model/User/hierarchy
+
+# List slots
+curl http://localhost:8080/api/store/classes/model/User/slots
+
+# Check type relationships
+curl http://localhost:8080/api/store/types/subclass-of/dt/Resource/model/User
+```

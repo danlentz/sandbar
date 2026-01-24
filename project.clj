@@ -1,4 +1,4 @@
-(defproject sandbag "0.0.1-SNAPSHOT"
+(defproject sandbar "0.0.1-SNAPSHOT"
   :description "FIXME: write description"
   :url "http://example.com/FIXME"
   :license {:name "Eclipse Public License"
@@ -24,6 +24,7 @@
                  [clj-http "3.13.1"]
 
                  [cheshire "6.1.0"]
+                 [com.cognitect/transit-clj "1.0.333"]
                  [danlentz/clj-uuid "0.2.0"]
                  [rm-hull/table "0.7.1"]
 
@@ -52,9 +53,9 @@
   :min-lein-version "2.4.0"
   :resource-paths ["config", "resources", "schema"]
 
-  :profiles {:dev {:aliases {"run-dev" ["trampoline" "run" "-m" "sandbag.core/go"]}
+  :profiles {:dev {:aliases {"run-dev" ["trampoline" "run" "-m" "sandbar.core/go"]}
                    :dependencies [[io.pedestal/pedestal.service-tools "0.7.2"]]}
-             :uberjar {:aot [sandbag.core] }}
+             :uberjar {:aot [sandbar.core] }}
 
 
   :asciidoc {:sources ["doc/*.adoc"]
@@ -65,4 +66,4 @@
              :extract-css      true
              :source-highlight true}
 
-  :main ^{:skip-aot true} sandbag.core)
+  :main ^{:skip-aot true} sandbar.core)
