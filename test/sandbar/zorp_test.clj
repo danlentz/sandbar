@@ -1,9 +1,13 @@
 (ns sandbar.zorp-test
   "Test suite for Zorp's Galactic Footwear Emporium.
 
-   Zorp is an alien sneaker salesman on Pluto. His inventory system needs to
-   handle beings with 0-12 tentacles, variable gravity preferences, and the
-   occasional sentient flip-flop that questions the nature of existence.
+   Zorp is a third-generation footwear merchant operating from a crater on the
+   dark side of Pluto. His grandfather sold ice cleats to settlers; his mother
+   pioneered vacuum-rated boots. Zorp inherited the family talent for fitting
+   beings with 0-12 tentacles, plus a warehouse full of legacy code.
+
+   The dark side location isn't just for ambiance — some of his best customers
+   prefer discretion. Don't ask about the Andromeda order.
 
    This test suite validates:
    - Class hierarchies (because even alien footwear has taxonomy)

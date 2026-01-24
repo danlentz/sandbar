@@ -4,7 +4,9 @@
 
 ## Meet Zorp
 
-Zorp is an alien sneaker salesman on Pluto. Business is booming — beings from across the galaxy need footwear rated for vacuum, variable gravity, and tentacles. But Zorp has a problem: his inventory system is a mess of untyped maps.
+Zorp is a third-generation footwear merchant. His grandfather sold ice cleats to early Plutonian settlers; his mother expanded into vacuum-rated boots when the tourist trade took off. Now Zorp runs the Galactic Footwear Emporium from a crater on the dark side of Pluto — prime real estate if you cater to clientele who prefer their transactions unobserved.
+
+Business is booming. Beings from across the galaxy need footwear rated for vacuum, variable gravity, and tentacles. But Zorp has a problem: his inventory system is a mess of untyped maps.
 
 ```clojure
 ;; Zorp's old code (bad)
