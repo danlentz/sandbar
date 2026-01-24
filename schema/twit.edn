@@ -10,10 +10,10 @@
 [
  [
   {:db/id #db/id[:db.part/user -1]
-   :db/ident :Twit
+   :db/ident :model/Twit
    :dt/label "Twit"
    :dt/subclass-of :dt/Ref
-   :dt/namespace "twitter"
+   :dt/namespace "model"
    :db/doc "Twitter User"
    :dt/type :dt/Class}
 ]
@@ -124,7 +124,7 @@
 
  [
   {; :db/id #db/id[:db.part/user -1]
-   :db/ident :Twit
+   :db/ident :model/Twit
    :dt/slots [:twit/name
               :twit/id
               :twit/namestring
@@ -146,20 +146,20 @@
  [
   {:db/id #db/id[:db.part/user -1]
    :dt/type :dt/Class
-   :dt/namespace "twitter"
+   :dt/namespace "model"
    :dt/label "Twit[]"
-   :db/ident :Twit*
+   :db/ident :model/Twit*
    :dt/subclass-of :dt/Ref*
    :db/doc "Single-dimensional aggregate of Twit datatype instances"
-   :dt/component :Twit
-   :dt/_list :Twit
+   :dt/component :model/Twit
+   :dt/_list :model/Twit
    :dt/slots []}
 
   {:db/id #db/id[:db.part/user -2]
    :dt/type :dt/Class
-   :dt/namespace "twitter"
+   :dt/namespace "model"
    :dt/label "Twit[][]"
-   :db/ident :Twit**
+   :db/ident :model/Twit**
    :dt/subclass-of :dt/Ref**
    :db/doc "Multi-dimensional aggregate of Twit datatype instances"
    :dt/component #db/id[:db.part/user -1]

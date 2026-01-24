@@ -45,7 +45,7 @@
                  ]
 
   :plugins [[lein-ancient "1.0.0-RC3"]
-            ; [lein-asciidoctor  "0.1.14"]
+             [lein-asciidoctor  "0.1.14"]
             ; [cider/cider-nrepl "0.58.0"]
             ]
   :jvm-opts ["-Dclojure.tools.logging.factory=clojure.tools.logging.impl/slf4j-factory"]
@@ -55,5 +55,14 @@
   :profiles {:dev {:aliases {"run-dev" ["trampoline" "run" "-m" "sandbag.core/go"]}
                    :dependencies [[io.pedestal/pedestal.service-tools "0.7.2"]]}
              :uberjar {:aot [sandbag.core] }}
+
+
+  :asciidoc {:sources ["doc/*.adoc"]
+             :to-dir "doc/html"
+             :toc              :left
+             :doctype          :article
+             :format           :html5
+             :extract-css      true
+             :source-highlight true}
 
   :main ^{:skip-aot true} sandbag.core)

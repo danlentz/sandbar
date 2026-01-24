@@ -1,0 +1,268 @@
+;; Zorp's Galactic Footwear Emporium Schema
+;; See doc/example-footwear.adoc for full documentation
+
+[
+ ;; Pre-declare entities
+ [{:db/id #db/id[:db.part/user -1]
+   :db/ident :zorp/Footwear}
+  {:db/id #db/id[:db.part/user -2]
+   :db/ident :zorp/Sneaker}
+  {:db/id #db/id[:db.part/user -3]
+   :db/ident :zorp/Boot}
+  {:db/id #db/id[:db.part/user -4]
+   :db/ident :zorp/Sandal}
+  {:db/id #db/id[:db.part/user -5]
+   :db/ident :zorp/HighTop}
+  {:db/id #db/id[:db.part/user -6]
+   :db/ident :zorp/LowTop}
+  {:db/id #db/id[:db.part/user -7]
+   :db/ident :zorp/SpaceBoot}
+  {:db/id #db/id[:db.part/user -8]
+   :db/ident :zorp/MoonBoot}
+  {:db/id #db/id[:db.part/user -9]
+   :db/ident :zorp/FlipFlop}]
+
+ ;; Properties for all footwear
+ [{:db/ident :footwear/name
+   :db/valueType :db.type/string
+   :db/cardinality :db.cardinality/one
+   :dt/type :dt/Property
+   :dt/domain :zorp/Footwear
+   :dt/range :db.type/string
+   :db/doc "The product name"
+   :db.install/_attribute :db.part/db}
+
+  {:db/ident :footwear/size
+   :db/valueType :db.type/string
+   :db/cardinality :db.cardinality/one
+   :dt/type :dt/Property
+   :dt/domain :zorp/Footwear
+   :dt/range :db.type/string
+   :db/doc "Size in Galactic Standard Units (e.g., '7-tentacle', 'juvenile-blob')"
+   :db.install/_attribute :db.part/db}
+
+  {:db/ident :footwear/color
+   :db/valueType :db.type/string
+   :db/cardinality :db.cardinality/one
+   :dt/type :dt/Property
+   :dt/domain :zorp/Footwear
+   :dt/range :db.type/string
+   :db/doc "Color (includes ultraviolet and infrared for species that can see them)"
+   :db.install/_attribute :db.part/db}
+
+  {:db/ident :footwear/tentacle-count
+   :db/valueType :db.type/long
+   :db/cardinality :db.cardinality/one
+   :dt/type :dt/Property
+   :dt/domain :zorp/Footwear
+   :dt/range :db.type/long
+   :db/doc "Number of tentacles/appendages this footwear accommodates"
+   :db.install/_attribute :db.part/db}
+
+  {:db/ident :footwear/gravity-rating
+   :db/valueType :db.type/double
+   :db/cardinality :db.cardinality/one
+   :dt/type :dt/Property
+   :dt/domain :zorp/Footwear
+   :dt/range :db.type/double
+   :db/doc "Optimal gravity in Earth Gs (Pluto is 0.063g)"
+   :db.install/_attribute :db.part/db}
+
+  {:db/ident :footwear/price
+   :db/valueType :db.type/bigdec
+   :db/cardinality :db.cardinality/one
+   :dt/type :dt/Property
+   :dt/domain :zorp/Footwear
+   :dt/range :db.type/bigdec
+   :db/doc "Price in Plutonian Credits (1 PC = mass of one Pluto ice pebble)"
+   :db.install/_attribute :db.part/db}
+
+  {:db/ident :footwear/sentient?
+   :db/valueType :db.type/boolean
+   :db/cardinality :db.cardinality/one
+   :dt/type :dt/Property
+   :dt/domain :zorp/Footwear
+   :dt/range :db.type/boolean
+   :db/doc "Whether this footwear has achieved consciousness (handle with care)"
+   :db.install/_attribute :db.part/db}]
+
+ ;; Sneaker-specific properties
+ [{:db/ident :sneaker/bounce-factor
+   :db/valueType :db.type/double
+   :db/cardinality :db.cardinality/one
+   :dt/type :dt/Property
+   :dt/domain :zorp/Sneaker
+   :dt/range :db.type/double
+   :db/doc "How high you'll bounce in 0.063g (in meters)"
+   :db.install/_attribute :db.part/db}
+
+  {:db/ident :sneaker/glow-in-dark?
+   :db/valueType :db.type/boolean
+   :db/cardinality :db.cardinality/one
+   :dt/type :dt/Property
+   :dt/domain :zorp/Sneaker
+   :dt/range :db.type/boolean
+   :db/doc "Emits visible light - essential on Pluto's dark side where it's always night"
+   :db.install/_attribute :db.part/db}
+
+  {:db/ident :sneaker/squeak-volume
+   :db/valueType :db.type/long
+   :db/cardinality :db.cardinality/one
+   :dt/type :dt/Property
+   :dt/domain :zorp/Sneaker
+   :dt/range :db.type/long
+   :db/doc "Volume in decibels per step (0=stealth, 85=conversation, 140=spacecraft launch)"
+   :db.install/_attribute :db.part/db}
+
+  {:db/ident :sneaker/lace-type
+   :db/valueType :db.type/string
+   :db/cardinality :db.cardinality/one
+   :dt/type :dt/Property
+   :dt/domain :zorp/Sneaker
+   :dt/range :db.type/string
+   :db/doc "Lace technology: 'self-tying', 'magnetic', 'tentacle-knot', 'velcro', 'psychic'"
+   :db.install/_attribute :db.part/db}
+
+  {:db/ident :sneaker/air-pump?
+   :db/valueType :db.type/boolean
+   :db/cardinality :db.cardinality/one
+   :dt/type :dt/Property
+   :dt/domain :zorp/Sneaker
+   :dt/range :db.type/boolean
+   :db/doc "Features 1990s Earth-style air pump (purely decorative in vacuum)"
+   :db.install/_attribute :db.part/db}]
+
+ ;; Boot-specific properties
+ [{:db/ident :boot/vacuum-rated?
+   :db/valueType :db.type/boolean
+   :db/cardinality :db.cardinality/one
+   :dt/type :dt/Property
+   :dt/domain :zorp/Boot
+   :dt/range :db.type/boolean
+   :db/doc "Safe for spacewalks"
+   :db.install/_attribute :db.part/db}
+
+  {:db/ident :boot/temperature-range
+   :db/valueType :db.type/string
+   :db/cardinality :db.cardinality/one
+   :dt/type :dt/Property
+   :dt/domain :zorp/Boot
+   :dt/range :db.type/string
+   :db/doc "Operating temperature range"
+   :db.install/_attribute :db.part/db}]
+
+ ;; FlipFlop-specific properties
+ [{:db/ident :flipflop/flop-frequency
+   :db/valueType :db.type/double
+   :db/cardinality :db.cardinality/one
+   :dt/type :dt/Property
+   :dt/domain :zorp/FlipFlop
+   :dt/range :db.type/double
+   :db/doc "Flops per meter walked - the signature sound of casual footwear"
+   :db.install/_attribute :db.part/db}
+
+  {:db/ident :flipflop/toe-separator-count
+   :db/valueType :db.type/long
+   :db/cardinality :db.cardinality/one
+   :dt/type :dt/Property
+   :dt/domain :zorp/FlipFlop
+   :dt/range :db.type/long
+   :db/doc "Number of toe dividers (1 for bipeds, up to 12 for Centaurian millipedes)"
+   :db.install/_attribute :db.part/db}
+
+  {:db/ident :flipflop/escape-velocity
+   :db/valueType :db.type/double
+   :db/cardinality :db.cardinality/one
+   :dt/type :dt/Property
+   :dt/domain :zorp/FlipFlop
+   :dt/range :db.type/double
+   :db/doc "Maximum speed in m/s when fleeing (only applicable to sentient units)"
+   :db.install/_attribute :db.part/db}
+
+  {:db/ident :flipflop/mood
+   :db/valueType :db.type/string
+   :db/cardinality :db.cardinality/one
+   :dt/type :dt/Property
+   :dt/domain :zorp/FlipFlop
+   :dt/range :db.type/string
+   :db/doc "Current emotional state: 'content', 'anxious', 'philosophical', 'hangry'"}]
+
+ ;; Class definitions
+ [{:db/ident :zorp/Footwear
+   :dt/type :dt/Class
+   :dt/abstract? true
+   :dt/subclass-of :dt/Ref
+   :dt/namespace "zorp"
+   :dt/label "Footwear"
+   :db/doc "Abstract base class for all galactic footwear"
+   :dt/slots [:footwear/name :footwear/size :footwear/color
+              :footwear/tentacle-count :footwear/gravity-rating
+              :footwear/price :footwear/sentient?]}
+
+  {:db/ident :zorp/Sneaker
+   :dt/type :dt/Class
+   :dt/subclass-of :zorp/Footwear
+   :dt/namespace "zorp"
+   :dt/label "Sneaker"
+   :db/doc "Casual athletic footwear for low-gravity sports"
+   :dt/slots [:sneaker/bounce-factor :sneaker/glow-in-dark?
+              :sneaker/squeak-volume :sneaker/lace-type
+              :sneaker/air-pump?]}
+
+  {:db/ident :zorp/Boot
+   :dt/type :dt/Class
+   :dt/subclass-of :zorp/Footwear
+   :dt/namespace "zorp"
+   :dt/label "Boot"
+   :db/doc "Heavy-duty footwear for harsh environments"
+   :dt/slots [:boot/vacuum-rated? :boot/temperature-range]}
+
+  {:db/ident :zorp/Sandal
+   :dt/type :dt/Class
+   :dt/subclass-of :zorp/Footwear
+   :dt/namespace "zorp"
+   :dt/label "Sandal"
+   :db/doc "Open footwear for warm methane beaches"
+   :dt/slots []}
+
+  {:db/ident :zorp/HighTop
+   :dt/type :dt/Class
+   :dt/subclass-of :zorp/Sneaker
+   :dt/namespace "zorp"
+   :dt/label "HighTop"
+   :db/doc "Extra ankle support for multi-jointed species"
+   :dt/slots []}
+
+  {:db/ident :zorp/LowTop
+   :dt/type :dt/Class
+   :dt/subclass-of :zorp/Sneaker
+   :dt/namespace "zorp"
+   :dt/label "LowTop"
+   :db/doc "Classic style for species with minimal ankle flexibility"
+   :dt/slots []}
+
+  {:db/ident :zorp/SpaceBoot
+   :dt/type :dt/Class
+   :dt/subclass-of :zorp/Boot
+   :dt/namespace "zorp"
+   :dt/label "SpaceBoot"
+   :db/doc "Vacuum-rated boots with magnetic soles"
+   :dt/slots []}
+
+  {:db/ident :zorp/MoonBoot
+   :dt/type :dt/Class
+   :dt/subclass-of :zorp/Boot
+   :dt/namespace "zorp"
+   :dt/label "MoonBoot"
+   :db/doc "Retro style, popular with Earth tourists"
+   :dt/slots []}
+
+  {:db/ident :zorp/FlipFlop
+   :dt/type :dt/Class
+   :dt/subclass-of :zorp/Sandal
+   :dt/namespace "zorp"
+   :dt/label "FlipFlop"
+   :db/doc "Warning: Not recommended for tentacled beings. May achieve sentience."
+   :dt/slots [:flipflop/flop-frequency :flipflop/toe-separator-count
+              :flipflop/escape-velocity :flipflop/mood]}]
+]

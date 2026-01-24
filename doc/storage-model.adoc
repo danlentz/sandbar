@@ -1,7 +1,17 @@
-== storage-model
+= Storage Model (Historical)
+:toc: left
+:toclevels: 3
+:source-highlighter: coderay
 
+[NOTE]
+====
+This document contains historical design notes about Datomic's storage internals.
+For current documentation, see <<meta.adoc#,Metamodel Reference>> and <<architecture.adoc#,System Architecture>>.
+====
 
-=== Fressian Tags
+== Fressian Tags and Value Types
+
+This section explores how Datomic implements value types using Fressian serialization.
 
 Datomic's basic data model, when you build on it, can begin to feel
 bifurcated into the world of literal types (`:db.type/uuid`,

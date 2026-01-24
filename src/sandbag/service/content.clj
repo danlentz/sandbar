@@ -119,7 +119,8 @@
                :body   (let [s (binding [*print-length* +response-print-length+
                                          *print-level*  +response-print-level+]
                                  (with-out-str (-> response :body println)))]
-                         (subs s +response-string-length+))}))
+                         s
+                         #_(subs s (inc +response-string-length+)))}))
   context)
 
 (defbefore suppress-logging

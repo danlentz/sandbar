@@ -1,7 +1,17 @@
-== computation-model
+= Computation Model (Historical)
+:toc: left
+:toclevels: 3
+:source-highlighter: coderay
 
+[NOTE]
+====
+This document contains historical design notes from the original development.
+For current documentation, see <<development.adoc#,Development Guide>> and <<architecture.adoc#,System Architecture>>.
+====
 
-=== rules
+== Datalog Rules
+
+This section describes the use of Datomic rules for metamodel queries.
 
 
 ==== Rule Induction vs. Functional Recursion

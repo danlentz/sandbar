@@ -51,7 +51,7 @@
     (let [classes (dt/all-classes)]
       (is (seq classes) "Should return at least some classes")
       (is (some #{:dt/Class} classes) "Should include :dt/Class")
-      (is (some #{:User} classes) "Should include :User"))))
+      (is (some #{:model/User} classes) "Should include :model/User"))))
 
 (deftest all-properties-test
   (testing "all-properties returns property idents"
@@ -69,14 +69,14 @@
   (testing "parents-of returns direct parent classes"
     (is (= #{:dt/Resource} (set (dt/parents-of :dt/Class)))
         "Class should have Resource as parent")
-    (is (= #{:dt/Ref} (set (dt/parents-of :User)))
+    (is (= #{:dt/Ref} (set (dt/parents-of :model/User)))
         "User should have Ref as parent")
     (is (nil? (dt/parents-of :dt/Resource))
         "Resource should have no parents")))
 
 (deftest ancestors-of-test
   (testing "ancestors-of returns all ancestor classes"
-    (let [user-ancestors (set (dt/ancestors-of :User))]
+    (let [user-ancestors (set (dt/ancestors-of :model/User))]
       (is (contains? user-ancestors :dt/Ref) "User ancestors should include Ref")
       (is (contains? user-ancestors :dt/Resource) "User ancestors should include Resource"))
     (let [class-ancestors (set (dt/ancestors-of :dt/Class))]
@@ -93,12 +93,12 @@
   (testing "subclasses-of returns all transitive subclasses"
     (let [resource-subclasses (set (dt/subclasses-of :dt/Resource))]
       (is (contains? resource-subclasses :dt/Class) "Should include direct subclass Class")
-      (is (contains? resource-subclasses :User) "Should include transitive subclass User"))))
+      (is (contains? resource-subclasses :model/User) "Should include transitive subclass User"))))
 
 (deftest subclass-of?-test
   (testing "subclass-of? checks subclass relationship"
     (is (dt/subclass-of? :dt/Resource :dt/Class) "Class should be subclass of Resource")
-    (is (dt/subclass-of? :dt/Resource :User) "User should be subclass of Resource")
+    (is (dt/subclass-of? :dt/Resource :model/User) "User should be subclass of Resource")
     (is (not (dt/subclass-of? :dt/Class :dt/Resource)) "Resource is not subclass of Class")))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -108,20 +108,20 @@
 (deftest class-of-test
   (testing "class-of returns the class of an entity"
     (is (= :dt/Class (dt/class-of :dt/Property)) ":dt/Property should be instance of :dt/Class")
-    (is (= :dt/Class (dt/class-of :User)) ":User should be instance of :dt/Class")
+    (is (= :dt/Class (dt/class-of :model/User)) ":model/User should be instance of :dt/Class")
     (is (= :dt/Property (dt/class-of :dt/type)) ":dt/type should be instance of :dt/Property")))
 
 (deftest instance-of?-test
   (testing "instance-of? checks instance relationship"
-    (is (dt/instance-of? :dt/Class :User) "User is instance of Class")
-    (is (dt/instance-of? :dt/Resource :User) "User is instance of Resource (via Class)")
+    (is (dt/instance-of? :dt/Class :model/User) "User is instance of Class")
+    (is (dt/instance-of? :dt/Resource :model/User) "User is instance of Resource (via Class)")
     (is (dt/instance-of? :dt/Property :dt/domain) ":dt/domain is instance of Property")))
 
 (deftest direct-instances-of-test
   (testing "direct-instances-of returns direct instances"
     (let [instances (dt/direct-instances-of :dt/Class)]
       (is (seq instances) "Should have some instances")
-      (is (some #(= :User (:db/ident %)) instances) "Should include User"))))
+      (is (some #(= :model/User (:db/ident %)) instances) "Should include User"))))
 
 (deftest all-instances-of-test
   (testing "all-instances-of includes instances of subclasses"
@@ -135,7 +135,7 @@
   (testing "all-named-instances-of returns idents"
     (let [class-instances (dt/all-named-instances-of :dt/Class)]
       (is (seq class-instances) "Should have some named instances")
-      (is (some #{:User} class-instances) "Should include :User")
+      (is (some #{:model/User} class-instances) "Should include :model/User")
       (is (every? keyword? class-instances) "All results should be keywords"))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -145,14 +145,14 @@
 (deftest direct-slots-of-test
   (testing "direct-slots-of returns directly declared slots"
     ;; direct-slots-of returns entity refs, need to get their idents
-    (let [slots (dt/direct-slots-of :User)
+    (let [slots (dt/direct-slots-of :model/User)
           user-slots (set (map #(:db/ident (db/entity %)) slots))]
       (is (contains? user-slots :user/login) "User should have :user/login slot")
       (is (contains? user-slots :user/secret) "User should have :user/secret slot"))))
 
 (deftest slots-of-test
   (testing "slots-of returns all effective slots including inherited"
-    (let [user-slots (dt/slots-of :User)]
+    (let [user-slots (dt/slots-of :model/User)]
       (is (contains? user-slots :user/login) "Should include direct slot :user/login")
       (is (contains? user-slots :dt/type) "Should include inherited slot :dt/type from Resource"))))
 
@@ -168,7 +168,7 @@
 
 (deftest domain-of-test
   (testing "domain-of returns the domain class"
-    (is (= :User (dt/domain-of :user/login)) ":user/login domain should be :User")
+    (is (= :model/User (dt/domain-of :user/login)) ":user/login domain should be :model/User")
     (is (= :dt/Resource (dt/domain-of :dt/type)) ":dt/type domain should be :dt/Resource")))
 
 (deftest range-of-test
@@ -178,7 +178,7 @@
 
 (deftest properties-with-domain-test
   (testing "properties-with-domain finds applicable properties"
-    (let [user-props (set (dt/properties-with-domain :User))]
+    (let [user-props (set (dt/properties-with-domain :model/User))]
       (is (contains? user-props :user/login) "Should include :user/login")
       (is (contains? user-props :dt/type) "Should include inherited :dt/type"))))
 
@@ -207,12 +207,12 @@
 
 (deftest required-slots-of-test
   (testing "required-slots-of returns required slots"
-    (let [required (dt/required-slots-of :User)]
+    (let [required (dt/required-slots-of :model/User)]
       (is (or (nil? required) (sequential? required)) "Should return nil or sequence"))))
 
 (deftest validator-of-test
   (testing "validator-of returns validator function if defined"
-    (let [validator (dt/validator-of :User)]
+    (let [validator (dt/validator-of :model/User)]
       (is (or (nil? validator) (fn? validator)) "Should return nil or function"))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -221,19 +221,19 @@
 
 (deftest make*-test
   (testing "make* creates typed instances without validation"
-    (let [user (dt/make* :User {:user/login "testuser"})]
+    (let [user (dt/make* :model/User {:user/login "testuser"})]
       (is (some? user) "Should return created entity")
-      (is (= :User (:dt/type user)) "Entity should have correct type")
+      (is (= :model/User (:dt/type user)) "Entity should have correct type")
       (is (= "testuser" (:user/login user)) "Entity should have provided properties"))))
 
 (deftest make-test
   (testing "make creates validated instances"
-    (let [user (dt/make :User {:user/login "validuser"})]
+    (let [user (dt/make :model/User {:user/login "validuser"})]
       (is (some? user) "Should return created entity")
-      (is (= :User (:dt/type user)) "Entity should have correct type")))
+      (is (= :model/User (:dt/type user)) "Entity should have correct type")))
 
   (testing "make with validation disabled"
-    (let [user (dt/make :User {:user/login "another"} {:validate? false})]
+    (let [user (dt/make :model/User {:user/login "another"} {:validate? false})]
       (is (some? user) "Should create entity without validation"))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -253,7 +253,7 @@
 
 (deftest validate-valid-entity-test
   (testing "validate returns nil for valid typed entity"
-    (let [user (dt/make* :User {:user/login "validuser2"
+    (let [user (dt/make* :model/User {:user/login "validuser2"
                                 :user/secret "hash123"})
           result (dt/validate user)]
       ;; If User has no required fields or all are satisfied, should be nil
@@ -275,7 +275,7 @@
 
 (deftest valid?-test
   (testing "valid? returns true for valid entity"
-    (let [user (dt/make* :User {:user/login "validuser3"})]
+    (let [user (dt/make* :model/User {:user/login "validuser3"})]
       (is (boolean? (dt/valid? user)) "Should return boolean")))
 
   (testing "valid? returns false for untyped entity"
@@ -285,11 +285,11 @@
 
 (deftest validate-data-basic-test
   (testing "validate-data returns nil for valid data"
-    (let [result (dt/validate-data :User {:user/login "precheck"})]
+    (let [result (dt/validate-data :model/User {:user/login "precheck"})]
       (is (or (nil? result) (map? result)) "Should return nil or error map")))
 
   (testing "validate-data returns error structure when invalid"
-    (let [result (dt/validate-data :User {})]
+    (let [result (dt/validate-data :model/User {})]
       ;; If User has required fields, this should fail
       (when result
         (is (contains? result :errors) "Should have :errors key")
@@ -308,7 +308,7 @@
 (deftest validate-data-type-checking-test
   (testing "validate-data checks slot value types"
     ;; user/login expects a string
-    (let [result (dt/validate-data :User {:user/login 12345})]
+    (let [result (dt/validate-data :model/User {:user/login 12345})]
       (when result
         (let [type-errors (filter #(= :invalid-type (:type %)) (:errors result))]
           (when (seq type-errors)
@@ -325,15 +325,15 @@
         "Should throw for abstract class"))
 
   (testing "make succeeds for valid concrete class"
-    (let [user (dt/make :User {:user/login "maketest"})]
+    (let [user (dt/make :model/User {:user/login "maketest"})]
       (is (some? user) "Should create valid entity")
-      (is (= :User (:dt/type user)) "Should have correct type")))
+      (is (= :model/User (:dt/type user)) "Should have correct type")))
 
   (testing "make with validate? false bypasses validation"
     ;; This should not throw even if data is questionable
-    (let [user (dt/make :User {} {:validate? false})]
+    (let [user (dt/make :model/User {} {:validate? false})]
       (is (some? user) "Should create entity without validation")
-      (is (= :User (:dt/type user)) "Should have correct type"))))
+      (is (= :model/User (:dt/type user)) "Should have correct type"))))
 
 (deftest validation-multiple-errors-test
   (testing "validation can return multiple errors"
@@ -349,9 +349,9 @@
   (testing "validate and validate-data agree on valid data"
     (let [props {:user/login "consistency-test"}
           ;; Pre-transaction check
-          pre-result (dt/validate-data :User props)
+          pre-result (dt/validate-data :model/User props)
           ;; Create and post-transaction check
-          user (dt/make* :User props)
+          user (dt/make* :model/User props)
           post-result (dt/validate user)]
       ;; Both should either pass or fail
       (is (= (nil? pre-result) (nil? post-result))

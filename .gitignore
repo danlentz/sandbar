@@ -1,6 +1,7 @@
 # Project related
 
 config/config.edn
+CLAUDE.md
 
 # Java related
 pom.xml
