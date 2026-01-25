@@ -5,8 +5,10 @@
             [io.pedestal.http.route       :as route]
             [sandbar.api.auth             :as auth-api]
             [sandbar.api.event            :as event]
+            [sandbar.api.job              :as job-api]
             [sandbar.api.status           :as status]
             [sandbar.api.store            :as store]
+            [sandbar.api.workflow         :as workflow-api]
             [sandbar.service.content      :as content]
             [sandbar.service.endpoint     :as endpoint :refer [defhandler]]
             [sandbar.service.params       :as params]
@@ -99,6 +101,31 @@
         ["/types"
          ["/instance-of/:class-ns/:class-name/:entity-ns/:entity-name" {:get store/check-instance-of}]
          ["/subclass-of/:parent-ns/:parent-name/:child-ns/:child-name" {:get store/check-subclass-of}]]]
+
+       ;; Jobs API
+       ["/jobs" {:get job-api/list-jobs :post job-api/create-scheduled-job}
+        ["/stats" {:get job-api/job-stats}]
+        ["/due" {:get job-api/due-jobs}]
+        ["/running" {:get job-api/running-jobs}]
+        ["/triggered" {:post job-api/create-triggered-job}]
+        ["/recurring" {:post job-api/create-recurring-job}]
+        ["/:id" {:get job-api/get-job}
+         ["/cancel" {:post job-api/cancel-job}]
+         ["/pause" {:post job-api/pause-job}]
+         ["/resume" {:post job-api/resume-job}]
+         ["/execute" {:post job-api/execute-job}]]]
+
+       ;; Workflows API
+       ["/workflows" {:get workflow-api/list-workflows :post workflow-api/create-workflow}
+        ["/:ns/:name" {:get workflow-api/get-workflow}
+         ["/stats" {:get workflow-api/workflow-stats}]]]
+
+       ;; Processes API
+       ["/processes" {:get workflow-api/list-processes :post workflow-api/start-process}
+        ["/:id" {:get workflow-api/get-process}
+         ["/transitions" {:get workflow-api/get-available-transitions}]
+         ["/transition" {:post workflow-api/execute-transition}]
+         ["/history" {:get workflow-api/get-process-history}]]]
        ]
 
       ]]])
