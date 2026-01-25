@@ -34,6 +34,8 @@
                  [io.pedestal/pedestal.jetty "0.8.1"]
                  [ring/ring-core "1.15.3"]
 
+                 [buddy/buddy-hashers "2.0.167"]
+
                  [com.taoensso/sente "1.21.0"]
 ;                 [com.taoensso/telemere "1.2.1"]
 

@@ -21,10 +21,11 @@
   - class-of, slots-of, ancestors-of: Introspection
   - instance-of?, subclass-of?: Type predicates"
   (:refer-clojure :exclude [cat])
-  (:require [datomic.api        :as    d]
-            [clojure.pprint     :as   pp]
-            [sandbar.db.rules   :refer [defrule clear-rulebase! all-rules] :as rule]
-            [sandbar.db.fn      :refer [defdbfn dbfn clear-fnbase! all-dbfn] :as fn]
+  (:require [clojure.pprint :as pp]
+            [clojure.tools.logging :as log]
+            [datomic.api :as d]
+            [sandbar.db.rules :refer [defrule clear-rulebase! all-rules] :as rule]
+            [sandbar.db.fn :refer [defdbfn dbfn clear-fnbase! all-dbfn] :as fn]
             [sandbar.db.datomic :refer [entity describe] :as db]))
 
 (defn all-datatypes
@@ -107,8 +108,10 @@
   ([dt] (make* dt {}))
   ([dt props]
    (let [row (merge props {:dt/type dt})
-         result @(d/transact (db/conn) [row])]
-     (-> result :tempids vals first entity))))
+         result @(d/transact (db/conn) [row])
+         new-entity (-> result :tempids vals first entity)]
+     (log/debug :DT/MAKE {:class dt :entity-id (:db/id new-entity)})
+     new-entity)))
 
 (declare validate-data)  ;; forward declaration
 
@@ -140,7 +143,9 @@
    (if-not validate?
      (make* dt props)
      (if-let [errors (validate-data dt props)]
-       (throw (ex-info "Validation failed" errors))
+       (do
+         (log/debug :DT/VALIDATION-FAILED {:class dt :errors errors})
+         (throw (ex-info "Validation failed" errors)))
        (make* dt props)))))
 
 (defn class-of

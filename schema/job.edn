@@ -1,0 +1,431 @@
+[
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Job Model
+;;
+;; Background task execution with scheduling, retries, and status tracking.
+;; Jobs can be scheduled for future execution, triggered by events, or
+;; set to recur on a cron-like schedule.
+;;
+;; Class Hierarchy:
+;;
+;;                       job/Task [abstract]
+;;                          |
+;;          ________________|________________
+;;         |                |                |
+;;    job/Scheduled    job/Triggered    job/Recurring
+;;
+;;    job/Execution - A single run of a task
+;;
+;; Example:
+;;
+;;   ;; Schedule a one-time job
+;;   (job/schedule! :job/Scheduled
+;;     {:job/name "Send welcome email"
+;;      :job/handler 'myapp.jobs/send-email
+;;      :job/payload {:user-id 123 :template :welcome}
+;;      :job/run-at (-> (Instant/now) (.plusSeconds 60))})
+;;
+;;   ;; Create a recurring job
+;;   (job/schedule! :job/Recurring
+;;     {:job/name "Daily backup"
+;;      :job/handler 'myapp.jobs/backup-database
+;;      :job/cron "0 2 * * *"})  ; 2 AM daily
+;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Forward Declarations
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident :job/Task
+   :db/doc "Abstract base class for background jobs"}
+
+  {:db/ident :job/Scheduled
+   :db/doc "One-time job scheduled for future execution"}
+
+  {:db/ident :job/Triggered
+   :db/doc "Job triggered by an event or condition"}
+
+  {:db/ident :job/Recurring
+   :db/doc "Job that runs on a schedule (cron-like)"}
+
+  {:db/ident :job/Execution
+   :db/doc "A single run of a job"}]
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Task Properties (Shared by all job types)
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident :job/name
+   :dt/type :dt/Property
+   :dt/domain :job/Task
+   :dt/range :db.type/string
+   :db/valueType :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/doc "Human-readable name for the job"}
+
+  {:db/ident :job/handler
+   :dt/type :dt/Property
+   :dt/domain :job/Task
+   :dt/range :db.type/symbol
+   :db/valueType :db.type/symbol
+   :db/cardinality :db.cardinality/one
+   :db/doc "Fully-qualified symbol of handler function (fn [payload] -> result)"}
+
+  {:db/ident :job/payload
+   :dt/type :dt/Property
+   :dt/domain :job/Task
+   :dt/range :db.type/string
+   :db/valueType :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/doc "Job parameters (EDN string)"}
+
+  {:db/ident :job/status
+   :dt/type :dt/Property
+   :dt/domain :job/Task
+   :dt/range :db.type/keyword
+   :db/valueType :db.type/keyword
+   :db/cardinality :db.cardinality/one
+   :db/doc "Current status (:pending, :running, :completed, :failed, :cancelled, :paused)"}
+
+  {:db/ident :job/priority
+   :dt/type :dt/Property
+   :dt/domain :job/Task
+   :dt/range :db.type/long
+   :db/valueType :db.type/long
+   :db/cardinality :db.cardinality/one
+   :db/doc "Priority (higher = more urgent, default 0)"}
+
+  {:db/ident :job/queue
+   :dt/type :dt/Property
+   :dt/domain :job/Task
+   :dt/range :db.type/keyword
+   :db/valueType :db.type/keyword
+   :db/cardinality :db.cardinality/one
+   :db/doc "Queue name for job routing (e.g., :default, :critical, :bulk)"}
+
+  {:db/ident :job/max-attempts
+   :dt/type :dt/Property
+   :dt/domain :job/Task
+   :dt/range :db.type/long
+   :db/valueType :db.type/long
+   :db/cardinality :db.cardinality/one
+   :db/doc "Maximum retry attempts (default 3)"}
+
+  {:db/ident :job/attempt-count
+   :dt/type :dt/Property
+   :dt/domain :job/Task
+   :dt/range :db.type/long
+   :db/valueType :db.type/long
+   :db/cardinality :db.cardinality/one
+   :db/doc "Current attempt number"}
+
+  {:db/ident :job/timeout-ms
+   :dt/type :dt/Property
+   :dt/domain :job/Task
+   :dt/range :db.type/long
+   :db/valueType :db.type/long
+   :db/cardinality :db.cardinality/one
+   :db/doc "Maximum execution time in milliseconds"}
+
+  {:db/ident :job/created-at
+   :dt/type :dt/Property
+   :dt/domain :job/Task
+   :dt/range :db.type/instant
+   :db/valueType :db.type/instant
+   :db/cardinality :db.cardinality/one
+   :db/doc "When the job was created"}
+
+  {:db/ident :job/created-by
+   :dt/type :dt/Property
+   :dt/domain :job/Task
+   :dt/range :dt/Ref
+   :db/valueType :db.type/ref
+   :db/cardinality :db.cardinality/one
+   :db/doc "User or system that created this job"}
+
+  {:db/ident :job/tags
+   :dt/type :dt/Property
+   :dt/domain :job/Task
+   :dt/range :db.type/keyword
+   :db/valueType :db.type/keyword
+   :db/cardinality :db.cardinality/many
+   :db/doc "Tags for filtering and grouping jobs"}
+
+  {:db/ident :job/executions
+   :dt/type :dt/Property
+   :dt/domain :job/Task
+   :dt/range :job/Execution
+   :db/valueType :db.type/ref
+   :db/cardinality :db.cardinality/many
+   :db/doc "Execution history for this job"}]
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Scheduled Job Properties
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident :job/run-at
+   :dt/type :dt/Property
+   :dt/domain :job/Scheduled
+   :dt/range :db.type/instant
+   :db/valueType :db.type/instant
+   :db/cardinality :db.cardinality/one
+   :db/doc "When to execute this job"}
+
+  {:db/ident :job/delay-ms
+   :dt/type :dt/Property
+   :dt/domain :job/Scheduled
+   :dt/range :db.type/long
+   :db/valueType :db.type/long
+   :db/cardinality :db.cardinality/one
+   :db/doc "Alternative to run-at: delay from creation time"}]
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Triggered Job Properties
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident :job/trigger-event
+   :dt/type :dt/Property
+   :dt/domain :job/Triggered
+   :dt/range :db.type/keyword
+   :db/valueType :db.type/keyword
+   :db/cardinality :db.cardinality/one
+   :db/doc "Event type that triggers this job (e.g., :user/created)"}
+
+  {:db/ident :job/trigger-source
+   :dt/type :dt/Property
+   :dt/domain :job/Triggered
+   :dt/range :dt/Ref
+   :db/valueType :db.type/ref
+   :db/cardinality :db.cardinality/one
+   :db/doc "Entity that triggered this job"}
+
+  {:db/ident :job/trigger-condition
+   :dt/type :dt/Property
+   :dt/domain :job/Triggered
+   :dt/range :db.type/symbol
+   :db/valueType :db.type/symbol
+   :db/cardinality :db.cardinality/one
+   :db/doc "Predicate function to filter triggers (fn [event] -> boolean)"}]
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Recurring Job Properties
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident :job/cron
+   :dt/type :dt/Property
+   :dt/domain :job/Recurring
+   :dt/range :db.type/string
+   :db/valueType :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/doc "Cron expression for scheduling (e.g., \"0 2 * * *\" for 2 AM daily)"}
+
+  {:db/ident :job/timezone
+   :dt/type :dt/Property
+   :dt/domain :job/Recurring
+   :dt/range :db.type/string
+   :db/valueType :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/doc "Timezone for cron interpretation (e.g., \"America/New_York\")"}
+
+  {:db/ident :job/next-run
+   :dt/type :dt/Property
+   :dt/domain :job/Recurring
+   :dt/range :db.type/instant
+   :db/valueType :db.type/instant
+   :db/cardinality :db.cardinality/one
+   :db/doc "Computed next execution time"}
+
+  {:db/ident :job/last-run
+   :dt/type :dt/Property
+   :dt/domain :job/Recurring
+   :dt/range :db.type/instant
+   :db/valueType :db.type/instant
+   :db/cardinality :db.cardinality/one
+   :db/doc "Most recent execution time"}
+
+  {:db/ident :job/run-count
+   :dt/type :dt/Property
+   :dt/domain :job/Recurring
+   :dt/range :db.type/long
+   :db/valueType :db.type/long
+   :db/cardinality :db.cardinality/one
+   :db/doc "Total number of times this job has run"}
+
+  {:db/ident :job/max-runs
+   :dt/type :dt/Property
+   :dt/domain :job/Recurring
+   :dt/range :db.type/long
+   :db/valueType :db.type/long
+   :db/cardinality :db.cardinality/one
+   :db/doc "Maximum runs before auto-pausing (optional)"}
+
+  {:db/ident :job/skip-if-running?
+   :dt/type :dt/Property
+   :dt/domain :job/Recurring
+   :dt/range :db.type/boolean
+   :db/valueType :db.type/boolean
+   :db/cardinality :db.cardinality/one
+   :db/doc "Skip scheduled run if previous is still running"}]
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Execution Properties
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident :job/execution-id
+   :dt/type :dt/Property
+   :dt/domain :job/Execution
+   :dt/range :db.type/uuid
+   :db/valueType :db.type/uuid
+   :db/cardinality :db.cardinality/one
+   :db/unique :db.unique/identity
+   :db/doc "Unique identifier for this execution"}
+
+  {:db/ident :job/started-at
+   :dt/type :dt/Property
+   :dt/domain :job/Execution
+   :dt/range :db.type/instant
+   :db/valueType :db.type/instant
+   :db/cardinality :db.cardinality/one
+   :db/doc "When execution started"}
+
+  {:db/ident :job/finished-at
+   :dt/type :dt/Property
+   :dt/domain :job/Execution
+   :dt/range :db.type/instant
+   :db/valueType :db.type/instant
+   :db/cardinality :db.cardinality/one
+   :db/doc "When execution finished"}
+
+  {:db/ident :job/duration-ms
+   :dt/type :dt/Property
+   :dt/domain :job/Execution
+   :dt/range :db.type/long
+   :db/valueType :db.type/long
+   :db/cardinality :db.cardinality/one
+   :db/doc "Execution duration in milliseconds"}
+
+  {:db/ident :job/execution-status
+   :dt/type :dt/Property
+   :dt/domain :job/Execution
+   :dt/range :db.type/keyword
+   :db/valueType :db.type/keyword
+   :db/cardinality :db.cardinality/one
+   :db/doc "Execution outcome (:success, :failure, :timeout, :cancelled)"}
+
+  {:db/ident :job/result
+   :dt/type :dt/Property
+   :dt/domain :job/Execution
+   :dt/range :db.type/string
+   :db/valueType :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/doc "Return value from handler (EDN string)"}
+
+  {:db/ident :job/error
+   :dt/type :dt/Property
+   :dt/domain :job/Execution
+   :dt/range :db.type/string
+   :db/valueType :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/doc "Error message if execution failed"}
+
+  {:db/ident :job/stacktrace
+   :dt/type :dt/Property
+   :dt/domain :job/Execution
+   :dt/range :db.type/string
+   :db/valueType :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/doc "Stack trace if execution failed"}
+
+  {:db/ident :job/attempt
+   :dt/type :dt/Property
+   :dt/domain :job/Execution
+   :dt/range :db.type/long
+   :db/valueType :db.type/long
+   :db/cardinality :db.cardinality/one
+   :db/doc "Which attempt this execution represents"}
+
+  {:db/ident :job/worker
+   :dt/type :dt/Property
+   :dt/domain :job/Execution
+   :dt/range :db.type/string
+   :db/valueType :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/doc "Identifier of the worker that processed this job"}]
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Job Classes
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident :job/Task
+   :dt/type :dt/Class
+   :dt/subclass-of :dt/Ref
+   :dt/namespace "job"
+   :dt/label "Task"
+   :dt/abstract? true
+   :db/doc "Abstract base class for background jobs. Tasks represent units of work to be executed asynchronously."
+   :dt/slots [:job/name
+              :job/handler
+              :job/payload
+              :job/status
+              :job/priority
+              :job/queue
+              :job/max-attempts
+              :job/attempt-count
+              :job/timeout-ms
+              :job/created-at
+              :job/created-by
+              :job/tags
+              :job/executions]}]
+
+ [{:db/ident :job/Scheduled
+   :dt/type :dt/Class
+   :dt/subclass-of :job/Task
+   :dt/namespace "job"
+   :dt/label "Scheduled Task"
+   :db/doc "A one-time job scheduled for future execution."
+   :dt/slots [:job/run-at
+              :job/delay-ms]}
+
+  {:db/ident :job/Triggered
+   :dt/type :dt/Class
+   :dt/subclass-of :job/Task
+   :dt/namespace "job"
+   :dt/label "Triggered Task"
+   :db/doc "A job triggered by an event or condition."
+   :dt/slots [:job/trigger-event
+              :job/trigger-source
+              :job/trigger-condition]}
+
+  {:db/ident :job/Recurring
+   :dt/type :dt/Class
+   :dt/subclass-of :job/Task
+   :dt/namespace "job"
+   :dt/label "Recurring Task"
+   :db/doc "A job that runs on a cron-like schedule."
+   :dt/slots [:job/cron
+              :job/timezone
+              :job/next-run
+              :job/last-run
+              :job/run-count
+              :job/max-runs
+              :job/skip-if-running?]}]
+
+ [{:db/ident :job/Execution
+   :dt/type :dt/Class
+   :dt/subclass-of :dt/Ref
+   :dt/namespace "job"
+   :dt/label "Execution"
+   :db/doc "A single run of a job, tracking timing, status, and results."
+   :dt/slots [:job/execution-id
+              :job/started-at
+              :job/finished-at
+              :job/duration-ms
+              :job/execution-status
+              :job/result
+              :job/error
+              :job/stacktrace
+              :job/attempt
+              :job/worker]}]
+
+]

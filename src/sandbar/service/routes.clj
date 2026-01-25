@@ -3,12 +3,14 @@
             [clojure.tools.logging        :as log]
             [io.pedestal.http.body-params :as body-params]
             [io.pedestal.http.route       :as route]
+            [sandbar.api.auth             :as auth-api]
             [sandbar.api.event            :as event]
             [sandbar.api.status           :as status]
             [sandbar.api.store            :as store]
             [sandbar.service.content      :as content]
             [sandbar.service.endpoint     :as endpoint :refer [defhandler]]
             [sandbar.service.params       :as params]
+            [sandbar.util.auth            :as auth]
             [sandbar.util.event           :as event-util]
             [sandbar.util.http-status     :as http-status]))
 
@@ -29,16 +31,41 @@
   `[[["/" {:get home-page} ^:interceptors [(body-params/body-params (content/body-parsers))
                                            params/url-decode-path-params]
       ["/favicon.ico" {:get favicon-ico}]
-;      ["/login" {:get identity}]
-;      ["/logout"]
+
+      ;; Public auth endpoints (no authentication required)
+      ["/login" ^:interceptors [content/data-body
+                                content/accept-content
+                                params/parsed-params
+                                params/validated-params]
+       {:post auth-api/login}]
+      ["/register" ^:interceptors [content/data-body
+                                   content/accept-content
+                                   params/parsed-params
+                                   params/validated-params]
+       {:post auth-api/register}]
+      ["/me" ^:interceptors [content/data-body
+                             content/accept-content
+                             params/parsed-params
+                             params/validated-params
+                             auth/authentication-interceptor]
+       {:get auth-api/me}]
+
+      ;; Protected API (authentication required)
       ["/api" ^:interceptors [event-util/log-request
                               content/data-body
                               content/log-response
                               content/accept-content
                               params/parsed-params
                               params/validated-params
-                              params/log-params]
+                              params/log-params
+                              auth/authentication-interceptor
+                              auth/require-authentication]
        ["/status" {:get status/status-handler}]
+       ["/auth"
+        ["/logout" {:post auth-api/logout}]
+        ["/password" {:post auth-api/change-password}]
+        ["/sessions" {:get auth-api/list-sessions}
+         ["/:id" {:delete auth-api/invalidate-session}]]]
        ["/events" {:get event/list-events :post event/create-event}
         ["/server" {:post event/create-server-event}]
         ["/user" {:post event/create-user-event}]

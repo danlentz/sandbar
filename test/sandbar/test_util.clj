@@ -6,9 +6,51 @@
             [io.pedestal.http :as http]
             [io.pedestal.test :refer [response-for]]
             [sandbar.db.datomic :as db]
+            [sandbar.db.datatype :as dt]
             [sandbar.service.config :as config]
+            [sandbar.util.auth :as auth]
             [sandbar.util.edn :as edn])
   (:import [java.io ByteArrayInputStream]))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Test Authentication
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(def ^:dynamic *test-session-id*
+  "Session ID for authenticated API requests in tests"
+  nil)
+
+(defn create-test-user!
+  "Create a test user for API authentication.
+   Returns the user entity."
+  ([] (create-test-user! {}))
+  ([{:keys [username email password]
+     :or {username "testuser"
+          email "test@sandbar.test"
+          password "testpassword123"}}]
+   (dt/make :auth/User
+     {:auth/username username
+      :auth/email email
+      :auth/password-hash (auth/hash-password password)
+      :auth/principal-name (str "Test User: " username)
+      :auth/active? true})))
+
+(defn get-test-session!
+  "Create a test user and get a session ID for API requests.
+   Returns the session ID string."
+  ([] (get-test-session! {}))
+  ([opts]
+   (let [user (create-test-user! opts)
+         session (auth/create-session! user)]
+     (str (:auth/session-id session)))))
+
+(defn with-auth-headers
+  "Add authentication header to a headers map"
+  ([headers] (with-auth-headers headers *test-session-id*))
+  ([headers session-id]
+   (if session-id
+     (assoc headers "X-Session-ID" session-id)
+     headers)))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Database Fixtures
@@ -34,13 +76,15 @@
    Options:
      :test-name    - Name for the test database URI (default: \"test\")
      :extra-schema - Additional schema keywords to load after required-schema
+     :auth?        - If true, create a test user and set *test-session-id* (default: true)
 
    Usage:
      (use-fixtures :each (make-test-db-fixture {:test-name \"my-test\"}))
-     (use-fixtures :each (make-test-db-fixture {:extra-schema [:zorp]}))"
+     (use-fixtures :each (make-test-db-fixture {:extra-schema [:zorp]}))
+     (use-fixtures :each (make-test-db-fixture {:auth? false}))  ;; No auto-auth"
   ([] (make-test-db-fixture {}))
-  ([{:keys [test-name extra-schema]
-     :or {test-name "test"}}]
+  ([{:keys [test-name extra-schema auth?]
+     :or {test-name "test" auth? true}}]
    (fn [f]
      (let [test-uri (str "datomic:mem://" test-name)]
        (d/create-database test-uri)
@@ -50,7 +94,11 @@
            (load-required-schema conn)
            (when extra-schema
              (load-schema conn extra-schema))
-           (f)
+           ;; Create test user and session if auth is enabled
+           (if auth?
+             (binding [*test-session-id* (get-test-session!)]
+               (f))
+             (f))
            (finally
              (reset! db/**conn* nil)
              (d/delete-database test-uri))))))))
@@ -97,35 +145,57 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (defn api-get
-  "Make GET request to API (uses default EDN content type)"
+  "Make GET request to API (uses default EDN content type).
+   Includes authentication if *test-session-id* is bound."
   [path]
-  (response-for service :get path))
+  (response-for service :get path
+                :headers (with-auth-headers {})))
 
 (defn api-get-edn
-  "Make GET request and parse EDN response"
+  "Make GET request and parse EDN response.
+   Includes authentication if *test-session-id* is bound."
   [path]
   (let [response (api-get path)]
     {:status (:status response)
      :body (parse-edn-body response)}))
 
 (defn api-get-json
-  "Make GET request with JSON Accept header and parse response"
+  "Make GET request with JSON Accept header and parse response.
+   Includes authentication if *test-session-id* is bound."
   [path]
   (let [response (response-for service :get path
-                               :headers {"Accept" "application/json"})]
+                               :headers (with-auth-headers {"Accept" "application/json"}))]
     {:status (:status response)
      :body (parse-json-body response)}))
 
 (defn api-get-transit
-  "Make GET request with Transit+JSON Accept header and parse response"
+  "Make GET request with Transit+JSON Accept header and parse response.
+   Includes authentication if *test-session-id* is bound."
   [path]
   (let [response (response-for service :get path
-                               :headers {"Accept" "application/transit+json"})]
+                               :headers (with-auth-headers {"Accept" "application/transit+json"}))]
     {:status (:status response)
      :body (parse-transit-body response)}))
 
 (defn api-get-csv
-  "Make GET request with CSV Accept header"
+  "Make GET request with CSV Accept header.
+   Includes authentication if *test-session-id* is bound."
   [path]
   (response-for service :get path
-                :headers {"Accept" "text/csv"}))
+                :headers (with-auth-headers {"Accept" "text/csv"})))
+
+(defn api-post
+  "Make POST request with EDN body.
+   Includes authentication if *test-session-id* is bound."
+  [path body]
+  (response-for service :post path
+                :headers (with-auth-headers {"Content-Type" "application/edn"})
+                :body (pr-str body)))
+
+(defn api-post-edn
+  "Make POST request with EDN body and parse EDN response.
+   Includes authentication if *test-session-id* is bound."
+  [path body]
+  (let [response (api-post path body)]
+    {:status (:status response)
+     :body (parse-edn-body response)}))

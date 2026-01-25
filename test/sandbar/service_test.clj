@@ -3,7 +3,8 @@
   (:require [clojure.test :refer :all]
             [clojure.string :as str]
             [io.pedestal.test :refer [response-for]]
-            [sandbar.test-util :as tu :refer [service parse-json-body get-header]]
+            [sandbar.test-util :as tu :refer [service parse-json-body get-header
+                                               with-auth-headers]]
             [sandbar.util.http-status :as http-status]))
 
 (use-fixtures :each (tu/make-test-db-fixture {:test-name "service-test"}))
@@ -45,7 +46,7 @@
 (deftest status-api-test
   (testing "GET /api/status returns status info"
     (let [response (response-for service :get "/api/status"
-                                 :headers {"Accept" "application/json"})]
+                                 :headers (with-auth-headers {"Accept" "application/json"}))]
       (is (= http-status/success (:status response))
           "Should return http-status/success OK")
       (let [body (parse-json-body response)]
@@ -57,14 +58,14 @@
 (deftest status-api-content-types-test
   (testing "Status API respects Accept header for JSON"
     (let [response (response-for service :get "/api/status"
-                                 :headers {"Accept" "application/json"})]
+                                 :headers (with-auth-headers {"Accept" "application/json"}))]
       (is (= http-status/success (:status response)))
       (is (str/includes? (get-header response "Content-Type") "application/json")
           "Should return JSON content type")))
 
   (testing "Status API respects Accept header for EDN"
     (let [response (response-for service :get "/api/status"
-                                 :headers {"Accept" "application/edn"})]
+                                 :headers (with-auth-headers {"Accept" "application/edn"}))]
       (is (= http-status/success (:status response)))
       (is (str/includes? (get-header response "Content-Type") "application/edn")
           "Should return EDN content type"))))
@@ -76,13 +77,14 @@
 (deftest content-negotiation-test
   (testing "API rejects unacceptable content types"
     (let [response (response-for service :get "/api/status"
-                                 :headers {"Accept" "text/html"})]
+                                 :headers (with-auth-headers {"Accept" "text/html"}))]
       (is (= http-status/not-acceptable (:status response))
           "Should return http-status/not-acceptable Not Acceptable for unsupported content type"))))
 
 (deftest default-content-type-test
   (testing "API defaults to EDN when no Accept header"
-    (let [response (response-for service :get "/api/status")]
+    (let [response (response-for service :get "/api/status"
+                                 :headers (with-auth-headers {}))]
       (is (= http-status/success (:status response)))
       ;; Should default to EDN
       (let [parsed (read-string (:body response))]
@@ -115,7 +117,7 @@
 
   (testing "Unknown API routes return http-status/not-found"
     (let [response (response-for service :get "/api/nonexistent"
-                                 :headers {"Accept" "application/json"})]
+                                 :headers (with-auth-headers {"Accept" "application/json"}))]
       (is (= http-status/not-found (:status response))
           "Should return http-status/not-found for unknown API route"))))
 
@@ -126,7 +128,7 @@
 (deftest response-structure-test
   (testing "Successful responses have expected structure"
     (let [response (response-for service :get "/api/status"
-                                 :headers {"Accept" "application/json"})]
+                                 :headers (with-auth-headers {"Accept" "application/json"}))]
       (is (contains? response :status) "Response should have :status")
       (is (contains? response :headers) "Response should have :headers")
       (is (contains? response :body) "Response should have :body"))))
@@ -138,7 +140,7 @@
 (deftest json-response-format-test
   (testing "JSON responses are well-formed"
     (let [response (response-for service :get "/api/status"
-                                 :headers {"Accept" "application/json"})
+                                 :headers (with-auth-headers {"Accept" "application/json"}))
           body (:body response)]
       (is (string? body) "Body should be a string")
       (is (str/starts-with? (str/trim body) "{")
@@ -153,27 +155,10 @@
 (deftest edn-response-format-test
   (testing "EDN responses are well-formed"
     (let [response (response-for service :get "/api/status"
-                                 :headers {"Accept" "application/edn"})
+                                 :headers (with-auth-headers {"Accept" "application/edn"}))
           body (:body response)]
       (is (string? body) "Body should be a string")
       (let [parsed (read-string body)]
         (is (map? parsed) "EDN body should parse to a map")
         (is (contains? parsed :time) "Parsed EDN should have :time")
         (is (contains? parsed :clojure) "Parsed EDN should have :clojure")))))
-
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; HTTP Method Tests
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-
-;; (deftest http-methods-test
-;;   (testing "HEAD request works"
-;;     (let [response (response-for service :head "/")]
-;;       ;; HEAD should return headers but no body
-;;       (is (#{http-status/success http-status/method-not-allowed} (:status response))
-;;           "HEAD should either work or return method not allowed")))
-
-;;   (testing "OPTIONS request"
-;;     (let [response (response-for service :options "/")]
-;;       ;; Pedestal may or may not handle OPTIONS
-;;       (is (number? (:status response))
-;;           "OPTIONS should return a status code"))))

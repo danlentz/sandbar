@@ -1,0 +1,462 @@
+[
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Auth Model
+;;
+;; Role-Based Access Control (RBAC) with support for users, groups, service
+;; accounts, roles, and permissions. Principals can have multiple roles;
+;; roles can have multiple permissions.
+;;
+;; Class Hierarchy:
+;;
+;;                    auth/Principal [abstract]
+;;                          |
+;;          ________________|________________
+;;         |                |                |
+;;    auth/User        auth/Group     auth/ServiceAccount
+;;
+;;    auth/Role        - Collection of permissions
+;;    auth/Permission  - Atomic authorization unit
+;;
+;; Example:
+;;
+;;   ;; Create a user with roles
+;;   (dt/make :auth/User
+;;     {:auth/username "zorp"
+;;      :auth/email "zorp@pluto.net"
+;;      :auth/roles [:role/footwear-admin :role/viewer]})
+;;
+;;   ;; Check permissions
+;;   (auth/has-permission? user :permission/edit-inventory)
+;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Forward Declarations
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident :auth/Principal
+   :db/doc "Abstract base class for security principals"}
+
+  {:db/ident :auth/User
+   :db/doc "A human user account"}
+
+  {:db/ident :auth/Group
+   :db/doc "A collection of principals"}
+
+  {:db/ident :auth/ServiceAccount
+   :db/doc "A non-human service identity"}
+
+  {:db/ident :auth/Role
+   :db/doc "A named collection of permissions"}
+
+  {:db/ident :auth/Permission
+   :db/doc "An atomic authorization unit"}]
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Principal Properties (Shared by User, Group, ServiceAccount)
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident :auth/principal-name
+   :dt/type :dt/Property
+   :dt/domain :auth/Principal
+   :dt/range :db.type/string
+   :db/valueType :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/doc "Display name for the principal"}
+
+  {:db/ident :auth/roles
+   :dt/type :dt/Property
+   :dt/domain :auth/Principal
+   :dt/range :auth/Role
+   :db/valueType :db.type/ref
+   :db/cardinality :db.cardinality/many
+   :db/doc "Roles assigned to this principal"}
+
+  {:db/ident :auth/active?
+   :dt/type :dt/Property
+   :dt/domain :auth/Principal
+   :dt/range :db.type/boolean
+   :db/valueType :db.type/boolean
+   :db/cardinality :db.cardinality/one
+   :db/doc "Whether this principal can authenticate"}
+
+  {:db/ident :auth/created-at
+   :dt/type :dt/Property
+   :dt/domain :auth/Principal
+   :dt/range :db.type/instant
+   :db/valueType :db.type/instant
+   :db/cardinality :db.cardinality/one
+   :db/doc "When this principal was created"}
+
+  {:db/ident :auth/metadata
+   :dt/type :dt/Property
+   :dt/domain :auth/Principal
+   :dt/range :db.type/string
+   :db/valueType :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/doc "Additional principal data (EDN string)"}]
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; User Properties
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident :auth/username
+   :dt/type :dt/Property
+   :dt/domain :auth/User
+   :dt/range :db.type/string
+   :db/valueType :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/unique :db.unique/identity
+   :db/doc "Unique login identifier"}
+
+  {:db/ident :auth/email
+   :dt/type :dt/Property
+   :dt/domain :auth/User
+   :dt/range :db.type/string
+   :db/valueType :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/unique :db.unique/value
+   :db/doc "Email address (unique)"}
+
+  {:db/ident :auth/password-hash
+   :dt/type :dt/Property
+   :dt/domain :auth/User
+   :dt/range :db.type/string
+   :db/valueType :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/doc "Hashed password (never store plaintext!)"}
+
+  {:db/ident :auth/last-login
+   :dt/type :dt/Property
+   :dt/domain :auth/User
+   :dt/range :db.type/instant
+   :db/valueType :db.type/instant
+   :db/cardinality :db.cardinality/one
+   :db/doc "Most recent successful login"}
+
+  {:db/ident :auth/failed-logins
+   :dt/type :dt/Property
+   :dt/domain :auth/User
+   :dt/range :db.type/long
+   :db/valueType :db.type/long
+   :db/cardinality :db.cardinality/one
+   :db/doc "Count of consecutive failed login attempts"}
+
+  {:db/ident :auth/locked-until
+   :dt/type :dt/Property
+   :dt/domain :auth/User
+   :dt/range :db.type/instant
+   :db/valueType :db.type/instant
+   :db/cardinality :db.cardinality/one
+   :db/doc "Account locked until this time (due to failed logins)"}
+
+  {:db/ident :auth/groups
+   :dt/type :dt/Property
+   :dt/domain :auth/User
+   :dt/range :auth/Group
+   :db/valueType :db.type/ref
+   :db/cardinality :db.cardinality/many
+   :db/doc "Groups this user belongs to"}]
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Group Properties
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident :auth/group-name
+   :dt/type :dt/Property
+   :dt/domain :auth/Group
+   :dt/range :db.type/keyword
+   :db/valueType :db.type/keyword
+   :db/cardinality :db.cardinality/one
+   :db/unique :db.unique/identity
+   :db/doc "Unique identifier for the group"}
+
+  {:db/ident :auth/members
+   :dt/type :dt/Property
+   :dt/domain :auth/Group
+   :dt/range :auth/Principal
+   :db/valueType :db.type/ref
+   :db/cardinality :db.cardinality/many
+   :db/doc "Principals in this group (users, service accounts, nested groups)"}
+
+  {:db/ident :auth/parent-group
+   :dt/type :dt/Property
+   :dt/domain :auth/Group
+   :dt/range :auth/Group
+   :db/valueType :db.type/ref
+   :db/cardinality :db.cardinality/one
+   :db/doc "Parent group for hierarchical organization"}]
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; ServiceAccount Properties
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident :auth/service-name
+   :dt/type :dt/Property
+   :dt/domain :auth/ServiceAccount
+   :dt/range :db.type/keyword
+   :db/valueType :db.type/keyword
+   :db/cardinality :db.cardinality/one
+   :db/unique :db.unique/identity
+   :db/doc "Unique identifier for the service account"}
+
+  {:db/ident :auth/api-key-hash
+   :dt/type :dt/Property
+   :dt/domain :auth/ServiceAccount
+   :dt/range :db.type/string
+   :db/valueType :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/doc "Hashed API key for authentication"}
+
+  {:db/ident :auth/owner
+   :dt/type :dt/Property
+   :dt/domain :auth/ServiceAccount
+   :dt/range :auth/User
+   :db/valueType :db.type/ref
+   :db/cardinality :db.cardinality/one
+   :db/doc "User responsible for this service account"}
+
+  {:db/ident :auth/expires-at
+   :dt/type :dt/Property
+   :dt/domain :auth/ServiceAccount
+   :dt/range :db.type/instant
+   :db/valueType :db.type/instant
+   :db/cardinality :db.cardinality/one
+   :db/doc "When this service account expires (optional)"}]
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Role Properties
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident :auth/role-name
+   :dt/type :dt/Property
+   :dt/domain :auth/Role
+   :dt/range :db.type/keyword
+   :db/valueType :db.type/keyword
+   :db/cardinality :db.cardinality/one
+   :db/unique :db.unique/identity
+   :db/doc "Unique identifier for the role (e.g., :role/admin)"}
+
+  {:db/ident :auth/role-label
+   :dt/type :dt/Property
+   :dt/domain :auth/Role
+   :dt/range :db.type/string
+   :db/valueType :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/doc "Human-readable role name"}
+
+  {:db/ident :auth/permissions
+   :dt/type :dt/Property
+   :dt/domain :auth/Role
+   :dt/range :auth/Permission
+   :db/valueType :db.type/ref
+   :db/cardinality :db.cardinality/many
+   :db/doc "Permissions granted by this role"}
+
+  {:db/ident :auth/inherits-from
+   :dt/type :dt/Property
+   :dt/domain :auth/Role
+   :dt/range :auth/Role
+   :db/valueType :db.type/ref
+   :db/cardinality :db.cardinality/many
+   :db/doc "Parent roles whose permissions are inherited"}]
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Permission Properties
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident :auth/permission-name
+   :dt/type :dt/Property
+   :dt/domain :auth/Permission
+   :dt/range :db.type/keyword
+   :db/valueType :db.type/keyword
+   :db/cardinality :db.cardinality/one
+   :db/unique :db.unique/identity
+   :db/doc "Unique identifier for the permission (e.g., :permission/edit-user)"}
+
+  {:db/ident :auth/permission-label
+   :dt/type :dt/Property
+   :dt/domain :auth/Permission
+   :dt/range :db.type/string
+   :db/valueType :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/doc "Human-readable permission name"}
+
+  {:db/ident :auth/resource-type
+   :dt/type :dt/Property
+   :dt/domain :auth/Permission
+   :dt/range :db.type/keyword
+   :db/valueType :db.type/keyword
+   :db/cardinality :db.cardinality/one
+   :db/doc "Type of resource this permission applies to (e.g., :user, :order)"}
+
+  {:db/ident :auth/action
+   :dt/type :dt/Property
+   :dt/domain :auth/Permission
+   :dt/range :db.type/keyword
+   :db/valueType :db.type/keyword
+   :db/cardinality :db.cardinality/one
+   :db/doc "Action permitted (e.g., :read, :write, :delete, :admin)"}]
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Auth Classes
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident :auth/Principal
+   :dt/type :dt/Class
+   :dt/subclass-of :dt/Ref
+   :dt/namespace "auth"
+   :dt/label "Principal"
+   :dt/abstract? true
+   :db/doc "Abstract base class for security principals. A principal is an entity that can be authenticated and authorized."
+   :dt/slots [:auth/principal-name
+              :auth/roles
+              :auth/active?
+              :auth/created-at
+              :auth/metadata]}]
+
+ [{:db/ident :auth/User
+   :dt/type :dt/Class
+   :dt/subclass-of :auth/Principal
+   :dt/namespace "auth"
+   :dt/label "User"
+   :db/doc "A human user with login credentials."
+   :dt/slots [:auth/username
+              :auth/email
+              :auth/password-hash
+              :auth/last-login
+              :auth/failed-logins
+              :auth/locked-until
+              :auth/groups]}
+
+  {:db/ident :auth/Group
+   :dt/type :dt/Class
+   :dt/subclass-of :auth/Principal
+   :dt/namespace "auth"
+   :dt/label "Group"
+   :db/doc "A collection of principals. Groups can contain users, service accounts, and other groups."
+   :dt/slots [:auth/group-name
+              :auth/members
+              :auth/parent-group]}
+
+  {:db/ident :auth/ServiceAccount
+   :dt/type :dt/Class
+   :dt/subclass-of :auth/Principal
+   :dt/namespace "auth"
+   :dt/label "Service Account"
+   :db/doc "A non-human identity for services and automated processes."
+   :dt/slots [:auth/service-name
+              :auth/api-key-hash
+              :auth/owner
+              :auth/expires-at]}]
+
+ [{:db/ident :auth/Role
+   :dt/type :dt/Class
+   :dt/subclass-of :dt/Ref
+   :dt/namespace "auth"
+   :dt/label "Role"
+   :db/doc "A named collection of permissions that can be assigned to principals."
+   :dt/slots [:auth/role-name
+              :auth/role-label
+              :auth/permissions
+              :auth/inherits-from]}
+
+  {:db/ident :auth/Permission
+   :dt/type :dt/Class
+   :dt/subclass-of :dt/Ref
+   :dt/namespace "auth"
+   :dt/label "Permission"
+   :db/doc "An atomic authorization unit representing a specific action on a resource type."
+   :dt/slots [:auth/permission-name
+              :auth/permission-label
+              :auth/resource-type
+              :auth/action]}]
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Session - For tracking active authentication sessions
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident :auth/Session
+   :db/doc "An active authentication session"}]
+
+ [{:db/ident :auth/session-id
+   :dt/type :dt/Property
+   :dt/domain :auth/Session
+   :dt/range :db.type/uuid
+   :db/valueType :db.type/uuid
+   :db/cardinality :db.cardinality/one
+   :db/unique :db.unique/identity
+   :db/doc "Unique session identifier (used in cookies/tokens)"}
+
+  {:db/ident :auth/session-principal
+   :dt/type :dt/Property
+   :dt/domain :auth/Session
+   :dt/range :auth/Principal
+   :db/valueType :db.type/ref
+   :db/cardinality :db.cardinality/one
+   :db/doc "The authenticated principal for this session"}
+
+  {:db/ident :auth/session-created
+   :dt/type :dt/Property
+   :dt/domain :auth/Session
+   :dt/range :db.type/instant
+   :db/valueType :db.type/instant
+   :db/cardinality :db.cardinality/one
+   :db/doc "When the session was created"}
+
+  {:db/ident :auth/session-expires
+   :dt/type :dt/Property
+   :dt/domain :auth/Session
+   :dt/range :db.type/instant
+   :db/valueType :db.type/instant
+   :db/cardinality :db.cardinality/one
+   :db/doc "When the session expires"}
+
+  {:db/ident :auth/session-last-access
+   :dt/type :dt/Property
+   :dt/domain :auth/Session
+   :dt/range :db.type/instant
+   :db/valueType :db.type/instant
+   :db/cardinality :db.cardinality/one
+   :db/doc "Last activity time (for idle timeout)"}
+
+  {:db/ident :auth/session-ip
+   :dt/type :dt/Property
+   :dt/domain :auth/Session
+   :dt/range :db.type/string
+   :db/valueType :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/doc "IP address that created the session"}
+
+  {:db/ident :auth/session-user-agent
+   :dt/type :dt/Property
+   :dt/domain :auth/Session
+   :dt/range :db.type/string
+   :db/valueType :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/doc "User agent that created the session"}
+
+  {:db/ident :auth/session-active?
+   :dt/type :dt/Property
+   :dt/domain :auth/Session
+   :dt/range :db.type/boolean
+   :db/valueType :db.type/boolean
+   :db/cardinality :db.cardinality/one
+   :db/doc "Whether the session is still active (false after logout)"}]
+
+ [{:db/ident :auth/Session
+   :dt/type :dt/Class
+   :dt/subclass-of :dt/Ref
+   :dt/namespace "auth"
+   :dt/label "Session"
+   :db/doc "An active authentication session linking a principal to a browser/client."
+   :dt/slots [:auth/session-id
+              :auth/session-principal
+              :auth/session-created
+              :auth/session-expires
+              :auth/session-last-access
+              :auth/session-ip
+              :auth/session-user-agent
+              :auth/session-active?]}]
+
+]

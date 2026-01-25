@@ -1,0 +1,230 @@
+[
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Audit Model
+;;
+;; Track changes to entities: who changed what, when, and why.
+;; Every mutation becomes a first-class entity you can query, correlate,
+;; and analyze. Perfect for compliance, debugging, and understanding
+;; how your data evolves over time.
+;;
+;; Class Hierarchy:
+;;
+;;                      audit/Change [abstract]
+;;                          |
+;;          ________________|________________
+;;         |                |                |
+;;    audit/Create     audit/Update     audit/Delete
+;;
+;; Example:
+;;
+;;   (audit/record! :audit/Update
+;;     {:audit/entity      user-id
+;;      :audit/attribute   :user/email
+;;      :audit/old-value   "old@example.com"
+;;      :audit/new-value   "new@example.com"
+;;      :audit/actor       admin-id
+;;      :audit/reason      "User requested email change"})
+;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Forward Declarations
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident :audit/Change
+   :db/doc "Abstract base class for all audit entries"}
+
+  {:db/ident :audit/Create
+   :db/doc "Records the creation of a new entity"}
+
+  {:db/ident :audit/Update
+   :db/doc "Records a change to an existing entity"}
+
+  {:db/ident :audit/Delete
+   :db/doc "Records the deletion or retraction of an entity"}]
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Change Properties (Common to all audit entries)
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident :audit/timestamp
+   :dt/type :dt/Property
+   :dt/domain :audit/Change
+   :dt/range :db.type/instant
+   :db/valueType :db.type/instant
+   :db/cardinality :db.cardinality/one
+   :db/doc "When the change occurred"}
+
+  {:db/ident :audit/entity
+   :dt/type :dt/Property
+   :dt/domain :audit/Change
+   :dt/range :dt/Ref
+   :db/valueType :db.type/ref
+   :db/cardinality :db.cardinality/one
+   :db/doc "The entity that was changed"}
+
+  {:db/ident :audit/entity-type
+   :dt/type :dt/Property
+   :dt/domain :audit/Change
+   :dt/range :db.type/keyword
+   :db/valueType :db.type/keyword
+   :db/cardinality :db.cardinality/one
+   :db/doc "The :dt/type of the changed entity (for queries when entity is gone)"}
+
+  {:db/ident :audit/actor
+   :dt/type :dt/Property
+   :dt/domain :audit/Change
+   :dt/range :dt/Ref
+   :db/valueType :db.type/ref
+   :db/cardinality :db.cardinality/one
+   :db/doc "The user, system, or process that made the change"}
+
+  {:db/ident :audit/reason
+   :dt/type :dt/Property
+   :dt/domain :audit/Change
+   :dt/range :db.type/string
+   :db/valueType :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/doc "Human-readable explanation for why the change was made"}
+
+  {:db/ident :audit/source
+   :dt/type :dt/Property
+   :dt/domain :audit/Change
+   :dt/range :db.type/keyword
+   :db/valueType :db.type/keyword
+   :db/cardinality :db.cardinality/one
+   :db/doc "Where the change originated (e.g., :api, :console, :migration, :system)"}
+
+  {:db/ident :audit/correlation-id
+   :dt/type :dt/Property
+   :dt/domain :audit/Change
+   :dt/range :db.type/uuid
+   :db/valueType :db.type/uuid
+   :db/cardinality :db.cardinality/one
+   :db/doc "UUID linking related changes across a single operation"}
+
+  {:db/ident :audit/transaction-id
+   :dt/type :dt/Property
+   :dt/domain :audit/Change
+   :dt/range :db.type/long
+   :db/valueType :db.type/long
+   :db/cardinality :db.cardinality/one
+   :db/doc "Datomic transaction ID for this change"}
+
+  {:db/ident :audit/tags
+   :dt/type :dt/Property
+   :dt/domain :audit/Change
+   :dt/range :db.type/keyword
+   :db/valueType :db.type/keyword
+   :db/cardinality :db.cardinality/many
+   :db/doc "Tags for categorizing changes (e.g., :security, :pii, :billing)"}]
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Update-Specific Properties
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident :audit/attribute
+   :dt/type :dt/Property
+   :dt/domain :audit/Update
+   :dt/range :db.type/keyword
+   :db/valueType :db.type/keyword
+   :db/cardinality :db.cardinality/one
+   :db/doc "The attribute that was changed"}
+
+  {:db/ident :audit/old-value
+   :dt/type :dt/Property
+   :dt/domain :audit/Update
+   :dt/range :db.type/string
+   :db/valueType :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/doc "Previous value (serialized as EDN string)"}
+
+  {:db/ident :audit/new-value
+   :dt/type :dt/Property
+   :dt/domain :audit/Update
+   :dt/range :db.type/string
+   :db/valueType :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/doc "New value (serialized as EDN string)"}]
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Create-Specific Properties
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident :audit/initial-data
+   :dt/type :dt/Property
+   :dt/domain :audit/Create
+   :dt/range :db.type/string
+   :db/valueType :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/doc "Initial entity data at creation (serialized as EDN string)"}]
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Delete-Specific Properties
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident :audit/final-data
+   :dt/type :dt/Property
+   :dt/domain :audit/Delete
+   :dt/range :db.type/string
+   :db/valueType :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/doc "Entity data at time of deletion (serialized as EDN string)"}
+
+  {:db/ident :audit/hard-delete?
+   :dt/type :dt/Property
+   :dt/domain :audit/Delete
+   :dt/range :db.type/boolean
+   :db/valueType :db.type/boolean
+   :db/cardinality :db.cardinality/one
+   :db/doc "True if entity was hard-deleted (retracted), false for soft delete"}]
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Audit Classes
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident :audit/Change
+   :dt/type :dt/Class
+   :dt/subclass-of :dt/Ref
+   :dt/namespace "audit"
+   :dt/label "Change"
+   :dt/abstract? true
+   :db/doc "Abstract base class for audit trail entries. Every mutation to tracked entities creates a Change record."
+   :dt/slots [:audit/timestamp
+              :audit/entity
+              :audit/entity-type
+              :audit/actor
+              :audit/reason
+              :audit/source
+              :audit/correlation-id
+              :audit/transaction-id
+              :audit/tags]}]
+
+ [{:db/ident :audit/Create
+   :dt/type :dt/Class
+   :dt/subclass-of :audit/Change
+   :dt/namespace "audit"
+   :dt/label "Create"
+   :db/doc "Records the creation of a new entity"
+   :dt/slots [:audit/initial-data]}
+
+  {:db/ident :audit/Update
+   :dt/type :dt/Class
+   :dt/subclass-of :audit/Change
+   :dt/namespace "audit"
+   :dt/label "Update"
+   :db/doc "Records a modification to an existing entity attribute"
+   :dt/slots [:audit/attribute
+              :audit/old-value
+              :audit/new-value]}
+
+  {:db/ident :audit/Delete
+   :dt/type :dt/Class
+   :dt/subclass-of :audit/Change
+   :dt/namespace "audit"
+   :dt/label "Delete"
+   :db/doc "Records the deletion or retraction of an entity"
+   :dt/slots [:audit/final-data
+              :audit/hard-delete?]}]
+
+]

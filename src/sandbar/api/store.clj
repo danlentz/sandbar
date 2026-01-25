@@ -31,12 +31,13 @@
   ## Type Predicates
     GET /api/store/types/instance-of/:ns/:name/:entity-ns/:entity-name
     GET /api/store/types/subclass-of/:parent-ns/:parent-name/:child-ns/:child-name"
-  (:require [datomic.api                 :as d]
-            [sandbar.db.datomic          :as db]
-            [sandbar.db.datatype         :as dt]
-            [sandbar.service.endpoint    :as endpoint :refer [defhandler]]
-            [sandbar.service.params      :as params :refer [defvalidator]]
-            [sandbar.util.http-status    :as http-status]))
+  (:require [clojure.tools.logging :as log]
+            [datomic.api :as d]
+            [sandbar.db.datomic :as db]
+            [sandbar.db.datatype :as dt]
+            [sandbar.service.endpoint :as endpoint :refer [defhandler]]
+            [sandbar.service.params :as params :refer [defvalidator]]
+            [sandbar.util.http-status :as http-status]))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Helpers

@@ -1,13 +1,14 @@
 (ns sandbar.core
   (:gen-class)
-  (:require [com.stuartsierra.component :as component]
-            [sandbar.db.datatype        :as dt]
-            [sandbar.db.datomic         :as db]
-            [sandbar.server.nrepl       :as nrepl]
-            [sandbar.server.pedestal    :as pedestal]
-            [sandbar.sys                :as sys]
-            [sandbar.util.common        :as util]
-            [sandbar.util.edn           :as edn]))
+  (:require [clojure.tools.logging :as log]
+            [com.stuartsierra.component :as component]
+            [sandbar.db.datatype :as dt]
+            [sandbar.db.datomic :as db]
+            [sandbar.server.nrepl :as nrepl]
+            [sandbar.server.pedestal :as pedestal]
+            [sandbar.sys :as sys]
+            [sandbar.util.common :as util]
+            [sandbar.util.edn :as edn]))
 
 (defn make-system
   ([] (make-system :config))
@@ -20,13 +21,18 @@
        :nrepl    (nrepl/make-nrepl-server config)))))
 
 (defn init []
+  (log/info :SYS/INIT "Initializing system")
   (alter-var-root #'sys/system (constantly (make-system))))
 
 (defn start []
-  (alter-var-root #'sys/system component/start))
+  (log/info :SYS/START "Starting system components")
+  (alter-var-root #'sys/system component/start)
+  (log/info :SYS/STARTED "System started successfully"))
 
 (defn stop []
-  (alter-var-root #'sys/system (fn [s] (when s (component/stop s)))))
+  (log/info :SYS/STOP "Stopping system components")
+  (alter-var-root #'sys/system (fn [s] (when s (component/stop s))))
+  (log/info :SYS/STOPPED "System stopped"))
 
 (defn go []
   (init)

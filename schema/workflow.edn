@@ -1,0 +1,360 @@
+[
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Workflow Model
+;;
+;; A state machine framework for modeling processes. Define states, transitions,
+;; and guard conditions declaratively. Attach workflows to any entity type.
+;;
+;; Class Hierarchy:
+;;
+;;   workflow/State       - A named state in a workflow
+;;   workflow/Transition  - A valid state change with optional guard
+;;   workflow/Definition  - The complete workflow specification
+;;   workflow/Process     - A running instance of a workflow
+;;
+;; Example: Order Fulfillment
+;;
+;;   States:     :pending -> :confirmed -> :shipped -> :delivered
+;;                              |                          |
+;;                              v                          v
+;;                          :cancelled               :returned
+;;
+;;   (workflow/transition! order-process :ship
+;;     {:workflow/actor warehouse-user
+;;      :workflow/reason "Package ready for carrier"})
+;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Forward Declarations
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident :workflow/State
+   :db/doc "A named state in a workflow"}
+
+  {:db/ident :workflow/Transition
+   :db/doc "A valid state change"}
+
+  {:db/ident :workflow/Definition
+   :db/doc "A complete workflow specification"}
+
+  {:db/ident :workflow/Process
+   :db/doc "A running workflow instance"}
+
+  {:db/ident :workflow/History
+   :db/doc "A record of a state transition"}]
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; State Properties
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident :workflow/state-name
+   :dt/type :dt/Property
+   :dt/domain :workflow/State
+   :dt/range :db.type/keyword
+   :db/valueType :db.type/keyword
+   :db/cardinality :db.cardinality/one
+   :db/unique :db.unique/identity
+   :db/doc "Unique identifier for this state (e.g., :order/pending)"}
+
+  {:db/ident :workflow/state-label
+   :dt/type :dt/Property
+   :dt/domain :workflow/State
+   :dt/range :db.type/string
+   :db/valueType :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/doc "Human-readable label for the state"}
+
+  {:db/ident :workflow/terminal?
+   :dt/type :dt/Property
+   :dt/domain :workflow/State
+   :dt/range :db.type/boolean
+   :db/valueType :db.type/boolean
+   :db/cardinality :db.cardinality/one
+   :db/doc "True if this is a final state (no outgoing transitions)"}
+
+  {:db/ident :workflow/initial?
+   :dt/type :dt/Property
+   :dt/domain :workflow/State
+   :dt/range :db.type/boolean
+   :db/valueType :db.type/boolean
+   :db/cardinality :db.cardinality/one
+   :db/doc "True if this is the starting state for new processes"}
+
+  {:db/ident :workflow/state-metadata
+   :dt/type :dt/Property
+   :dt/domain :workflow/State
+   :dt/range :db.type/string
+   :db/valueType :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/doc "Additional state data (EDN string)"}]
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Transition Properties
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident :workflow/transition-name
+   :dt/type :dt/Property
+   :dt/domain :workflow/Transition
+   :dt/range :db.type/keyword
+   :db/valueType :db.type/keyword
+   :db/cardinality :db.cardinality/one
+   :db/doc "Action name that triggers this transition (e.g., :approve, :ship)"}
+
+  {:db/ident :workflow/from-state
+   :dt/type :dt/Property
+   :dt/domain :workflow/Transition
+   :dt/range :workflow/State
+   :db/valueType :db.type/ref
+   :db/cardinality :db.cardinality/one
+   :db/doc "State this transition originates from"}
+
+  {:db/ident :workflow/to-state
+   :dt/type :dt/Property
+   :dt/domain :workflow/Transition
+   :dt/range :workflow/State
+   :db/valueType :db.type/ref
+   :db/cardinality :db.cardinality/one
+   :db/doc "State this transition leads to"}
+
+  {:db/ident :workflow/guard
+   :dt/type :dt/Property
+   :dt/domain :workflow/Transition
+   :dt/range :db.type/symbol
+   :db/valueType :db.type/symbol
+   :db/cardinality :db.cardinality/one
+   :db/doc "Fully-qualified symbol of guard function (fn [process context] -> boolean)"}
+
+  {:db/ident :workflow/on-transition
+   :dt/type :dt/Property
+   :dt/domain :workflow/Transition
+   :dt/range :db.type/symbol
+   :db/valueType :db.type/symbol
+   :db/cardinality :db.cardinality/one
+   :db/doc "Fully-qualified symbol of side-effect function (fn [process context] -> nil)"}
+
+  {:db/ident :workflow/requires-reason?
+   :dt/type :dt/Property
+   :dt/domain :workflow/Transition
+   :dt/range :db.type/boolean
+   :db/valueType :db.type/boolean
+   :db/cardinality :db.cardinality/one
+   :db/doc "True if this transition requires a reason/comment"}]
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Definition Properties
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident :workflow/definition-name
+   :dt/type :dt/Property
+   :dt/domain :workflow/Definition
+   :dt/range :db.type/keyword
+   :db/valueType :db.type/keyword
+   :db/cardinality :db.cardinality/one
+   :db/unique :db.unique/identity
+   :db/doc "Unique identifier for this workflow (e.g., :workflow/order-fulfillment)"}
+
+  {:db/ident :workflow/states
+   :dt/type :dt/Property
+   :dt/domain :workflow/Definition
+   :dt/range :workflow/State
+   :db/valueType :db.type/ref
+   :db/cardinality :db.cardinality/many
+   :db/doc "All states in this workflow"}
+
+  {:db/ident :workflow/transitions
+   :dt/type :dt/Property
+   :dt/domain :workflow/Definition
+   :dt/range :workflow/Transition
+   :db/valueType :db.type/ref
+   :db/cardinality :db.cardinality/many
+   :db/doc "All valid transitions in this workflow"}
+
+  {:db/ident :workflow/version
+   :dt/type :dt/Property
+   :dt/domain :workflow/Definition
+   :dt/range :db.type/long
+   :db/valueType :db.type/long
+   :db/cardinality :db.cardinality/one
+   :db/doc "Version number for workflow evolution"}]
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Process Properties
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident :workflow/definition
+   :dt/type :dt/Property
+   :dt/domain :workflow/Process
+   :dt/range :workflow/Definition
+   :db/valueType :db.type/ref
+   :db/cardinality :db.cardinality/one
+   :db/doc "The workflow definition this process follows"}
+
+  {:db/ident :workflow/current-state
+   :dt/type :dt/Property
+   :dt/domain :workflow/Process
+   :dt/range :workflow/State
+   :db/valueType :db.type/ref
+   :db/cardinality :db.cardinality/one
+   :db/doc "Current state of this process"}
+
+  {:db/ident :workflow/subject
+   :dt/type :dt/Property
+   :dt/domain :workflow/Process
+   :dt/range :dt/Ref
+   :db/valueType :db.type/ref
+   :db/cardinality :db.cardinality/one
+   :db/doc "The entity this workflow is attached to (e.g., order, ticket)"}
+
+  {:db/ident :workflow/started-at
+   :dt/type :dt/Property
+   :dt/domain :workflow/Process
+   :dt/range :db.type/instant
+   :db/valueType :db.type/instant
+   :db/cardinality :db.cardinality/one
+   :db/doc "When this process was started"}
+
+  {:db/ident :workflow/completed-at
+   :dt/type :dt/Property
+   :dt/domain :workflow/Process
+   :dt/range :db.type/instant
+   :db/valueType :db.type/instant
+   :db/cardinality :db.cardinality/one
+   :db/doc "When this process reached a terminal state"}
+
+  {:db/ident :workflow/history
+   :dt/type :dt/Property
+   :dt/domain :workflow/Process
+   :dt/range :workflow/History
+   :db/valueType :db.type/ref
+   :db/cardinality :db.cardinality/many
+   :db/doc "Complete history of state transitions"}
+
+  {:db/ident :workflow/process-data
+   :dt/type :dt/Property
+   :dt/domain :workflow/Process
+   :dt/range :db.type/string
+   :db/valueType :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/doc "Process-specific data (EDN string)"}]
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; History Properties
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident :workflow/history-from
+   :dt/type :dt/Property
+   :dt/domain :workflow/History
+   :dt/range :workflow/State
+   :db/valueType :db.type/ref
+   :db/cardinality :db.cardinality/one
+   :db/doc "State before this transition"}
+
+  {:db/ident :workflow/history-to
+   :dt/type :dt/Property
+   :dt/domain :workflow/History
+   :dt/range :workflow/State
+   :db/valueType :db.type/ref
+   :db/cardinality :db.cardinality/one
+   :db/doc "State after this transition"}
+
+  {:db/ident :workflow/history-action
+   :dt/type :dt/Property
+   :dt/domain :workflow/History
+   :dt/range :db.type/keyword
+   :db/valueType :db.type/keyword
+   :db/cardinality :db.cardinality/one
+   :db/doc "Action that triggered this transition"}
+
+  {:db/ident :workflow/history-timestamp
+   :dt/type :dt/Property
+   :dt/domain :workflow/History
+   :dt/range :db.type/instant
+   :db/valueType :db.type/instant
+   :db/cardinality :db.cardinality/one
+   :db/doc "When this transition occurred"}
+
+  {:db/ident :workflow/history-actor
+   :dt/type :dt/Property
+   :dt/domain :workflow/History
+   :dt/range :dt/Ref
+   :db/valueType :db.type/ref
+   :db/cardinality :db.cardinality/one
+   :db/doc "Who triggered this transition"}
+
+  {:db/ident :workflow/history-reason
+   :dt/type :dt/Property
+   :dt/domain :workflow/History
+   :dt/range :db.type/string
+   :db/valueType :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/doc "Reason/comment for this transition"}]
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Workflow Classes
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident :workflow/State
+   :dt/type :dt/Class
+   :dt/subclass-of :dt/Ref
+   :dt/namespace "workflow"
+   :dt/label "State"
+   :db/doc "A named state in a workflow. States can be initial (starting point), terminal (end point), or intermediate."
+   :dt/slots [:workflow/state-name
+              :workflow/state-label
+              :workflow/terminal?
+              :workflow/initial?
+              :workflow/state-metadata]}
+
+  {:db/ident :workflow/Transition
+   :dt/type :dt/Class
+   :dt/subclass-of :dt/Ref
+   :dt/namespace "workflow"
+   :dt/label "Transition"
+   :db/doc "A valid state change triggered by an action. Can have guard functions and side effects."
+   :dt/slots [:workflow/transition-name
+              :workflow/from-state
+              :workflow/to-state
+              :workflow/guard
+              :workflow/on-transition
+              :workflow/requires-reason?]}
+
+  {:db/ident :workflow/Definition
+   :dt/type :dt/Class
+   :dt/subclass-of :dt/Ref
+   :dt/namespace "workflow"
+   :dt/label "Definition"
+   :db/doc "A complete workflow specification with states and transitions."
+   :dt/slots [:workflow/definition-name
+              :workflow/states
+              :workflow/transitions
+              :workflow/version]}
+
+  {:db/ident :workflow/Process
+   :dt/type :dt/Class
+   :dt/subclass-of :dt/Ref
+   :dt/namespace "workflow"
+   :dt/label "Process"
+   :db/doc "A running instance of a workflow attached to a subject entity."
+   :dt/slots [:workflow/definition
+              :workflow/current-state
+              :workflow/subject
+              :workflow/started-at
+              :workflow/completed-at
+              :workflow/history
+              :workflow/process-data]}
+
+  {:db/ident :workflow/History
+   :dt/type :dt/Class
+   :dt/subclass-of :dt/Ref
+   :dt/namespace "workflow"
+   :dt/label "History"
+   :db/doc "A record of a single state transition in a process."
+   :dt/slots [:workflow/history-from
+              :workflow/history-to
+              :workflow/history-action
+              :workflow/history-timestamp
+              :workflow/history-actor
+              :workflow/history-reason]}]
+
+]

@@ -5,7 +5,7 @@
             [io.pedestal.test :refer [response-for]]
             [sandbar.api.event :as event-api]
             [sandbar.db.datomic :as db]
-            [sandbar.test-util :as tu]
+            [sandbar.test-util :as tu :refer [with-auth-headers]]
             [sandbar.util.event :as event])
   (:import [java.util UUID Date]))
 
@@ -19,8 +19,8 @@
 (deftest create-event-with-type-test
   (testing "Create ServerEvent via POST /api/events"
     (let [response (response-for tu/service :post "/api/events"
-                                 :headers {"Content-Type" "application/edn"
-                                           "Accept" "application/edn"}
+                                 :headers (with-auth-headers {"Content-Type" "application/edn"
+                                           "Accept" "application/edn"})
                                  :body (pr-str {:dt/type :event/ServerEvent
                                                 :event/name "Test event"
                                                 :event/level :info
@@ -33,8 +33,8 @@
 
   (testing "Create UserEvent via POST /api/events"
     (let [response (response-for tu/service :post "/api/events"
-                                 :headers {"Content-Type" "application/edn"
-                                           "Accept" "application/edn"}
+                                 :headers (with-auth-headers {"Content-Type" "application/edn"
+                                           "Accept" "application/edn"})
                                  :body (pr-str {:dt/type :event/UserEvent
                                                 :event/name "User action"
                                                 :event/kind :user/login}))
@@ -44,15 +44,15 @@
 
   (testing "Missing :dt/type returns 400"
     (let [response (response-for tu/service :post "/api/events"
-                                 :headers {"Content-Type" "application/edn"
-                                           "Accept" "application/edn"}
+                                 :headers (with-auth-headers {"Content-Type" "application/edn"
+                                           "Accept" "application/edn"})
                                  :body (pr-str {:event/name "No type"}))]
       (is (= 400 (:status response)))))
 
   (testing "Invalid :dt/type returns 400"
     (let [response (response-for tu/service :post "/api/events"
-                                 :headers {"Content-Type" "application/edn"
-                                           "Accept" "application/edn"}
+                                 :headers (with-auth-headers {"Content-Type" "application/edn"
+                                           "Accept" "application/edn"})
                                  :body (pr-str {:dt/type :invalid/Type
                                                 :event/name "Bad type"}))]
       (is (= 400 (:status response))))))
@@ -64,8 +64,8 @@
 (deftest create-server-event-test
   (testing "POST /api/events/server creates ServerEvent"
     (let [response (response-for tu/service :post "/api/events/server"
-                                 :headers {"Content-Type" "application/edn"
-                                           "Accept" "application/edn"}
+                                 :headers (with-auth-headers {"Content-Type" "application/edn"
+                                           "Accept" "application/edn"})
                                  :body (pr-str {:event/name "Server event"
                                                 :event/level :warn
                                                 :event/namespace "sandbar.test"}))
@@ -77,8 +77,8 @@
 (deftest create-user-event-test
   (testing "POST /api/events/user creates UserEvent"
     (let [response (response-for tu/service :post "/api/events/user"
-                                 :headers {"Content-Type" "application/edn"
-                                           "Accept" "application/edn"}
+                                 :headers (with-auth-headers {"Content-Type" "application/edn"
+                                           "Accept" "application/edn"})
                                  :body (pr-str {:event/name "User event"
                                                 :event/kind :user/logout}))
           body (tu/parse-edn-body response)]
@@ -88,8 +88,8 @@
 (deftest create-system-event-test
   (testing "POST /api/events/system creates SystemEvent"
     (let [response (response-for tu/service :post "/api/events/system"
-                                 :headers {"Content-Type" "application/edn"
-                                           "Accept" "application/edn"}
+                                 :headers (with-auth-headers {"Content-Type" "application/edn"
+                                           "Accept" "application/edn"})
                                  :body (pr-str {:event/name "System startup"
                                                 :event/kind :system/startup
                                                 :event/status :success}))
@@ -100,8 +100,8 @@
 (deftest create-http-event-test
   (testing "POST /api/events/http creates HttpRequest"
     (let [response (response-for tu/service :post "/api/events/http"
-                                 :headers {"Content-Type" "application/edn"
-                                           "Accept" "application/edn"}
+                                 :headers (with-auth-headers {"Content-Type" "application/edn"
+                                           "Accept" "application/edn"})
                                  :body (pr-str {:event/name "GET /api/test"
                                                 :event/level :info
                                                 :event/namespace "test"
@@ -118,8 +118,8 @@
 (deftest create-api-event-test
   (testing "POST /api/events/api creates ApiCall"
     (let [response (response-for tu/service :post "/api/events/api"
-                                 :headers {"Content-Type" "application/edn"
-                                           "Accept" "application/edn"}
+                                 :headers (with-auth-headers {"Content-Type" "application/edn"
+                                           "Accept" "application/edn"})
                                  :body (pr-str {:event/name "API call"
                                                 :event/level :debug
                                                 :event/namespace "test"
@@ -133,8 +133,8 @@
 (deftest create-transaction-event-test
   (testing "POST /api/events/transaction creates Transaction"
     (let [response (response-for tu/service :post "/api/events/transaction"
-                                 :headers {"Content-Type" "application/edn"
-                                           "Accept" "application/edn"}
+                                 :headers (with-auth-headers {"Content-Type" "application/edn"
+                                           "Accept" "application/edn"})
                                  :body (pr-str {:event/name "DB transaction"
                                                 :event/level :info
                                                 :event/namespace "test"
@@ -245,8 +245,8 @@
 (deftest create-event-json-test
   (testing "POST /api/events/server with JSON"
     (let [response (response-for tu/service :post "/api/events/server"
-                                 :headers {"Content-Type" "application/json"
-                                           "Accept" "application/json"}
+                                 :headers (with-auth-headers {"Content-Type" "application/json"
+                                                              "Accept" "application/json"})
                                  :body "{\"event/name\": \"JSON event\", \"event/level\": \"info\", \"event/namespace\": \"test\"}")
           body (tu/parse-json-body response)]
       (is (= 201 (:status response)))
@@ -464,8 +464,8 @@
 (deftest verify-post-request-event-test
   (testing "POST request logs correct method and status"
     (let [response (response-for tu/service :post "/api/events/server"
-                                 :headers {"Content-Type" "application/edn"
-                                           "Accept" "application/edn"}
+                                 :headers (with-auth-headers {"Content-Type" "application/edn"
+                                           "Accept" "application/edn"})
                                  :body (pr-str {:event/name "Test POST"
                                                 :event/level :info
                                                 :event/namespace "test"}))

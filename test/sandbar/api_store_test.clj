@@ -9,7 +9,7 @@
             [io.pedestal.test :refer [response-for]]
             [sandbar.db.datatype :as dt]
             [sandbar.test-util :as tu :refer [service api-get api-get-edn api-get-json
-                                              api-get-transit api-get-csv]]
+                                              api-get-transit api-get-csv with-auth-headers]]
             [sandbar.util.http-status :as http-status]))
 
 (use-fixtures :each (tu/make-test-db-fixture {:test-name "api-store-test"}))
@@ -430,7 +430,7 @@
 
   (testing "API returns JSON when requested"
     (let [response (response-for service :get "/api/store/classes"
-                                 :headers {"Accept" "application/json"})]
+                                 :headers (with-auth-headers {"Accept" "application/json"}))]
       (is (= http-status/success (:status response))
           "Should return 200 OK")
       (is (str/includes? (get-in response [:headers "Content-Type"]) "application/json")
@@ -438,7 +438,7 @@
 
   (testing "API returns CSV when requested"
     (let [response (response-for service :get "/api/store/classes"
-                                 :headers {"Accept" "text/csv"})]
+                                 :headers (with-auth-headers {"Accept" "text/csv"}))]
       (is (= http-status/success (:status response))
           "Should return 200 OK for CSV")
       (is (str/includes? (get-in response [:headers "Content-Type"]) "text/csv")
@@ -448,7 +448,7 @@
 
   (testing "API returns Transit+JSON when requested"
     (let [response (response-for service :get "/api/store/classes"
-                                 :headers {"Accept" "application/transit+json"})]
+                                 :headers (with-auth-headers {"Accept" "application/transit+json"}))]
       (is (= http-status/success (:status response))
           "Should return 200 OK for Transit+JSON")
       (is (str/includes? (get-in response [:headers "Content-Type"]) "application/transit+json")
@@ -456,13 +456,13 @@
 
   (testing "API rejects text/html with 406 Not Acceptable"
     (let [response (response-for service :get "/api/store/classes"
-                                 :headers {"Accept" "text/html"})]
+                                 :headers (with-auth-headers {"Accept" "text/html"}))]
       (is (= http-status/not-acceptable (:status response))
           "Should return 406 Not Acceptable for HTML")))
 
   (testing "API rejects application/xml with 406 Not Acceptable"
     (let [response (response-for service :get "/api/store/classes"
-                                 :headers {"Accept" "application/xml"})]
+                                 :headers (with-auth-headers {"Accept" "application/xml"}))]
       (is (= http-status/not-acceptable (:status response))
           "Should return 406 Not Acceptable for XML"))))
 
