@@ -21,6 +21,7 @@
    - C.3 Notifications channel (sandbar.mcp.notifications)
    - C.4 Resources + Prompts + Tasks support"
   (:require [clojure.tools.logging :as log]
+            [sandbar.mcp.resources :as resources]
             [sandbar.mcp.tools     :as tools]))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -136,12 +137,17 @@
 ;; per JSON-RPC notification semantics.
 
 (def method-handlers
-  "Stage C.1 dispatch table. Subsequent stages register more handlers
-   (resources/list, resources/read, prompts/list, prompts/get, tasks/get)."
+  "Method dispatch table. Stages C.1+C.4 added initialize + tools/*;
+   Stage C.5 adds resources/*; subsequent stages add prompts/* +
+   tasks/*."
   {"initialize"                  handle-initialize
    "notifications/initialized"   (fn [_ _] nil) ;; client confirms ready; no response
    "tools/list"                  (fn [id params] (tools/handle-list id params))
-   "tools/call"                  (fn [id params] (tools/handle-call id params))})
+   "tools/call"                  (fn [id params] (tools/handle-call id params))
+   "resources/list"              (fn [id params] (resources/handle-list id params))
+   "resources/read"              (fn [id params] (resources/handle-read id params))
+   "resources/subscribe"         (fn [id params] (resources/handle-subscribe id params))
+   "resources/unsubscribe"       (fn [id params] (resources/handle-unsubscribe id params))})
 
 (defn dispatch
   "Dispatch a single JSON-RPC message. Returns a response map (or nil for
