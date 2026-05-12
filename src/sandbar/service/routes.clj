@@ -145,6 +145,10 @@
                               params/parsed-params
                               mcp-auth/bearer-interceptor
                               mcp-auth/require-bearer]
-       {:post mcp-transport/mcp-handler}]
+       {:post mcp-transport/mcp-handler}
+       ;; SSE channel for server → client notifications (Stage C.3)
+       ;; per ADR B.1.1 + B.1.4 + B.1.5. Subscribers managed by
+       ;; sandbar.mcp.notifications.
+       ["/sse" {:get mcp-transport/sse-handler}]]
 
       ]]])
