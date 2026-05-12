@@ -176,11 +176,33 @@
                  :message (str "Task not found: " task-id)}}
 
       :else
-      {:jsonrpc "2.0"
-       :id      id
-       :result  {:content [{:type "text"
-                            :text "tasks/cancel: workflow/cancel-process! pending Stage C.7.4 (improve-abstraction-not-bypass per the layer-targeting discipline)"}]
-                 :isError true}})))
+      (try
+        (let [cancelled (workflow/cancel-process! process
+                                                  :reason "Cancelled via MCP tasks/cancel")
+              status    (process->task-status cancelled)]
+          {:jsonrpc "2.0"
+           :id      id
+           :result  {:taskId  task-id
+                     :status  (:status status)
+                     :state   (:state status)
+                     :content [{:type "text"
+                                :text (str "Task cancelled. Workflow state: "
+                                           (:state status))}]}})
+        (catch clojure.lang.ExceptionInfo e
+          (let [ex-reason (:reason (ex-data e))]
+            {:jsonrpc "2.0"
+             :id      id
+             :result  {:content [{:type "text"
+                                  :text (str "Cannot cancel task: " (.getMessage e)
+                                             " (reason: " ex-reason ")")}]
+                       :isError true}}))
+        (catch Exception e
+          (log/error e :MCP/tasks-cancel-error)
+          {:jsonrpc "2.0"
+           :id      id
+           :error   {:code    -32603
+                     :message "Tasks/cancel failed"
+                     :data    {:exception-message (.getMessage e)}}})))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Task initiator — helper for tools that start long-running ops

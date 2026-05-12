@@ -736,3 +736,81 @@
       (let [path (or resource-path
                      (str "workflows/" (name workflow-name) ".edn"))]
         (load-workflow-from-resource! path))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Cancellation
+;;
+;; Per the layer-targeting + improve-abstraction-not-bypass disciplines:
+;; the MCP layer (sandbar.mcp.tasks/handle-cancel) needs a generic
+;; cancellation primitive. Rather than each consumer reaching into raw
+;; d/transact, we expose cancel-process! as a workflow-aware operation
+;; that composes with transition!.
+;;
+;; Convention: a workflow that supports cancellation declares a
+;; transition whose target state's ident name contains \"cancel\" (e.g.,
+;; the validation workflow's :validation/cancelled terminal state). Such
+;; transitions are typically named :cancel, :abort, or analogous.
+
+(defn- cancel-transition-for
+  "Find an available transition that targets a state whose ident name
+   indicates cancellation. Returns the transition entity, or nil if no
+   cancel-shaped transition is available from the process's current state."
+  [process]
+  (let [transitions (available-transitions process)]
+    (->> transitions
+         (filter (fn [t]
+                   (when-let [target (:workflow/to-state t)]
+                     (when-let [target-ident (:db/ident target)]
+                       (clojure.string/includes?
+                         (clojure.string/lower-case (name target-ident))
+                         "cancel")))))
+         first)))
+
+(defn cancel-process!
+  "Cancel a running workflow process. Finds an available transition that
+   targets a cancellation-shaped state (state ident name contains
+   \"cancel\") and executes it via transition!.
+
+   Arguments:
+     process - The process entity (or eid; resolved via find-process)
+
+   Options:
+     :actor  - User/principal performing the cancellation
+     :reason - Reason/comment for the cancellation (passed to transition!)
+
+   Returns the updated process entity.
+
+   Throws ex-info with :reason :no-cancel-transition when the workflow
+   doesn't declare a cancellation path from the current state.
+
+   This is the discipline-correct cancellation path per
+   interaction/target_sandbar_introspection_api_layer_not_raw_datomic_2026_05_12.md
+   — consumers call this instead of constructing raw transact data."
+  [process & {:keys [actor reason]
+              :or   {reason "Cancelled by consumer (via workflow/cancel-process!)"}}]
+  (let [process-entity (if (number? process) (find-process process) process)
+        cancel-tx      (cancel-transition-for process-entity)]
+    (when-not process-entity
+      (throw (ex-info "Process not found"
+                      {:reason :process-not-found
+                       :input  process})))
+    (when-not cancel-tx
+      (throw (ex-info "Workflow does not support cancellation from the current state"
+                      {:reason         :no-cancel-transition
+                       :process-id     (:db/id process-entity)
+                       :current-state  (some-> process-entity get-current-state :db/ident)})))
+    (let [transition-name (:db/ident cancel-tx)]
+      (log/info :workflow/cancel-process
+                {:process-id (:db/id process-entity)
+                 :transition transition-name
+                 :actor      actor})
+      (transition! process-entity transition-name
+                   :actor  actor
+                   :reason reason))))
+
+(defn can-cancel?
+  "Predicate: is the process in a state from which cancellation is
+   possible? True iff at least one available transition targets a
+   cancellation-shaped state."
+  [process]
+  (boolean (cancel-transition-for process)))
