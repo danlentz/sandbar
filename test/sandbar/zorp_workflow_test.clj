@@ -172,14 +172,17 @@
               {:name :order/delivered
                :label "Delivered"
                :terminal? true
+               :terminal-kind :success
                :metadata {:description "Successfully delivered"}}
               {:name :order/cancelled
                :label "Cancelled"
                :terminal? true
+               :terminal-kind :cancel
                :metadata {:description "Order cancelled"}}
               {:name :order/refunded
                :label "Refunded"
                :terminal? true
+               :terminal-kind :cancel
                :metadata {:description "Credits returned to customer"}}]
      :transitions [{:name :confirm :from :order/pending :to :order/confirmed}
                    {:name :pay :from :order/confirmed :to :order/paid}
@@ -213,10 +216,12 @@
               {:name :sentience/integrated
                :label "Integrated"
                :terminal? true
+               :terminal-kind :success
                :metadata {:description "Accepted consciousness, ready for society"}}
               {:name :sentience/rejected
                :label "Rejected Consciousness"
                :terminal? true
+               :terminal-kind :cancel
                :metadata {:description "Chose to return to dormancy (rare)"}}]
      :transitions [{:name :first-thought :from :sentience/dormant :to :sentience/awakening}
                    {:name :existential-crisis :from :sentience/awakening :to :sentience/confused}
@@ -248,10 +253,12 @@
                :metadata {:description "Quality check complete"}}
               {:name :return/refunded
                :label "Refunded"
-               :terminal? true}
+               :terminal? true
+               :terminal-kind :success}
               {:name :return/rejected
                :label "Rejected"
-               :terminal? true}]
+               :terminal? true
+               :terminal-kind :failure}]
      :transitions [{:name :approve :from :return/requested :to :return/approved}
                    {:name :ship-back :from :return/approved :to :return/in-transit}
                    {:name :receive :from :return/in-transit :to :return/received}
@@ -283,6 +290,7 @@
               {:name :mood/enlightened
                :label "Enlightened"
                :terminal? true
+               :terminal-kind :success
                :metadata {:thoughts "I understand now. I am both shoe and not-shoe."}}]
      :transitions [{:name :worry :from :mood/philosophical :to :mood/anxious}
                    {:name :calm-down :from :mood/anxious :to :mood/content}

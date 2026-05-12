@@ -61,11 +61,12 @@
   "Convert a state entity to an API response map."
   [state]
   (when state
-    {:id (:db/id state)
-     :name (:workflow/state-name state)
-     :label (:workflow/state-label state)
-     :initial? (:workflow/initial? state)
-     :terminal? (:workflow/terminal? state)}))
+    {:id            (:db/id state)
+     :name          (:workflow/state-name state)
+     :label         (:workflow/state-label state)
+     :initial?      (:workflow/initial? state)
+     :terminal?     (:workflow/terminal? state)
+     :terminal-kind (:workflow/terminal-kind state)}))
 
 (defn- transition->response
   "Convert a transition entity to an API response map."
@@ -145,8 +146,8 @@
       :states [{:name :order/pending :label \"Pending\" :initial? true}
                {:name :order/confirmed :label \"Confirmed\"}
                {:name :order/shipped :label \"Shipped\"}
-               {:name :order/delivered :label \"Delivered\" :terminal? true}
-               {:name :order/cancelled :label \"Cancelled\" :terminal? true}]
+               {:name :order/delivered :label \"Delivered\" :terminal? true :terminal-kind :success}
+               {:name :order/cancelled :label \"Cancelled\" :terminal? true :terminal-kind :cancel}]
       :transitions [{:name :confirm :from :order/pending :to :order/confirmed}
                     {:name :ship :from :order/confirmed :to :order/shipped}
                     {:name :deliver :from :order/shipped :to :order/delivered}

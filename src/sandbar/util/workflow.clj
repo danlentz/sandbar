@@ -17,8 +17,8 @@
          {:states [{:name :order/pending :initial? true}
                    {:name :order/confirmed}
                    {:name :order/shipped}
-                   {:name :order/delivered :terminal? true}
-                   {:name :order/cancelled :terminal? true}]
+                   {:name :order/delivered :terminal? true :terminal-kind :success}
+                   {:name :order/cancelled :terminal? true :terminal-kind :cancel}]
           :transitions [{:name :confirm :from :order/pending :to :order/confirmed}
                         {:name :ship :from :order/confirmed :to :order/shipped}
                         {:name :deliver :from :order/shipped :to :order/delivered}
@@ -64,6 +64,39 @@
 ;; State Management
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
+(def valid-terminal-kinds
+  "Closed set of terminal-kind classifications per
+   decisions/sandbar_workflow_cancellation_modeled_as_terminal_kind_on_states_2026_05_12.md.
+
+   :success — process completed its intended purpose
+   :failure — process encountered an outcome-blocking problem
+   :cancel  — process was deliberately stopped"
+  #{:success :failure :cancel})
+
+(defn- validate-terminal-kind!
+  "Validate :terminal-kind against the closed set + terminal? consistency.
+   Throws ex-info on violation per F-B-002 ADR acceptance criterion A.4."
+  [state-name terminal? terminal-kind]
+  (cond
+    (and terminal? (not terminal-kind))
+    (throw (ex-info ":workflow/State terminal? true requires :terminal-kind"
+                    {:reason  :terminal-without-kind
+                     :state   state-name
+                     :allowed valid-terminal-kinds}))
+
+    (and (not terminal?) terminal-kind)
+    (throw (ex-info ":workflow/State :terminal-kind only meaningful when terminal? true"
+                    {:reason        :non-terminal-with-kind
+                     :state         state-name
+                     :terminal-kind terminal-kind}))
+
+    (and terminal-kind (not (contains? valid-terminal-kinds terminal-kind)))
+    (throw (ex-info (str ":workflow/State :terminal-kind must be one of " valid-terminal-kinds)
+                    {:reason        :invalid-terminal-kind
+                     :state         state-name
+                     :terminal-kind terminal-kind
+                     :allowed       valid-terminal-kinds}))))
+
 (defn create-state!
   "Create a workflow state.
 
@@ -71,19 +104,28 @@
      state-name - Keyword identifier (e.g., :order/pending)
 
    Options:
-     :label     - Human-readable name
-     :initial?  - Is this the starting state?
-     :terminal? - Is this a final state (no outgoing transitions)?
-     :metadata  - Additional state data (any EDN-serializable value)
+     :label         - Human-readable name
+     :initial?      - Is this the starting state?
+     :terminal?     - Is this a final state (no outgoing transitions)?
+     :terminal-kind - Classification of terminal outcome: :success / :failure / :cancel.
+                      REQUIRED when :terminal? is true; rejected otherwise.
+     :metadata      - Additional state data (any EDN-serializable value)
 
-   Returns the created state entity."
-  [state-name & {:keys [label initial? terminal? metadata]}]
+   Returns the created state entity.
+
+   Throws ex-info if :terminal? is true without :terminal-kind, or if
+   :terminal-kind is not in #{:success :failure :cancel}, or if
+   :terminal-kind is supplied when :terminal? is not true.  Per
+   decisions/sandbar_workflow_cancellation_modeled_as_terminal_kind_on_states_2026_05_12.md."
+  [state-name & {:keys [label initial? terminal? terminal-kind metadata]}]
+  (validate-terminal-kind! state-name terminal? terminal-kind)
   (dt/make :workflow/State
     (cond-> {:workflow/state-name state-name
              :workflow/state-label (or label (name state-name))}
-      initial? (assoc :workflow/initial? true)
-      terminal? (assoc :workflow/terminal? true)
-      metadata (assoc :workflow/state-metadata (pr-str metadata)))))
+      initial?      (assoc :workflow/initial? true)
+      terminal?     (assoc :workflow/terminal? true)
+      terminal-kind (assoc :workflow/terminal-kind terminal-kind)
+      metadata      (assoc :workflow/state-metadata (pr-str metadata)))))
 
 (defn find-state
   "Find a state by name. Returns entity map or nil."
@@ -167,18 +209,23 @@
                        :transitions - Vector of transition specs
                        :version     - Optional version number
 
-   State spec: {:name :state-name :label \"Label\" :initial? bool :terminal? bool}
+   State spec: {:name :state-name :label \"Label\" :initial? bool :terminal? bool
+                :terminal-kind :success|:failure|:cancel}
    Transition spec: {:name :action :from :state :to :state :guard 'fn :requires-reason? bool}
+
+   Terminal state specs MUST declare :terminal-kind per
+   decisions/sandbar_workflow_cancellation_modeled_as_terminal_kind_on_states_2026_05_12.md.
 
    Returns the created workflow definition entity."
   [definition-name {:keys [states transitions version] :or {version 1}}]
   ;; Create states first
   (let [state-entities (into {}
-                             (map (fn [{:keys [name label initial? terminal? metadata]}]
+                             (map (fn [{:keys [name label initial? terminal? terminal-kind metadata]}]
                                     [name (create-state! name
                                                          :label label
                                                          :initial? initial?
                                                          :terminal? terminal?
+                                                         :terminal-kind terminal-kind
                                                          :metadata metadata)])
                                   states))
         ;; Create transitions
@@ -746,30 +793,32 @@
 ;; d/transact, we expose cancel-process! as a workflow-aware operation
 ;; that composes with transition!.
 ;;
-;; Convention: a workflow that supports cancellation declares a
-;; transition whose target state's ident name contains \"cancel\" (e.g.,
-;; the validation workflow's :validation/cancelled terminal state). Such
-;; transitions are typically named :cancel, :abort, or analogous.
+;; Convention (per
+;; decisions/sandbar_workflow_cancellation_modeled_as_terminal_kind_on_states_2026_05_12.md):
+;; a workflow that supports cancellation declares one or more terminal
+;; states with :workflow/terminal-kind :cancel and at least one
+;; transition leading to such a state from a non-terminal state.
+;; Cancelability is determined by modeled classification, NOT by
+;; ident-name string heuristic.
 
 (defn- cancel-transition-for
-  "Find an available transition that targets a state whose ident name
-   indicates cancellation. Returns the transition entity, or nil if no
-   cancel-shaped transition is available from the process's current state."
+  "Find an available transition that targets a state classified
+   :workflow/terminal-kind :cancel.  Returns the transition entity, or
+   nil if no cancel-shaped transition is available from the process's
+   current state.  Per F-B-002 ADR; replaces the prior ident-name string
+   heuristic."
   [process]
   (let [transitions (available-transitions process)]
     (->> transitions
          (filter (fn [t]
                    (when-let [target (:workflow/to-state t)]
-                     (when-let [target-ident (:db/ident target)]
-                       (clojure.string/includes?
-                         (clojure.string/lower-case (name target-ident))
-                         "cancel")))))
+                     (= :cancel (:workflow/terminal-kind target)))))
          first)))
 
 (defn cancel-process!
   "Cancel a running workflow process. Finds an available transition that
-   targets a cancellation-shaped state (state ident name contains
-   \"cancel\") and executes it via transition!.
+   targets a state classified :workflow/terminal-kind :cancel and executes
+   it via transition!.
 
    Arguments:
      process - The process entity (or eid; resolved via find-process)
@@ -799,7 +848,12 @@
                       {:reason         :no-cancel-transition
                        :process-id     (:db/id process-entity)
                        :current-state  (some-> process-entity get-current-state :db/ident)})))
-    (let [transition-name (:db/ident cancel-tx)]
+    ;; Transitions don't carry :db/ident (not :db.unique/identity); the
+    ;; canonical action keyword lives on :workflow/transition-name.  Keep
+    ;; :db/ident as the first preference for schema-defined transitions
+    ;; that might carry an explicit ident in some future setup.
+    (let [transition-name (or (:db/ident cancel-tx)
+                              (:workflow/transition-name cancel-tx))]
       (log/info :workflow/cancel-process
                 {:process-id (:db/id process-entity)
                  :transition transition-name

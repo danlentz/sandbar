@@ -58,33 +58,60 @@
 ;; Task status projection
 ;;
 ;; Per the MCP Tasks (experimental) shape — map a workflow process state
-;; to a Task status string:
-;;   running   — process exists; not in terminal state
-;;   completed — process in a terminal state that means "success"
-;;   failed    — process in a terminal state that means "error"
-;;   cancelled — process explicitly cancelled
+;; to a Task status string by reading the current state's
+;; :workflow/terminal-kind classification per
+;; decisions/sandbar_workflow_cancellation_modeled_as_terminal_kind_on_states_2026_05_12.md:
+;;
+;;   :workflow/terminal-kind :success → "completed"
+;;   :workflow/terminal-kind :failure → "failed"
+;;   :workflow/terminal-kind :cancel  → "cancelled"
+;;   (terminal? true, no kind)        → "completed" (graceful degradation + warn)
+;;   (terminal? false)                → "running"
+;;
+;; Resolves F-S-003 (task status projection previously collapsed all
+;; terminal outcomes into "completed").
+
+(def ^:private terminal-kind->task-status
+  {:success "completed"
+   :failure "failed"
+   :cancel  "cancelled"})
 
 (defn process->task-status
-  "Project a workflow process to an MCP Task status map."
+  "Project a workflow process to an MCP Task status map.  Reads
+   :workflow/terminal-kind on the current state to distinguish
+   success / failure / cancellation outcomes per F-B-002 ADR.
+
+   Returns a map with :status (one of \"missing\" / \"running\" /
+   \"completed\" / \"failed\" / \"cancelled\") + :state (the current
+   state's :db/ident) when a current state exists."
   [process]
-  (let [current-state (workflow/get-current-state process)
-        state-ident   (:db/ident current-state)]
+  (let [current-state (when process (workflow/get-current-state process))
+        ;; Schema-loaded states carry :db/ident; runtime-defined states (via
+        ;; wf/define-workflow!) carry only :workflow/state-name.  Fall back so
+        ;; consumers get a usable keyword in both cases.
+        state-ident   (or (:db/ident current-state)
+                          (:workflow/state-name current-state))
+        terminal?     (boolean (:workflow/terminal? current-state))
+        kind          (:workflow/terminal-kind current-state)]
     (cond
       (nil? process)
       {:status "missing"}
 
-      (workflow/process-completed? process)
-      {:status "completed"
+      (not terminal?)
+      {:status "running"
        :state  state-ident}
 
-      (workflow/process-in-terminal-state? process)
-      {:status "completed"   ;; workflow's terminal state — distinct
-                             ;; from completed (success); refine in C.7.2
+      (contains? terminal-kind->task-status kind)
+      {:status (terminal-kind->task-status kind)
        :state  state-ident}
 
       :else
-      {:status "running"
-       :state  state-ident})))
+      (do
+        (log/warn :process->task-status/terminal-without-kind
+                  {:process-id (:db/id process)
+                   :state      state-ident})
+        {:status "completed"
+         :state  state-ident}))))
 
 (defn- task-result-data
   "Project the workflow process's data + final state for the MCP task

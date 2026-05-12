@@ -40,6 +40,7 @@
             [sandbar.db.datomic         :as db]
             [sandbar.mcp.envelope       :as envelope]
             [sandbar.mcp.notifications  :as notifications]
+            [sandbar.mcp.resources      :as resources]
             [sandbar.service.validation :as validation]
             [sandbar.util.workflow      :as workflow]))
 
@@ -289,6 +290,15 @@
         ;; becomes a resource.
         (when (#{:dt/Class :dt/Property} class-ident)
           (notifications/resources-list-changed!))
+        ;; Per F-S-001 resolution: every new entity is potentially a
+        ;; resource subscribers care about — fire resources/updated for
+        ;; the entity's URI.  resources/entity-updated! is a no-op when
+        ;; no subscriptions exist; per-URI routing handles fan-out.
+        (try
+          (resources/entity-updated! new-entity)
+          (catch Exception e
+            (log/warn e :MCP/entity-create-notify-failed
+                      {:class class-ident :entity-id (:db/id new-entity)})))
         {:entity (entity-projection new-entity)}))))
 
 (defn- entity-find-handler [args]

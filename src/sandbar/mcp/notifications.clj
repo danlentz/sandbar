@@ -111,6 +111,35 @@
       0
       @+subscribers+)))
 
+(defn publish-to!
+  "Send a JSON-RPC notification to a specific set of subscriber-ids only.
+   Per-URI / per-subscription routing per F-S-001 resolution; the broadcast
+   shape of `publish!` is the fallback for legacy `::broadcast`-bound
+   subscriptions.
+
+   subscriber-ids — collection of subscriber-id strings registered via
+                    `register!`.  Unknown ids are silently skipped.
+   Returns the count of subscribers that received the notification."
+  [subscriber-ids method params]
+  (let [event (envelope/jsonrpc-notification method params)
+        subs  @+subscribers+]
+    (log/debug :MCP/notification-publish-to
+               {:method method :subscriber-ids subscriber-ids})
+    (reduce
+      (fn [n id]
+        (if-let [{:keys [send!]} (get subs id)]
+          (try
+            (send! event)
+            (inc n)
+            (catch Exception e
+              (log/warn e :MCP/notification-send-failed
+                        {:subscriber-id id :method method})
+              (unregister! id)
+              n))
+          n))
+      0
+      subscriber-ids)))
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Canonical MCP notification methods
 ;;

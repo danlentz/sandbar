@@ -254,24 +254,35 @@
 (defonce ^:private +subscriptions+
   ;; Map of URI string → set of subscriber-ids that watch this resource.
   ;; The subscriber-id matches the SSE subscription id from
-  ;; sandbar.mcp.notifications/register!.
+  ;; sandbar.mcp.notifications/register!.  A subscriber-id of ::broadcast
+  ;; is the legacy wildcard sentinel meaning "fan out to ALL currently-
+  ;; registered SSE subscribers" — preserved for clients that don't yet
+  ;; pass an explicit :subscriberId param on resources/subscribe.
   (atom {}))
+
+(def ^:const broadcast-sentinel
+  "Subscriber-id sentinel used when a resources/subscribe request arrives
+   without an explicit :subscriberId.  See entity-updated! for the fan-out
+   semantics."
+  ::broadcast)
 
 (defn subscribe!
   "Register a subscription. uri is the resource URI; subscriber-id is the
-   SSE subscriber from sandbar.mcp.notifications."
+   SSE subscriber from sandbar.mcp.notifications (or ::broadcast)."
   [uri subscriber-id]
   (swap! +subscriptions+ update uri (fnil conj #{}) subscriber-id))
 
 (defn unsubscribe!
-  "Remove a subscription. Idempotent."
+  "Remove a subscription. Idempotent.  Returns nil (canonical idempotent
+   shape) rather than the swap! atom value."
   [uri subscriber-id]
   (swap! +subscriptions+
          (fn [subs]
            (let [updated (update subs uri (fnil disj #{}) subscriber-id)]
              (if (empty? (get updated uri))
                (dissoc updated uri)
-               updated)))))
+               updated))))
+  nil)
 
 (defn subscriber-count
   "How many subscribers does this URI have?"
@@ -297,33 +308,49 @@
 ;; (broadcast on update). Per-subscriber routing lands in C.5.3.
 
 (defn handle-subscribe
-  "MCP `resources/subscribe`. Stage C.5: records URI in subscription
-   registry. Per-SSE-channel routing lands in C.5.3 (tx-report-queue
-   listener)."
+  "MCP `resources/subscribe`. Records URI in subscription registry, bound
+   to the client's SSE subscriber-id when provided.
+
+   Accepted params:
+     :uri          — required; resource URI
+     :subscriberId — optional; SSE subscriber-id received in the
+                     `notifications/sandbar/sse-ready` initial event.  When
+                     supplied, updates to the URI route only to this
+                     subscriber.  When omitted, the legacy ::broadcast
+                     sentinel is bound; updates fan out to all registered
+                     SSE subscribers (preserved for non-SSE callers + back-
+                     compat).  Per F-S-001 resolution."
   [id params]
-  (let [uri (:uri params)]
-    (if (nil? uri)
+  (let [uri      (:uri params)
+        sub-id   (:subscriberId params)]
+    (cond
+      (nil? uri)
       {:jsonrpc "2.0"
        :id      id
        :error   {:code -32602 :message "resources/subscribe requires :uri parameter"}}
-      ;; In Stage C.5 the subscriber-id is the global-broadcast sentinel
-      ;; per the broadcast-fan-out model; per-client routing is C.5.3.
+
+      :else
       (do
-        (subscribe! uri ::broadcast)
+        (subscribe! uri (or sub-id broadcast-sentinel))
         {:jsonrpc "2.0"
          :id      id
          :result  {}}))))
 
 (defn handle-unsubscribe
-  "MCP `resources/unsubscribe`."
+  "MCP `resources/unsubscribe`.  Symmetric to handle-subscribe — removes
+   the (uri, subscriberId-or-broadcast) binding."
   [id params]
-  (let [uri (:uri params)]
-    (if (nil? uri)
+  (let [uri    (:uri params)
+        sub-id (:subscriberId params)]
+    (cond
+      (nil? uri)
       {:jsonrpc "2.0"
        :id      id
        :error   {:code -32602 :message "resources/unsubscribe requires :uri parameter"}}
+
+      :else
       (do
-        (unsubscribe! uri ::broadcast)
+        (unsubscribe! uri (or sub-id broadcast-sentinel))
         {:jsonrpc "2.0"
          :id      id
          :result  {}}))))
@@ -335,12 +362,31 @@
 ;; entity. Stage C.5.3 wires this to tx-report-queue automatically.
 
 (defn entity-updated!
-  "Notify subscribers (if any) that an entity changed. Fires
-   notifications/resources/updated to ALL SSE subscribers for now (Stage
-   C.5 broadcast); per-URI routing lands in C.5.3."
+  "Notify subscribers that an entity changed.  Routes
+   notifications/resources/updated to subscribers bound to the entity's
+   URI per F-S-001 resolution:
+
+   - subscriptions registered with an explicit subscriber-id receive a
+     targeted notification via notifications/publish-to!
+   - subscriptions registered with the legacy ::broadcast sentinel
+     fan out to ALL currently-registered SSE subscribers via
+     notifications/resources-updated! (back-compat path)
+
+   No-op when no subscriptions exist for the URI."
   [entity]
-  (let [uri (entity->uri entity)]
-    (when (pos? (subscriber-count uri))
+  (let [uri        (entity->uri entity)
+        subs       (get @+subscriptions+ uri #{})
+        broadcast? (contains? subs broadcast-sentinel)
+        specific   (disj subs broadcast-sentinel)]
+    (when (seq subs)
       (log/debug :MCP/resources-updated
-                 {:uri uri :subscribers (subscriber-count uri)})
-      (notifications/resources-updated! uri))))
+                 {:uri           uri
+                  :subscribers   (count subs)
+                  :broadcast?    broadcast?
+                  :specific-ids  specific})
+      (when broadcast?
+        (notifications/resources-updated! uri))
+      (when (seq specific)
+        (notifications/publish-to! specific
+                                   "notifications/resources/updated"
+                                   {:uri uri})))))

@@ -32,21 +32,25 @@
   {:name :validation/passed
    :label "Passed"
    :terminal? true
+   :terminal-kind :success
    :description "All instances passed validation"}
 
   {:name :validation/failed
    :label "Failed"
    :terminal? true
+   :terminal-kind :failure
    :description "One or more instances failed validation"}
 
   {:name :validation/error
    :label "Error"
    :terminal? true
+   :terminal-kind :failure
    :description "Validation encountered an error and could not complete"}
 
   {:name :validation/cancelled
    :label "Cancelled"
    :terminal? true
+   :terminal-kind :cancel
    :description "Validation was cancelled before completion"}]
 
  :transitions

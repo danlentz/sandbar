@@ -15,6 +15,7 @@
             [datomic.api :as d]
             [sandbar.db.datatype :as dt]
             [sandbar.db.datomic :as db]
+            [sandbar.mcp.tasks :as mcp-tasks]
             [sandbar.test-util :as tu]
             [sandbar.util.workflow :as wf])
   (:import [java.util Date]))
@@ -63,9 +64,9 @@
               {:name :order/confirmed :label "Confirmed"}
               {:name :order/paid :label "Paid"}
               {:name :order/shipped :label "Shipped"}
-              {:name :order/delivered :label "Delivered" :terminal? true}
-              {:name :order/cancelled :label "Cancelled" :terminal? true}
-              {:name :order/refunded :label "Refunded" :terminal? true}]
+              {:name :order/delivered :label "Delivered" :terminal? true :terminal-kind :success}
+              {:name :order/cancelled :label "Cancelled" :terminal? true :terminal-kind :cancel}
+              {:name :order/refunded :label "Refunded" :terminal? true :terminal-kind :cancel}]
      :transitions [{:name :confirm :from :order/pending :to :order/confirmed}
                    {:name :pay :from :order/confirmed :to :order/paid
                     :guard 'sandbar.workflow-test/payment-received?}
@@ -87,8 +88,8 @@
     {:states [{:name :ticket/new :label "New" :initial? true}
               {:name :ticket/open :label "Open"}
               {:name :ticket/in-progress :label "In Progress"}
-              {:name :ticket/resolved :label "Resolved" :terminal? true}
-              {:name :ticket/closed :label "Closed" :terminal? true}]
+              {:name :ticket/resolved :label "Resolved" :terminal? true :terminal-kind :success}
+              {:name :ticket/closed :label "Closed" :terminal? true :terminal-kind :success}]
      :transitions [{:name :triage :from :ticket/new :to :ticket/open}
                    {:name :assign :from :ticket/open :to :ticket/in-progress}
                    {:name :resolve :from :ticket/in-progress :to :ticket/resolved}
@@ -211,9 +212,10 @@
       (is (true? (wf/state-initial? state)))))
 
   (testing "Create a terminal state via API"
-    (let [state (wf/create-state! :test/terminal :terminal? true)]
+    (let [state (wf/create-state! :test/terminal :terminal? true :terminal-kind :success)]
       (is (true? (:workflow/terminal? state)))
-      (is (true? (wf/state-terminal? state)))))
+      (is (true? (wf/state-terminal? state)))
+      (is (= :success (:workflow/terminal-kind state)))))
 
   (testing "Create state with metadata"
     (let [state (wf/create-state! :test/with-meta
@@ -622,7 +624,7 @@
     ;; Create a new workflow to isolate this test's processes
     (let [workflow (wf/define-workflow! :workflow/active-test
                      {:states [{:name :active-test/pending :initial? true}
-                               {:name :active-test/done :terminal? true}]
+                               {:name :active-test/done :terminal? true :terminal-kind :success}]
                       :transitions [{:name :finish :from :active-test/pending :to :active-test/done}]})]
       (let [p1 (wf/start-process! workflow (create-test-subject!))
             p2 (wf/start-process! workflow (create-test-subject!))]
@@ -637,7 +639,7 @@
     ;; Create a new workflow to isolate this test's processes
     (let [workflow (wf/define-workflow! :workflow/completed-test
                      {:states [{:name :completed-test/pending :initial? true}
-                               {:name :completed-test/done :terminal? true}]
+                               {:name :completed-test/done :terminal? true :terminal-kind :success}]
                       :transitions [{:name :finish :from :completed-test/pending :to :completed-test/done}]})]
       (let [p1 (wf/start-process! workflow (create-test-subject!))
             p2 (wf/start-process! workflow (create-test-subject!))]
@@ -673,11 +675,11 @@
     ;; Create unique workflows for this test to avoid interference from other tests
     (let [order-wf (wf/define-workflow! :workflow/multi-test-order
                      {:states [{:name :mto/pending :initial? true}
-                               {:name :mto/done :terminal? true}]
+                               {:name :mto/done :terminal? true :terminal-kind :success}]
                       :transitions [{:name :finish :from :mto/pending :to :mto/done}]})
           ticket-wf (wf/define-workflow! :workflow/multi-test-ticket
                       {:states [{:name :mtt/new :initial? true}
-                                {:name :mtt/closed :terminal? true}]
+                                {:name :mtt/closed :terminal? true :terminal-kind :success}]
                        :transitions [{:name :close :from :mtt/new :to :mtt/closed}]})]
       (wf/start-process! order-wf (create-test-subject!))
       (wf/start-process! order-wf (create-test-subject!))
@@ -832,3 +834,111 @@
       (let [slot-idents (set (map :ident (:slots body)))]
         (is (contains? slot-idents :workflow/states))
         (is (contains? slot-idents :workflow/transitions))))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Part 19: F-B-002 ADR Acceptance Criteria — Workflow Cancellation +
+;; Terminal-Outcome Semantics as :workflow/terminal-kind
+;;
+;; Per decisions/sandbar_workflow_cancellation_modeled_as_terminal_kind_on_states_2026_05_12.md
+;; Validates E.1 (cancel-detection independent of ident name), E.2
+;; (process->task-status projection for each kind), E.3 (validator
+;; rejection paths).
+
+(deftest terminal-kind-validator-rejects-terminal-without-kind
+  (testing "create-state! throws when :terminal? true without :terminal-kind"
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"terminal\? true requires :terminal-kind"
+          (wf/create-state! :fb002/bad-terminal :terminal? true))))
+
+  (testing "create-state! throws when :terminal-kind is not a valid kind"
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo #":terminal-kind must be one of"
+          (wf/create-state! :fb002/bad-kind :terminal? true :terminal-kind :timeout))))
+
+  (testing "create-state! throws when :terminal-kind set on non-terminal state"
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo #":terminal-kind only meaningful"
+          (wf/create-state! :fb002/non-terminal-with-kind :terminal-kind :success))))
+
+  (testing "create-state! accepts each valid terminal-kind"
+    (doseq [kind [:success :failure :cancel]]
+      (let [state-name (keyword "fb002" (str "valid-" (name kind)))
+            state      (wf/create-state! state-name :terminal? true :terminal-kind kind)]
+        (is (= kind (:workflow/terminal-kind state)))
+        (is (true? (:workflow/terminal? state)))))))
+
+(deftest cancel-detection-independent-of-ident-name
+  (testing "can-cancel? uses :workflow/terminal-kind :cancel, not 'cancel' string heuristic"
+    ;; Workflow whose abort state ident does NOT contain "cancel" — would
+    ;; have been uncancellable under the string-heuristic implementation;
+    ;; the modeled :terminal-kind :cancel makes it cancellable.
+    (let [workflow (wf/define-workflow! :workflow/fb002-aborted
+                     {:states [{:name :fb002a/pending :initial? true}
+                               {:name :fb002a/in-progress}
+                               {:name :fb002a/done :terminal? true :terminal-kind :success}
+                               {:name :fb002a/aborted :terminal? true :terminal-kind :cancel}]
+                      :transitions [{:name :start  :from :fb002a/pending     :to :fb002a/in-progress}
+                                    {:name :finish :from :fb002a/in-progress :to :fb002a/done}
+                                    {:name :abort  :from :fb002a/in-progress :to :fb002a/aborted}]})
+          subject  (create-test-subject!)
+          process  (wf/start-process! workflow subject)
+          started  (wf/transition! process :start)]
+      (is (true? (wf/can-cancel? started))
+          ":fb002a/aborted lacks 'cancel' substring; modeled terminal-kind makes it cancellable")
+      (let [cancelled (wf/cancel-process! started)]
+        (is (= :fb002a/aborted (:workflow/state-name (wf/get-current-state cancelled))))))))
+
+(deftest cancel-detection-respects-terminal-kind-only
+  (testing "can-cancel? returns false when no transition leads to a :cancel terminal"
+    ;; Workflow with terminals named :cancel-like but classified differently —
+    ;; ensures the lookup is on terminal-kind, not state name.
+    (let [workflow (wf/define-workflow! :workflow/fb002-noncancel
+                     {:states [{:name :fb002n/pending :initial? true}
+                               {:name :fb002n/cancellation-info :terminal? true :terminal-kind :success}]
+                      :transitions [{:name :go :from :fb002n/pending :to :fb002n/cancellation-info}]})
+          subject  (create-test-subject!)
+          process  (wf/start-process! workflow subject)]
+      (is (false? (wf/can-cancel? process))
+          ":fb002n/cancellation-info has 'cancel' in name but :terminal-kind :success — not cancellable")
+      (is (thrown-with-msg? clojure.lang.ExceptionInfo #"does not support cancellation"
+            (wf/cancel-process! process))))))
+
+(deftest process->task-status-projects-each-terminal-kind
+  ;; Reuses the order workflow (delivered=:success, cancelled=:cancel,
+  ;; refunded=:cancel) + adds a failure-classified workflow.
+  (let [success-wf  (wf/define-workflow! :workflow/fb002-success
+                      {:states [{:name :fb002s/pending :initial? true}
+                                {:name :fb002s/done :terminal? true :terminal-kind :success}]
+                       :transitions [{:name :finish :from :fb002s/pending :to :fb002s/done}]})
+        failure-wf  (wf/define-workflow! :workflow/fb002-failure
+                      {:states [{:name :fb002f/pending :initial? true}
+                                {:name :fb002f/errored :terminal? true :terminal-kind :failure}]
+                       :transitions [{:name :fail :from :fb002f/pending :to :fb002f/errored}]})
+        cancel-wf   (wf/define-workflow! :workflow/fb002-cancel
+                      {:states [{:name :fb002c/pending :initial? true}
+                                {:name :fb002c/stopped :terminal? true :terminal-kind :cancel}]
+                       :transitions [{:name :stop :from :fb002c/pending :to :fb002c/stopped}]})
+        success-proc (wf/transition! (wf/start-process! success-wf (create-test-subject!))
+                                     :finish)
+        failure-proc (wf/transition! (wf/start-process! failure-wf (create-test-subject!))
+                                     :fail)
+        cancel-proc  (wf/transition! (wf/start-process! cancel-wf (create-test-subject!))
+                                     :stop)
+        running-proc (wf/start-process! success-wf (create-test-subject!))]
+
+    (testing ":success → \"completed\""
+      (is (= "completed" (:status (mcp-tasks/process->task-status success-proc)))))
+
+    (testing ":failure → \"failed\""
+      (is (= "failed" (:status (mcp-tasks/process->task-status failure-proc)))))
+
+    (testing ":cancel → \"cancelled\""
+      (is (= "cancelled" (:status (mcp-tasks/process->task-status cancel-proc)))))
+
+    (testing "non-terminal → \"running\""
+      (is (= "running" (:status (mcp-tasks/process->task-status running-proc)))))
+
+    (testing "nil process → \"missing\""
+      (is (= "missing" (:status (mcp-tasks/process->task-status nil)))))
+
+    (testing ":state ident preserved"
+      (is (= :fb002s/done    (:state (mcp-tasks/process->task-status success-proc))))
+      (is (= :fb002f/errored (:state (mcp-tasks/process->task-status failure-proc))))
+      (is (= :fb002c/stopped (:state (mcp-tasks/process->task-status cancel-proc)))))))
