@@ -21,6 +21,7 @@
    - C.3 Notifications channel (sandbar.mcp.notifications)
    - C.4 Resources + Prompts + Tasks support"
   (:require [clojure.tools.logging :as log]
+            [sandbar.mcp.prompts   :as prompts]
             [sandbar.mcp.resources :as resources]
             [sandbar.mcp.tools     :as tools]))
 
@@ -147,7 +148,9 @@
    "resources/list"              (fn [id params] (resources/handle-list id params))
    "resources/read"              (fn [id params] (resources/handle-read id params))
    "resources/subscribe"         (fn [id params] (resources/handle-subscribe id params))
-   "resources/unsubscribe"       (fn [id params] (resources/handle-unsubscribe id params))})
+   "resources/unsubscribe"       (fn [id params] (resources/handle-unsubscribe id params))
+   "prompts/list"                (fn [id params] (prompts/handle-list id params))
+   "prompts/get"                 (fn [id params] (prompts/handle-get id params))})
 
 (defn dispatch
   "Dispatch a single JSON-RPC message. Returns a response map (or nil for
