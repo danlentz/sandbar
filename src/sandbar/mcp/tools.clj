@@ -10,17 +10,16 @@
    - Bootstrap-by-discovery: new mm/* classes via `dt/make` auto-surface
      as MCP tools after `notifications/tools/list_changed`
 
-   Stage C.1 foundation:
-   - tools/list walks dt/all-classes
-   - tools/call dispatches by tool name to dt/* operations
-   - Auto-generated JSON Schema from dt/range-of slot types
-
-   Subsequent stages:
-   - C.3 notifications/tools/list_changed when dt/Class instances change
-   - C.4 richer parameter validation; per-tool authorization hooks"
-  (:require [clojure.tools.logging :as log]
-            [clojure.string        :as str]
-            [sandbar.db.datatype   :as dt]))
+   Stage progression:
+   - C.1 foundation — tools/list bootstrap-by-discovery; tools/call stub
+   - C.4 — real tools/call dispatch via dt/make; argument coercion;
+     auto-fires notifications/tools/list_changed on :dt/Class instances
+   - Subsequent stages add richer parameter validation; per-tool
+     authorization hooks; query tools (dt/all-instances-of); etc."
+  (:require [clojure.tools.logging     :as log]
+            [clojure.string            :as str]
+            [sandbar.db.datatype       :as dt]
+            [sandbar.mcp.notifications :as notifications]))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Tool naming convention
@@ -132,61 +131,166 @@
 
 (defn handle-list
   "MCP `tools/list` — bootstrap-by-discovery returns all class-derived
-   tools. Stage C.1 returns ONLY class-derived tools; subsequent stages
-   add schema-introspection tools (sandbar.schema.*) + cross-cutting
-   query tools."
+   tools."
   [id _params]
   {:jsonrpc "2.0"
    :id      id
    :result  {:tools (all-class-tools)}})
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; tools/call handler — Stage C.1 STUB (returns class metadata; real
-;;                     dispatch lands in subsequent stages)
+;; Argument coercion — JSON-Schema-typed inputs → Datomic-typed values
+;;
+;; MCP clients send arguments as a JSON object; Datomic slots expect
+;; specific value types. Coerce per the slot's :db/valueType +
+;; cardinality.
+
+(defn- coerce-value
+  "Coerce one argument value to its target Datomic type. Strings remain
+   strings; keyword-shaped strings ('foo/bar' or ':foo/bar') become
+   keywords; instants parse from ISO-8601; refs by ident-string become
+   keywords.
+
+   Cardinality-many: single value wrapped as a vector; existing
+   vectors preserved."
+  [value target-type many?]
+  (let [coerce-one (fn [v]
+                     (case target-type
+                       :db.type/keyword (if (string? v)
+                                          (if (str/starts-with? v ":")
+                                            (keyword (subs v 1))
+                                            (keyword v))
+                                          v)
+                       :db.type/instant (if (string? v)
+                                          (java.util.Date/from
+                                            (java.time.Instant/parse v))
+                                          v)
+                       :db.type/uuid    (if (string? v)
+                                          (java.util.UUID/fromString v)
+                                          v)
+                       :db.type/ref     (if (and (string? v) (str/starts-with? v ":"))
+                                          (keyword (subs v 1))
+                                          v)
+                       v))]
+    (cond
+      (and many? (sequential? value))
+      (mapv coerce-one value)
+
+      many?
+      [(coerce-one value)]
+
+      :else
+      (coerce-one value))))
+
+(defn- coerce-arguments
+  "Build a Datomic-shaped props map from JSON arguments + a class's
+   declared slots. Drops unknown arguments (the JSON Schema validation
+   layer should already have rejected them, but we're defensive)."
+  [cls arguments]
+  (let [slots (dt/slots-of cls)]
+    (reduce
+      (fn [acc slot]
+        (let [k        (:db/ident slot)
+              key-name (name k)
+              v        (get arguments key-name)]
+          (if (some? v)
+            (assoc acc k (coerce-value v (dt/range-of slot) (dt/cardinality-many? slot)))
+            acc)))
+      {}
+      slots)))
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; tools/call handler — Stage C.4 real dispatch via dt/make
+;;
+;; Per ADR B.1.3 layer-targeting discipline: this dispatcher uses ONLY
+;; dt/* introspection (class-of, slots-of, range-of, cardinality-many?,
+;; abstract?) + dt/make for the transact. NO raw datomic.api / d/q /
+;; d/pull / d/transact references.
+;;
+;; Behavior:
+;;   1. Resolves tool name → class ident
+;;   2. Looks up the class via dt/class-of
+;;   3. Coerces JSON arguments per slot ranges + cardinality
+;;   4. Calls dt/make (ALWAYS validated — no {:validate? false})
+;;   5. Returns the new entity's data
+;;   6. If the new entity is :dt/Class or :dt/Property (schema evolution),
+;;      fires notifications/tools/list_changed per ADR B.1.4
+
+(defn- entity->json-data
+  "Project a Sandbar entity to a JSON-friendly map. Keeps :db/id,
+   :db/ident, and dt/* + user-namespace slot values."
+  [entity]
+  (when entity
+    (into {}
+          (filter (fn [[k _v]]
+                    (or (= :db/id k)
+                        (= :db/ident k)
+                        (and (keyword? k) (some? (namespace k)))))
+                  entity))))
 
 (defn handle-call
-  "MCP `tools/call` — invoke a discovered tool. Stage C.1 returns the
-   class metadata as the call result (proves the dispatch path works);
-   subsequent stages route to actual dt/* operations.
+  "MCP `tools/call` — invoke a discovered tool. Real dispatch via
+   dt/make per ADR B.1.3.
 
-   Per B.1.3 discipline: when this is fleshed out, each tool's body
-   calls dt/* / sandbar.util.* / sandbar.service.* — NEVER raw datomic.api."
+   Response shapes:
+   - Success: {:content [{:type \"text\" :text <entity-edn>}]}
+   - Validation failure: {:content [{:type \"text\" :text ...}] :isError true}
+   - Abstract-class instantiation: {:content [...] :isError true}
+   - Internal error: JSON-RPC -32603
+   - Invalid tool name: JSON-RPC -32602
+   - Missing class: JSON-RPC -32602"
   [id params]
-  (let [{:keys [name arguments]} params
-        cls-ident (tool-name->class-ident name)]
-    (cond
-      (nil? cls-ident)
+  (let [tool-name (:name params)
+        arguments (:arguments params {})
+        cls-ident (tool-name->class-ident tool-name)]
+    (if (nil? cls-ident)
       {:jsonrpc "2.0"
        :id      id
        :error   {:code    -32602
-                 :message (str "Invalid tool name: " name)
-                 :data    {:received-name name}}}
-
-      :else
+                 :message (str "Invalid tool name: " tool-name)
+                 :data    {:received-name tool-name}}}
       (try
         (let [cls (dt/class-of cls-ident)]
-          (if cls
-            {:jsonrpc "2.0"
-             :id      id
-             :result  {:content [{:type "text"
-                                  :text (str "Stage C.1 stub: tool " name
-                                             " called with " (count arguments)
-                                             " argument(s). "
-                                             "Real dispatch lands in subsequent stages. "
-                                             "Class metadata: " (pr-str
-                                                                  {:ident       cls-ident
-                                                                   :slots       (mapv :db/ident (dt/slots-of cls))
-                                                                   :abstract?   (dt/abstract? cls)
-                                                                   :parents     (mapv :db/ident (dt/parents-of cls))
-                                                                   :subclasses  (mapv :db/ident (dt/subclasses-of cls))}))}]}}
+          (cond
+            (nil? cls)
             {:jsonrpc "2.0"
              :id      id
              :error   {:code    -32602
-                       :message (str "No class found for tool: " name)
-                       :data    {:resolved-ident cls-ident}}}))
+                       :message (str "No class found for tool: " tool-name)
+                       :data    {:resolved-ident cls-ident}}}
+
+            (dt/abstract? cls)
+            {:jsonrpc "2.0"
+             :id      id
+             :result  {:content [{:type "text"
+                                  :text (str "Cannot instantiate abstract class " cls-ident)}]
+                       :isError true}}
+
+            :else
+            (let [props      (coerce-arguments cls arguments)
+                  new-entity (dt/make cls-ident props)
+                  data       (entity->json-data new-entity)]
+              (log/info :MCP/tools-call-success
+                        {:tool tool-name :class cls-ident :entity-id (:db/id new-entity)})
+              ;; Per ADR B.1.4: when a :dt/Class or :dt/Property lands,
+              ;; the tools surface changed — push notification.
+              (when (#{:dt/Class :dt/Property} cls-ident)
+                (notifications/tools-list-changed!))
+              {:jsonrpc "2.0"
+               :id      id
+               :result  {:content [{:type "text"
+                                    :text (pr-str data)}]}})))
+        (catch clojure.lang.ExceptionInfo e
+          (let [errors (ex-data e)]
+            (log/warn :MCP/tools-call-validation-failed
+                      {:tool tool-name :errors errors})
+            {:jsonrpc "2.0"
+             :id      id
+             :result  {:content [{:type "text"
+                                  :text (str "Validation failed: " (.getMessage e)
+                                             " — " (pr-str errors))}]
+                       :isError true}}))
         (catch Exception e
-          (log/error e :MCP/tools-call-error {:tool name})
+          (log/error e :MCP/tools-call-error {:tool tool-name})
           {:jsonrpc "2.0"
            :id      id
            :error   {:code    -32603
