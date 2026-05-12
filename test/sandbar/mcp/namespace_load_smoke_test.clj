@@ -15,10 +15,13 @@
   (:require [clojure.test :refer :all]))
 
 (def required-mcp-namespaces
-  "Every sandbar.mcp.* namespace the protocol layer depends on at runtime.
-   Adding a new namespace here when one is introduced is part of the
-   F-M-005 substage acceptance discipline."
-  '[sandbar.mcp.auth
+  "Every sandbar.mcp.* namespace + adjacent substrate namespaces the
+   protocol layer depends on at runtime.  Adding a new namespace here
+   when one is introduced is part of the F-M-005 substage acceptance
+   discipline."
+  '[sandbar.codec
+    sandbar.codec.protocol
+    sandbar.mcp.auth
     sandbar.mcp.envelope
     sandbar.mcp.notifications
     sandbar.mcp.prompts

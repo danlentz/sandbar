@@ -248,7 +248,18 @@
    :dt/range :db.type/symbol
    :db/valueType :db.type/symbol
    :db/cardinality :db.cardinality/one
-   :db/doc "Fully-qualified symbol of a custom validator function (fn [entity] -> nil | error-map)."}]
+   :db/doc "Fully-qualified symbol of a custom validator function (fn [entity] -> nil | error-map)."}
+
+  {:db/ident :dt/native-codec
+   :dt/type  :dt/Property
+   :dt/domain :dt/Class
+   :dt/range :db.type/keyword
+   :db/valueType :db.type/keyword
+   :db/cardinality :db.cardinality/one
+   :db/doc "Per-class default codec format hint. The codec mediator
+            (sandbar.codec) uses this when no explicit :format hint is
+            provided. E.g., :mm/Memory → :markdown. Per
+            decisions/sandbar_codec_layer_owns_wire_format_concerns_consumer_native_representation_2026_05_12.md §2.5."}]
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Fundamental Classes
@@ -266,7 +277,7 @@
    :dt/context "meta"
    :dt/subclass-of :dt/Resource
    :dt/label "Class"
-   :dt/slots [:dt/subclass-of :dt/abstract? :dt/list :dt/component :dt/slots :dt/validator]}
+   :dt/slots [:dt/subclass-of :dt/abstract? :dt/list :dt/component :dt/slots :dt/validator :dt/native-codec]}
 
   {:db/ident :dt/Property
    :dt/type :dt/Class
