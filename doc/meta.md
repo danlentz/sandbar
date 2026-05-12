@@ -123,7 +123,7 @@ The superclass of all classes. Every entity in the typed metamodel is ultimately
 | Namespace | `meta` |
 | Abstract | No |
 | Parent | *(none - root class)* |
-| Slots | `:db/doc`, `:db/ident`, `:dt/namespace`, `:dt/label`, `:dt/type` |
+| Slots | `:db/doc`, `:db/ident`, `:dt/context`, `:dt/label`, `:dt/type` |
 
 ### dt/Class
 
@@ -141,7 +141,7 @@ A type definition. Classes define the structure of instances via slots and can f
 {:db/ident :model/User
  :dt/type :dt/Class
  :dt/subclass-of :dt/Ref
- :dt/namespace "model"
+ :dt/context "model"
  :dt/label "User"
  :db/doc "Application user accounts"
  :dt/slots [:user/uuid :user/login :user/secret]}
@@ -404,7 +404,7 @@ The metamodel provides validation for typed entities.
 ```clojure
 ;; All effective slots (inherited + direct)
 (dt/slots-of :model/User)
-;; => #{:db/doc :db/ident :dt/label :dt/namespace :dt/type
+;; => #{:db/doc :db/ident :dt/label :dt/context :dt/type
 ;;      :user/login :user/secret :user/uuid}
 
 ;; Direct slots only

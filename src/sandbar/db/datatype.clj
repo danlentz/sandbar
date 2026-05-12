@@ -468,6 +468,33 @@
   [e]
   (nil? (validate e)))
 
+(defn validate-all-instances
+  "Validate all instances of a class (including subclass instances).
+   Returns a map with validation results:
+   {:class dt
+    :total N
+    :valid N
+    :invalid N
+    :errors [{:entity e :errors [...]} ...]}"
+  [dt]
+  (let [instances (all-instances-of dt)
+        results (map (fn [inst]
+                       {:entity (:db/id inst)
+                        :class (class-of inst)
+                        :validation (validate inst)})
+                     instances)
+        invalid (filter #(some? (:validation %)) results)
+        valid-count (- (count results) (count invalid))]
+    {:class dt
+     :total (count results)
+     :valid valid-count
+     :invalid (count invalid)
+     :errors (mapv (fn [{:keys [entity class validation]}]
+                     {:entity entity
+                      :class class
+                      :errors (:errors validation)})
+                   invalid)}))
+
 (defn validate-data
   "Validate data map before transaction (pre-transaction validation).
    Takes a class and a props map, returns nil if valid or error map."
@@ -605,7 +632,7 @@
   ;; {:db/id 17592186045446, :db/ident :dt/Number,
   ;;  :db/doc "Numeric value type",
   ;;  :dt/type :dt/Class,
-  ;;  :dt/namespace "system",
+  ;;  :dt/context "system",
   ;;  :dt/label "Number",
   ;;  :dt/subclass-of #{:dt/Literal}}
 
@@ -656,16 +683,16 @@
 
 
   (datatype-slots :dt/Resource)
-  ;; => #{:dt/label :dt/namespace :db/doc :db/ident :dt/type}
+  ;; => #{:dt/label :dt/context :db/doc :db/ident :dt/type}
 
   (datatype-slots :dt/Class)
 
-  ;; => #{:dt/list :dt/label :dt/namespace :dt/abstract? :db/doc :dt/slots :db/ident
+  ;; => #{:dt/list :dt/label :dt/context :dt/abstract? :db/doc :dt/slots :db/ident
   ;;      :dt/subclass-of :dt/type :dt/component}
 
   (datatype-slots :dt/Property)
 
-  ;; => #{:db/unique :dt/label :dt/domain :dt/namespace :dt/range :db/fulltext :db/cardinality
+  ;; => #{:db/unique :dt/label :dt/domain :dt/context :dt/range :db/fulltext :db/cardinality
   ;;       :db/doc :db/ident :dt/subproperty-of :dt/type}
 
 

@@ -8,11 +8,11 @@
    or worse, be locked out forever. Handle with care."
   (:require [clojure.test :refer :all]
             [datomic.api :as d]
+            [io.pedestal.test :refer [response-for]]
             [sandbar.db.datatype :as dt]
             [sandbar.db.datomic :as db]
             [sandbar.util.auth :as auth]
-            [sandbar.test-util :as tu]
-            [io.pedestal.test :refer [response-for]])
+            [sandbar.test-util :as tu :refer [service]])
   (:import [java.util Date UUID]))
 
 (use-fixtures :each (tu/make-test-db-fixture {:test-name "auth-api-test"
@@ -240,7 +240,7 @@
              :auth/active? true})]
 
     (testing "Successful login via API"
-      (let [response (response-for tu/service :post "/login"
+      (let [response (response-for service :post "/login"
                                    :headers {"Content-Type" "application/edn"}
                                    :body (pr-str {:username "apiuser"
                                                   :password "testpass"}))]
@@ -250,14 +250,14 @@
           (is (some? (:principal body)) "Should return principal info"))))
 
     (testing "Failed login via API - wrong password"
-      (let [response (response-for tu/service :post "/login"
+      (let [response (response-for service :post "/login"
                                    :headers {"Content-Type" "application/edn"}
                                    :body (pr-str {:username "apiuser"
                                                   :password "wrongpass"}))]
         (is (= 401 (:status response)) "Should return 401")))
 
     (testing "Failed login via API - missing password"
-      (let [response (response-for tu/service :post "/login"
+      (let [response (response-for service :post "/login"
                                    :headers {"Content-Type" "application/edn"}
                                    :body (pr-str {:username "apiuser"}))]
         (is (= 400 (:status response)) "Should return 400")))))
@@ -271,14 +271,14 @@
                 :auth/active? true})]
 
     (testing "Unauthenticated /me returns authenticated: false"
-      (let [response (response-for tu/service :get "/me")]
+      (let [response (response-for service :get "/me")]
         (is (= 200 (:status response)))
         (let [body (tu/parse-edn-body response)]
           (is (false? (:authenticated body))))))
 
     (testing "Authenticated /me returns user info"
       ;; First login to get session
-      (let [login-response (response-for tu/service :post "/login"
+      (let [login-response (response-for service :post "/login"
                                          :headers {"Content-Type" "application/edn"}
                                          :body (pr-str {:username "meuser"
                                                         :password "password"}))
@@ -287,7 +287,7 @@
         (is (some? session-id) "Should have session ID from login")
 
         ;; Now call /me with session
-        (let [me-response (response-for tu/service :get "/me"
+        (let [me-response (response-for service :get "/me"
                                         :headers {"X-Session-ID" session-id})
               me-body (tu/parse-edn-body me-response)]
           (is (= 200 (:status me-response)))
@@ -303,30 +303,30 @@
 
     (testing "Logout invalidates session"
       ;; Login first
-      (let [login-response (response-for tu/service :post "/login"
+      (let [login-response (response-for service :post "/login"
                                          :headers {"Content-Type" "application/edn"}
                                          :body (pr-str {:username "logoutuser"
                                                         :password "password"}))
             session-id (:session-id (tu/parse-edn-body login-response))]
 
         ;; Verify session works
-        (let [me-response (response-for tu/service :get "/me"
+        (let [me-response (response-for service :get "/me"
                                         :headers {"X-Session-ID" session-id})]
           (is (true? (:authenticated (tu/parse-edn-body me-response)))))
 
         ;; Logout
-        (let [logout-response (response-for tu/service :post "/api/auth/logout"
+        (let [logout-response (response-for service :post "/api/auth/logout"
                                             :headers {"X-Session-ID" session-id})]
           (is (= 200 (:status logout-response))))
 
         ;; Session should no longer work
-        (let [me-response (response-for tu/service :get "/me"
+        (let [me-response (response-for service :get "/me"
                                         :headers {"X-Session-ID" session-id})]
           (is (false? (:authenticated (tu/parse-edn-body me-response)))))))))
 
 (deftest register-endpoint-test
   (testing "Successful registration"
-    (let [response (response-for tu/service :post "/register"
+    (let [response (response-for service :post "/register"
                                  :headers {"Content-Type" "application/edn"}
                                  :body (pr-str {:username "newuser"
                                                 :email "new@test.com"
@@ -339,13 +339,13 @@
 
   (testing "Registration with existing username fails"
     ;; First registration
-    (response-for tu/service :post "/register"
+    (response-for service :post "/register"
                   :headers {"Content-Type" "application/edn"}
                   :body (pr-str {:username "duplicate"
                                  :email "dup1@test.com"
                                  :password "password123"}))
     ;; Second should fail
-    (let [response (response-for tu/service :post "/register"
+    (let [response (response-for service :post "/register"
                                  :headers {"Content-Type" "application/edn"}
                                  :body (pr-str {:username "duplicate"
                                                 :email "dup2@test.com"
@@ -353,7 +353,7 @@
       (is (= 409 (:status response)))))
 
   (testing "Registration with short password fails"
-    (let [response (response-for tu/service :post "/register"
+    (let [response (response-for service :post "/register"
                                  :headers {"Content-Type" "application/edn"}
                                  :body (pr-str {:username "shortpass"
                                                 :email "short@test.com"

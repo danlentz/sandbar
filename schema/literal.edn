@@ -7,7 +7,7 @@
  [{:db/ident :dt/Literal
    :dt/type :dt/Class
    :dt/subclass-of :dt/Resource
-   :dt/namespace "system"
+   :dt/context "system"
    :dt/label "Literal"
    :dt/abstract? true
    :dt/slots []
@@ -16,7 +16,7 @@
  [{:db/ident :dt/Number
    :dt/type :dt/Class
    :dt/subclass-of :dt/Literal
-   :dt/namespace "system"
+   :dt/context "system"
    :dt/label "Number"
    :dt/slots []
    :db/doc "Numeric value type"}]
@@ -28,91 +28,91 @@
  [{:db/ident :db.type/string
    :dt/type :dt/Class
    :dt/subclass-of :dt/Literal
-   :dt/namespace "datomic"
+   :dt/context "datomic"
    :dt/label "String"}
 
   {:db/ident :db.type/uuid
    :dt/type :dt/Class
    :dt/subclass-of :dt/Literal
-   :dt/namespace "datomic"
+   :dt/context "datomic"
    :dt/label "UUID"}
 
   {:db/ident :db.type/boolean
    :dt/type :dt/Class
    :dt/subclass-of :dt/Literal
-   :dt/namespace "datomic"
+   :dt/context "datomic"
    :dt/label "Boolean"}
 
   {:db/ident :db.type/uri
    :dt/type :dt/Class
    :dt/subclass-of :dt/Literal
-   :dt/namespace "datomic"
+   :dt/context "datomic"
    :dt/label "URI"}
 
   {:db/ident :db.type/instant
    :dt/type :dt/Class
    :dt/subclass-of :dt/Literal
-   :dt/namespace "datomic"
+   :dt/context "datomic"
    :dt/label "Instant"}
 
   {:db/ident :db.type/long
    :dt/type :dt/Class
    :dt/subclass-of :dt/Number
-   :dt/namespace "datomic"
+   :dt/context "datomic"
    :dt/label "Long"}
 
   {:db/ident :db.type/float
    :dt/type :dt/Class
    :dt/subclass-of :dt/Number
-   :dt/namespace "datomic"
+   :dt/context "datomic"
    :dt/label "Float"}
 
   {:db/ident :db.type/double
    :dt/type :dt/Class
    :dt/subclass-of :dt/Number
-   :dt/namespace "datomic"
+   :dt/context "datomic"
    :dt/label "Double"}
 
   {:db/ident :db.type/bigint
    :dt/type :dt/Class
    :dt/subclass-of :dt/Number
-   :dt/namespace "datomic"
+   :dt/context "datomic"
    :dt/label "BigInt"}
 
   {:db/ident :db.type/bigdec
    :dt/type :dt/Class
    :dt/subclass-of :dt/Number
-   :dt/namespace "datomic"
+   :dt/context "datomic"
    :dt/label "BigDec"}
 
   {:db/ident :db.type/bytes
    :dt/type :dt/Class
    :dt/subclass-of :dt/Literal
-   :dt/namespace "datomic"
+   :dt/context "datomic"
    :dt/label "Bytes"}
 
   {:db/ident :db.type/keyword
    :dt/type :dt/Class
    :dt/subclass-of :dt/Literal
-   :dt/namespace "datomic"
+   :dt/context "datomic"
    :dt/label "Keyword"}
 
   {:db/ident :db.type/symbol
    :dt/type :dt/Class
    :dt/subclass-of :dt/Literal
-   :dt/namespace "datomic"
+   :dt/context "datomic"
    :dt/label "Symbol"}
 
   {:db/ident :db.type/fn
    :dt/type :dt/Class
    :dt/subclass-of :dt/Literal
-   :dt/namespace "datomic"
+   :dt/context "datomic"
    :dt/label "Function"}
 
   {:db/ident :db.type/tuple
    :dt/type :dt/Class
    :dt/subclass-of :dt/Literal
-   :dt/namespace "datomic"
+   :dt/context "datomic"
    :dt/label "Tuple"}]
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -121,7 +121,7 @@
 
   [{:db/id #db/id[:db.part/user -1]
    :dt/type :dt/Class
-   :dt/namespace "system"
+   :dt/context "system"
    :dt/label "Literal[]"
    :db/ident :dt/Literal*
    :dt/subclass-of :dt/Resource*
@@ -132,7 +132,7 @@
 
   {:db/id #db/id[:db.part/user -2]
    :dt/type :dt/Class
-   :dt/namespace "system"
+   :dt/context "system"
    :dt/label "Literal[][]"
    :db/ident :dt/Literal**
    :dt/subclass-of :dt/Resource**

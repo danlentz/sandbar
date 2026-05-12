@@ -1,51 +1,50 @@
 (ns sandbar.server.pedestal
   (:require [clojure.tools.logging      :as log]
             [com.stuartsierra.component :as component]
-            [io.pedestal.http :as server]
-            [io.pedestal.http.route :as route]
+            [io.pedestal.connector :as conn]
+            [io.pedestal.http :as http]
+            [io.pedestal.http.jetty :as jetty]
             [sandbar.service.routes :as routes]
-            [sandbar.service.config :as service]            ))
+            [sandbar.service.config :as service]))
 
-(defonce prod-service (server/create-server service/service))
+(defn- create-connector-map
+  "Create a connector map from service config"
+  [service-config]
+  (let [port (::http/port service-config 8080)]
+    (-> (conn/default-connector-map port)
+        (conn/with-default-interceptors)
+        (conn/with-routes routes/routes))))
 
-(defonce dev-service (-> service/service ;; start with production configuration
-                         (merge {:env :dev
-                                 ;; do not block thread that starts web server
-                                 ::server/join? false
-                                 ;; Routes can be a function that resolve routes,
-                                 ;;  we can use this to set the routes to be reloadable
-                                 ::server/routes #(route/expand-routes (deref #'routes/routes))
-                                 ;; all origins are allowed in dev mode
-                                 ::server/allowed-origins {:creds true :allowed-origins (constantly true)}
-                                 ;; Content Security Policy (CSP) is mostly turned off in dev mode
-                                 ::server/secure-headers {:content-security-policy-settings {:object-src "'none'"}}})
-                         ;; Wire up interceptor chains
-                        ; server/default-interceptors
-                        ; server/dev-interceptors
-                         server/create-server))
+(defonce prod-connector
+  (-> (create-connector-map service/service)
+      (jetty/create-connector nil)))
+
+(defonce dev-connector
+  (-> (create-connector-map (merge service/service {:env :dev}))
+      (jetty/create-connector nil)))
 
 (defn run-dev [& args]
   (println "\nCreating your [DEV] server...")
-  (server/start dev-service))
+  (conn/start! dev-connector))
 
 (defn run [& args]
   (println "\nCreating your server...")
-  (server/start prod-service))
+  (conn/start! prod-connector))
 
-(defrecord Pedestal [service server]
+(defrecord Pedestal [connector server]
   component/Lifecycle
   (start [self]
     (when server (component/stop self))
-    (let [s (server/start service)]
+    (let [s (conn/start! connector)]
       (log/info "Pedestal started.")
       (assoc self :server s)))
 
   (stop [self]
     (when server
-      (server/stop server)
+      (conn/stop! server)
       (log/info "Pedestal stopped")
       (assoc self :server nil))))
 
 (defn make-pedestal-server [mode]
-  (let [service (if (= mode :prod) prod-service dev-service)]
-    (map->Pedestal {:service service :server nil})))
+  (let [connector (if (= mode :prod) prod-connector dev-connector)]
+    (map->Pedestal {:connector connector :server nil})))

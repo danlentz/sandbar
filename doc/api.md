@@ -107,12 +107,12 @@ GET /api/store/classes/model/User
 {:class :dt/Resource
  :description {:db/ident :dt/Resource
                :dt/type :dt/Class
-               :dt/namespace "meta"
+               :dt/context "meta"
                :dt/label "Resource"
                :db/doc "Resource is the abstract superclass of all classes"}
  :abstract? false
- :slots [:db/doc :db/ident :dt/label :dt/namespace :dt/type]
- :direct-slots [:db/doc :db/ident :dt/label :dt/namespace :dt/type]
+ :slots [:db/doc :db/ident :dt/label :dt/context :dt/type]
+ :direct-slots [:db/doc :db/ident :dt/label :dt/context :dt/type]
  :inherited-slots []
  :parents []
  :subclasses [:dt/Class :dt/List :dt/Literal :dt/Property :dt/Ref ...]
@@ -333,6 +333,63 @@ GET /api/store/classes/model/User/parents
  :parents [:dt/Ref]}
 ```
 
+### GET /api/store/classes/:ns/:name/validate
+
+Validates all instances of a class (including instances of subclasses) against their class schemas.
+
+This is useful for batch validation. For example, validating `:dt/Resource` will validate **all** typed entities in the database since every class inherits from Resource.
+
+**Example**
+
+```
+GET /api/store/classes/dt/Class/validate
+GET /api/store/classes/dt/Resource/validate
+GET /api/store/classes/model/User/validate
+```
+
+**Response** (all valid)
+
+```clojure
+{:class :dt/Class
+ :total 42
+ :valid 42
+ :invalid 0
+ :all-valid? true
+ :errors []}
+```
+
+**Response** (some invalid)
+
+```clojure
+{:class :model/User
+ :total 150
+ :valid 148
+ :invalid 2
+ :all-valid? false
+ :errors [{:entity 17592186045500
+           :class :model/User
+           :errors [{:type :missing-required
+                     :slot :user/email
+                     :message "Required slot :user/email is missing"}]}
+          {:entity 17592186045501
+           :class :model/User
+           :errors [{:type :invalid-type
+                     :slot :user/age
+                     :expected :db.type/long
+                     :message "Slot :user/age expects :db.type/long"}]}]}
+```
+
+**Error Types**
+
+| Type | Description |
+|------|-------------|
+| `:no-class` | Entity has no `:dt/type` |
+| `:abstract-class` | Entity's class is abstract |
+| `:missing-required` | Required slot is missing |
+| `:invalid-type` | Slot value doesn't match range type |
+| `:cardinality-violation` | Single-valued slot has multiple values |
+| `:custom-validation` | Custom validator returned an error |
+
 ## Property Endpoints
 
 ### GET /api/store/properties
@@ -444,10 +501,10 @@ GET /api/store/entities/model/User
  :class :dt/Class
  :entity {:db/ident :dt/Resource
           :dt/type :dt/Class
-          :dt/namespace "meta"
+          :dt/context "meta"
           :dt/label "Resource"
           :db/doc "Resource is the abstract superclass of all classes"
-          :dt/slots [:db/doc :db/ident :dt/namespace :dt/label :dt/type]}}
+          :dt/slots [:db/doc :db/ident :dt/context :dt/label :dt/type]}}
 ```
 
 ### GET /api/store/entities/:ns/:name/validate

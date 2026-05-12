@@ -21,11 +21,11 @@
    13. Zorp recovers from lockout"
   (:require [clojure.test :refer :all]
             [datomic.api :as d]
+            [io.pedestal.test :refer [response-for]]
             [sandbar.db.datatype :as dt]
             [sandbar.db.datomic :as db]
             [sandbar.util.auth :as auth]
-            [sandbar.test-util :as tu]
-            [io.pedestal.test :refer [response-for]])
+            [sandbar.test-util :as tu :refer [service]])
   (:import [java.util Date UUID]))
 
 (use-fixtures :each (tu/make-test-db-fixture {:test-name "zorp-auth-test"
@@ -38,20 +38,20 @@
 (defn post-edn
   "POST EDN data to an endpoint"
   [path body]
-  (response-for tu/service :post path
+  (response-for service :post path
                 :headers {"Content-Type" "application/edn"}
                 :body (pr-str body)))
 
 (defn get-with-session
   "GET with session header"
   [path session-id]
-  (response-for tu/service :get path
+  (response-for service :get path
                 :headers {"X-Session-ID" session-id}))
 
 (defn post-with-session
   "POST with session header"
   [path session-id body]
-  (response-for tu/service :post path
+  (response-for service :post path
                 :headers {"Content-Type" "application/edn"
                           "X-Session-ID" session-id}
                 :body (pr-str body)))
@@ -59,7 +59,7 @@
 (defn delete-with-session
   "DELETE with session header"
   [path session-id]
-  (response-for tu/service :delete path
+  (response-for service :delete path
                 :headers {"X-Session-ID" session-id}))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;

@@ -297,7 +297,7 @@
  [{:db/ident :workflow/State
    :dt/type :dt/Class
    :dt/subclass-of :dt/Ref
-   :dt/namespace "workflow"
+   :dt/context "workflow"
    :dt/label "State"
    :db/doc "A named state in a workflow. States can be initial (starting point), terminal (end point), or intermediate."
    :dt/slots [:workflow/state-name
@@ -309,7 +309,7 @@
   {:db/ident :workflow/Transition
    :dt/type :dt/Class
    :dt/subclass-of :dt/Ref
-   :dt/namespace "workflow"
+   :dt/context "workflow"
    :dt/label "Transition"
    :db/doc "A valid state change triggered by an action. Can have guard functions and side effects."
    :dt/slots [:workflow/transition-name
@@ -322,7 +322,7 @@
   {:db/ident :workflow/Definition
    :dt/type :dt/Class
    :dt/subclass-of :dt/Ref
-   :dt/namespace "workflow"
+   :dt/context "workflow"
    :dt/label "Definition"
    :db/doc "A complete workflow specification with states and transitions."
    :dt/slots [:workflow/definition-name
@@ -333,7 +333,7 @@
   {:db/ident :workflow/Process
    :dt/type :dt/Class
    :dt/subclass-of :dt/Ref
-   :dt/namespace "workflow"
+   :dt/context "workflow"
    :dt/label "Process"
    :db/doc "A running instance of a workflow attached to a subject entity."
    :dt/slots [:workflow/definition
@@ -347,7 +347,7 @@
   {:db/ident :workflow/History
    :dt/type :dt/Class
    :dt/subclass-of :dt/Ref
-   :dt/namespace "workflow"
+   :dt/context "workflow"
    :dt/label "History"
    :db/doc "A record of a single state transition in a process."
    :dt/slots [:workflow/history-from

@@ -36,6 +36,11 @@
      (wf/available-transitions process)
      ;; => [{:name :deliver} {:name :cancel}]
 
+   ## Loading Workflows from Resources
+
+     ;; Load a workflow definition from resources/workflows/
+     (wf/load-workflow-from-resource! \"workflows/resource-validation.edn\")
+
    ## Guard Functions
 
    Transitions can have guard functions that control when they're allowed:
@@ -46,7 +51,9 @@
       :guard 'myapp.guards/inventory-available?}
 
    Guard functions receive (process context) and return boolean."
-  (:require [clojure.tools.logging :as log]
+  (:require [clojure.edn :as edn]
+            [clojure.java.io :as io]
+            [clojure.tools.logging :as log]
             [datomic.api :as d]
             [sandbar.db.datatype :as dt]
             [sandbar.db.datomic :as db]
@@ -653,3 +660,79 @@
      :completed completed
      :active active
      :total (+ completed active)}))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Resource Loading
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defn load-workflow-spec
+  "Load a workflow specification from a resource file (EDN).
+
+   Arguments:
+     resource-path - Path to the resource file (e.g., \"workflows/resource-validation.edn\")
+
+   Returns the parsed EDN map, or nil if resource not found."
+  [resource-path]
+  (when-let [resource (io/resource resource-path)]
+    (with-open [reader (io/reader resource)]
+      (edn/read (java.io.PushbackReader. reader)))))
+
+(defn load-workflow-from-resource!
+  "Load and define a workflow from a resource file.
+
+   Arguments:
+     resource-path - Path to the resource file (e.g., \"workflows/resource-validation.edn\")
+
+   The resource file should be an EDN map with keys:
+     :name        - Keyword identifier for the workflow
+     :version     - Optional version number
+     :states      - Vector of state specs
+     :transitions - Vector of transition specs
+
+   Returns the created workflow definition entity, or the existing workflow
+   if it was already defined."
+  [resource-path]
+  (if-let [spec (load-workflow-spec resource-path)]
+    (let [workflow-name (:name spec)]
+      (if-let [existing (find-workflow workflow-name)]
+        (do
+          (log/debug :WORKFLOW/ALREADY-EXISTS {:name workflow-name})
+          existing)
+        (do
+          (log/info :WORKFLOW/LOAD-FROM-RESOURCE {:path resource-path :name workflow-name})
+          (define-workflow! workflow-name spec))))
+    (throw (ex-info "Workflow resource not found" {:path resource-path}))))
+
+(defn load-all-workflows-from-resources!
+  "Load all workflow definitions from resources/workflows/ directory.
+
+   Returns a map of workflow names to workflow definition entities."
+  []
+  (let [workflows-dir "workflows"
+        ;; List .edn files in the workflows directory
+        edn-files (->> (io/resource workflows-dir)
+                       io/file
+                       file-seq
+                       (filter #(and (.isFile %)
+                                    (.endsWith (.getName %) ".edn")))
+                       (map #(.getName %)))]
+    (into {}
+          (for [filename edn-files]
+            (let [path (str workflows-dir "/" filename)
+                  workflow (load-workflow-from-resource! path)]
+              [(:workflow/definition-name workflow) workflow])))))
+
+(defn ensure-workflow!
+  "Ensure a workflow is defined, loading from resource if necessary.
+
+   Arguments:
+     workflow-name - Keyword identifier for the workflow
+     resource-path - Optional path to resource file; defaults to
+                     \"workflows/{name}.edn\" where name is the workflow name
+
+   Returns the workflow definition entity."
+  [workflow-name & [resource-path]]
+  (or (find-workflow workflow-name)
+      (let [path (or resource-path
+                     (str "workflows/" (name workflow-name) ".edn"))]
+        (load-workflow-from-resource! path))))

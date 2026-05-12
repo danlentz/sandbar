@@ -192,7 +192,7 @@
    :dt/type :dt/Class
    :dt/abstract? true
    :dt/subclass-of :dt/Ref
-   :dt/namespace "zorp"
+   :dt/context "zorp"
    :dt/label "Footwear"
    :db/doc "Abstract base class for all galactic footwear"
    :dt/slots [:footwear/name :footwear/size :footwear/color
@@ -202,7 +202,7 @@
   {:db/ident :zorp/Sneaker
    :dt/type :dt/Class
    :dt/subclass-of :zorp/Footwear
-   :dt/namespace "zorp"
+   :dt/context "zorp"
    :dt/label "Sneaker"
    :db/doc "Casual athletic footwear for low-gravity sports"
    :dt/slots [:sneaker/bounce-factor :sneaker/glow-in-dark?
@@ -212,7 +212,7 @@
   {:db/ident :zorp/Boot
    :dt/type :dt/Class
    :dt/subclass-of :zorp/Footwear
-   :dt/namespace "zorp"
+   :dt/context "zorp"
    :dt/label "Boot"
    :db/doc "Heavy-duty footwear for harsh environments"
    :dt/slots [:boot/vacuum-rated? :boot/temperature-range]}
@@ -220,7 +220,7 @@
   {:db/ident :zorp/Sandal
    :dt/type :dt/Class
    :dt/subclass-of :zorp/Footwear
-   :dt/namespace "zorp"
+   :dt/context "zorp"
    :dt/label "Sandal"
    :db/doc "Open footwear for warm methane beaches"
    :dt/slots []}
@@ -228,7 +228,7 @@
   {:db/ident :zorp/HighTop
    :dt/type :dt/Class
    :dt/subclass-of :zorp/Sneaker
-   :dt/namespace "zorp"
+   :dt/context "zorp"
    :dt/label "HighTop"
    :db/doc "Extra ankle support for multi-jointed species"
    :dt/slots []}
@@ -236,7 +236,7 @@
   {:db/ident :zorp/LowTop
    :dt/type :dt/Class
    :dt/subclass-of :zorp/Sneaker
-   :dt/namespace "zorp"
+   :dt/context "zorp"
    :dt/label "LowTop"
    :db/doc "Classic style for species with minimal ankle flexibility"
    :dt/slots []}
@@ -244,7 +244,7 @@
   {:db/ident :zorp/SpaceBoot
    :dt/type :dt/Class
    :dt/subclass-of :zorp/Boot
-   :dt/namespace "zorp"
+   :dt/context "zorp"
    :dt/label "SpaceBoot"
    :db/doc "Vacuum-rated boots with magnetic soles"
    :dt/slots []}
@@ -252,7 +252,7 @@
   {:db/ident :zorp/MoonBoot
    :dt/type :dt/Class
    :dt/subclass-of :zorp/Boot
-   :dt/namespace "zorp"
+   :dt/context "zorp"
    :dt/label "MoonBoot"
    :db/doc "Retro style, popular with Earth tourists"
    :dt/slots []}
@@ -260,7 +260,7 @@
   {:db/ident :zorp/FlipFlop
    :dt/type :dt/Class
    :dt/subclass-of :zorp/Sandal
-   :dt/namespace "zorp"
+   :dt/context "zorp"
    :dt/label "FlipFlop"
    :db/doc "Warning: Not recommended for tentacled beings. May achieve sentience."
    :dt/slots [:flipflop/flop-frequency :flipflop/toe-separator-count

@@ -360,7 +360,7 @@
  [{:db/ident :job/Task
    :dt/type :dt/Class
    :dt/subclass-of :dt/Ref
-   :dt/namespace "job"
+   :dt/context "job"
    :dt/label "Task"
    :dt/abstract? true
    :db/doc "Abstract base class for background jobs. Tasks represent units of work to be executed asynchronously."
@@ -381,7 +381,7 @@
  [{:db/ident :job/Scheduled
    :dt/type :dt/Class
    :dt/subclass-of :job/Task
-   :dt/namespace "job"
+   :dt/context "job"
    :dt/label "Scheduled Task"
    :db/doc "A one-time job scheduled for future execution."
    :dt/slots [:job/run-at
@@ -390,7 +390,7 @@
   {:db/ident :job/Triggered
    :dt/type :dt/Class
    :dt/subclass-of :job/Task
-   :dt/namespace "job"
+   :dt/context "job"
    :dt/label "Triggered Task"
    :db/doc "A job triggered by an event or condition."
    :dt/slots [:job/trigger-event
@@ -400,7 +400,7 @@
   {:db/ident :job/Recurring
    :dt/type :dt/Class
    :dt/subclass-of :job/Task
-   :dt/namespace "job"
+   :dt/context "job"
    :dt/label "Recurring Task"
    :db/doc "A job that runs on a cron-like schedule."
    :dt/slots [:job/cron
@@ -414,7 +414,7 @@
  [{:db/ident :job/Execution
    :dt/type :dt/Class
    :dt/subclass-of :dt/Ref
-   :dt/namespace "job"
+   :dt/context "job"
    :dt/label "Execution"
    :db/doc "A single run of a job, tracking timing, status, and results."
    :dt/slots [:job/execution-id

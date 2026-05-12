@@ -143,7 +143,7 @@ Here's how Zorp defines his footwear ontology in EDN (see [schema/zorp.edn](../s
    :dt/type :dt/Class
    :dt/abstract? true
    :dt/subclass-of :dt/Ref
-   :dt/namespace "zorp"
+   :dt/context "zorp"
    :dt/label "Footwear"
    :db/doc "Abstract base class for all galactic footwear"
    :dt/slots [:footwear/name :footwear/size :footwear/color
@@ -153,7 +153,7 @@ Here's how Zorp defines his footwear ontology in EDN (see [schema/zorp.edn](../s
   {:db/ident :zorp/Sneaker
    :dt/type :dt/Class
    :dt/subclass-of :zorp/Footwear
-   :dt/namespace "zorp"
+   :dt/context "zorp"
    :dt/label "Sneaker"
    :db/doc "Casual athletic footwear for low-gravity sports"
    :dt/slots [:sneaker/bounce-factor :sneaker/glow-in-dark?
@@ -295,7 +295,7 @@ curl http://localhost:8080/api/store/classes/zorp/SpaceBoot/slots
  :slots [{:ident :db/doc :domain :dt/Resource :range :db.type/string}
          {:ident :db/ident :domain :dt/Resource :range :db.type/keyword}
          {:ident :dt/label :domain :dt/Resource :range :db.type/string}
-         {:ident :dt/namespace :domain :dt/Resource :range :db.type/string}
+         {:ident :dt/context :domain :dt/Resource :range :db.type/string}
          {:ident :dt/type :domain :dt/Resource :range :dt/Class}
          {:ident :footwear/name :domain :zorp/Footwear :range :db.type/string}
          {:ident :footwear/size :domain :zorp/Footwear :range :db.type/string}

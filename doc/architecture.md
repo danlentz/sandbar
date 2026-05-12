@@ -282,7 +282,7 @@ src/sandbar/
  [{:db/ident :model/MyClass
    :dt/type :dt/Class
    :dt/subclass-of :dt/Ref
-   :dt/namespace "model"
+   :dt/context "model"
    :dt/label "MyClass"
    :dt/slots [:myclass/name :myclass/value]}]
 

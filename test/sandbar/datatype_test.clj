@@ -330,3 +330,70 @@
       ;; Both should either pass or fail
       (is (= (nil? pre-result) (nil? post-result))
           "Pre and post validation should agree"))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Batch Validation Tests
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(deftest validate-all-instances-basic-test
+  (testing "validate-all-instances returns correct structure"
+    (let [result (dt/validate-all-instances :dt/Class)]
+      (is (map? result) "Should return a map")
+      (is (= :dt/Class (:class result)) "Should include the class")
+      (is (number? (:total result)) "Should include total count")
+      (is (number? (:valid result)) "Should include valid count")
+      (is (number? (:invalid result)) "Should include invalid count")
+      (is (vector? (:errors result)) "Should include errors vector")
+      (is (= (:total result) (+ (:valid result) (:invalid result)))
+          "Total should equal valid + invalid"))))
+
+(deftest validate-all-instances-with-valid-entities-test
+  (testing "validate-all-instances with valid entities"
+    ;; Create some valid User instances
+    (dt/make* :model/User {:user/login "batch-user-1"})
+    (dt/make* :model/User {:user/login "batch-user-2"})
+    (let [result (dt/validate-all-instances :model/User)]
+      (is (pos? (:total result)) "Should have instances")
+      (is (>= (:valid result) 2) "Should have at least 2 valid instances")
+      ;; Check that errors only contain actual errors
+      (is (every? #(contains? % :errors) (:errors result))
+          "Each error entry should have :errors key"))))
+
+(deftest validate-all-instances-includes-subclasses-test
+  (testing "validate-all-instances includes subclass instances"
+    ;; dt/Resource is the root class, so validating it should include
+    ;; instances from all subclasses (Class, Property, User, etc.)
+    (let [result (dt/validate-all-instances :dt/Resource)]
+      (is (pos? (:total result))
+          "Should find instances (classes, properties, etc. are all Resources)")
+      ;; Verify it found more than just direct instances
+      (let [direct-result (dt/validate-all-instances :dt/Class)]
+        (is (>= (:total result) (:total direct-result))
+            "Resource validation should include at least as many as Class")))))
+
+(deftest validate-all-instances-empty-class-test
+  (testing "validate-all-instances handles classes with no instances"
+    ;; dt/Literal is abstract and shouldn't have direct instances
+    (let [result (dt/validate-all-instances :dt/Literal)]
+      (is (map? result) "Should return a map even for empty/abstract class")
+      (is (= :dt/Literal (:class result))
+          "Should include the class name")
+      (is (number? (:total result))
+          "Should have a total (possibly 0)")
+      (is (= (:total result) (+ (:valid result) (:invalid result)))
+          "Counts should be consistent"))))
+
+(deftest validate-all-instances-error-structure-test
+  (testing "validate-all-instances errors have correct structure"
+    ;; Create an untyped entity to ensure we have something invalid
+    (let [result @(d/transact (db/conn) [{:db/doc "untyped for batch test"}])
+          eid (-> result :tempids vals first)
+          ;; Note: This entity won't be found by validate-all-instances
+          ;; because it has no :dt/type. But we can check valid entities.
+          validation-result (dt/validate-all-instances :model/User)]
+      ;; The errors should be properly structured
+      (doseq [error (:errors validation-result)]
+        (is (contains? error :entity) "Error should have :entity")
+        (is (contains? error :class) "Error should have :class")
+        (is (contains? error :errors) "Error should have :errors list")
+        (is (vector? (:errors error)) "Errors list should be a vector")))))

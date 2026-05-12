@@ -878,3 +878,106 @@
       ;; Should include core metamodel classes
       (is (pos? (:count body))
           "dt/Resource should have subclasses"))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Class Instance Validation Tests
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(deftest validate-instances-test
+  (testing "GET /api/store/classes/dt/Class/validate returns validation results"
+    (let [{:keys [status body]} (api-get-edn "/api/store/classes/dt/Class/validate")]
+      (is (= http-status/success status)
+          "Should return 200 OK")
+      (is (= :dt/Class (:class body))
+          "Should return correct class")
+      (is (number? (:total body))
+          "Should have total count")
+      (is (number? (:valid body))
+          "Should have valid count")
+      (is (number? (:invalid body))
+          "Should have invalid count")
+      (is (boolean? (:all-valid? body))
+          "Should have all-valid? flag")
+      (is (vector? (:errors body))
+          "Should have errors vector")
+      (is (= (:total body) (+ (:valid body) (:invalid body)))
+          "Total should equal valid + invalid")))
+
+  (testing "GET /api/store/classes/:ns/:name/validate returns 404 for unknown class"
+    (let [{:keys [status body]} (api-get-edn "/api/store/classes/nonexistent/Class/validate")]
+      (is (= http-status/not-found status)
+          "Should return 404 Not Found")
+      (is (contains? body :error)
+          "Should contain error message"))))
+
+(deftest validate-all-resources-test
+  (testing "GET /api/store/classes/dt/Resource/validate validates entire database"
+    (let [{:keys [status body]} (api-get-edn "/api/store/classes/dt/Resource/validate")]
+      (is (= http-status/success status)
+          "Should return 200 OK")
+      (is (= :dt/Resource (:class body))
+          "Should return dt/Resource class")
+      (is (pos? (:total body))
+          "Should have instances (all typed entities are Resources)")
+      ;; dt/Resource validation includes all classes, properties, and data instances
+      (let [{:keys [body class-body]} {:body body
+                                        :class-body (:body (api-get-edn "/api/store/classes/dt/Class/validate"))}]
+        (is (>= (:total body) (:total class-body))
+            "Resource validation should include at least as many as Class validation")))))
+
+(deftest validate-instances-with-created-entities-test
+  (testing "Validation includes newly created entities"
+    ;; Create a valid User
+    (dt/make* :model/User {:user/login "validate-api-test-user"
+                           :user/secret "testhash"})
+    (let [{:keys [status body]} (api-get-edn "/api/store/classes/model/User/validate")]
+      (is (= http-status/success status)
+          "Should return 200 OK")
+      (is (pos? (:total body))
+          "Should have User instances")
+      (is (pos? (:valid body))
+          "Should have valid User instances"))))
+
+(deftest validate-instances-json-test
+  (testing "GET /api/store/classes/dt/Class/validate returns valid JSON"
+    (let [{:keys [status body]} (api-get-json "/api/store/classes/dt/Class/validate")]
+      (is (= http-status/success status)
+          "Should return 200 OK")
+      (is (= "dt/Class" (:class body))
+          "JSON class should be a string")
+      (is (number? (:total body))
+          "JSON total should be a number")
+      (is (number? (:valid body))
+          "JSON valid should be a number")
+      (is (number? (:invalid body))
+          "JSON invalid should be a number")
+      (is (boolean? (:all-valid? body))
+          "JSON all-valid? should be a boolean")
+      (is (vector? (:errors body))
+          "JSON errors should be a vector"))))
+
+(deftest validate-instances-transit-test
+  (testing "GET /api/store/classes/dt/Class/validate returns valid Transit+JSON"
+    (let [{:keys [status body]} (api-get-transit "/api/store/classes/dt/Class/validate")]
+      (is (= http-status/success status)
+          "Should return 200 OK")
+      (is (= :dt/Class (:class body))
+          "Transit class should be a keyword")
+      (is (number? (:total body))
+          "Transit total should be a number")
+      (is (boolean? (:all-valid? body))
+          "Transit all-valid? should be a boolean"))))
+
+(deftest validate-instances-csv-test
+  (testing "GET /api/store/classes/dt/Class/validate returns valid CSV"
+    (let [response (api-get-csv "/api/store/classes/dt/Class/validate")]
+      (is (= http-status/success (:status response))
+          "Should return 200 OK")
+      (is (str/includes? (get-in response [:headers "Content-Type"]) "text/csv")
+          "Should return CSV content type")
+      (is (str/includes? (:body response) "class")
+          "CSV should include class column")
+      (is (str/includes? (:body response) "total")
+          "CSV should include total column")
+      (is (str/includes? (:body response) "valid")
+          "CSV should include valid column"))))

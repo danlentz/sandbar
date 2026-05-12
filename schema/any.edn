@@ -245,7 +245,7 @@
    :db/ident :dt/Any
    :dt/type :dt/Class
    :dt/subclass-of :dt/Ref
-   :dt/namespace "system"
+   :dt/context "system"
    :dt/label "Any"
    :db/doc "Any is a variant datatype used to create references to data that abstracts over its representation in the storage model."
    :dt/slots [:value/string
@@ -269,7 +269,7 @@
  [
   {:db/id #db/id[:db.part/user -1]
    :dt/type :dt/Class
-   :dt/namespace "system"
+   :dt/context "system"
    :dt/label "Any[]"
    :db/ident :dt/Any*
    :dt/subclass-of :dt/Resource*
@@ -280,7 +280,7 @@
 
   {:db/id #db/id[:db.part/user -2]
    :dt/type :dt/Class
-   :dt/namespace "system"
+   :dt/context "system"
    :dt/label "Any[][]"
    :db/ident :dt/Any**
    :dt/subclass-of :dt/Resource**

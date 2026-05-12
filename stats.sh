@@ -53,9 +53,6 @@ echo ""
 echo "PROJECT FILES"
 echo "--------------------------------------------------------------------------------"
 wc -l project.clj 2>/dev/null | awk '{print "  project.clj:" $1 " lines"}'
-if [ -f "CLAUDE.md" ]; then
-  wc -l CLAUDE.md | awk '{print "  CLAUDE.md:  " $1 " lines"}'
-fi
 echo ""
 
 # Totals

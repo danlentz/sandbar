@@ -170,7 +170,7 @@
   ;;  :db/ident :dt/Resource,
   ;;  :db/doc "Resource is the abstract superclass of all classes",
   ;;  :dt/type :dt/Class,
-  ;;  :dt/namespace "system",
+  ;;  :dt/context "system",
   ;;  :dt/name "Resource",
   ;;  :dt/list :dt/Resource*,
   ;;  :dt/slots #{:dt/type}}
@@ -181,7 +181,7 @@
   ;;  :db/ident :dt/Literal,
   ;;  :db/doc "Abstract superclass of literal/scalar types",
   ;;  :dt/type :dt/Class,
-  ;;  :dt/namespace "system",
+  ;;  :dt/context "system",
   ;;  :dt/name "Literal",
   ;;  :dt/subclass-of #{:dt/Resource}}
 

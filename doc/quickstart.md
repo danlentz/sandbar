@@ -137,7 +137,7 @@ lein repl :connect 28888
 
 ;; Query slots
 (dt/slots-of :model/User)
-;; => #{:db/doc :db/ident :dt/label :dt/namespace :dt/type :user/login :user/secret :user/uuid}
+;; => #{:db/doc :db/ident :dt/label :dt/context :dt/type :user/login :user/secret :user/uuid}
 
 ;; Check type relationships
 (dt/subclass-of? :dt/Resource :model/User)

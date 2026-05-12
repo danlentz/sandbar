@@ -90,7 +90,8 @@
           ["/subclasses" {:get store/list-subclasses}
            ["/direct" {:get store/list-direct-subclasses}]]
           ["/ancestors" {:get store/list-ancestors}]
-          ["/parents" {:get store/list-parents}]]]
+          ["/parents" {:get store/list-parents}]
+          ["/validate" {:get store/validate-instances}]]]
         ["/properties" {:get store/list-properties}
          ["/:ns/:name" {:get store/get-property}
           ["/domain" {:get store/property-domain}]

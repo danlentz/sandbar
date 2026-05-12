@@ -124,8 +124,8 @@
     (let [pedestal (pedestal/make-pedestal-server :dev)]
       (is (instance? sandbar.server.pedestal.Pedestal pedestal)
           "Should create Pedestal record")
-      (is (some? (:service pedestal))
-          "Pedestal should have service")
+      (is (some? (:connector pedestal))
+          "Pedestal should have connector")
       (is (nil? (:server pedestal))
           "Pedestal should have nil server before start")))
 

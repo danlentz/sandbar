@@ -87,9 +87,9 @@ This enables typed collection handling within the metamodel.
 
   {:db/id :dt/type
    :dt/type :dt/Class
-   :dt/namespace "system"
+   :dt/context "system"
    :dt/name "Datatype"
-   :dt/slots [:dt/namespace
+   :dt/slots [:dt/context
               :dt/name
               :dt/parent
               :dt/list

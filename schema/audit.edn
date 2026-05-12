@@ -186,7 +186,7 @@
  [{:db/ident :audit/Change
    :dt/type :dt/Class
    :dt/subclass-of :dt/Ref
-   :dt/namespace "audit"
+   :dt/context "audit"
    :dt/label "Change"
    :dt/abstract? true
    :db/doc "Abstract base class for audit trail entries. Every mutation to tracked entities creates a Change record."
@@ -203,7 +203,7 @@
  [{:db/ident :audit/Create
    :dt/type :dt/Class
    :dt/subclass-of :audit/Change
-   :dt/namespace "audit"
+   :dt/context "audit"
    :dt/label "Create"
    :db/doc "Records the creation of a new entity"
    :dt/slots [:audit/initial-data]}
@@ -211,7 +211,7 @@
   {:db/ident :audit/Update
    :dt/type :dt/Class
    :dt/subclass-of :audit/Change
-   :dt/namespace "audit"
+   :dt/context "audit"
    :dt/label "Update"
    :db/doc "Records a modification to an existing entity attribute"
    :dt/slots [:audit/attribute
@@ -221,7 +221,7 @@
   {:db/ident :audit/Delete
    :dt/type :dt/Class
    :dt/subclass-of :audit/Change
-   :dt/namespace "audit"
+   :dt/context "audit"
    :dt/label "Delete"
    :db/doc "Records the deletion or retraction of an entity"
    :dt/slots [:audit/final-data

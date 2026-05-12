@@ -1,0 +1,94 @@
+[
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Context Model
+;;
+;; A hierarchical naming context for organizing resources. Contexts provide
+;; a way to group and namespace entities, similar to packages in Java or
+;; modules in other languages.
+;;
+;; Contexts form a tree structure via parent references, enabling paths like:
+;;   root -> domain -> subdomain -> feature
+;;
+;; The base context :context/empty serves as the root with the nil UUID.
+;;
+;; Example:
+;;
+;;   (def app-context (dt/make :context/Context
+;;     {:context/uuid (java.util.UUID/randomUUID)
+;;      :context/name "myapp"}))
+;;
+;;   (def auth-context (dt/make :context/Context
+;;     {:context/uuid (java.util.UUID/randomUUID)
+;;      :context/name "auth"
+;;      :context/parent app-context}))
+;;
+;;   ;; Creates hierarchy: myapp -> auth
+;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Forward Declaration
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident :context/Context
+   :db/doc "A hierarchical naming context for organizing resources"}]
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Context Properties
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident :context/uuid
+   :dt/type :dt/Property
+   :dt/domain :context/Context
+   :dt/range :db.type/uuid
+   :db/valueType :db.type/uuid
+   :db/cardinality :db.cardinality/one
+   :db/unique :db.unique/identity
+   :dt/required? true
+   :db/doc "Unique identifier for this context"}
+
+  {:db/ident :context/name
+   :dt/type :dt/Property
+   :dt/subproperty-of :dt/label
+   :dt/domain :context/Context
+   :dt/range :db.type/string
+   :db/valueType :db.type/string
+   :db/cardinality :db.cardinality/one
+   :dt/required? true
+   :db/doc "The local name of this context (e.g., 'auth', 'model', 'workflow')"}
+
+  {:db/ident :context/parent
+   :dt/type :dt/Property
+   :dt/domain :context/Context
+   :dt/range :context/Context
+   :db/valueType :db.type/ref
+   :db/cardinality :db.cardinality/one
+   :db/doc "Parent context, forming a hierarchy. Nil for root contexts."}]
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Context Class
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident :context/Context
+   :dt/type :dt/Class
+   :dt/subclass-of :dt/Ref
+   :dt/context "context"
+   :dt/label "Context"
+   :db/doc "A hierarchical naming context for organizing resources. Contexts can be nested via parent references to form trees like: root -> domain -> feature."
+   :dt/slots [:context/uuid
+              :context/name
+              :context/parent]}]
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Base Context
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident :context/Empty
+   :dt/type :context/Context
+   :dt/context "context"
+   :dt/label "Empty"
+   :context/uuid #uuid "00000000-0000-0000-0000-000000000000"
+   :context/name "Empty"
+   :db/doc "The empty/root context with the nil UUID. Serves as the base of the context hierarchy."}]
+
+]

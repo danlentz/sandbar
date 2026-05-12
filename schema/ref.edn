@@ -7,7 +7,7 @@
 
  [{:db/id #db/id[:db.part/user -1]
    :dt/type :dt/Class
-   :dt/namespace "meta"
+   :dt/context "meta"
    :dt/label "Ref"
    :db/ident :dt/Ref
    :dt/subclass-of :dt/Resource
@@ -20,7 +20,7 @@
 
  [{:db/id #db/id[:db.part/user -1]
    :dt/type :dt/Class
-   :dt/namespace "meta"
+   :dt/context "meta"
    :dt/label "Ref[]"
    :db/ident :dt/Ref*
    :dt/subclass-of :dt/Resource*
@@ -31,7 +31,7 @@
 
   {:db/id #db/id[:db.part/user -2]
    :dt/type :dt/Class
-   :dt/namespace "meta"
+   :dt/context "meta"
    :dt/label "Ref[][]"
    :db/ident :dt/Ref**
    :dt/subclass-of :dt/Resource**
