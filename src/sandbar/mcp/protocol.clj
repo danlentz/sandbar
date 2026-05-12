@@ -23,6 +23,7 @@
   (:require [clojure.tools.logging :as log]
             [sandbar.mcp.prompts   :as prompts]
             [sandbar.mcp.resources :as resources]
+            [sandbar.mcp.tasks     :as tasks]
             [sandbar.mcp.tools     :as tools]))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -150,7 +151,9 @@
    "resources/subscribe"         (fn [id params] (resources/handle-subscribe id params))
    "resources/unsubscribe"       (fn [id params] (resources/handle-unsubscribe id params))
    "prompts/list"                (fn [id params] (prompts/handle-list id params))
-   "prompts/get"                 (fn [id params] (prompts/handle-get id params))})
+   "prompts/get"                 (fn [id params] (prompts/handle-get id params))
+   "tasks/get"                   (fn [id params] (tasks/handle-get id params))
+   "tasks/cancel"                (fn [id params] (tasks/handle-cancel id params))})
 
 (defn dispatch
   "Dispatch a single JSON-RPC message. Returns a response map (or nil for
