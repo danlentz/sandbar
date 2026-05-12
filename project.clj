@@ -1,6 +1,6 @@
 (defproject sandbar "0.0.1-SNAPSHOT"
-  :description "FIXME: write description"
-  :url "http://example.com/FIXME"
+  :description "RDFS-inspired metamodel platform on Datomic — runtime-evolvable classes with inheritance, validation, REST API, and Model Context Protocol (MCP) server for AI clients"
+  :url "https://github.com/danlentz/sandbar"
   :license {:name "Eclipse Public License"
             :url "http://www.eclipse.org/legal/epl-v10.html"}
   :dependencies [[org.clojure/clojure "1.12.4"]

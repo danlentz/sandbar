@@ -21,6 +21,7 @@
    - C.3 Notifications channel (sandbar.mcp.notifications)
    - C.4 Resources + Prompts + Tasks support"
   (:require [clojure.tools.logging :as log]
+            [sandbar.mcp.envelope  :as envelope]
             [sandbar.mcp.prompts   :as prompts]
             [sandbar.mcp.resources :as resources]
             [sandbar.mcp.tasks     :as tasks]
@@ -57,50 +58,10 @@
    :prompts   {:listChanged true}
    :logging   {}})
 
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; JSON-RPC 2.0 envelope shapes
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-
-(defn jsonrpc-result
-  "Construct a JSON-RPC 2.0 success response."
-  [id result]
-  {:jsonrpc "2.0"
-   :id      id
-   :result  result})
-
-(defn jsonrpc-error
-  "Construct a JSON-RPC 2.0 error response.
-   Standard codes per https://www.jsonrpc.org/specification#error_object:
-   -32700 Parse error
-   -32600 Invalid Request
-   -32601 Method not found
-   -32602 Invalid params
-   -32603 Internal error
-   -32000 to -32099 Server error (implementation-defined)"
-  [id code message & [data]]
-  {:jsonrpc "2.0"
-   :id      id
-   :error   (cond-> {:code    code
-                     :message message}
-              data (assoc :data data))})
-
-(defn jsonrpc-notification
-  "Construct a JSON-RPC 2.0 notification (no id; server → client push)."
-  [method params]
-  {:jsonrpc "2.0"
-   :method  method
-   :params  params})
-
-(defn valid-envelope?
-  "Quick structural validation of an inbound JSON-RPC 2.0 message.
-   Requires `:jsonrpc` field equal to '2.0' and either `:method` (request
-   or notification) or `:result`/`:error` (response). Returns boolean."
-  [msg]
-  (and (map? msg)
-       (= "2.0" (:jsonrpc msg))
-       (or (contains? msg :method)
-           (contains? msg :result)
-           (contains? msg :error))))
+;; JSON-RPC 2.0 envelope shapes live in `sandbar.mcp.envelope` — extracted
+;; to a leaf namespace to break the protocol → notifications cycle per the
+;; F-M-001 resolution in
+;; audit-results/codex_sandbar_as_mcp_server_2026_05_12.md.
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Lifecycle method — initialize
@@ -124,7 +85,7 @@
                :client-info      client-info
                :server-version   protocol-version
                :server-capabilities (keys server-capabilities)})
-    (jsonrpc-result
+    (envelope/jsonrpc-result
      id
      {:protocolVersion protocol-version
       :capabilities    server-capabilities
@@ -166,11 +127,11 @@
   [msg]
   (let [{:keys [id method params]} msg]
     (cond
-      (not (valid-envelope? msg))
-      (jsonrpc-error nil -32600 "Invalid Request" {:received msg})
+      (not (envelope/valid-envelope? msg))
+      (envelope/jsonrpc-error nil -32600 "Invalid Request" {:received msg})
 
       (nil? method)
-      (jsonrpc-error id -32600 "Invalid Request — method missing")
+      (envelope/jsonrpc-error id -32600 "Invalid Request — method missing")
 
       :else
       (if-let [handler (get method-handlers method)]
@@ -179,6 +140,6 @@
           (catch Exception e
             (log/error e :MCP/dispatch-error
                        {:method method :id id})
-            (jsonrpc-error id -32603 "Internal error"
-                           {:exception-message (.getMessage e)})))
-        (jsonrpc-error id -32601 (str "Method not found: " method))))))
+            (envelope/jsonrpc-error id -32603 "Internal error"
+                                    {:exception-message (.getMessage e)})))
+        (envelope/jsonrpc-error id -32601 (str "Method not found: " method))))))

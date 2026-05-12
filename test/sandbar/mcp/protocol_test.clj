@@ -1,64 +1,18 @@
 (ns sandbar.mcp.protocol-test
   "Test suite for the MCP protocol layer (sandbar.mcp.protocol).
 
-   Stage C.1 foundation — pure tests for JSON-RPC 2.0 envelope handling,
-   initialize handshake, capability negotiation, and method dispatch
-   (no Datomic DB required; tools/call DB-backed tests land in C.4).
+   Stage C.1 foundation — pure tests for the initialize handshake,
+   capability negotiation, and method dispatch (no Datomic DB required;
+   tools/call DB-backed tests land in C.4).
+
+   JSON-RPC envelope builder/validator tests live in
+   sandbar.mcp.envelope-test (extracted as part of the F-M-001
+   cycle-break — envelope lives in a leaf namespace).
 
    Per decisions/sandbar_mcp_server_design_2026_05_12.md + the
    Sandbar-as-MCP-Server arc."
   (:require [clojure.test         :refer :all]
             [sandbar.mcp.protocol :as protocol]))
-
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; JSON-RPC 2.0 envelope shape
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-
-(deftest jsonrpc-result-shape
-  (testing "jsonrpc-result returns canonical JSON-RPC 2.0 success envelope"
-    (let [r (protocol/jsonrpc-result 42 {:foo "bar"})]
-      (is (= "2.0" (:jsonrpc r)))
-      (is (= 42 (:id r)))
-      (is (= {:foo "bar"} (:result r)))
-      (is (not (contains? r :error))))))
-
-(deftest jsonrpc-error-shape
-  (testing "jsonrpc-error without data field"
-    (let [r (protocol/jsonrpc-error 7 -32601 "Method not found")]
-      (is (= "2.0" (:jsonrpc r)))
-      (is (= 7 (:id r)))
-      (is (= -32601 (-> r :error :code)))
-      (is (= "Method not found" (-> r :error :message)))
-      (is (not (contains? (:error r) :data)))))
-
-  (testing "jsonrpc-error with optional data field"
-    (let [r (protocol/jsonrpc-error 8 -32602 "Invalid params" {:reason "x"})]
-      (is (= -32602 (-> r :error :code)))
-      (is (= {:reason "x"} (-> r :error :data))))))
-
-(deftest jsonrpc-notification-shape
-  (testing "jsonrpc-notification has no id"
-    (let [n (protocol/jsonrpc-notification "notifications/tools/list_changed" nil)]
-      (is (= "2.0" (:jsonrpc n)))
-      (is (= "notifications/tools/list_changed" (:method n)))
-      (is (not (contains? n :id))))))
-
-(deftest valid-envelope?-discriminates
-  (testing "valid request"
-    (is (protocol/valid-envelope? {:jsonrpc "2.0" :id 1 :method "ping"})))
-  (testing "valid notification"
-    (is (protocol/valid-envelope? {:jsonrpc "2.0" :method "notifications/ready"})))
-  (testing "valid success response"
-    (is (protocol/valid-envelope? {:jsonrpc "2.0" :id 1 :result {}})))
-  (testing "valid error response"
-    (is (protocol/valid-envelope? {:jsonrpc "2.0" :id 1 :error {:code -1 :message "x"}})))
-  (testing "missing :jsonrpc rejected"
-    (is (not (protocol/valid-envelope? {:id 1 :method "ping"}))))
-  (testing "wrong :jsonrpc version rejected"
-    (is (not (protocol/valid-envelope? {:jsonrpc "1.0" :id 1 :method "ping"}))))
-  (testing "non-map rejected"
-    (is (not (protocol/valid-envelope? "not a map")))
-    (is (not (protocol/valid-envelope? nil)))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Initialize handshake

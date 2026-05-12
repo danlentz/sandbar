@@ -14,14 +14,15 @@
    - SSE channel at `/mcp/sse` for server-streaming responses + notifications
    - Batched message support (JSON-RPC allows array of messages)
    - Connection-level state (session identity for capability negotiation)"
-  (:require [clojure.tools.logging      :as log]
-            [io.pedestal.http.sse       :as sse]
+  (:require [cheshire.core              :as json]
             [clojure.core.async         :as async]
+            [clojure.tools.logging      :as log]
+            [io.pedestal.http.sse       :as sse]
+            [sandbar.mcp.envelope       :as envelope]
             [sandbar.mcp.notifications  :as notifications]
             [sandbar.mcp.protocol       :as protocol]
             [sandbar.service.endpoint   :as endpoint :refer [defhandler]]
-            [sandbar.util.http-status   :as http-status])
-  (:import [java.nio.charset StandardCharsets]))
+            [sandbar.util.http-status   :as http-status]))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; MCP request handler
@@ -56,13 +57,15 @@
 (defn- send-sse-event!
   "Write one JSON-RPC notification event to a Pedestal SSE channel.
    The notification is serialized as JSON in the `data:` field per the
-   SSE spec; the event name defaults to 'message'."
+   SSE spec; the event name defaults to 'message'.
+
+   Per Pedestal 0.8.x SSE: put `{:name :data :id}` maps onto the
+   event-channel; the framework handles SSE framing.  Returns the
+   put-channel result (nil-able if the channel is closed)."
   [event-channel notification]
   (try
-    (let [json (pr-str notification)] ;; Stage C.3 uses EDN→string;
-                                      ;; production Cheshire/Transit
-                                      ;; serialization lands in C.3.1
-      (sse/send-event event-channel "message" json))
+    (let [json-data (json/generate-string notification)]
+      (async/put! event-channel {:name "message" :data json-data}))
     (catch Exception e
       (log/warn e :MCP/sse-send-failed)
       (throw e))))
@@ -84,7 +87,7 @@
 
     ;; Send a no-op initial event to confirm the connection is live
     (send-sse-event! event-channel
-                     (protocol/jsonrpc-notification
+                     (envelope/jsonrpc-notification
                        "notifications/sandbar/sse-ready"
                        {:subscriber-id sub-id}))
 

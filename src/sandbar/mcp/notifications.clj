@@ -25,7 +25,7 @@
    namespace (Stage C.5+); for now `publish!` is invoked explicitly by
    callers that know an entity changed."
   (:require [clojure.tools.logging :as log]
-            [sandbar.mcp.protocol  :as protocol]))
+            [sandbar.mcp.envelope  :as envelope]))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Subscriber registry
@@ -95,7 +95,7 @@
    Returns the count of subscribers that received the notification
    successfully."
   [method params]
-  (let [event (protocol/jsonrpc-notification method params)]
+  (let [event (envelope/jsonrpc-notification method params)]
     (log/debug :MCP/notification-publish
                {:method method :subscribers (subscriber-count)})
     (reduce-kv

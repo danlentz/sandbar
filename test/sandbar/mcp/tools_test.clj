@@ -1,50 +1,135 @@
 (ns sandbar.mcp.tools-test
-  "Test suite for the MCP tools layer (sandbar.mcp.tools) — focused on
-   pure-data helpers (naming convention; JSON Schema mapping). DB-backed
-   bootstrap-by-discovery tests would require the test-db fixture and
-   land in C.4 when tools/call actually dispatches dt/* operations.
+  "Test suite for the MCP tools layer (sandbar.mcp.tools) — pure tests for
+   the operational verb catalog shape + projection helpers + JSON Schema
+   mapping.  DB-backed handler dispatch tests live alongside the test
+   fixture under sandbar.mcp.tools-db-test (F-M-005 release-gate suite).
 
-   Per decisions/sandbar_mcp_server_design_2026_05_12.md B.1.4."
+   Per decisions/sandbar_mcp_tool_surface_resolution_operational_verb_catalog_per_adr_b13_2026_05_12.md
+   (F-B-001 resolution)."
   (:require [clojure.test     :refer :all]
             [sandbar.mcp.tools :as tools]))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; Tool naming convention
+;; Verb catalog shape
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-(deftest class->tool-name-roundtrip
-  (testing "keyword → tool name"
-    (is (= "sandbar.class.zorp.Footwear"
-           (tools/class->tool-name :zorp/Footwear)))
-    (is (= "sandbar.class.dt.Class"
-           (tools/class->tool-name :dt/Class)))
-    (is (= "sandbar.class.mm.Memory"
-           (tools/class->tool-name :mm/Memory))))
-  (testing "map (entity-shaped) → tool name"
-    (is (= "sandbar.class.mm.Section"
-           (tools/class->tool-name {:db/ident :mm/Section})))))
+(deftest verb-catalog-is-stable-and-shaped
+  (testing "catalog is a non-empty sequential collection"
+    (is (sequential? tools/verb-catalog))
+    (is (pos? (count tools/verb-catalog))))
 
-(deftest tool-name->class-ident-roundtrip
-  (testing "valid tool-name extracts class ident"
-    (is (= :zorp/Footwear
-           (tools/tool-name->class-ident "sandbar.class.zorp.Footwear")))
-    (is (= :mm/Memory
-           (tools/tool-name->class-ident "sandbar.class.mm.Memory"))))
-  (testing "non-class-tool names return nil"
-    (is (nil? (tools/tool-name->class-ident "not.a.class.tool")))
-    (is (nil? (tools/tool-name->class-ident "sandbar.schema.classes")))))
+  (testing "every entry has the required keys"
+    (doseq [entry tools/verb-catalog]
+      (is (string? (:name entry)) (str "missing :name in " entry))
+      (is (string? (:title entry)) (str "missing :title in " entry))
+      (is (string? (:description entry)) (str "missing :description in " entry))
+      (is (map? (:inputSchema entry)) (str "missing :inputSchema in " entry))
+      (is (fn? (:handler entry)) (str "missing :handler in " entry))))
 
-(deftest naming-roundtrips-cleanly
-  (testing "class→tool-name→class-ident is identity for class idents"
-    (doseq [ident [:zorp/Footwear :dt/Class :mm/Memory :sandbar/User]]
-      (is (= ident
-             (-> ident
-                 tools/class->tool-name
-                 tools/tool-name->class-ident))
-          (str "Roundtrip failed for " ident)))))
+  (testing "every name is unique"
+    (let [names (map :name tools/verb-catalog)]
+      (is (= (count names) (count (distinct names))))))
+
+  (testing "names follow the sandbar.<group>.<verb> convention"
+    (doseq [entry tools/verb-catalog]
+      (is (re-matches #"sandbar\.[a-z]+\.[a-z][a-z\-]*"
+                      (:name entry))
+          (str ":name doesn't match convention: " (:name entry))))))
+
+(deftest expected-verbs-present
+  (testing "schema introspection verbs"
+    (let [names (set (map :name tools/verb-catalog))]
+      (is (contains? names "sandbar.schema.classes"))
+      (is (contains? names "sandbar.schema.properties"))
+      (is (contains? names "sandbar.schema.datatypes"))))
+
+  (testing "class introspection verbs"
+    (let [names (set (map :name tools/verb-catalog))]
+      (is (contains? names "sandbar.class.describe"))
+      (is (contains? names "sandbar.class.slots"))
+      (is (contains? names "sandbar.class.direct-slots"))
+      (is (contains? names "sandbar.class.required-slots"))
+      (is (contains? names "sandbar.class.instances"))
+      (is (contains? names "sandbar.class.subclasses"))
+      (is (contains? names "sandbar.class.parents"))
+      (is (contains? names "sandbar.class.validate-all-instances"))))
+
+  (testing "type predicate verbs"
+    (let [names (set (map :name tools/verb-catalog))]
+      (is (contains? names "sandbar.types.instance-of"))
+      (is (contains? names "sandbar.types.subclass-of"))))
+
+  (testing "property introspection verbs"
+    (let [names (set (map :name tools/verb-catalog))]
+      (is (contains? names "sandbar.property.domain"))
+      (is (contains? names "sandbar.property.range"))
+      (is (contains? names "sandbar.property.cardinality"))))
+
+  (testing "entity operation verbs"
+    (let [names (set (map :name tools/verb-catalog))]
+      (is (contains? names "sandbar.entity.create"))
+      (is (contains? names "sandbar.entity.find"))
+      (is (contains? names "sandbar.entity.update"))
+      (is (contains? names "sandbar.entity.validate"))))
+
+  (testing "workflow operation verbs"
+    (let [names (set (map :name tools/verb-catalog))]
+      (is (contains? names "sandbar.workflow.define"))
+      (is (contains? names "sandbar.workflow.find"))
+      (is (contains? names "sandbar.workflow.start-process"))
+      (is (contains? names "sandbar.workflow.transition"))
+      (is (contains? names "sandbar.workflow.process-state"))
+      (is (contains? names "sandbar.workflow.process-history"))
+      (is (contains? names "sandbar.workflow.active-processes"))))
+
+  (testing "validation service verbs"
+    (let [names (set (map :name tools/verb-catalog))]
+      (is (contains? names "sandbar.validation.start"))
+      (is (contains? names "sandbar.validation.run"))
+      (is (contains? names "sandbar.validation.cancel"))
+      (is (contains? names "sandbar.validation.retry"))
+      (is (contains? names "sandbar.validation.results"))
+      (is (contains? names "sandbar.validation.history")))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; Datomic-type → JSON Schema mapping
+;; tools/list response shape
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(deftest handle-list-returns-catalog-without-handlers
+  (let [response (tools/handle-list 42 {})
+        result   (:result response)
+        tools-vec (:tools result)]
+    (testing "response is a JSON-RPC success envelope"
+      (is (= "2.0" (:jsonrpc response)))
+      (is (= 42 (:id response)))
+      (is (some? result)))
+
+    (testing "tools list contains every verb"
+      (is (= (count tools/verb-catalog) (count tools-vec))))
+
+    (testing "tools list omits :handler keys (not JSON-serializable)"
+      (doseq [tool tools-vec]
+        (is (not (contains? tool :handler))
+            (str "tool entry leaks :handler: " tool))))
+
+    (testing "tools list preserves :name + :inputSchema (the MCP-visible parts)"
+      (doseq [tool tools-vec]
+        (is (string? (:name tool)))
+        (is (map? (:inputSchema tool)))))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; tools/call dispatch — error paths (no DB required)
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(deftest unknown-tool-returns-32602
+  (let [response (tools/handle-call 1 {:name "nonexistent.tool"
+                                        :arguments {}})]
+    (is (= -32602 (-> response :error :code)))
+    (is (re-find #"Unknown tool" (-> response :error :message)))
+    (is (some? (-> response :error :data :available-tools)))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Datomic-type → JSON Schema mapping (carried over from prior tests)
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (deftest datomic-type-mapping

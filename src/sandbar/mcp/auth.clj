@@ -113,8 +113,14 @@
                     context)
 
                   :else
+                  ;; Per F-M-002 fix: `authenticate-api-key` expects the
+                  ;; service-name as a keyword (schema type
+                  ;; :db.type/keyword); the Bearer token carries it as a
+                  ;; string per RFC 6750.  Keywordize at the boundary —
+                  ;; mirrors the existing X-API-Key interceptor path.
                   (let [[service-name api-key] parsed
-                        result (auth/authenticate-api-key service-name api-key)]
+                        service-key (keyword service-name)
+                        result (auth/authenticate-api-key service-key api-key)]
                     (if (:success result)
                       (do
                         (log/debug :MCP/bearer-authenticated
@@ -122,7 +128,8 @@
                         (assoc context :identity (:principal result)))
                       (do
                         (log/warn :MCP/bearer-rejected
-                                  {:reason (:reason result)})
+                                  {:reason (:reason result)
+                                   :service-key service-key})
                         context))))))}))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -146,7 +153,7 @@
               (if (:identity context)
                 context
                 (assoc context
-                  :response {:status  http-status/unauthorized
+                  :response {:status  http-status/not-authorized
                              :headers {"WWW-Authenticate" "Bearer realm=\"sandbar-mcp\""
                                        "Content-Type"     "application/json"}
                              :body    "{\"error\":\"Bearer token required\"}"})))}))

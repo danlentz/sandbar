@@ -1,55 +1,89 @@
 (ns sandbar.mcp.tools
-  "MCP `tools/list` + `tools/call` handlers — bootstrap-by-discovery
-   walks `dt/all-classes` and emits one MCP tool description per class
-   with parameters auto-generated from `dt/slots-of` + `dt/range-of`.
+  "MCP `tools/list` + `tools/call` handlers — operational verb catalog.
 
-   Per decisions/sandbar_mcp_server_design_2026_05_12.md B.1.3 + B.1.4:
-   - Tool implementations call `dt/*` introspection API directly
-   - NEVER raw `datomic.api` — bypass smell per
-     interaction/target_sandbar_introspection_api_layer_not_raw_datomic_2026_05_12.md
-   - Bootstrap-by-discovery: new mm/* classes via `dt/make` auto-surface
-     as MCP tools after `notifications/tools/list_changed`
+   Per decisions/sandbar_mcp_tool_surface_resolution_operational_verb_catalog_per_adr_b13_2026_05_12.md
+   (F-B-001 resolution): the tool surface is a STABLE OPERATIONAL VERB
+   CATALOG, NOT per-class constructors.  ~33 verbs grouped into:
 
-   Stage progression:
-   - C.1 foundation — tools/list bootstrap-by-discovery; tools/call stub
-   - C.4 — real tools/call dispatch via dt/make; argument coercion;
-     auto-fires notifications/tools/list_changed on :dt/Class instances
-   - Subsequent stages add richer parameter validation; per-tool
-     authorization hooks; query tools (dt/all-instances-of); etc."
-  (:require [clojure.tools.logging     :as log]
-            [clojure.string            :as str]
-            [sandbar.db.datatype       :as dt]
-            [sandbar.mcp.notifications :as notifications]))
+   - schema introspection   — sandbar.schema.{classes,properties,datatypes}
+   - class introspection    — sandbar.class.{describe,slots,direct-slots,
+                                              required-slots,instances,
+                                              subclasses,parents,
+                                              validate-all-instances}
+   - type predicates        — sandbar.types.{instance-of,subclass-of}
+   - property introspection — sandbar.property.{domain,range,cardinality}
+   - entity operations      — sandbar.entity.{create,find,update,validate}
+   - workflow operations    — sandbar.workflow.{define,find,start-process,
+                                                 transition,process-state,
+                                                 process-history,
+                                                 active-processes}
+   - validation service     — sandbar.validation.{start,run,cancel,retry,
+                                                   results,history}
 
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; Tool naming convention
-;;
-;; Per decisions/sandbar_mcp_server_design_2026_05_12.md B.1.4:
-;;   tool name = "sandbar.class.<class-ns>.<class-name>" for instance ops
-;;   tool name = "sandbar.schema.<verb>" for schema-introspection ops
+   Discipline per
+   interaction/target_sandbar_introspection_api_layer_not_raw_datomic_2026_05_12.md:
+   every handler routes through `dt/*` / `sandbar.util.*` /
+   `sandbar.service.*` higher-layer APIs — NEVER raw `datomic.api`.
 
-(defn class->tool-name
-  "Map a class entity (or its :db/ident keyword) to a tool name.
-   `:zorp/Footwear` → `\"sandbar.class.zorp.Footwear\"`."
-  [cls-or-ident]
-  (let [ident (if (keyword? cls-or-ident) cls-or-ident (:db/ident cls-or-ident))]
-    (str "sandbar.class." (namespace ident) "." (name ident))))
-
-(defn tool-name->class-ident
-  "Inverse of class->tool-name. `\"sandbar.class.zorp.Footwear\"` →
-   `:zorp/Footwear`. Returns nil if name doesn't match the convention."
-  [tool-name]
-  (when (str/starts-with? tool-name "sandbar.class.")
-    (let [suffix (subs tool-name (count "sandbar.class."))
-          dot    (str/last-index-of suffix ".")]
-      (when (and dot (pos? dot))
-        (keyword (subs suffix 0 dot) (subs suffix (inc dot)))))))
+   Per codex F-M-003 resolution: handlers respect each `dt/*` function's
+   actual return-shape contract.  `dt/all-classes` / `dt/all-properties`
+   / `dt/all-named-instances-of` / `dt/class-of` return IDENTS
+   (keywords).  `dt/all-instances-of` / `dt/direct-instances-of` return
+   ENTITY MAPS.  `dt/direct-slots-of` returns ENTITY MAPS (Datomic
+   ref-traversal); `dt/slots-of` returns IDENTS (rule-based).  The
+   `->ident-str` helper coerces either shape to a string at the
+   projection boundary."
+  (:require [cheshire.core              :as json]
+            [clojure.string             :as str]
+            [clojure.tools.logging      :as log]
+            [sandbar.db.datatype        :as dt]
+            [sandbar.db.datomic         :as db]
+            [sandbar.mcp.envelope       :as envelope]
+            [sandbar.mcp.notifications  :as notifications]
+            [sandbar.service.validation :as validation]
+            [sandbar.util.workflow      :as workflow]))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; JSON Schema generation from dt/* slot metadata
-;;
-;; Per decisions/sandbar_mcp_server_design_2026_05_12.md B.1.4: parameters
-;; auto-generated from `dt/slots-of` + each slot's `dt/range-of`.
+;; Projection helpers
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defn- ->ident
+  "Coerce an ident-string or keyword to a Clojure keyword.
+   `\"foo/bar\"`, `\":foo/bar\"`, `:foo/bar` all → `:foo/bar`."
+  [x]
+  (cond
+    (keyword? x) x
+    (and (string? x) (str/starts-with? x ":")) (keyword (subs x 1))
+    (string? x) (keyword x)
+    :else nil))
+
+(defn- ->ident-str
+  "Project an ident (keyword) or entity-map to a string form.
+   Handles dt/* contract variance — some functions return idents,
+   others return entity-maps (Datomic ref-traversal)."
+  [x]
+  (cond
+    (keyword? x) (str x)
+    (map? x)     (str (:db/ident x))
+    :else        (str x)))
+
+(defn- entity-projection
+  "Project an entity-map to a JSON-friendly map.
+   Keeps `:db/id`, `:db/ident`, and namespaced-keyword slots."
+  [entity]
+  (when entity
+    (into {}
+          (filter (fn [[k _v]]
+                    (or (= :db/id k)
+                        (= :db/ident k)
+                        (and (keyword? k) (some? (namespace k)))))
+                  entity))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; JSON Schema type mapping (carried over from per-class implementation
+;; because the property.range / class.slots / entity.create verbs still
+;; project Datomic types to JSON Schema for parameter description)
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (defn datomic-type->json-schema
   "Map a Datomic value type keyword to a JSON Schema type stub."
@@ -66,100 +100,18 @@
     :db.type/ref     {:type "string" :description "Reference to another entity (ident or eid)"}
     {:type "string" :description (str "Datomic type " t)}))
 
-(defn slot->json-schema-property
-  "Convert one dt/* slot (a :dt/Property entity) to a JSON Schema property
-   pair `[prop-name prop-schema]`.
-
-   Per discipline: uses `dt/range-of` + `dt/cardinality-of` introspection
-   (NOT raw d/pull on the property entity)."
-  [slot]
-  (let [ident   (:db/ident slot)
-        range   (dt/range-of slot)
-        many?   (dt/cardinality-many? slot)
-        base    (datomic-type->json-schema range)
-        schema  (if many?
-                  {:type "array" :items base}
-                  base)
-        described (assoc schema :description
-                         (or (:db/doc slot)
-                             (str "Slot " ident
-                                  (when range (str " (range " range ")"))
-                                  (when many? " (cardinality-many)"))))]
-    [(name ident) described]))
-
-(defn class->input-schema
-  "Build a JSON Schema for the inputs to a `tools/call` against a class.
-   Uses `dt/slots-of` (inherited) + `dt/required-slots-of`."
-  [cls]
-  (let [slots          (dt/slots-of cls)
-        required-slots (set (map :db/ident (dt/required-slots-of cls)))
-        properties     (into {} (map slot->json-schema-property slots))
-        required-names (vec (keep #(when (required-slots %) (name %))
-                                  (map :db/ident slots)))]
-    (cond-> {:type "object" :properties properties}
-      (seq required-names) (assoc :required required-names))))
-
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; Tool description generation — bootstrap-by-discovery
-;;
-;; Per B.1.4: walk dt/all-classes; emit one tool per non-abstract class.
-
-(defn class->tool-description
-  "Build the MCP tool-description map for a single class."
-  [cls]
-  (let [ident (:db/ident cls)]
-    {:name        (class->tool-name ident)
-     :title       (str (name ident) " operations")
-     :description (or (:db/doc cls)
-                      (str "Sandbar operations on " ident " instances"))
-     :inputSchema (class->input-schema cls)}))
-
-(defn all-class-tools
-  "Walk `dt/all-classes` + emit MCP tool descriptions for all non-abstract
-   classes. Per the metacircular property — :dt/Class is itself a class,
-   so this surfaces dt/Class operations as a tool too."
-  []
-  (->> (dt/all-classes)
-       (remove dt/abstract?)
-       (map class->tool-description)
-       (sort-by :name)
-       vec))
-
+;; Argument coercion for entity.create / entity.update — JSON values
+;; arrive as strings/numbers/bools per JSON Schema; coerce per the
+;; target slot's :db.type/* using dt/range-of + dt/cardinality-many?.
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; tools/list handler
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-
-(defn handle-list
-  "MCP `tools/list` — bootstrap-by-discovery returns all class-derived
-   tools."
-  [id _params]
-  {:jsonrpc "2.0"
-   :id      id
-   :result  {:tools (all-class-tools)}})
-
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; Argument coercion — JSON-Schema-typed inputs → Datomic-typed values
-;;
-;; MCP clients send arguments as a JSON object; Datomic slots expect
-;; specific value types. Coerce per the slot's :db/valueType +
-;; cardinality.
 
 (defn- coerce-value
-  "Coerce one argument value to its target Datomic type. Strings remain
-   strings; keyword-shaped strings ('foo/bar' or ':foo/bar') become
-   keywords; instants parse from ISO-8601; refs by ident-string become
-   keywords.
-
-   Cardinality-many: single value wrapped as a vector; existing
-   vectors preserved."
+  "Coerce one argument value to its target Datomic type."
   [value target-type many?]
   (let [coerce-one (fn [v]
                      (case target-type
-                       :db.type/keyword (if (string? v)
-                                          (if (str/starts-with? v ":")
-                                            (keyword (subs v 1))
-                                            (keyword v))
-                                          v)
+                       :db.type/keyword (->ident v)
                        :db.type/instant (if (string? v)
                                           (java.util.Date/from
                                             (java.time.Instant/parse v))
@@ -167,9 +119,7 @@
                        :db.type/uuid    (if (string? v)
                                           (java.util.UUID/fromString v)
                                           v)
-                       :db.type/ref     (if (and (string? v) (str/starts-with? v ":"))
-                                          (keyword (subs v 1))
-                                          v)
+                       :db.type/ref     (->ident v)
                        v))]
     (cond
       (and many? (sequential? value))
@@ -181,118 +131,600 @@
       :else
       (coerce-one value))))
 
-(defn- coerce-arguments
-  "Build a Datomic-shaped props map from JSON arguments + a class's
-   declared slots. Drops unknown arguments (the JSON Schema validation
-   layer should already have rejected them, but we're defensive)."
-  [cls arguments]
-  (let [slots (dt/slots-of cls)]
+(defn- coerce-slot-map
+  "Coerce a JSON-shaped slot map (string keys → arbitrary values) to a
+   Datomic-shaped props map (keyword keys → coerced values).  Uses
+   `dt/range-of` + `dt/cardinality-many?` for each declared slot."
+  [class-ident slot-map]
+  (let [slots (dt/slots-of class-ident)]
     (reduce
-      (fn [acc slot]
-        (let [k        (:db/ident slot)
-              key-name (name k)
-              v        (get arguments key-name)]
+      (fn [acc slot-ident]
+        (let [k        slot-ident
+              key-name (name slot-ident)
+              v        (or (get slot-map key-name)
+                           (get slot-map (str k))
+                           (get slot-map (subs (str k) 1)))]
           (if (some? v)
-            (assoc acc k (coerce-value v (dt/range-of slot) (dt/cardinality-many? slot)))
+            (assoc acc k (coerce-value v
+                                       (dt/range-of slot-ident)
+                                       (dt/cardinality-many? slot-ident)))
             acc)))
       {}
       slots)))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; tools/call handler — Stage C.4 real dispatch via dt/make
+;; Per-verb handlers
 ;;
-;; Per ADR B.1.3 layer-targeting discipline: this dispatcher uses ONLY
-;; dt/* introspection (class-of, slots-of, range-of, cardinality-many?,
-;; abstract?) + dt/make for the transact. NO raw datomic.api / d/q /
-;; d/pull / d/transact references.
+;; Each handler takes an argument map (already JSON-decoded; string keys
+;; or keyword keys depending on the parser) and returns a JSON-friendly
+;; data shape.  Wrapping in MCP `content` arrays + envelope happens in
+;; `handle-call`.
 ;;
-;; Behavior:
-;;   1. Resolves tool name → class ident
-;;   2. Looks up the class via dt/class-of
-;;   3. Coerces JSON arguments per slot ranges + cardinality
-;;   4. Calls dt/make (ALWAYS validated — no {:validate? false})
-;;   5. Returns the new entity's data
-;;   6. If the new entity is :dt/Class or :dt/Property (schema evolution),
-;;      fires notifications/tools/list_changed per ADR B.1.4
+;; Handlers raise `ex-info` on user-input errors; `handle-call` catches
+;; and projects to `isError: true` MCP responses.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-(defn- entity->json-data
-  "Project a Sandbar entity to a JSON-friendly map. Keeps :db/id,
-   :db/ident, and dt/* + user-namespace slot values."
-  [entity]
-  (when entity
-    (into {}
-          (filter (fn [[k _v]]
-                    (or (= :db/id k)
-                        (= :db/ident k)
-                        (and (keyword? k) (some? (namespace k)))))
-                  entity))))
+;; ---------- Schema introspection ----------
+
+(defn- schema-classes-handler [_args]
+  {:classes (->> (dt/all-classes) (map ->ident-str) sort vec)})
+
+(defn- schema-properties-handler [_args]
+  {:properties (->> (dt/all-properties) (map ->ident-str) sort vec)})
+
+(defn- schema-datatypes-handler [_args]
+  {:datatypes (->> (dt/all-datatypes) (map ->ident-str) sort vec)})
+
+;; ---------- Class introspection ----------
+
+(defn- class-arg [args]
+  (or (->ident (get args "class"))
+      (->ident (get args :class))
+      (throw (ex-info "Missing required argument: class" {:args args}))))
+
+(defn- class-describe-handler [args]
+  (let [c (class-arg args)]
+    {:class      (str c)
+     :abstract?  (boolean (dt/abstract? c))
+     :parents    (mapv ->ident-str (dt/parents-of c))
+     :ancestors  (mapv ->ident-str (dt/ancestors-of c))
+     :subclasses (mapv ->ident-str (dt/subclasses-of c))
+     :slots      (->> (dt/slots-of c) (map ->ident-str) sort vec)}))
+
+(defn- class-slots-handler [args]
+  {:class (str (class-arg args))
+   :slots (->> (dt/slots-of (class-arg args)) (map ->ident-str) sort vec)})
+
+(defn- class-direct-slots-handler [args]
+  {:class (str (class-arg args))
+   :slots (->> (dt/direct-slots-of (class-arg args)) (map ->ident-str) sort vec)})
+
+(defn- class-required-slots-handler [args]
+  {:class (str (class-arg args))
+   :slots (->> (dt/required-slots-of (class-arg args)) (map ->ident-str) sort vec)})
+
+(defn- class-instances-handler [args]
+  (let [c (class-arg args)
+        instances (dt/all-instances-of c)]
+    {:class (str c)
+     :instances (mapv entity-projection instances)}))
+
+(defn- class-subclasses-handler [args]
+  {:class (str (class-arg args))
+   :subclasses (->> (dt/subclasses-of (class-arg args)) (map ->ident-str) sort vec)})
+
+(defn- class-parents-handler [args]
+  (let [c (class-arg args)]
+    {:class (str c)
+     :parents (mapv ->ident-str (dt/parents-of c))
+     :ancestors (mapv ->ident-str (dt/ancestors-of c))}))
+
+(defn- class-validate-all-instances-handler [args]
+  (let [c (class-arg args)
+        report (dt/validate-all-instances c)]
+    {:class (str c)
+     :report report}))
+
+;; ---------- Type predicates ----------
+
+(defn- types-instance-of-handler [args]
+  (let [c (->ident (or (get args "class") (get args :class)))
+        e (or (get args "entity") (get args :entity))]
+    (when (nil? c) (throw (ex-info "Missing required argument: class" {:args args})))
+    (when (nil? e) (throw (ex-info "Missing required argument: entity" {:args args})))
+    {:class (str c) :entity (str e) :instance-of? (boolean (dt/instance-of? c (->ident e)))}))
+
+(defn- types-subclass-of-handler [args]
+  (let [parent (->ident (or (get args "parent") (get args :parent)))
+        child  (->ident (or (get args "child") (get args :child)))]
+    (when (nil? parent) (throw (ex-info "Missing required argument: parent" {:args args})))
+    (when (nil? child) (throw (ex-info "Missing required argument: child" {:args args})))
+    {:parent (str parent) :child (str child)
+     :subclass-of? (boolean (dt/subclass-of? parent child))}))
+
+;; ---------- Property introspection ----------
+
+(defn- property-arg [args]
+  (or (->ident (get args "property"))
+      (->ident (get args :property))
+      (throw (ex-info "Missing required argument: property" {:args args}))))
+
+(defn- property-domain-handler [args]
+  (let [p (property-arg args)
+        d (dt/domain-of p)]
+    {:property (str p) :domain (some-> d ->ident-str)}))
+
+(defn- property-range-handler [args]
+  (let [p (property-arg args)
+        r (dt/range-of p)]
+    {:property (str p) :range (some-> r ->ident-str)}))
+
+(defn- property-cardinality-handler [args]
+  (let [p (property-arg args)
+        c (dt/cardinality-of p)]
+    {:property (str p) :cardinality (some-> c ->ident-str)}))
+
+;; ---------- Entity operations ----------
+
+(defn- entity-create-handler [args]
+  (let [class-ident (->ident (or (get args "class") (get args :class)))
+        slots       (or (get args "slots") (get args :slots) {})]
+    (when (nil? class-ident)
+      (throw (ex-info "Missing required argument: class" {:args args})))
+    (let [cls (db/entity class-ident)]
+      (when (nil? cls)
+        (throw (ex-info (str "Class not found: " class-ident) {:class class-ident})))
+      (when (dt/abstract? class-ident)
+        (throw (ex-info (str "Cannot instantiate abstract class: " class-ident)
+                        {:class class-ident :reason :abstract})))
+      (let [props      (coerce-slot-map class-ident slots)
+            new-entity (dt/make class-ident props)]
+        (log/info :MCP/entity-create
+                  {:class class-ident :entity-id (:db/id new-entity)})
+        ;; Per ADR B.1.4: a new dt/Class or dt/Property changes the
+        ;; schema surface (visible to schema.* + class.* verbs).
+        ;; tools/list itself doesn't change (verb catalog is stable),
+        ;; so we DON'T fire tools/list_changed; instead, fire
+        ;; resources/list_changed because the new class/property
+        ;; becomes a resource.
+        (when (#{:dt/Class :dt/Property} class-ident)
+          (notifications/resources-list-changed!))
+        {:entity (entity-projection new-entity)}))))
+
+(defn- entity-find-handler [args]
+  (let [ident-or-id (or (get args "ident") (get args :ident)
+                        (get args "id")    (get args :id))]
+    (when (nil? ident-or-id)
+      (throw (ex-info "Missing required argument: ident (or id)" {:args args})))
+    (let [lookup (if (number? ident-or-id) ident-or-id (->ident ident-or-id))
+          e      (db/entity lookup)]
+      (if (some? e)
+        {:entity (entity-projection e)}
+        {:entity nil :missing? true :lookup (str ident-or-id)}))))
+
+(defn- entity-update-handler [args]
+  ;; Entity update via dt/make-equivalent: this requires a primitive
+  ;; that doesn't yet exist in dt/*.  Per the layer-targeting discipline
+  ;; (improve-abstraction-not-bypass), we throw a not-yet-implemented
+  ;; error pointing at the gap.  Stage F follow-up: extend dt/* with
+  ;; an `update-entity` primitive that handles slot updates with
+  ;; validation.
+  (throw (ex-info "entity.update is not yet implemented — pending dt/update-entity primitive per the improve-abstraction-not-bypass discipline"
+                  {:args args :gap :dt-update-entity-needed})))
+
+(defn- entity-validate-handler [args]
+  (let [class-ident (->ident (or (get args "class") (get args :class)))
+        slots       (or (get args "slots") (get args :slots) {})]
+    (when (nil? class-ident)
+      (throw (ex-info "Missing required argument: class" {:args args})))
+    (let [props  (coerce-slot-map class-ident slots)
+          errors (dt/validate-data class-ident props)]
+      (if errors
+        {:valid? false :errors errors}
+        {:valid? true}))))
+
+;; ---------- Workflow operations ----------
+
+(defn- workflow-arg [args]
+  (or (->ident (get args "workflow"))
+      (->ident (get args :workflow))
+      (throw (ex-info "Missing required argument: workflow" {:args args}))))
+
+(defn- workflow-define-handler [args]
+  (let [spec (or (get args "spec") (get args :spec))]
+    (when (nil? spec) (throw (ex-info "Missing required argument: spec" {:args args})))
+    {:workflow (workflow/define-workflow! spec)}))
+
+(defn- workflow-find-handler [args]
+  (let [w (workflow-arg args)
+        def (workflow/find-workflow w)]
+    {:workflow (str w) :definition (entity-projection def)}))
+
+(defn- workflow-start-process-handler [args]
+  (let [w       (workflow-arg args)
+        subject (or (get args "subject") (get args :subject))
+        data    (or (get args "data") (get args :data) {})]
+    (let [process (workflow/start-process! w subject data)]
+      {:process-id (str (:db/id process))
+       :workflow   (str w)
+       :state      (->ident-str (workflow/get-current-state process))})))
+
+(defn- workflow-transition-handler [args]
+  (let [process-id (or (get args "process-id") (get args :process-id))
+        transition (->ident (or (get args "transition") (get args :transition)))
+        reason     (or (get args "reason") (get args :reason))
+        opts       (cond-> {}
+                     reason (assoc :reason reason))]
+    (when (nil? process-id) (throw (ex-info "Missing required argument: process-id" {:args args})))
+    (when (nil? transition) (throw (ex-info "Missing required argument: transition" {:args args})))
+    (let [eid (if (number? process-id) process-id (Long/parseLong (str process-id)))
+          p   (workflow/find-process eid)
+          result (workflow/transition! p transition opts)]
+      {:process-id (str eid)
+       :new-state  (->ident-str (workflow/get-current-state result))
+       :terminal?  (boolean (workflow/process-in-terminal-state? result))})))
+
+(defn- workflow-process-state-handler [args]
+  (let [process-id (or (get args "process-id") (get args :process-id))]
+    (when (nil? process-id) (throw (ex-info "Missing required argument: process-id" {:args args})))
+    (let [eid (if (number? process-id) process-id (Long/parseLong (str process-id)))
+          p   (workflow/find-process eid)]
+      {:process-id (str eid)
+       :state      (->ident-str (workflow/get-current-state p))
+       :terminal?  (boolean (workflow/process-in-terminal-state? p))
+       :completed? (boolean (workflow/process-completed? p))})))
+
+(defn- workflow-process-history-handler [args]
+  (let [process-id (or (get args "process-id") (get args :process-id))]
+    (when (nil? process-id) (throw (ex-info "Missing required argument: process-id" {:args args})))
+    (let [eid (if (number? process-id) process-id (Long/parseLong (str process-id)))
+          p   (workflow/find-process eid)]
+      {:process-id (str eid)
+       :history    (workflow/get-process-history p)})))
+
+(defn- workflow-active-processes-handler [args]
+  (let [w (or (->ident (get args "workflow")) (->ident (get args :workflow)))]
+    {:workflow (when w (str w))
+     :processes (mapv entity-projection
+                      (if w
+                        (workflow/active-processes :workflow w)
+                        (workflow/active-processes)))}))
+
+;; ---------- Validation service ----------
+
+(defn- validation-start-handler [args]
+  (let [class-ident (->ident (or (get args "class") (get args :class)))]
+    (when (nil? class-ident)
+      (throw (ex-info "Missing required argument: class" {:args args})))
+    {:validation (validation/start-validation! class-ident)}))
+
+(defn- validation-run-handler [args]
+  (let [validation-id (or (get args "validation-id") (get args :validation-id))]
+    (when (nil? validation-id) (throw (ex-info "Missing required argument: validation-id" {:args args})))
+    {:result (validation/run-validation! validation-id)}))
+
+(defn- validation-cancel-handler [args]
+  (let [validation-id (or (get args "validation-id") (get args :validation-id))]
+    (when (nil? validation-id) (throw (ex-info "Missing required argument: validation-id" {:args args})))
+    {:cancelled (validation/cancel-validation! validation-id)}))
+
+(defn- validation-retry-handler [args]
+  (let [validation-id (or (get args "validation-id") (get args :validation-id))]
+    (when (nil? validation-id) (throw (ex-info "Missing required argument: validation-id" {:args args})))
+    {:retried (validation/retry-validation! validation-id)}))
+
+(defn- validation-results-handler [args]
+  (let [validation-id (or (get args "validation-id") (get args :validation-id))]
+    (when (nil? validation-id) (throw (ex-info "Missing required argument: validation-id" {:args args})))
+    {:results (validation/get-validation-results validation-id)}))
+
+(defn- validation-history-handler [args]
+  (let [class-ident (->ident (or (get args "class") (get args :class)))]
+    {:class (when class-ident (str class-ident))
+     :history (if class-ident
+                (validation/get-validation-history class-ident)
+                (validation/recent-validations))}))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Verb catalog — data-driven dispatch
+;;
+;; Each entry: tool name + title + description + inputSchema + handler.
+;; tools/list emits the catalog (sans :handler); tools/call looks up the
+;; handler by name and invokes it with the request arguments.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(def ^:private class-arg-schema
+  {:class {:type "string" :description "Class ident (e.g. ':zorp/Footwear' or 'zorp/Footwear')"}})
+
+(def ^:private property-arg-schema
+  {:property {:type "string" :description "Property ident"}})
+
+(def ^:private no-args-schema
+  {:type "object" :properties {} :required []})
+
+(defn- one-required [props required-keys]
+  {:type "object" :properties props :required (mapv name required-keys)})
+
+(def verb-catalog
+  "The stable ~33-verb operational catalog.  Adding a verb is one entry
+   here + one handler function above + (optionally) a test in
+   `test/sandbar/mcp/tools_test.clj`."
+  [;; Schema introspection
+   {:name "sandbar.schema.classes"
+    :title "List all classes"
+    :description "Return all `:dt/Class` instances (idents) in the metamodel."
+    :inputSchema no-args-schema
+    :handler schema-classes-handler}
+   {:name "sandbar.schema.properties"
+    :title "List all properties"
+    :description "Return all `:dt/Property` instances (idents) in the metamodel."
+    :inputSchema no-args-schema
+    :handler schema-properties-handler}
+   {:name "sandbar.schema.datatypes"
+    :title "List all Datomic value types"
+    :description "Return all `:db.type/*` value types available."
+    :inputSchema no-args-schema
+    :handler schema-datatypes-handler}
+
+   ;; Class introspection
+   {:name "sandbar.class.describe"
+    :title "Describe a class"
+    :description "Return abstract? + parents + ancestors + subclasses + slots for a class."
+    :inputSchema (one-required class-arg-schema [:class])
+    :handler class-describe-handler}
+   {:name "sandbar.class.slots"
+    :title "All slots of a class (inherited + direct)"
+    :description "Return the effective slot set for a class (inherited from parents + directly declared)."
+    :inputSchema (one-required class-arg-schema [:class])
+    :handler class-slots-handler}
+   {:name "sandbar.class.direct-slots"
+    :title "Direct slots only (no inheritance)"
+    :description "Return only the slots declared directly on a class (no inherited slots)."
+    :inputSchema (one-required class-arg-schema [:class])
+    :handler class-direct-slots-handler}
+   {:name "sandbar.class.required-slots"
+    :title "Required slots of a class"
+    :description "Return the subset of slots that are required (`:dt/required true`)."
+    :inputSchema (one-required class-arg-schema [:class])
+    :handler class-required-slots-handler}
+   {:name "sandbar.class.instances"
+    :title "All instances of a class"
+    :description "Return all entities that are instances of a class (including subclass instances)."
+    :inputSchema (one-required class-arg-schema [:class])
+    :handler class-instances-handler}
+   {:name "sandbar.class.subclasses"
+    :title "All subclasses (transitive)"
+    :description "Return all transitive subclasses of a class."
+    :inputSchema (one-required class-arg-schema [:class])
+    :handler class-subclasses-handler}
+   {:name "sandbar.class.parents"
+    :title "Direct parents + all ancestors"
+    :description "Return direct parents + all ancestor classes."
+    :inputSchema (one-required class-arg-schema [:class])
+    :handler class-parents-handler}
+   {:name "sandbar.class.validate-all-instances"
+    :title "Validate all instances of a class"
+    :description "Run validation against every instance of a class; return the report."
+    :inputSchema (one-required class-arg-schema [:class])
+    :handler class-validate-all-instances-handler}
+
+   ;; Type predicates
+   {:name "sandbar.types.instance-of"
+    :title "Is entity an instance of class?"
+    :description "Predicate: returns true if entity is an instance of class (direct or subclass)."
+    :inputSchema (one-required
+                   (merge class-arg-schema
+                          {:entity {:type "string" :description "Entity ident or eid"}})
+                   [:class :entity])
+    :handler types-instance-of-handler}
+   {:name "sandbar.types.subclass-of"
+    :title "Is child a subclass of parent?"
+    :description "Predicate: returns true if child is a transitive subclass of parent."
+    :inputSchema (one-required
+                   {:parent {:type "string" :description "Parent class ident"}
+                    :child  {:type "string" :description "Child class ident"}}
+                   [:parent :child])
+    :handler types-subclass-of-handler}
+
+   ;; Property introspection
+   {:name "sandbar.property.domain"
+    :title "Property domain"
+    :description "Return the domain class of a property (`:dt/domain`)."
+    :inputSchema (one-required property-arg-schema [:property])
+    :handler property-domain-handler}
+   {:name "sandbar.property.range"
+    :title "Property range"
+    :description "Return the value-type range of a property (`:dt/range` / `:db/valueType`)."
+    :inputSchema (one-required property-arg-schema [:property])
+    :handler property-range-handler}
+   {:name "sandbar.property.cardinality"
+    :title "Property cardinality"
+    :description "Return the cardinality of a property (`:db.cardinality/one` or `/many`)."
+    :inputSchema (one-required property-arg-schema [:property])
+    :handler property-cardinality-handler}
+
+   ;; Entity operations
+   {:name "sandbar.entity.create"
+    :title "Create an entity"
+    :description "Create a new entity of `:class` with `:slots`; validated via `dt/make`."
+    :inputSchema (one-required
+                   {:class {:type "string" :description "Class ident"}
+                    :slots {:type "object" :description "Slot map (slot-ident-string → value)"}}
+                   [:class])
+    :handler entity-create-handler}
+   {:name "sandbar.entity.find"
+    :title "Find an entity by ident or id"
+    :description "Look up an entity by `:ident` (keyword string) or `:id` (eid)."
+    :inputSchema {:type "object"
+                  :properties {:ident {:type "string" :description "Entity ident"}
+                               :id    {:type "integer" :description "Entity eid"}}
+                  :required []}
+    :handler entity-find-handler}
+   {:name "sandbar.entity.update"
+    :title "Update an entity's slots"
+    :description "Update slot values on an existing entity (NOT YET IMPLEMENTED — pending dt/update-entity primitive)."
+    :inputSchema (one-required
+                   {:entity {:type "string" :description "Entity ident or eid"}
+                    :slots  {:type "object" :description "Slot updates"}}
+                   [:entity :slots])
+    :handler entity-update-handler}
+   {:name "sandbar.entity.validate"
+    :title "Validate a slot map against a class"
+    :description "Pre-transaction validation: check that `:slots` would be valid for `:class`. No write."
+    :inputSchema (one-required
+                   {:class {:type "string" :description "Class ident"}
+                    :slots {:type "object" :description "Slot map to validate"}}
+                   [:class :slots])
+    :handler entity-validate-handler}
+
+   ;; Workflow operations
+   {:name "sandbar.workflow.define"
+    :title "Define a workflow"
+    :description "Register a new workflow definition from a spec (states + transitions)."
+    :inputSchema (one-required {:spec {:type "object" :description "Workflow spec"}} [:spec])
+    :handler workflow-define-handler}
+   {:name "sandbar.workflow.find"
+    :title "Find a workflow definition"
+    :description "Look up a workflow definition by ident."
+    :inputSchema (one-required {:workflow {:type "string"}} [:workflow])
+    :handler workflow-find-handler}
+   {:name "sandbar.workflow.start-process"
+    :title "Start a workflow process"
+    :description "Create a new workflow process attached to a subject; returns the new process id."
+    :inputSchema (one-required
+                   {:workflow {:type "string"}
+                    :subject  {:type "string" :description "Subject entity ident or eid"}
+                    :data     {:type "object" :description "Initial process data"}}
+                   [:workflow :subject])
+    :handler workflow-start-process-handler}
+   {:name "sandbar.workflow.transition"
+    :title "Transition a workflow process"
+    :description "Apply a named transition to a workflow process."
+    :inputSchema (one-required
+                   {:process-id {:type "integer"}
+                    :transition {:type "string"}
+                    :reason     {:type "string" :description "Optional human-readable reason"}}
+                   [:process-id :transition])
+    :handler workflow-transition-handler}
+   {:name "sandbar.workflow.process-state"
+    :title "Current state of a process"
+    :description "Return the current state + terminal flag + completion flag for a workflow process."
+    :inputSchema (one-required {:process-id {:type "integer"}} [:process-id])
+    :handler workflow-process-state-handler}
+   {:name "sandbar.workflow.process-history"
+    :title "Process transition history"
+    :description "Return the full transition history of a workflow process."
+    :inputSchema (one-required {:process-id {:type "integer"}} [:process-id])
+    :handler workflow-process-history-handler}
+   {:name "sandbar.workflow.active-processes"
+    :title "Active processes"
+    :description "Return all active (non-terminal) workflow processes; optionally filtered by workflow."
+    :inputSchema {:type "object"
+                  :properties {:workflow {:type "string" :description "Optional workflow ident"}}
+                  :required []}
+    :handler workflow-active-processes-handler}
+
+   ;; Validation service
+   {:name "sandbar.validation.start"
+    :title "Start a validation run"
+    :description "Begin validating all instances of a class as a tracked workflow."
+    :inputSchema (one-required class-arg-schema [:class])
+    :handler validation-start-handler}
+   {:name "sandbar.validation.run"
+    :title "Run a queued validation"
+    :description "Execute a previously-started validation."
+    :inputSchema (one-required {:validation-id {:type "integer"}} [:validation-id])
+    :handler validation-run-handler}
+   {:name "sandbar.validation.cancel"
+    :title "Cancel a validation"
+    :description "Cancel an in-flight validation run."
+    :inputSchema (one-required {:validation-id {:type "integer"}} [:validation-id])
+    :handler validation-cancel-handler}
+   {:name "sandbar.validation.retry"
+    :title "Retry a validation"
+    :description "Re-run a failed validation."
+    :inputSchema (one-required {:validation-id {:type "integer"}} [:validation-id])
+    :handler validation-retry-handler}
+   {:name "sandbar.validation.results"
+    :title "Get validation results"
+    :description "Fetch the results of a completed validation run."
+    :inputSchema (one-required {:validation-id {:type "integer"}} [:validation-id])
+    :handler validation-results-handler}
+   {:name "sandbar.validation.history"
+    :title "Validation history"
+    :description "Recent validation runs (all classes or filtered by `:class`)."
+    :inputSchema {:type "object"
+                  :properties (merge class-arg-schema {})
+                  :required []}
+    :handler validation-history-handler}])
+
+(def ^:private verb-by-name
+  (into {} (map (juxt :name identity)) verb-catalog))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; tools/list — return the verb catalog
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defn handle-list
+  "MCP `tools/list` — return the stable verb catalog.
+   Catalog is constant regardless of schema state; schema evolution
+   surfaces through the `sandbar.schema.*` + `sandbar.class.*` read
+   verbs, not through tools/list."
+  [id _params]
+  (envelope/jsonrpc-result id
+                           {:tools (mapv #(dissoc % :handler) verb-catalog)}))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; tools/call — dispatch verb by name; project result to MCP content array
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defn- result->content
+  "Project a handler's return value to an MCP `content` array entry.
+   Per MCP spec: `content` is an array of typed parts; `text` parts
+   carry stringified content.  We JSON-encode the handler's return
+   value for consistent client-side parsing."
+  [data]
+  [{:type "text"
+    :text (json/generate-string data {:pretty true})}])
 
 (defn handle-call
-  "MCP `tools/call` — invoke a discovered tool. Real dispatch via
-   dt/make per ADR B.1.3.
+  "MCP `tools/call` — dispatch a named verb from the catalog and project
+   its result.
 
    Response shapes:
-   - Success: {:content [{:type \"text\" :text <entity-edn>}]}
-   - Validation failure: {:content [{:type \"text\" :text ...}] :isError true}
-   - Abstract-class instantiation: {:content [...] :isError true}
-   - Internal error: JSON-RPC -32603
-   - Invalid tool name: JSON-RPC -32602
-   - Missing class: JSON-RPC -32602"
+   - Success: `{:content [{:type \"text\" :text <json>}]}`
+   - User error (ex-info from handler): `{:content [...] :isError true}`
+   - Unknown verb: JSON-RPC `-32602` invalid params
+   - Internal error: JSON-RPC `-32603`"
   [id params]
   (let [tool-name (:name params)
         arguments (:arguments params {})
-        cls-ident (tool-name->class-ident tool-name)]
-    (if (nil? cls-ident)
-      {:jsonrpc "2.0"
-       :id      id
-       :error   {:code    -32602
-                 :message (str "Invalid tool name: " tool-name)
-                 :data    {:received-name tool-name}}}
+        verb      (get verb-by-name tool-name)]
+    (cond
+      (nil? verb)
+      (envelope/jsonrpc-error id -32602
+                              (str "Unknown tool: " tool-name)
+                              {:received-name tool-name
+                               :available-tools (mapv :name verb-catalog)})
+
+      :else
       (try
-        (let [cls (dt/class-of cls-ident)]
-          (cond
-            (nil? cls)
-            {:jsonrpc "2.0"
-             :id      id
-             :error   {:code    -32602
-                       :message (str "No class found for tool: " tool-name)
-                       :data    {:resolved-ident cls-ident}}}
-
-            (dt/abstract? cls)
-            {:jsonrpc "2.0"
-             :id      id
-             :result  {:content [{:type "text"
-                                  :text (str "Cannot instantiate abstract class " cls-ident)}]
-                       :isError true}}
-
-            :else
-            (let [props      (coerce-arguments cls arguments)
-                  new-entity (dt/make cls-ident props)
-                  data       (entity->json-data new-entity)]
-              (log/info :MCP/tools-call-success
-                        {:tool tool-name :class cls-ident :entity-id (:db/id new-entity)})
-              ;; Per ADR B.1.4: when a :dt/Class or :dt/Property lands,
-              ;; the tools surface changed — push notification.
-              (when (#{:dt/Class :dt/Property} cls-ident)
-                (notifications/tools-list-changed!))
-              {:jsonrpc "2.0"
-               :id      id
-               :result  {:content [{:type "text"
-                                    :text (pr-str data)}]}})))
-        (catch clojure.lang.ExceptionInfo e
-          (let [errors (ex-data e)]
-            (log/warn :MCP/tools-call-validation-failed
-                      {:tool tool-name :errors errors})
-            {:jsonrpc "2.0"
-             :id      id
-             :result  {:content [{:type "text"
-                                  :text (str "Validation failed: " (.getMessage e)
-                                             " — " (pr-str errors))}]
-                       :isError true}}))
+        (let [result (try
+                       ((:handler verb) arguments)
+                       (catch clojure.lang.ExceptionInfo e
+                         {:_user-error true
+                          :message (.getMessage e)
+                          :details (ex-data e)}))]
+          (if (:_user-error result)
+            (envelope/jsonrpc-result id
+                                     {:content (result->content
+                                                 (dissoc result :_user-error))
+                                      :isError true})
+            (envelope/jsonrpc-result id
+                                     {:content (result->content result)})))
         (catch Exception e
           (log/error e :MCP/tools-call-error {:tool tool-name})
-          {:jsonrpc "2.0"
-           :id      id
-           :error   {:code    -32603
-                     :message "Tool execution failed"
-                     :data    {:exception-message (.getMessage e)}}})))))
+          (envelope/jsonrpc-error id -32603
+                                  "Tool execution failed"
+                                  {:tool tool-name
+                                   :exception-message (.getMessage e)}))))))

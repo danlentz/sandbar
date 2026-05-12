@@ -483,6 +483,94 @@ GET /api/processes/17592186045500/history
 }
 ```
 
+### Cancel Process
+
+```
+POST /api/processes/:id/cancel
+Content-Type: application/edn
+```
+
+Cancel a running workflow process. Calls `workflow/cancel-process!` after `workflow/can-cancel?` clears.
+
+**Request Body (optional):**
+
+```clojure
+{:reason "User requested cancellation"}
+```
+
+**Success Response:**
+
+```json
+{
+  "success": true,
+  "process": {
+    "id": 17592186045500,
+    "workflow": {
+      "id": 17592186045421,
+      "name": ":workflow/order-fulfillment"
+    },
+    "subject-id": 17592186045450,
+    "current-state": {
+      "id": 17592186045499,
+      "name": ":order/cancelled",
+      "label": "Cancelled",
+      "initial?": false,
+      "terminal?": true
+    },
+    "started-at": "2024-01-15T10:30:00.000Z",
+    "completed-at": "2024-01-15T10:45:00.000Z",
+    "completed?": true,
+    "in-terminal-state?": true,
+    "data": {"order-number": "ORD-001", "cancel-reason": "User requested cancellation"}
+  }
+}
+```
+
+**Error Response (process cannot be cancelled):**
+
+```json
+{
+  "error": "Cannot cancel process",
+  "reason": ":already-completed",
+  "current-state": ":order/delivered"
+}
+```
+
+**Cancellation guard — `workflow/can-cancel?`:**
+
+`can-cancel?` returns `false` (and `cancel-process!` raises `ExceptionInfo` with `:reason` ex-data) when:
+
+| `:reason` | Meaning |
+|-----------|---------|
+| `:already-completed` | Process is already in a terminal state |
+| `:not-cancellable` | The workflow definition disallows cancellation from the current state |
+| `:no-cancel-transition` | No transition exists to a `:cancelled`-type terminal state |
+
+### Process Cancellation — Programmatic
+
+The underlying functions are in `sandbar.util.workflow`:
+
+```clojure
+(require '[sandbar.util.workflow :as workflow])
+
+;; Check whether a process can be cancelled from its current state
+(workflow/can-cancel? process)
+;; => true / false
+
+;; Cancel — raises ExceptionInfo with :reason on guard failure
+(workflow/cancel-process! process)
+;; or with a reason for the audit history:
+(workflow/cancel-process! process :reason "User abandoned checkout")
+
+;; Returns the updated process entity (in its terminal :cancelled state)
+```
+
+Stage C.7.4 of the Sandbar-as-MCP-Server arc landed these primitives upstream so that `sandbar.mcp.tasks/handle-cancel` could delegate rather than reach for raw `datomic.api` — preserving the layer-targeting discipline (see [doc/mcp-server.md](mcp-server.md#layer-targeting-discipline)).
+
+### MCP Tasks composition
+
+Long-running workflow processes are also exposed via the **MCP Tasks** primitive — see [doc/tasks-api.md](tasks-api.md). The task-id IS the workflow process's `:db/id` (stringified); `tasks/get` projects current state; `tasks/cancel` calls `workflow/cancel-process!`. There is no parallel registry — the workflow process is the durable source of truth for both REST and MCP consumers.
+
 ---
 
 ## Jobs API
