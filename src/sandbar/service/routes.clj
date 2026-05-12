@@ -9,6 +9,7 @@
             [sandbar.api.status           :as status]
             [sandbar.api.store            :as store]
             [sandbar.api.workflow         :as workflow-api]
+            [sandbar.mcp.auth             :as mcp-auth]
             [sandbar.mcp.transport        :as mcp-transport]
             [sandbar.service.content      :as content]
             [sandbar.service.endpoint     :as endpoint :refer [defhandler]]
@@ -131,15 +132,19 @@
        ]
 
       ;; MCP (Model Context Protocol) endpoint — per
-      ;; decisions/sandbar_mcp_server_design_2026_05_12.md B.1.1
+      ;; decisions/sandbar_mcp_server_design_2026_05_12.md B.1.1 + B.1.2
       ;; Streamable HTTP transport at /mcp; JSON-RPC 2.0 envelope.
-      ;; Stage C.1 foundation: no Bearer auth interceptor yet (lands in C.2);
-      ;; relies on content-negotiation interceptors for JSON-RPC body parsing.
+      ;; Bearer-token auth (Stage C.2) — mcp-auth/bearer-interceptor extracts
+      ;; Authorization: Bearer <token> + delegates to sandbar.util.auth/authenticate-api-key;
+      ;; mcp-auth/require-bearer terminates with 401 + WWW-Authenticate: Bearer if
+      ;; no :identity attached.
       ["/mcp" ^:interceptors [event-util/log-request
                               content/data-body
                               content/log-response
                               content/accept-content
-                              params/parsed-params]
+                              params/parsed-params
+                              mcp-auth/bearer-interceptor
+                              mcp-auth/require-bearer]
        {:post mcp-transport/mcp-handler}]
 
       ]]])
