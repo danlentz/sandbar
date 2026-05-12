@@ -9,6 +9,7 @@
             [sandbar.api.status           :as status]
             [sandbar.api.store            :as store]
             [sandbar.api.workflow         :as workflow-api]
+            [sandbar.mcp.transport        :as mcp-transport]
             [sandbar.service.content      :as content]
             [sandbar.service.endpoint     :as endpoint :refer [defhandler]]
             [sandbar.service.params       :as params]
@@ -128,5 +129,17 @@
          ["/transition" {:post workflow-api/execute-transition}]
          ["/history" {:get workflow-api/get-process-history}]]]
        ]
+
+      ;; MCP (Model Context Protocol) endpoint — per
+      ;; decisions/sandbar_mcp_server_design_2026_05_12.md B.1.1
+      ;; Streamable HTTP transport at /mcp; JSON-RPC 2.0 envelope.
+      ;; Stage C.1 foundation: no Bearer auth interceptor yet (lands in C.2);
+      ;; relies on content-negotiation interceptors for JSON-RPC body parsing.
+      ["/mcp" ^:interceptors [event-util/log-request
+                              content/data-body
+                              content/log-response
+                              content/accept-content
+                              params/parsed-params]
+       {:post mcp-transport/mcp-handler}]
 
       ]]])
