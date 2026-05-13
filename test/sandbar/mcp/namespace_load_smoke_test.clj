@@ -20,6 +20,7 @@
    when one is introduced is part of the F-M-005 substage acceptance
    discipline."
   '[sandbar.codec
+    sandbar.codec.markdown
     sandbar.codec.protocol
     sandbar.mcp.auth
     sandbar.mcp.envelope

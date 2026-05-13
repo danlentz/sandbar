@@ -24,6 +24,7 @@
                  [clj-http "3.13.1"]
 
                  [cheshire "6.1.0"]
+                 [clj-commons/clj-yaml "1.0.29"]
                  [com.cognitect/transit-clj "1.0.333"]
                  [danlentz/clj-uuid "0.2.0"]
                  [rm-hull/table "0.7.1"]
