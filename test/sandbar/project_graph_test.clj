@@ -179,3 +179,73 @@
         result (pg/round-trip-test [m1 m2])]
     (is (true? (:ok? result))
         (str "multi-memory round-trip diff: " (pr-str (:diff result))))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Stage G Signal 2 — Filtering on project.export + ingest.import
+
+(deftest entity-passes-filter-class
+  (let [m (simple-memory)]
+    (is (true?  (pg/entity-passes-filter? m {:class :mm/Memory})))
+    (is (false? (pg/entity-passes-filter? m {:class :mm/Section})))))
+
+(deftest entity-passes-filter-classes-set
+  (let [m (simple-memory)]
+    (is (true?  (pg/entity-passes-filter? m {:classes #{:mm/Memory :mm/Tag}})))
+    (is (false? (pg/entity-passes-filter? m {:classes #{:mm/Tag}})))))
+
+(deftest entity-passes-filter-tree-filter
+  (let [m1 (assoc (simple-memory) :mm.memory/rel-path "decisions/m1.md")
+        m2 (assoc (simple-memory) :mm.memory/rel-path "bugs/m2.md")]
+    (is (true?  (pg/entity-passes-filter? m1 {:tree-filter "decisions/"})))
+    (is (false? (pg/entity-passes-filter? m2 {:tree-filter "decisions/"})))))
+
+(deftest entity-passes-filter-pred
+  (let [m (assoc (simple-memory) :mm.memory/memory-type :decision)]
+    (is (true?  (pg/entity-passes-filter? m {:pred #(= :decision (:mm.memory/memory-type %))})))
+    (is (false? (pg/entity-passes-filter? m {:pred #(= :bug (:mm.memory/memory-type %))})))))
+
+(deftest entity-passes-filter-composes-via-and
+  (let [m (assoc (simple-memory)
+                 :mm.memory/rel-path "decisions/m1.md"
+                 :mm.memory/memory-type :decision)]
+    (is (true?  (pg/entity-passes-filter? m {:class :mm/Memory
+                                              :tree-filter "decisions/"
+                                              :pred #(= :decision (:mm.memory/memory-type %))})))
+    (is (false? (pg/entity-passes-filter? m {:class :mm/Memory
+                                              :tree-filter "bugs/"})))))
+
+(deftest project-graph-applies-filter
+  (with-tmp-dir [dir nil]
+    (let [m1 (assoc (simple-memory) :mm.memory/rel-path "decisions/m1.md"
+                                    :db/ident :decisions/m1)
+          m2 (assoc (simple-memory) :mm.memory/rel-path "bugs/m2.md"
+                                    :db/ident :bugs/m2)
+          result (pg/project-graph [m1 m2] {:to dir :filter {:tree-filter "decisions/"}})]
+      (is (= 1 (count result)))
+      (is (= "decisions/m1.md" (-> result first :rel-path)))
+      (is (.exists (io/file dir "decisions/m1.md")))
+      (is (not (.exists (io/file dir "bugs/m2.md")))))))
+
+(deftest ingest-graph-applies-tree-filter
+  (with-tmp-dir [dir nil]
+    (let [m1 (assoc (simple-memory) :mm.memory/rel-path "decisions/m1.md"
+                                    :db/ident :decisions/m1)
+          m2 (assoc (simple-memory) :mm.memory/rel-path "bugs/m2.md"
+                                    :db/ident :bugs/m2)]
+      (pg/project-graph [m1 m2] {:to dir})
+      (let [back (pg/ingest-graph dir {:filter {:tree-filter "decisions/"}})]
+        (is (= 1 (count back)))
+        (is (= :decisions/m1 (-> back first :db/ident)))))))
+
+(deftest project-graph-filter-preserves-sections-under-matching-memory
+  (with-tmp-dir [dir nil]
+    (let [entities (memory-with-sections)
+          result (pg/project-graph entities {:to dir :filter {:class :mm/Memory}})]
+      ;; Even though :class :mm/Memory filters out mm/Section entities from
+      ;; the input directly, the project-graph implementation reattaches
+      ;; sections of matching memories before emitting.  Result should
+      ;; still contain the memory + its sections in the file.
+      (is (= 1 (count result)) "one memory written")
+      (let [content (slurp (io/file dir "decisions/bar.md"))]
+        (is (str/includes? content "## Context"))
+        (is (str/includes? content "## Decision"))))))

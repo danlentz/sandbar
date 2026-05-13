@@ -79,6 +79,42 @@
     (:mm.memory/rel-path entity)))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Filter mechanism (Stage G Signal 2 — essential for hybrid-backend
+;; experimentation per
+;; ideas/sandbar_project_export_filtering_for_hybrid_backend_experimentation_2026_05_13.md)
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defn entity-passes-filter?
+  "Test an entity-spec map against a filter spec.  Filter dimensions:
+     :class           - single class-ident; entity's :dt/type must match
+     :classes         - set of class-idents; entity's :dt/type must be a member
+     :pred            - arbitrary predicate fn (entity → boolean)
+     :tree-filter     - rel-path prefix; entity must carry :mm.memory/rel-path
+                        starting with this prefix (applies to mm/Memory only;
+                        non-mm/Memory entities pass through unchanged)
+
+   Multiple keys compose via AND.  An empty / nil filter spec passes all
+   entities."
+  [entity filter-spec]
+  (let [{:keys [class classes pred tree-filter]} filter-spec]
+    (and (or (nil? class)        (= class (:dt/type entity)))
+         (or (nil? classes)      (contains? classes (:dt/type entity)))
+         (or (nil? pred)         (pred entity))
+         (or (nil? tree-filter)
+             (not= :mm/Memory (:dt/type entity))   ; non-memory passes
+             (and (:mm.memory/rel-path entity)
+                  (str/starts-with? (:mm.memory/rel-path entity)
+                                    tree-filter))))))
+
+(defn apply-filter
+  "Filter a coll of entity-spec maps via `filter-spec`.  Returns a
+   vector preserving original order."
+  [entities filter-spec]
+  (if (empty? filter-spec)
+    (vec entities)
+    (vec (filter #(entity-passes-filter? % filter-spec) entities))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; project-graph — entities → filesystem
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
@@ -118,6 +154,10 @@
        :hierarchy-fn  — optional; entity → rel-path-string.  Defaults
                         to default-hierarchy-fn (reads
                         :mm.memory/rel-path).
+       :filter        — optional filter spec per `entity-passes-filter?`;
+                        when supplied, only matching entities project to
+                        disk.  Sections under a matching mm/Memory always
+                        accompany the memory regardless of filter.
 
    Returns: vector of `{:rel-path \"...\" :written true}` records.
 
@@ -125,14 +165,32 @@
    byte-identical files (per the markdown codec's normalization
    invariants in
    decisions/mm_section_schema_path_derived_idents_sibling_chain_navigation_2026_05_13.md §4)."
-  [entities {:keys [to hierarchy-fn]
+  [entities {:keys [to hierarchy-fn] filter-spec :filter
              :or   {hierarchy-fn default-hierarchy-fn}}]
   (when-not to
     (throw (ex-info "project-graph requires :to opt (output directory)" {})))
-  (let [out-dir (io/file to)]
+  (let [out-dir    (io/file to)
+        ;; Filter applied at the memory level — sections under a matching
+        ;; memory always travel with their host
+        filtered (if (and filter-spec (seq filter-spec))
+                   ;; Keep all sections; filter memories; drop sections
+                   ;; whose parent didn't pass.
+                   (let [memories       (clojure.core/filter (fn [e] (= :mm/Memory (:dt/type e)))
+                                                              entities)
+                         pass-memories  (apply-filter memories filter-spec)
+                         pass-mem-idents (set (map :db/ident pass-memories))
+                         sections       (clojure.core/filter (fn [e] (= :mm/Section (:dt/type e)))
+                                                              entities)
+                         pass-sections  (vec (clojure.core/filter
+                                               (fn [s]
+                                                 (contains? pass-mem-idents
+                                                            (:mm.section/parent s)))
+                                               sections))]
+                     (into pass-memories pass-sections))
+                   entities)]
     (.mkdirs out-dir)
     (vec
-      (for [{:keys [memory sections]} (group-entities-by-memory entities)
+      (for [{:keys [memory sections]} (group-entities-by-memory filtered)
             :let [rel-path (hierarchy-fn memory)]
             :when rel-path]
         (let [target-file (io/file out-dir rel-path)
@@ -165,22 +223,43 @@
 
    Inputs:
      from-dir — input directory (java.io.File or string)
-     opts     — currently unused (reserved for filter + class-override
-                opts in later Stage D substages)
+     opts     — map; supported keys:
+       :filter — filter spec per `entity-passes-filter?`; applied
+                 AFTER per-file parse.  Memories that fail :class /
+                 :pred / :tree-filter drop; sections under dropped
+                 memories drop too (consistency invariant).
 
    Returns: flat vector of entity-spec maps; for each .md file, the
    memory entity + its section entities in chain order are appended."
   ([from-dir] (ingest-graph from-dir {}))
-  ([from-dir _opts]
+  ([from-dir {filter-spec :filter}]
    (let [root (io/file from-dir)]
      (when-not (.isDirectory root)
        (throw (ex-info "ingest-graph requires a directory input"
                        {:from-dir (str from-dir)})))
-     (vec
-       (mapcat (fn [rel-path]
-                 (let [source (slurp (io/file root rel-path))]
-                   (md/parse-document source rel-path)))
-               (walk-markdown-files root))))))
+     (let [all-entities
+           (vec
+             (mapcat (fn [rel-path]
+                       ;; Tree-filter optimization — skip parse if rel-path
+                       ;; can't pass the :tree-filter prefix anyway.
+                       (when (or (nil? (:tree-filter filter-spec))
+                                 (str/starts-with? rel-path
+                                                   (:tree-filter filter-spec)))
+                         (let [source (slurp (io/file root rel-path))]
+                           (md/parse-document source rel-path))))
+                     (walk-markdown-files root)))]
+       (if (or (nil? filter-spec) (empty? filter-spec))
+         all-entities
+         ;; Filter memories first; drop sections of dropped memories
+         (let [memories       (clojure.core/filter #(= :mm/Memory (:dt/type %)) all-entities)
+               pass-memories  (apply-filter memories filter-spec)
+               pass-mem-idents (set (map :db/ident pass-memories))
+               sections       (clojure.core/filter #(= :mm/Section (:dt/type %)) all-entities)
+               pass-sections  (vec (clojure.core/filter
+                                     (fn [s] (contains? pass-mem-idents
+                                                        (:mm.section/parent s)))
+                                     sections))]
+           (into pass-memories pass-sections)))))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Round-trip-test convenience

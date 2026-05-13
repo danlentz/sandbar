@@ -332,29 +332,55 @@
 (defn- codec-list-handler [_args]
   {:codecs (codec/list-codecs)})
 
+(defn- ->filter-spec
+  "Coerce JSON-shaped filter arg to a Clojure filter spec for
+   sandbar.project-graph/entity-passes-filter?.  Accepts string keys
+   (from JSON) or keyword keys.  String class-idents are coerced to
+   keywords via ->ident; `:classes` value may be array or single ident."
+  [filter-arg]
+  (when (and filter-arg (map? filter-arg))
+    (let [g (fn [k] (or (get filter-arg (name k)) (get filter-arg k)))]
+      (cond-> {}
+        (g :class)
+        (assoc :class (->ident (g :class)))
+
+        (g :classes)
+        (assoc :classes (set (mapv ->ident
+                                   (let [c (g :classes)]
+                                     (if (sequential? c) c [c])))))
+
+        (g :tree-filter)
+        (assoc :tree-filter (g :tree-filter))))))
+
 (defn- project-export-handler [args]
-  (let [to (or (get args "to") (get args :to))]
+  (let [to     (or (get args "to") (get args :to))
+        filter-spec (->filter-spec (or (get args "filter") (get args :filter)))]
     (when-not to
       (throw (ex-info "project.export requires :to (output directory path)"
                       {:args args})))
-    ;; Stage F minimum-viable — exports ALL mm/Memory instances.
-    ;; Class-filter + per-attribute-filter mechanisms are Stage F/D follow-up.
-    (let [memories (dt/all-instances-of :mm/Memory)
-          ;; Project-graph operates on entity-spec maps; realize Datomic
-          ;; entities to plain maps before passing.
+    ;; Stage G Signal 2 — filter opt enables hybrid-backend
+    ;; experimentation per
+    ;; ideas/sandbar_project_export_filtering_for_hybrid_backend_experimentation_2026_05_13.md
+    (let [memories    (dt/all-instances-of :mm/Memory)
           entity-maps (mapv #(into {:dt/type :mm/Memory} %) memories)
-          result   (pg/project-graph entity-maps {:to to})]
-      {:to to
+          result      (pg/project-graph entity-maps
+                                         (cond-> {:to to}
+                                           filter-spec (assoc :filter filter-spec)))]
+      {:to       to
+       :filter   filter-spec
        :exported (count result)
-       :files (mapv :rel-path result)})))
+       :files    (mapv :rel-path result)})))
 
 (defn- project-import-handler [args]
-  (let [from (or (get args "from") (get args :from))]
+  (let [from        (or (get args "from") (get args :from))
+        filter-spec (->filter-spec (or (get args "filter") (get args :filter)))]
     (when-not from
       (throw (ex-info "project.import requires :from (input directory path)"
                       {:args args})))
-    (let [entities (pg/ingest-graph from)]
-      {:from from
+    (let [entities (pg/ingest-graph from (cond-> {}
+                                            filter-spec (assoc :filter filter-spec)))]
+      {:from     from
+       :filter   filter-spec
        :imported (count entities)
        :entities (mapv (fn [e]
                          {:dt/type (:dt/type e)
@@ -727,16 +753,20 @@
     :handler codec-list-handler}
    {:name "sandbar.project.export"
     :title "Project entities to filesystem hierarchy"
-    :description "Project every mm/Memory instance to a filesystem hierarchy at `:to` (output directory) via sandbar.project-graph.  Each entity emits as native representation per its class's `:dt/native-codec`.  Anderson de.setf.rdf:project-graph lineage per the codec ADR §1.1."
+    :description "Project mm/Memory instances to a filesystem hierarchy at `:to` via sandbar.project-graph.  Each entity emits as native representation per its class's `:dt/native-codec`.  Anderson de.setf.rdf:project-graph lineage per the codec ADR §1.1.  Optional `:filter` spec enables partition flexibility for hybrid FS/DB experimentation (per ideas/sandbar_project_export_filtering_for_hybrid_backend_experimentation_2026_05_13.md) — keys: `:class` (single ident), `:classes` (array), `:tree-filter` (rel-path prefix)."
     :inputSchema (one-required
-                   {:to {:type "string" :description "Output directory path"}}
+                   {:to     {:type "string" :description "Output directory path"}
+                    :filter {:type "object"
+                              :description "Optional filter spec: {:class :mm/Memory, :classes [..], :tree-filter \"decisions/\"}"}}
                    [:to])
     :handler project-export-handler}
    {:name "sandbar.project.import"
     :title "Ingest entities from filesystem hierarchy"
-    :description "Walk `:from` directory; parse each .md file via sandbar.codec.markdown; return the entity-spec maps.  Inverse of project.export."
+    :description "Walk `:from` directory; parse each .md file via sandbar.codec.markdown; return the entity-spec maps.  Inverse of project.export.  Optional `:filter` spec same shape as project.export."
     :inputSchema (one-required
-                   {:from {:type "string" :description "Input directory path"}}
+                   {:from   {:type "string" :description "Input directory path"}
+                    :filter {:type "object"
+                              :description "Optional filter spec (same shape as project.export)"}}
                    [:from])
     :handler project-import-handler}])
 
