@@ -237,11 +237,14 @@
             [slot v']))))
 
 (defn- coerce-keyword->string
-  "Coerce a keyword value to its bare string form for YAML emission.
-   Lists of keywords → vectors of strings.  Pass-through otherwise."
+  "Coerce a keyword value to its full-form string for YAML emission
+   (`:decisions/foo` → `\"decisions/foo\"`; `:decision` → `\"decision\"`).
+   Uses `subs (str ...) 1` to strip the leading `:` rather than `name`
+   so namespaced keywords preserve their namespace.  Lists of keywords
+   → vectors of strings.  Pass-through otherwise."
   [v]
   (cond
-    (keyword? v) (name v)
+    (keyword? v) (subs (str v) 1)
     (sequential? v) (mapv coerce-keyword->string v)
     :else v))
 
