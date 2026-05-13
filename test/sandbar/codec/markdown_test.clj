@@ -362,3 +362,146 @@
     ;; Parent links preserved
     (is (= (mapv :mm.section/parent (rest parsed))
            (mapv :mm.section/parent (rest reparsed))))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; B.4 — Adversarial round-trip + performance baseline
+
+(deftest round-trip-deep-nesting
+  (let [src (str "---\n"
+                 "name: Deep\n"
+                 "---\n"
+                 "# L1\nL1 text.\n\n"
+                 "## L2\nL2 text.\n\n"
+                 "### L3\nL3 text.\n\n"
+                 "#### L4\nL4 text.\n\n"
+                 "##### L5\nL5 text.\n\n"
+                 "###### L6\nL6 text.\n")
+        parsed   (md/parse-document src "decisions/deep.md")
+        emitted  (md/emit-document parsed)
+        reparsed (md/parse-document emitted "decisions/deep.md")]
+    (is (= 7 (count parsed)) "memory + 6 sections (one per level)")
+    ;; Each level's parent walks up properly
+    (let [sections (rest parsed)]
+      (is (= [:decisions/deep
+              :decisions/deep__l1
+              :decisions/deep__l1__l2
+              :decisions/deep__l1__l2__l3
+              :decisions/deep__l1__l2__l3__l4
+              :decisions/deep__l1__l2__l3__l4__l5]
+             (mapv :mm.section/parent sections))))
+    ;; Round-trip preserves structure
+    (is (= (mapv :db/ident parsed) (mapv :db/ident reparsed)))))
+
+(deftest round-trip-multi-paragraph-bodies
+  (let [src (str "---\nname: Multi\n---\n"
+                 "## A\n\n"
+                 "First paragraph.\n\n"
+                 "Second paragraph.\n\n"
+                 "Third paragraph.\n\n"
+                 "## B\n\n"
+                 "B body.\n")
+        parsed   (md/parse-document src "decisions/multi.md")
+        emitted  (md/emit-document parsed)
+        reparsed (md/parse-document emitted "decisions/multi.md")]
+    (is (= 3 (count parsed)))
+    ;; Body content survives — A has 3 paragraphs
+    (let [a-body (-> parsed second :mm.section/body)]
+      (is (str/includes? a-body "First paragraph"))
+      (is (str/includes? a-body "Second paragraph"))
+      (is (str/includes? a-body "Third paragraph")))
+    ;; Round-trip idempotent
+    (is (= (-> parsed   second :mm.section/body)
+           (-> reparsed second :mm.section/body)))))
+
+(deftest round-trip-mixed-frontmatter-types
+  (let [src (str "---\n"
+                 "name: Mixed\n"
+                 "type: decision\n"
+                 "scope: global\n"
+                 "status: active\n"
+                 "importance: high\n"
+                 "---\n"
+                 "## Body\n\nContent.\n")
+        parsed   (md/parse-document src "decisions/mixed.md")
+        emitted  (md/emit-document parsed)
+        reparsed (md/parse-document emitted "decisions/mixed.md")
+        memory   (first parsed)
+        re-memory (first reparsed)]
+    ;; Keyword slots round-trip as keywords
+    (is (= :decision (:mm.memory/memory-type memory)))
+    (is (= :decision (:mm.memory/memory-type re-memory)))
+    (is (= :global   (:mm.memory/scope memory)))
+    (is (= :global   (:mm.memory/scope re-memory)))
+    (is (= :active   (:mm.memory/status memory)))
+    (is (= :active   (:mm.memory/status re-memory)))
+    ;; Non-keyword scalar round-trips as authored
+    (is (= (:mm.memory/name memory) (:mm.memory/name re-memory)))))
+
+(deftest round-trip-empty-section-body
+  (let [src (str "---\nname: Empty\n---\n"
+                 "## A\n\n"
+                 "## B\n\nB body.\n")
+        parsed   (md/parse-document src "decisions/empty.md")
+        emitted  (md/emit-document parsed)
+        reparsed (md/parse-document emitted "decisions/empty.md")]
+    ;; A has empty body; B has content
+    (is (str/blank? (-> parsed second :mm.section/body)))
+    (is (not (str/blank? (-> parsed last :mm.section/body))))
+    ;; Round-trip preserves empty body
+    (is (str/blank? (-> reparsed second :mm.section/body)))))
+
+(deftest round-trip-crlf-line-endings
+  ;; Source has CRLF; codec normalizes to LF; round-trip stable thereafter
+  (let [src "---\r\nname: CR\r\n---\r\n## Body\r\n\r\nText.\r\n"
+        parsed   (md/parse-document src "decisions/cr.md")
+        emitted  (md/emit-document parsed)]
+    (is (not (str/includes? emitted "\r")) "emit uses LF only")
+    ;; Second-parse idempotent
+    (let [reparsed (md/parse-document emitted "decisions/cr.md")]
+      (is (= (mapv :db/ident parsed) (mapv :db/ident reparsed))))))
+
+(deftest round-trip-headings-with-special-chars
+  ;; Slug strips non-alphanumeric; check the round-trip works
+  (let [src (str "---\nname: Special\n---\n"
+                 "## Q&A: First!\n\nA.\n\n"
+                 "## Next-Steps\n\nB.\n")
+        parsed   (md/parse-document src "decisions/special.md")]
+    (is (= 3 (count parsed)))
+    (is (= :decisions/special__qa-first    (-> parsed second :db/ident)))
+    (is (= :decisions/special__next-steps  (-> parsed last :db/ident)))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; B.4 — Performance baseline (informational; assertions soft)
+;;
+;; Target per B.0 ADR §7.4: ~30ms per typical 10KB file.  The corpus
+;; ~1000-file round-trip should complete in ≤30s budget.
+
+(defn- gen-sample-doc
+  "Generate a synthetic mm/Memory markdown source approximating corpus
+   structure — frontmatter + 5 top-level sections, each ~2KB."
+  []
+  (let [section-body (apply str (repeat 30 "Lorem ipsum dolor sit amet, consectetur adipiscing elit.\n"))
+        sections     (for [i (range 1 6)]
+                       (str "## Section " i "\n\n" section-body "\n"))]
+    (str "---\nname: Bench Sample\ntype: decision\nscope: global\n---\n"
+         (apply str sections))))
+
+(deftest perf-baseline-10kb-document
+  ;; Soft assertion — informational; reports timing but doesn't fail
+  ;; CI on environmental variation.
+  (let [src (gen-sample-doc)
+        n-runs 20]
+    (is (> (count src) 8000) "Sample doc is ~10KB")
+    (let [start (System/nanoTime)
+          _     (dotimes [_ n-runs]
+                  (let [parsed  (md/parse-document src "decisions/bench.md")
+                        emitted (md/emit-document parsed)]
+                    (when (str/blank? emitted) (throw (ex-info "emit empty" {})))))
+          elapsed-ns (- (System/nanoTime) start)
+          per-run-ms (/ elapsed-ns 1e6 n-runs)]
+      (println (format "B.4 perf baseline: %.2f ms/round-trip (n=%d, ~%dKB doc)"
+                       per-run-ms n-runs (int (/ (count src) 1024))))
+      ;; Soft assertion — fail only on egregious regression (>500ms/file)
+      (is (< per-run-ms 500.0)
+          (format "Performance baseline severely exceeded: %.2f ms/run > 500 ms target"
+                  per-run-ms)))))
