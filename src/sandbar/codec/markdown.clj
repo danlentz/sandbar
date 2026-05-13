@@ -353,6 +353,267 @@
   (->MarkdownCodec))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Stage B.3 — Section-tree parse + emit
+;;
+;; Per B.0 ADR §2 (path-derived idents) + §3 (sibling-chain semantics).
+;; Walks markdown headings; produces mm/Section entity-specs with
+;; :parent / :next-sibling / :previous-sibling refs set bidirectionally.
+;;
+;; The parse + emit functions in this section are exposed publicly so
+;; callers can reach them via `sandbar.codec.markdown/parse-document` +
+;; `sandbar.codec.markdown/emit-document` (the coll-shape variants), in
+;; addition to the standard codec/parse + codec/emit calls.
+
+(def ^:const max-heading-level
+  "ATX heading depth cap.  Per CommonMark §4.2 + B.0 ADR §1.2."
+  6)
+
+(defn- slugify
+  "Produce a URL-safe slug from a heading text.  Lowercase, spaces → hyphens,
+   strip non-alphanumeric-hyphen.  Per B.0 ADR §2.2."
+  [s]
+  (-> (or s "")
+      str/lower-case
+      (str/replace #"\s+" "-")
+      (str/replace #"[^a-z0-9-]+" "")
+      (str/replace #"-+" "-")
+      (str/replace #"^-|-$" "")))
+
+(defn memory-ident-from-rel-path
+  "Compute the mm/Memory entity ident from a corpus rel-path.  Per B.0
+   ADR §2.2.
+
+   Examples:
+     'decisions/foo.md' → :decisions/foo
+     'patterns/architectural/sandbar/x.md' → :patterns.architectural.sandbar/x"
+  [rel-path]
+  (let [no-ext (str/replace rel-path #"\.md$" "")
+        parts  (str/split no-ext #"/")
+        ns-parts   (butlast parts)
+        local-name (last parts)]
+    (when (and (seq ns-parts) local-name)
+      (keyword (str/join "." ns-parts) local-name))))
+
+(defn section-ident
+  "Compute path-derived ident for a section.  Per B.0 ADR §2.2.
+
+   memory-ident  — :decisions/foo
+   heading-chain — vector of ancestor heading titles, e.g. [\"Context\" \"Decision\"]
+   → :decisions/foo__context__decision"
+  [memory-ident heading-chain]
+  (when (and memory-ident (seq heading-chain))
+    (let [ns-part   (namespace memory-ident)
+          name-part (name memory-ident)
+          slug-chain (str/join "__" (map slugify heading-chain))]
+      (keyword ns-part (str name-part "__" slug-chain)))))
+
+(defn- parse-heading-line
+  "Match an ATX heading line.  Returns `{:level N :title \"...\"}` or nil.
+   Accepts headings with up to 3 leading spaces per CommonMark §4.2."
+  [line]
+  (when-let [m (re-matches #"^[ ]{0,3}(#{1,6})\s+(.+?)(?:\s*#*)?\s*$" line)]
+    (let [level (count (nth m 1))
+          title (str/trim (nth m 2))]
+      (when (and (<= level max-heading-level)
+                 (seq title))
+        {:level level :title title}))))
+
+(defn parse-sections
+  "Walk a markdown body + produce a vector of mm/Section entity-specs in
+   document order, with :parent / :next-sibling / :previous-sibling refs
+   set bidirectionally per B.0 ADR §3.
+
+   Inputs:
+     body         — markdown body string (post-frontmatter)
+     memory-ident — the host mm/Memory's :db/ident (e.g., :decisions/foo)
+
+   Returns: vector of section maps; empty when body has no headings.
+
+   On slug-collision (two sections at same level under same parent
+   producing the same slug), throws ex-info per B.0 ADR §2.3."
+  [body memory-ident]
+  (when-not memory-ident
+    (throw (ex-info "parse-sections requires memory-ident" {})))
+  (let [lines             (str/split (or body "") #"\n" -1)
+        sections          (atom [])
+        path-stack        (atom [])           ; ancestor chain: vec of {:level :ident :title}
+        sibling-tracker   (atom {})           ; {[parent-ident level] → last-sibling-ident}
+        body-buf          (atom (StringBuilder.))
+        ident->index      (atom {})           ; for O(1) sibling pointer rewrite
+
+        flush-body!
+        (fn []
+          (let [text (.toString ^StringBuilder @body-buf)]
+            (reset! body-buf (StringBuilder.))
+            (when (pos? (count @sections))
+              (let [last-idx (dec (count @sections))]
+                (swap! sections assoc-in [last-idx :mm.section/body]
+                       (or (normalize-body text) ""))))))
+
+        set-next-sibling-on!
+        (fn [prev-ident new-ident]
+          (when-let [idx (get @ident->index prev-ident)]
+            (swap! sections assoc-in [idx :mm.section/next-sibling] new-ident)))]
+
+    (doseq [line lines]
+      (if-let [{:keys [level title]} (parse-heading-line line)]
+        (do
+          ;; Flush body buffer to the CURRENT-LAST section before opening
+          ;; a new one (this section's body is the text between its
+          ;; heading and the next heading at ANY level — per B.0 §1.2
+          ;; exclusive semantics).
+          (flush-body!)
+          ;; Pop path-stack to (level - 1) — closes deeper sections.
+          (swap! path-stack
+                 (fn [stk]
+                   (vec (take-while #(< (:level %) level) stk))))
+          (let [parent        (or (some-> @path-stack last :ident) memory-ident)
+                heading-chain (conj (mapv :title @path-stack) title)
+                ident         (section-ident memory-ident heading-chain)
+                tracker-key   [parent level]
+                prev-sibling  (get @sibling-tracker tracker-key)]
+            ;; Collision check per B.0 ADR §2.3
+            (when (contains? @ident->index ident)
+              (throw (ex-info "Section ident collision under same parent — slug conflict"
+                              {:memory-ident memory-ident
+                               :colliding-ident ident
+                               :heading-chain heading-chain})))
+            (let [section (cond-> {:dt/type           :mm/Section
+                                   :db/ident          ident
+                                   :mm.section/heading       title
+                                   :mm.section/heading-level level
+                                   :mm.section/parent        parent
+                                   :mm.section/body          ""}
+                            prev-sibling (assoc :mm.section/previous-sibling prev-sibling))]
+              (swap! sections conj section)
+              (swap! ident->index assoc ident (dec (count @sections)))
+              ;; Wire previous sibling's :next-sibling backward
+              (when prev-sibling
+                (set-next-sibling-on! prev-sibling ident))
+              ;; Update sibling tracker + path stack
+              (swap! sibling-tracker assoc tracker-key ident)
+              (swap! path-stack conj {:level level :ident ident :title title}))))
+        ;; Non-heading line — append to body buffer
+        (do
+          (.append ^StringBuilder @body-buf ^String line)
+          (.append ^StringBuilder @body-buf "\n"))))
+    ;; Flush final accumulated body to the last section
+    (flush-body!)
+    @sections))
+
+(defn first-section-of
+  "Find the first section in the chain — the section whose :parent is
+   `memory-ident` AND has no :previous-sibling.  Returns the section map
+   or nil."
+  [sections memory-ident]
+  (first (filter (fn [s]
+                   (and (= memory-ident (:mm.section/parent s))
+                        (not (:mm.section/previous-sibling s))))
+                 sections)))
+
+(defn parse-document
+  "Full mm/Memory document parse: split frontmatter + body, build the
+   section tree, return a vector of entity-specs.
+
+   First element is the mm/Memory entity (with :first-section ref to the
+   chain head); subsequent elements are mm/Section entities in document
+   order with full sibling-chain wiring.
+
+   Inputs:
+     source   — markdown source text
+     rel-path — corpus rel-path (e.g., 'decisions/foo.md') — REQUIRED for
+                path-derived idents
+
+   When body has no headings, returns a single-element vector with just
+   the mm/Memory entity."
+  [source rel-path]
+  (let [memory-ident (or (memory-ident-from-rel-path rel-path)
+                         (throw (ex-info "parse-document requires a rel-path that yields a valid memory ident"
+                                         {:rel-path rel-path})))
+        c          (make-codec)
+        memory-ent (proto/parse c source {:class :mm/Memory})
+        memory-ent (assoc memory-ent :db/ident memory-ident
+                                     :mm.memory/rel-path rel-path)
+        body-raw   (:mm.memory/body-raw memory-ent)
+        sections   (parse-sections body-raw memory-ident)]
+    (if (empty? sections)
+      [memory-ent]
+      (let [first-sec (first-section-of sections memory-ident)]
+        (into [(assoc memory-ent :mm.memory/first-section (:db/ident first-sec))]
+              sections)))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Section-tree emit — reconstruct markdown body from section chain
+
+(defn- ^String emit-section-body
+  "Build the section's emitted text — heading line + body + children (via
+   chain walk).  Recursively emits sub-sections in chain order."
+  [section-by-ident memory-ident section sb]
+  (let [^StringBuilder sb sb
+        heading-prefix    (apply str (repeat (:mm.section/heading-level section) "#"))
+        title             (:mm.section/heading section)
+        body              (:mm.section/body section)]
+    (.append sb heading-prefix)
+    (.append sb " ")
+    (.append sb (or title ""))
+    (.append sb "\n")
+    (when (and body (not (str/blank? body)))
+      (.append sb "\n")
+      (.append sb body)
+      (when-not (str/ends-with? body "\n")
+        (.append sb "\n")))
+    ;; Find first child + walk down via :next-sibling chain
+    (let [this-ident (:db/ident section)]
+      (loop [child (first (filter (fn [s]
+                                    (and (= this-ident (:mm.section/parent s))
+                                         (not (:mm.section/previous-sibling s))))
+                                  (vals section-by-ident)))]
+        (when child
+          (.append sb "\n")
+          (emit-section-body section-by-ident memory-ident child sb)
+          (recur (some->> (:mm.section/next-sibling child)
+                          (get section-by-ident))))))
+    sb))
+
+(defn emit-sections-body
+  "Reconstruct the markdown body text from a vector of mm/Section entity-
+   specs + the host memory-ident.  Walks the top-level chain via
+   :first-section + recurses through sibling + parent links."
+  [sections memory-ident first-section-ident]
+  (let [section-by-ident (into {} (for [s sections] [(:db/ident s) s]))
+        sb               (StringBuilder.)]
+    (loop [section (get section-by-ident first-section-ident)
+           first?  true]
+      (when section
+        (when-not first? (.append sb "\n"))
+        (emit-section-body section-by-ident memory-ident section sb)
+        (recur (some->> (:mm.section/next-sibling section)
+                        (get section-by-ident))
+               false)))
+    (.toString sb)))
+
+(defn emit-document
+  "Full mm/Memory document emit: takes a vector of entity-specs (memory +
+   sections); reconstructs frontmatter + body via section-tree walk;
+   returns the markdown source string.
+
+   When the input is a single-entity vector (mm/Memory only, no sections),
+   delegates to MarkdownCodec/emit (frontmatter + body-raw)."
+  [entities]
+  (let [memory   (first entities)
+        sections (rest entities)
+        c        (make-codec)]
+    (if (empty? sections)
+      (proto/emit c memory {})
+      (let [first-sec-ident (:mm.memory/first-section memory)
+            body-text       (emit-sections-body sections (:db/ident memory) first-sec-ident)
+            ;; Build a memory-with-body-from-sections for the codec's emit
+            memory-for-emit (-> memory
+                                (dissoc :mm.memory/first-section :db/ident :mm.memory/rel-path)
+                                (assoc :mm.memory/body-raw body-text))]
+        (proto/emit c memory-for-emit {})))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Convenience registration
 ;;
 ;; Consumers may call this at component-startup time to make the

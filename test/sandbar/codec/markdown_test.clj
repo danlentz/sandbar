@@ -204,3 +204,161 @@
   (let [src "---\nname: Bar\n---\n# Body\n"
         [fmt _codec] (codec/codec-for-mime "text/markdown")]
     (is (= :markdown fmt))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; B.3 — Section-tree parsing
+;;
+;; Per decisions/mm_section_schema_path_derived_idents_sibling_chain_navigation_2026_05_13.md §2 + §3.
+
+(deftest slugify-edge-cases
+  ;; via the public memory-ident-from-rel-path / section-ident
+  (is (= :decisions/foo (md/memory-ident-from-rel-path "decisions/foo.md")))
+  (is (= :decisions/foo__context (md/section-ident :decisions/foo ["Context"])))
+  (is (= :decisions/foo__context__decision
+         (md/section-ident :decisions/foo ["Context" "Decision"])))
+  (is (= :patterns.architectural.sandbar/x
+         (md/memory-ident-from-rel-path "patterns/architectural/sandbar/x.md"))))
+
+(deftest parse-sections-simple
+  (let [body "## Context\n\nFirst para.\n\n## Decision\n\nSecond para.\n"
+        sections (md/parse-sections body :decisions/foo)]
+    (is (= 2 (count sections)))
+    (let [[a b] sections]
+      (is (= :decisions/foo__context (:db/ident a)))
+      (is (= :decisions/foo__decision (:db/ident b)))
+      (is (= "Context"  (:mm.section/heading a)))
+      (is (= "Decision" (:mm.section/heading b)))
+      (is (= 2 (:mm.section/heading-level a)))
+      (is (= :decisions/foo (:mm.section/parent a)))
+      (is (= :decisions/foo (:mm.section/parent b)))
+      ;; Sibling chain: a → b
+      (is (= :decisions/foo__decision (:mm.section/next-sibling a)))
+      (is (nil? (:mm.section/previous-sibling a)))
+      (is (= :decisions/foo__context (:mm.section/previous-sibling b)))
+      (is (nil? (:mm.section/next-sibling b))))))
+
+(deftest parse-sections-nested
+  (let [body "## Context\n\nIntro.\n\n### Sub\n\nDeeper.\n\n## Decision\n\nNext.\n"
+        sections (md/parse-sections body :decisions/foo)]
+    (is (= 3 (count sections)))
+    (let [[ctx sub dec] sections]
+      (is (= :decisions/foo__context (:db/ident ctx)))
+      (is (= :decisions/foo__context__sub (:db/ident sub)))
+      (is (= :decisions/foo__decision (:db/ident dec)))
+      ;; Parent links
+      (is (= :decisions/foo (:mm.section/parent ctx)))
+      (is (= :decisions/foo__context (:mm.section/parent sub)))
+      (is (= :decisions/foo (:mm.section/parent dec)))
+      ;; Sibling chain at top-level: ctx → dec; sub has no top-level
+      ;; sibling chain entry (different parent).
+      (is (= :decisions/foo__decision (:mm.section/next-sibling ctx)))
+      (is (= :decisions/foo__context  (:mm.section/previous-sibling dec)))
+      ;; Sub is the only child of ctx — no siblings at level 3 yet.
+      (is (nil? (:mm.section/next-sibling sub)))
+      (is (nil? (:mm.section/previous-sibling sub))))))
+
+(deftest parse-sections-collision-raises
+  ;; Two sections at same level under same parent with same slug
+  (let [body "## Context\n\n## Context\n"]
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"collision"
+          (md/parse-sections body :decisions/foo)))))
+
+(deftest parse-sections-bidirectional-consistency
+  (let [body "## A\n\n## B\n\n## C\n"
+        [a b c] (md/parse-sections body :decisions/foo)]
+    ;; Forward + backward chain must agree
+    (is (= (:db/ident b) (:mm.section/next-sibling a)))
+    (is (= (:db/ident a) (:mm.section/previous-sibling b)))
+    (is (= (:db/ident c) (:mm.section/next-sibling b)))
+    (is (= (:db/ident b) (:mm.section/previous-sibling c)))
+    (is (nil? (:mm.section/next-sibling c)))
+    (is (nil? (:mm.section/previous-sibling a)))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; B.3 — Full-document round-trip via parse-document + emit-document
+
+(deftest parse-document-simple
+  (let [src (str "---\n"
+                 "name: Foo Decision\n"
+                 "type: decision\n"
+                 "---\n"
+                 "## Context\n"
+                 "\n"
+                 "Context body.\n"
+                 "\n"
+                 "## Decision\n"
+                 "\n"
+                 "Decision body.\n")
+        entities (md/parse-document src "decisions/foo.md")]
+    (is (= 3 (count entities)) "memory + 2 sections")
+    (let [[memory ctx decision] entities]
+      (is (= :decisions/foo (:db/ident memory)))
+      (is (= :mm/Memory     (:dt/type memory)))
+      (is (= "Foo Decision" (:mm.memory/name memory)))
+      (is (= :decision      (:mm.memory/memory-type memory)))
+      (is (= :decisions/foo__context (:mm.memory/first-section memory)))
+      ;; Memory's rel-path captured
+      (is (= "decisions/foo.md" (:mm.memory/rel-path memory)))
+      ;; Section ctx
+      (is (= :decisions/foo__context (:db/ident ctx)))
+      (is (= "Context" (:mm.section/heading ctx)))
+      ;; Section decision
+      (is (= :decisions/foo__decision (:db/ident decision)))
+      (is (= "Decision" (:mm.section/heading decision))))))
+
+(deftest parse-document-frontmatter-only
+  (let [src "---\nname: Empty\n---\n"
+        entities (md/parse-document src "notes/empty.md")]
+    (is (= 1 (count entities)) "frontmatter-only memory → no sections")
+    (is (= :notes/empty (:db/ident (first entities))))))
+
+(deftest round-trip-document-sections
+  (let [src (str "---\n"
+                 "name: Foo\n"
+                 "type: decision\n"
+                 "---\n"
+                 "## Context\n"
+                 "\n"
+                 "Para one.\n"
+                 "\n"
+                 "## Decision\n"
+                 "\n"
+                 "Para two.\n")
+        parsed   (md/parse-document src "decisions/foo.md")
+        emitted  (md/emit-document parsed)
+        reparsed (md/parse-document emitted "decisions/foo.md")]
+    ;; Same number of entities
+    (is (= (count parsed) (count reparsed)))
+    ;; Sibling refs survive round-trip
+    (is (= (-> parsed   second :db/ident)
+           (-> reparsed second :db/ident)))
+    (is (= (-> parsed   second :mm.section/next-sibling)
+           (-> reparsed second :mm.section/next-sibling)))
+    ;; Headings survive
+    (is (= (-> parsed   second :mm.section/heading)
+           (-> reparsed second :mm.section/heading)))))
+
+(deftest round-trip-document-nested-sections
+  (let [src (str "---\n"
+                 "name: Nested\n"
+                 "---\n"
+                 "## Outer\n"
+                 "\n"
+                 "Outer para.\n"
+                 "\n"
+                 "### Inner\n"
+                 "\n"
+                 "Inner para.\n"
+                 "\n"
+                 "## Sibling\n"
+                 "\n"
+                 "Sibling para.\n")
+        parsed   (md/parse-document src "decisions/nested.md")
+        emitted  (md/emit-document parsed)
+        reparsed (md/parse-document emitted "decisions/nested.md")]
+    (is (= (count parsed) (count reparsed)) "4 entities (memory + 3 sections)")
+    ;; Section idents preserved
+    (is (= (mapv :db/ident parsed) (mapv :db/ident reparsed)))
+    ;; Parent links preserved
+    (is (= (mapv :mm.section/parent (rest parsed))
+           (mapv :mm.section/parent (rest reparsed))))))
