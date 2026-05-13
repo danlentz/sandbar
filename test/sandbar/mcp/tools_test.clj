@@ -41,7 +41,9 @@
     (let [names (set (map :name tools/verb-catalog))]
       (is (contains? names "sandbar.schema.classes"))
       (is (contains? names "sandbar.schema.properties"))
-      (is (contains? names "sandbar.schema.datatypes"))))
+      (is (contains? names "sandbar.schema.datatypes"))
+      (is (contains? names "sandbar.schema.entities")
+          "Stage G Signal 8 — batch verb for N+1 elimination")))
 
   (testing "class introspection verbs"
     (let [names (set (map :name tools/verb-catalog))]

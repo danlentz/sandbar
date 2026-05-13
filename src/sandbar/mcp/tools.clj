@@ -212,6 +212,32 @@
     {:class (str c)
      :instances (mapv entity-projection instances)}))
 
+(defn- schema-entities-handler
+  "Batch fetch — return entity-spec maps for all non-abstract classes
+   (or a filtered subset via :classes).  Single round-trip alternative
+   to N+1 sandbar.class.instances calls.  Per Stage G Signal 8
+   (corpus-side friction-discovery 2026-05-13)."
+  [args]
+  (let [classes-arg (or (get args "classes") (get args :classes))
+        target-classes (cond
+                         (sequential? classes-arg)
+                         (mapv ->ident classes-arg)
+
+                         (some? classes-arg)
+                         [(->ident classes-arg)]
+
+                         :else
+                         (->> (dt/all-classes)
+                              (remove dt/abstract?)))
+        by-class (into {}
+                       (for [cls target-classes]
+                         [(->ident-str cls)
+                          (mapv entity-projection (dt/all-instances-of cls))]))
+        total    (reduce + (map count (vals by-class)))]
+    {:by-class       by-class
+     :total-classes  (count target-classes)
+     :total-entities total}))
+
 (defn- class-subclasses-handler [args]
   {:class (str (class-arg args))
    :subclasses (->> (dt/subclasses-of (class-arg args)) (map ->ident-str) sort vec)})
@@ -545,6 +571,15 @@
     :description "Return all `:dt/Property` instances (idents) in the metamodel."
     :inputSchema no-args-schema
     :handler schema-properties-handler}
+   {:name "sandbar.schema.entities"
+    :title "Batch fetch entities across classes"
+    :description "Return entity-spec maps grouped by class for all non-abstract classes (default) or a `:classes` filter.  Single round-trip alternative to N+1 sandbar.class.instances calls.  Result shape: `{:by-class {class-ident-string [entity-map ...]} :total-classes int :total-entities int}`.  Per Stage G Signal 8 (corpus-side friction-discovery)."
+    :inputSchema {:type "object"
+                  :properties {:classes {:type "array"
+                                          :items {:type "string"}
+                                          :description "Optional list of class-ident strings to fetch; default fetches all non-abstract classes"}}
+                  :required []}
+    :handler schema-entities-handler}
    {:name "sandbar.schema.datatypes"
     :title "List all Datomic value types"
     :description "Return all `:db.type/*` value types available."
