@@ -1,368 +1,220 @@
 # Sandbar
 
-**An integrated metamodel platform for typed Clojure data over Datomic — with first-class codecs, workflow substrate, and protocol surfaces (REST + MCP + RDF) derived from the same metacircular type system.**
+> A metacircular metamodel platform — RDFS-style classes + properties + inheritance on Datomic, exposed simultaneously through HTTP, MCP, and (incrementally) other protocols. The type system is data, queryable + evolvable at runtime through the same API you use to query your application's entities. The wire-format layer is substrate, not application concern. Long-running operations have history, cancellation, and outcome classification baked in.
 
-Sandbar lets you define classes, properties, and inheritance once; expose them through whatever wire protocol your consumer prefers; and trust the substrate to handle the translation. The type system describes itself using its own constructs (`:dt/Class` is itself an instance of `:dt/Class`), so the metamodel is queryable, evolvable, and introspectable at runtime — through Clojure, HTTP, or the Model Context Protocol — with no protocol-specific schema duplication.
+Sandbar exists because the things that make a *database* powerful (transactions, time, expressive query) and the things that make a *type system* powerful (classes, inheritance, validation) and the things that make a *protocol surface* powerful (reflection, content negotiation, push notifications) keep wanting to be the same things. Each layer in Sandbar is the previous layer talking to itself.
 
-## The conceptual basis
+This README is a 5-minute elevator. For depth, follow the pointers into `doc/concepts/` (theoretical reference, citation-rich) and `doc/guides/` (hands-on how-to).
 
-Three ideas hold the platform together:
+## What makes Sandbar interesting
 
-### 1. Metacircular metamodel
+Sandbar's individual ingredients exist elsewhere. The unique value is in the *synthesis* — how these ingredients combine into one substrate with a consistent discipline.
 
-The type system is data, stored in Datomic alongside the entities it describes. `:dt/Class` is itself a class, `:dt/Property` is itself a property. Adding a class is a transaction; introspecting the schema is a query. Evolution at runtime is a first-class case rather than a redeploy. The Clojure REPL, the REST API, and the MCP server all reach the metamodel through the same `dt/*` introspection layer (`dt/all-classes`, `dt/slots-of`, `dt/instance-of?`, `dt/make`).
+### Metacircular RDFS on Datomic
 
-This is the *turtles all the way down* property: every layer above the kernel is expressed in terms of constructs the kernel already understands.
+RDFS gave us a clean vocabulary for classes, properties, inheritance, and predicates. Datomic gave us schema-on-read, first-class time, and expressive query. Sandbar stores its own type system inside Datomic using its own type system — `:dt/Class` is itself an instance of `:dt/Class`. Adding a class is a transaction; introspecting the schema is a query. Application data and metadata flow through the same `dt/*` API.
 
-### 2. Boundary-layer abstraction (consumer talks native)
+→ `doc/concepts/metamodel.md` for theory + citations
 
-Sandbar absorbs substrate complexity at each layer so consumers can talk in their natural representation:
+### Layer-targeting discipline + multi-protocol surface
 
-| Consumer's native form | Boundary layer that absorbs it | Substrate underneath |
-|------------------------|-------------------------------|---------------------|
-| Markdown documents (`mm/Memory` consumer) | `sandbar.codec.markdown` | `dt/*` model |
-| TTL / RDF triples (graph-query clients) | `sandbar.codec.ttl` *(arc-pending)* | `dt/*` model |
-| EDN/TTL hybrid (Clojure-side Lisp) | `sandbar.codec.edn-ttl-hybrid` *(arc-pending)* | `dt/*` model |
-| JSON-RPC tool calls (AI clients) | `sandbar.mcp.*` (MCP server) | `dt/*` model |
-| HTTP REST (traditional clients) | `sandbar.api.*` | `dt/*` model |
-| Datalog queries | `dt/*` introspection API | `datomic.api` (peer / cloud) |
+The same metamodel is exposed simultaneously through HTTP REST, the Model Context Protocol (JSON-RPC + SSE for AI clients), and (incrementally) RDF / TTL. Every protocol layer projects from the same `dt/*` API — there are no parallel schemas to keep in sync. Adding a new protocol means adding a translator, not duplicating the model.
 
-Each layer adds expressivity without pushing complexity up the stack. The `dt/*` API abstracts Datomic so the MCP server never touches `d/q` / `d/transact`; the codec layer abstracts wire formats so the memory-corpus consumer never hand-rolls a YAML parser; the protocol layers abstract transport so the metamodel author never writes per-protocol glue.
+→ `doc/concepts/mcp-protocol.md` · `doc/guides/writing-an-mcp-client.md` · `doc/guides/writing-a-rest-client.md`
 
-### 3. Multi-surface protocol exposure (bootstrap-by-discovery)
+### Codec layer absorbs wire-format complexity
 
-The same metamodel is exposed through multiple wire protocols simultaneously. Every non-abstract `dt/Class` is automatically an MCP tool, a REST resource, and (when the codec arc completes) a TTL graph node — with no hand-curated mapping table. `tools/list` walks `dt/all-classes`; JSON Schema is reflected from `dt/range-of` + `dt/cardinality-many?`; resource URIs are computed from class metadata. New classes auto-surface across every protocol the moment they're transacted.
+Consumers talk in their native representation. The memory-corpus consumer passes markdown; a future RDF consumer will pass Turtle; an MCP client passes JSON. Sandbar's codec layer absorbs the parse/emit and binds the result to the model — same architectural shape as `dt/*` absorbing Datomic. Per-class `:dt/native-codec` declares the default; the mediator resolves at call time.
 
-The corollary: there's exactly one schema, one validation pass, one type system. Protocols are derived projections, not parallel models to keep in sync.
+→ `doc/concepts/codec-layer.md` · `doc/guides/implementing-a-codec.md`
 
-## Architecture
+### Bootstrap-by-discovery
 
-```
-                  ┌──────────────────────────────────────────────────────────────┐
-  Consumer        │  Claude (MCP client)   curl  bb  REPL  external RDF tools    │
-  surface         └──┬──────────────┬──────────┬─────┬──────────────┬────────────┘
-                     │              │          │     │              │
-                  ┌──▼─────┐   ┌────▼────┐ ┌───▼─┐ ┌─▼──┐    ┌──────▼─────┐
-  Protocol        │  MCP   │   │ REST API│ │ CLI │ │REPL│    │  TTL / EDN │
-  layer           │ server │   │  HTTP+  │ │     │ │    │    │   (codec   │
-                  │ JSON-  │   │ content-│ │     │ │    │    │   arc      │
-                  │ RPC +  │   │ negot.  │ │     │ │    │    │   pending) │
-                  │  SSE   │   └─────────┘ └─────┘ └────┘    └────────────┘
-                  └────┬───┘
-                       │
-                  ┌────▼──────────────────────────────────────────────────────────┐
-  Codec          │  sandbar.codec — mediator + per-class :dt/native-codec        │
-  layer          │  ┌──────────────────────────────────────────────────────────┐ │
-                 │  │  codec.markdown   codec.ttl*   codec.edn-ttl-hybrid*     │ │
-                 │  │  codec.json*                                             │ │
-                 │  └──────────────────────────────────────────────────────────┘ │
-                 │       (*arc-pending)                                          │
-                 └────┬──────────────────────────────────────────────────────────┘
-                      │
-                  ┌───▼────────────────────────────────────────────────────────┐
-  Model         │  sandbar.db.datatype  (dt/*)                                 │
-  layer         │  classes • properties • inheritance • validation • introsp.  │
-                │  workflow substrate • tasks • auth • events • jobs           │
-                └───┬──────────────────────────────────────────────────────────┘
-                    │
-                  ┌─▼─────────────────────────────────────────────────────────┐
-  Backend       │  Datomic (peer / cloud)                                     │
-  layer         └─────────────────────────────────────────────────────────────┘
-```
+Every non-abstract class is automatically discoverable through every protocol. MCP `tools/list` walks `dt/all-classes`; JSON Schema is reflected from `dt/range-of`. Add a class to the schema and it auto-surfaces as a tool, a resource, a REST endpoint — no hand-curated registries, no mapping tables, no server restart.
 
-Each layer composes through the layer below it. The protocol layer NEVER touches Datomic directly (per the layer-targeting discipline); the codec layer NEVER bypasses `dt/*`; the model layer is the only place that knows about transactions and peer connections. This invariant keeps protocols swappable and the model layer authoritative.
+→ `doc/concepts/mcp-protocol.md`
 
-## What's in the platform
+### Workflows as first-class substrate
 
-| Surface | Provides |
-|---------|----------|
-| **`dt/*` model API** | classes, properties, inheritance, validation, introspection, instance ops |
-| **REST API** | HTTP endpoints for class / property / entity introspection with content-type negotiation (EDN / JSON) |
-| **MCP server** | JSON-RPC 2.0 + SSE transport; bootstrap-by-discovery tool catalog; resources, prompts, tasks; bearer-token auth |
-| **Codec layer** | Modular extensible codecs (markdown, TTL\*, EDN-TTL-hybrid\*, JSON\*); per-class `:dt/native-codec` declares default format |
-| **Workflow substrate** | First-class state machines with transitions, guards, history, cancellation, terminal-kind classification |
-| **MCP Tasks** | Long-running operations as workflow processes — task-id-as-process-id correspondence; durable execution |
-| **Auth** | User / Group / ServiceAccount / Role / Permission with Buddy-hashers + bearer-token interceptor |
-| **Events** | Structured event log with correlation IDs + interceptor integration |
-| **Jobs** | Scheduled, triggered, and recurring background jobs |
-| **Context** | Hierarchical namespacing substrate for resource scoping |
+State machines are entities. Processes are running instances. MCP Tasks are workflow processes — `task-id` IS `:db/id` (no parallel registry). Terminal states carry an outcome classification (`:success` / `:failure` / `:cancel`) so consumers don't reinvent the "what kind of done is this" projection. Cancellation is workflow-substrate, not per-tool plumbing.
 
-*Asterisk-marked surfaces are arc-pending; see the codec arc plan in the corpus.*
+→ `doc/concepts/workflow-substrate.md` · `doc/guides/designing-workflows.md`
 
-## Quick start
+### Filesystem-canonical projection (Anderson lineage)
 
-```bash
-# Prerequisites: Java 11+, Leiningen, running Datomic transactor
-git clone <repository-url> && cd sandbar
-lein deps
-lein repl
-```
+The filesystem format is the canonical ground-truth. Sandbar's `project-graph` / `ingest-graph` primitives are bidirectional — DB state ↔ filesystem hierarchy of native-format files. Any backend complies with the filesystem format. Document chunks are addressable entities with their own URIs and sibling-chain navigation (`:next-sibling` / `:previous-sibling`, RDFS-inspired). The pattern borrows from James Anderson's `de.setf.rdf:project-graph` (Datagraph/Dydra-era CL CLOS-metaclass framework) and applies it to filesystem hierarchies as the native projection target.
 
-```clojure
-;; In the REPL
-(require '[sandbar.core :refer [go stop]])
-(go)  ; HTTP on :8080, nREPL on :28888
-```
+→ `doc/concepts/project-graph.md`
 
-Then:
+### Hybrid filesystem/database topology (experimental)
 
-- **REST**: `curl http://localhost:8080/api/store/classes` lists every class
-- **MCP**: issue a service-account token (`(sandbar.util.auth/issue-api-key! ...)` in the REPL), then `POST /mcp` with a JSON-RPC body
-- **REPL**: `(require '[sandbar.db.datatype :as dt])` and explore via `dt/all-classes`, `dt/slots-of`, etc.
+The partition between what lives on disk and what lives in the runtime DB is an open architectural question we're actively exploring. Filtering primitives on `project.export` / `project.import` exist precisely to enable this experimentation. Today, both sides are first-class. Tomorrow's answer depends on what measurement reveals.
 
-## A worked example — Zorp's footwear
+→ `doc/concepts/multi-store-architecture.md`
 
-Zorp runs the Galactic Footwear Emporium from a crater on the dark side of Pluto. His inventory was a mess of untyped maps:
+## Two concrete examples
 
-```clojure
-{:name "Moon Boot Pro" :price 299.99 :tentacles 4}
-;; Wait — is `tentacles` required? Can boots have tentacles?
-```
+### Example 1 — Clojure, in-process
 
-With Sandbar, Zorp defines a proper type hierarchy:
-
-```
-                  zorp/Footwear [abstract]
-          ________________|________________
-         |                |                |
-    zorp/Sneaker     zorp/Boot       zorp/Sandal
-                    ____|____             |
-                   |         |       zorp/FlipFlop
-              zorp/HighTop  zorp/SpaceBoot
-```
-
-```clojure
-;; Define a class
-{:db/ident :zorp/Boot
- :dt/type :dt/Class
- :dt/subclass-of :zorp/Footwear
- :dt/slots [:boot/vacuum-rated? :boot/temperature-range]}
-
-;; Create + validate an instance
-(dt/make :zorp/SpaceBoot
-  {:footwear/name "Moon Boot Pro"
-   :footwear/price 299.99M
-   :boot/vacuum-rated? true})
-;; => entity with :dt/type :zorp/SpaceBoot
-
-;; Abstract instantiation rejected
-(dt/make :zorp/Footwear {...})
-;; => throws "Cannot instantiate abstract class"
-
-;; Introspect at runtime
-(dt/slots-of :zorp/SpaceBoot)
-;; => #{:footwear/name :footwear/price :boot/vacuum-rated? ...}
-```
-
-The full tutorial walks Zorp through hierarchy design, validation, and the surfaces above — see [doc/zorp-example.md](doc/zorp-example.md).
-
-## Core API (dt/*)
+Define a class hierarchy, create a validated instance, query the metamodel:
 
 ```clojure
 (require '[sandbar.db.datatype :as dt])
 
-;; Classes
-(dt/all-classes)                          ; List all classes
-(dt/parents-of :model/User)               ; Direct parents
-(dt/ancestors-of :model/User)             ; Full chain
-(dt/subclasses-of :dt/Resource)           ; All descendants
-(dt/abstract? :zorp/Footwear)             ; true | false
+;; Classes describe themselves
+(dt/make :dt/Class
+  {:db/ident :order/Order
+   :dt/subclass-of :dt/Resource
+   :dt/slots [:order/customer :order/total :order/status]})
 
-;; Properties
-(dt/all-properties)
-(dt/slots-of :model/User)                 ; inherited + direct
-(dt/direct-slots-of :model/User)          ; declared only
-(dt/domain-of :user/login)                ; => :model/User
-(dt/range-of :user/login)                 ; => :db.type/string
+;; Create a validated instance
+(dt/make :order/Order
+  {:order/customer customer-entity
+   :order/total    299.99M
+   :order/status   :order/pending})
+;; => entity; validation passed; transacted
 
-;; Instances
-(dt/make :model/User {:user/login "zorp"})  ; create with validation
-(dt/class-of some-entity)                   ; => :model/User
-(dt/instance-of? :model/User some-entity)   ; true | false
-(dt/all-instances-of :model/User)           ; includes subclass instances
-(dt/valid? some-entity)                     ; validate against class
+;; Introspect at runtime
+(dt/slots-of      :order/Order)        ; #{:order/customer :order/total ...}
+(dt/instance-of?  :order/Order order)  ; true
+(dt/all-instances-of :dt/Resource)     ; every entity, including order
 ```
 
-## MCP server
+### Example 2 — AI client (Claude or other MCP consumer)
 
-Sandbar speaks the [Model Context Protocol](https://modelcontextprotocol.io/) for AI-client integration. The MCP surface is a peer of the REST API, not a wrapper — both protocols project the same metamodel through different wire formats, derived reflectively from `dt/*`.
-
-| Route | Method | Purpose |
-|-------|--------|---------|
-| `/mcp` | POST | JSON-RPC 2.0 request endpoint |
-| `/mcp/sse` | GET | Server-sent-events channel for notifications |
-
-**Capabilities declared at `initialize`**:
-
-- **tools** — operational verb catalog of stable Sandbar operations (`schema.classes`, `class.describe`, `class.instances`, `entity.create`, `entity.find`, `workflow.start-process`, `validation.start`, etc.) plus `listChanged` notifications for schema evolution
-- **resources** — every entity addressable at `mcp://sandbar/<class-ns>/<class-name>/<ident-or-eid>`; `subscribe` + per-subscriber routing
-- **prompts** — workflow definitions exposed as MCP prompts (workflows-as-prompts pattern)
-- **tasks** — long-running operations via the workflow substrate (task-id-as-process-id)
-- **logging** — reserved for per-tool log hooks
+Discover the surface; create an entity from markdown source; read it back:
 
 ```bash
-# Get a service-account token from the REPL first
-export SANDBAR_TOKEN="claude:..."
+export SANDBAR_TOKEN="<your-service-account-token>"
 
-# Discover the surface
+# 1. Discover available tools (bootstrap-by-discovery)
 curl -X POST http://localhost:8080/mcp \
   -H "Authorization: Bearer $SANDBAR_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+
+# 2. Create an mm/Memory entity by passing markdown source —
+#    codec layer absorbs the parse + class-binding
+curl -X POST http://localhost:8080/mcp \
+  -H "Authorization: Bearer $SANDBAR_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":
+        {"name":"sandbar.entity.create",
+         "arguments":{"class":"mm/Memory",
+                       "format":"markdown",
+                       "source":"---\nname: Foo\n---\n# Context\n..."}}}'
+
+# 3. Read it back as markdown (full section tree reconstructed)
+curl -X POST http://localhost:8080/mcp \
+  -H "Authorization: Bearer $SANDBAR_TOKEN" \
+  -d '{"jsonrpc":"2.0","id":3,"method":"resources/read",
+        "params":{"uri":"mcp://sandbar/mm/Memory/decisions/foo"}}'
 ```
 
-For the full MCP surface (lifecycle, all methods, configuration, failure modes) see [doc/mcp-server.md](doc/mcp-server.md). For long-running operations see [doc/tasks-api.md](doc/tasks-api.md).
+→ `doc/guides/writing-an-mcp-client.md` for full client patterns
+→ `doc/guides/zorp-tutorial.md` for a complete worked example
 
-## REST API
-
-The metamodel is fully exposed via HTTP for traditional clients. Content-type negotiation picks EDN by default; request JSON with `Accept: application/json`.
+## Quick start
 
 ```bash
-curl http://localhost:8080/api/store/schema                              # overview
-curl http://localhost:8080/api/store/classes                             # list
-curl http://localhost:8080/api/store/classes/model/User                  # details
-curl http://localhost:8080/api/store/classes/model/User/slots            # all slots
-curl http://localhost:8080/api/store/classes/model/User/hierarchy        # tree
-curl http://localhost:8080/api/store/properties/user/login/range         # property range
-curl http://localhost:8080/api/store/types/instance-of/dt/Class/model/User
+# Prerequisites: Java 11+, Leiningen, Datomic transactor running
+git clone <repository-url> && cd sandbar
+lein deps && lein repl
+
+# In the REPL
+(require '[sandbar.core :refer [go]])
+(go)  ; HTTP on :8080; nREPL on :28888
+
+# Sanity check (in another shell)
+curl http://localhost:8080/api/status
 ```
 
-Full endpoint table at [doc/store-api.md](doc/store-api.md).
+→ `doc/guides/quickstart.md` for the 5-minute hands-on tour
 
-## Codec layer
+## Where to learn more
 
-The codec layer is the wire-format boundary. Consumers pass native representation (markdown documents, TTL triples, JSON payloads, EDN values); the codec absorbs parse + class-binding + emit. Each class declares `:dt/native-codec :markdown` (or similar) and the mediator resolves the default at call time.
+Documentation follows a four-layer structure. This README is Layer 1. Pick the layer that matches your goal.
 
-```clojure
-(require '[sandbar.codec :as codec]
-         '[sandbar.codec.markdown :as md])
+### Layer 2 — Concepts (theoretical reference)
 
-(md/register!)                            ; one-time registration
+Citation-rich documents explaining how Sandbar works, with references to the source papers and standards.
 
-;; Parse markdown → entity-spec
-(codec/parse markdown-source
-             {:format :markdown :class :mm/Memory})
+| Document | What you'll learn |
+|----------|-------------------|
+| `doc/concepts/metamodel.md` | The dt/* primitives; RDFS lineage; metacircularity |
+| `doc/concepts/codec-layer.md` | Boundary-layer abstraction; consumer-native representation; per-class `:dt/native-codec` |
+| `doc/concepts/project-graph.md` | Bidirectional FS↔DB projection; Anderson lineage; chunk addressability |
+| `doc/concepts/workflow-substrate.md` | First-class workflows; terminal-kind classification; MCP Tasks composition |
+| `doc/concepts/mcp-protocol.md` | Model Context Protocol; bootstrap-by-discovery; operational verb catalog |
+| `doc/concepts/multi-store-architecture.md` | Multi-store topology; federated query; hybrid FS/DB experimentation |
+| `doc/concepts/markdown-as-canonical.md` | Markdown as canonical Layer-1 corpus format; FS-format-is-ground-truth |
 
-;; Emit entity → markdown
-(codec/emit entity {:format :markdown})
+### Layer 3 — Guides (practical how-to)
 
-;; Mime-type-driven dispatch
-(codec/parse-mime "text/markdown" source)
-```
+Hands-on documents with runnable examples.
 
-Document chunks are first-class addressable entities — for `mm/Memory`, the markdown codec decomposes headings into `mm/Section` entities with bidirectional sibling-chain navigation (`:next-sibling` / `:previous-sibling`), parent-child nesting, and path-derived idents (e.g., `:decisions/foo__context__decision`). The chain shape gives O(1) point-local neighbor lookup; at the TTL emission boundary it can dual-emit as canonical `rdf:List`.
+| Document | What you'll learn |
+|----------|-------------------|
+| `doc/guides/quickstart.md` | Get Sandbar running in 5 minutes |
+| `doc/guides/zorp-tutorial.md` | Worked example — class hierarchy + validation + queries |
+| `doc/guides/writing-a-clojure-client.md` | Embed Sandbar in your Clojure code; dt/* idioms |
+| `doc/guides/writing-an-mcp-client.md` | Connect Claude or other AI client via MCP |
+| `doc/guides/writing-a-rest-client.md` | Consume Sandbar over HTTP REST |
+| `doc/guides/implementing-a-codec.md` | Author a codec for a new wire format |
+| `doc/guides/defining-new-classes.md` | Extend the schema with new mm/* or domain classes |
+| `doc/guides/designing-workflows.md` | Author state machines with terminal-kind |
+| `doc/guides/sandbar-as-substrate.md` | Embed Sandbar in your own application |
 
-## Workflows + Tasks
+### Layer 4 — API Reference (mechanical)
 
-Workflows are first-class entities. A workflow definition has states + transitions + guards + history. A process is a running instance attached to a subject entity. Terminal states carry a `:workflow/terminal-kind` classification (`:success` / `:failure` / `:cancel`) — the workflow substrate knows the outcome shape, not just "process ended."
-
-```clojure
-(require '[sandbar.util.workflow :as wf])
-
-(wf/define-workflow! :order/fulfillment
-  {:states [{:name :order/pending :initial? true}
-            {:name :order/shipped}
-            {:name :order/delivered :terminal? true :terminal-kind :success}
-            {:name :order/cancelled :terminal? true :terminal-kind :cancel}]
-   :transitions [{:name :ship   :from :order/pending  :to :order/shipped}
-                 {:name :deliver :from :order/shipped :to :order/delivered}
-                 {:name :cancel :from :order/pending  :to :order/cancelled}]})
-
-(def proc (wf/start-process! :order/fulfillment order-entity))
-(wf/transition! proc :ship)
-(wf/can-cancel? proc)         ; checks for a :terminal-kind :cancel transition
-(wf/cancel-process! proc)     ; deliberate stop with full history
-```
-
-MCP Tasks build on this substrate — every long-running tool-call becomes a workflow process, the task-id IS the process's `:db/id` (no parallel registry), and `tasks/cancel` is just `workflow/cancel-process!`. The validation service `validation/start` / `validation/run` / `validation/cancel` follows the same shape — see [doc/workflow.md](doc/workflow.md).
+| Document | Coverage |
+|----------|----------|
+| `doc/api/dt-star.md` | Every `dt/*` function signature |
+| `doc/api/http-rest.md` | Every REST endpoint |
+| `doc/api/mcp-verbs.md` | Every MCP verb in the catalog |
+| `doc/api/codec-protocol.md` | The Codec defprotocol |
 
 ## Project layout
 
 ```
 sandbar/
-├── config/             # EDN configuration
-├── schema/             # Type definitions
-│   ├── meta.edn        # Core metamodel (Class, Property, Resource, ...)
-│   ├── auth.edn        # User / Group / ServiceAccount / Role / Permission
-│   ├── event.edn       # Event types
-│   ├── workflow.edn    # Workflow state machines + terminal-kind
-│   ├── context.edn     # Hierarchical scoping
-│   ├── job.edn         # Background-job schema
-│   └── zorp.edn        # Example: Galactic Footwear Emporium
+├── schema/             EDN class + property definitions
 ├── src/sandbar/
-│   ├── codec.clj            # Mediator + format resolution
-│   ├── codec/
-│   │   ├── protocol.clj     # Codec defprotocol
-│   │   └── markdown.clj     # Markdown + YAML frontmatter codec
-│   ├── db/
-│   │   ├── datatype.clj     # dt/* API — model layer
-│   │   ├── datomic.clj      # peer connection
-│   │   └── rules.clj        # recursive Datalog rules
-│   ├── mcp/                 # Model Context Protocol server
-│   │   ├── envelope.clj     # JSON-RPC 2.0 envelope (leaf ns)
-│   │   ├── protocol.clj     # initialize + dispatch table
-│   │   ├── transport.clj    # POST /mcp + GET /mcp/sse
-│   │   ├── auth.clj         # bearer-token Pedestal interceptor
-│   │   ├── tools.clj        # operational verb catalog
-│   │   ├── resources.clj    # URI codec + list/read/subscribe (per-sub routing)
-│   │   ├── prompts.clj      # workflows-as-prompts
-│   │   ├── tasks.clj        # workflow-backed Tasks primitive
-│   │   └── notifications.clj # subscriber registry + SSE notifications
-│   ├── api/                 # REST handlers (store, auth, event, job, workflow)
-│   ├── server/              # HTTP + nREPL component
-│   ├── service/             # routing, interceptors, validation-as-workflow
-│   └── util/
-│       ├── auth.clj         # Buddy-hashers + service-account lifecycle
-│       ├── event.clj        # event logging + correlation
-│       └── workflow.clj     # process lifecycle, transition!, cancel-process!
-└── test/                    # comprehensive test suite (~470 tests)
+│   ├── codec.clj       Mediator + per-class :dt/native-codec resolution
+│   ├── codec/          Codec protocol + markdown + JSON
+│   ├── project_graph.clj  Anderson-style FS↔DB projection
+│   ├── db/             dt/* model API + Datomic peer connection
+│   ├── mcp/            MCP server (transport / protocol / tools / resources / prompts / tasks)
+│   ├── api/            REST handlers
+│   ├── service/        Routing + validation-as-workflow
+│   └── util/           Auth (Buddy-hashers) / events / workflow lifecycle
+└── doc/                Layered documentation (Layer 2 + 3 + 4)
 ```
-
-## Documentation
-
-| Document | Topic |
-|----------|-------|
-| [Quick Start](doc/quickstart.md) | Zero to running in 5 minutes |
-| [Architecture](doc/architecture.md) | How the layers compose |
-| [Metamodel](doc/meta.md) | Classes, properties, inheritance, validation |
-| [MCP Server](doc/mcp-server.md) | Tools, resources, prompts, tasks; lifecycle + configuration |
-| [MCP Tasks API](doc/tasks-api.md) | Long-running operations via workflow-backed tasks |
-| [Store API](doc/store-api.md) | REST surface for classes / properties / entities |
-| [Authentication](doc/auth.md) | Users, sessions, API keys, bearer tokens |
-| [Workflow API](doc/workflow.md) | State machines, transitions, cancellation, terminal-kind |
-| [Background Jobs](doc/jobs-api.md) | Scheduled / triggered / recurring jobs |
-| [Event System](doc/event.md) | Logging, correlation, interceptors |
-| [Zorp Tutorial](doc/zorp-example.md) | Worked example — alien footwear inventory |
 
 ## Running tests
 
 ```bash
-lein test                                       # full suite
-lein test sandbar.codec.markdown-test           # one namespace
-lein test :only sandbar.datatype-test/make-test # one deftest
+lein test                                              # full suite
+lein test :only sandbar.codec.markdown-test            # one namespace
+lein test :only sandbar.datatype-test/make-test        # one deftest
 ```
 
 ## FAQ
 
-**Q: Why not just use Datomic's schema?**
-A: Datomic schemas define attributes, not types. You can say "there's an attribute called `:user/login`" but not "a User has login, email, and inherits from Person." Sandbar adds the class layer + the inheritance + the validation, and stores the type system as data so it's queryable like everything else.
-
-**Q: Is this RDFS / OWL?**
-A: Inspired by RDFS, but simpler. Closed-world (no open-world assumption), no inference engine, no PhD required. Just classes, properties, inheritance, and a small set of metacircular primitives.
+**Q: Is this OWL/RDF?**
+A: Inspired by RDFS, but simpler. Closed-world; no inference engine; no PhD required. The metamodel is closer to KL-ONE-shaped frames-with-inheritance than to OWL DL.
 
 **Q: Why both REST and MCP?**
-A: Different consumers, same metamodel. Traditional HTTP clients want REST; AI clients want JSON-RPC with reflective tool discovery + push notifications for schema evolution. Both projections come for free from the same `dt/*` introspection — no parallel models to keep in sync.
+A: Different consumers; same metamodel. Traditional HTTP clients want REST. AI clients want JSON-RPC with reflective tool discovery + push notifications. Both projections come from the same `dt/*` introspection — no parallel models to keep in sync.
 
-**Q: What's the codec layer for?**
-A: So consumers can talk to Sandbar in their native representation. A memory-corpus consumer passes markdown; an RDF tool passes Turtle; an MCP client passes JSON. Sandbar absorbs the wire format and binds to the model. Same architectural shape as `dt/*` absorbing Datomic.
+**Q: How does the codec layer relate to Datomic's serialization?**
+A: It doesn't. Datomic handles in-store representation; codecs handle wire format at the protocol boundary. The codec layer absorbs format complexity from consumers, the same way `dt/*` absorbs Datomic query complexity.
 
-**Q: What's with the turtle jokes?**
-A: The metamodel describes itself using its own constructs. `dt/Class` is an instance of `dt/Class`. It's self-referential. Turtles, all the way down. We're not sorry.
+**Q: What's the relationship between Sandbar and the memory-model corpus?**
+A: The corpus (this codebase's `memory/` tree, mirroring its own development history) is the first consumer. The corpus's markdown shape informs Sandbar's `codec.markdown` + `mm/*` classes. Per the filesystem-canonical directive, the FS shape is ground-truth — Sandbar serves it.
 
-**Q: Can I use this in production?**
-A: Zorp has been selling moon boots on Pluto for years with zero incidents.\*
-
-<sub>\* Incidents involving sentient footwear are tracked separately.</sub>
+**Q: Can I use this in production today?**
+A: 0.1.0 is the first published release. It's an early library; expect ergonomic churn. The substrate design is stabilizing through the codec arc + Phase 3 MCP work; production-readiness is the focus of 0.x → 0.y iteration.
 
 ## License
 
