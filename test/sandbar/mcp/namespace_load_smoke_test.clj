@@ -23,6 +23,7 @@
     sandbar.codec.json
     sandbar.codec.markdown
     sandbar.codec.protocol
+    sandbar.project-graph
     sandbar.mcp.auth
     sandbar.mcp.envelope
     sandbar.mcp.notifications

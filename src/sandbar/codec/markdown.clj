@@ -136,6 +136,9 @@
      - CRLF → LF
      - trailing whitespace stripped (except markdown hard-breaks)
      - 2+ consecutive blank lines collapsed to 1
+     - leading + trailing blank lines stripped (canonical form:
+       non-empty bodies end with exactly ONE trailing newline; empty
+       bodies remain the empty string)
    Per §4.3, this transformation is applied on PARSE for canonical
    storage; emission produces normalized output too — round-trip is
    idempotent at the second parse, not byte-exact with the first parse's
@@ -144,10 +147,12 @@
    B.3 follow-up requiring fenced-block awareness."
   [body]
   (when body
-    (-> body
-        normalize-line-endings
-        strip-trailing-non-hardbreak-whitespace
-        collapse-multi-blank-lines)))
+    (let [s (-> body
+                normalize-line-endings
+                strip-trailing-non-hardbreak-whitespace
+                collapse-multi-blank-lines
+                str/trim)]
+      (if (empty? s) "" (str s "\n")))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Class-aware frontmatter ↔ slot mapping
@@ -315,10 +320,10 @@
           fm-slots      (dissoc entity :dt/type body-slot)
           fm-yaml       (emit-frontmatter fm-slots class-ident)
           normalized    (normalize-body body-text)
-          ;; Ensure final newline
-          body-final    (if (str/ends-with? (or normalized "") "\n")
-                          normalized
-                          (str normalized "\n"))]
+          ;; Empty body emits no trailing newline; non-empty body
+          ;; already ends with exactly one trailing newline per
+          ;; normalize-body's canonical-form invariant.
+          body-final    (or normalized "")]
       (if (str/blank? fm-yaml)
         body-final
         (str frontmatter-delim "\n"
@@ -595,25 +600,41 @@
                false)))
     (.toString sb)))
 
+(def ^:private derived-memory-attrs
+  "mm/Memory slots that are derived from the file's filesystem path or
+   from the section chain — these MUST be stripped before emit so they
+   don't leak into YAML frontmatter (where parse would interpret them
+   as regular slots).  Re-derived on ingest from rel-path + heading
+   walk."
+  #{:db/ident
+    :db/id
+    :mm.memory/rel-path
+    :mm.memory/first-section})
+
 (defn emit-document
   "Full mm/Memory document emit: takes a vector of entity-specs (memory +
    sections); reconstructs frontmatter + body via section-tree walk;
    returns the markdown source string.
+
+   Derived attributes (`:db/ident`, `:mm.memory/rel-path`,
+   `:mm.memory/first-section`) are stripped before serialization — they
+   re-derive from the file's filesystem path + the heading walk on
+   ingest, so emitting them into frontmatter would create a redundant
+   surface that parse interprets as a regular slot.
 
    When the input is a single-entity vector (mm/Memory only, no sections),
    delegates to MarkdownCodec/emit (frontmatter + body-raw)."
   [entities]
   (let [memory   (first entities)
         sections (rest entities)
+        memory-stripped (apply dissoc memory derived-memory-attrs)
         c        (make-codec)]
     (if (empty? sections)
-      (proto/emit c memory {})
+      (proto/emit c memory-stripped {})
       (let [first-sec-ident (:mm.memory/first-section memory)
             body-text       (emit-sections-body sections (:db/ident memory) first-sec-ident)
             ;; Build a memory-with-body-from-sections for the codec's emit
-            memory-for-emit (-> memory
-                                (dissoc :mm.memory/first-section :db/ident :mm.memory/rel-path)
-                                (assoc :mm.memory/body-raw body-text))]
+            memory-for-emit (assoc memory-stripped :mm.memory/body-raw body-text)]
         (proto/emit c memory-for-emit {})))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;

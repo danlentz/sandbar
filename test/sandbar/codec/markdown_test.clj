@@ -56,20 +56,24 @@
 
 (deftest normalize-body-strips-non-hardbreak-trailing-whitespace
   ;; Lines with EXACTLY 1 trailing space (or trailing tab) are NOT a
-  ;; markdown hard-break and must be stripped.
-  (is (= "line one\nline two\nline three"
+  ;; markdown hard-break and must be stripped.  Canonical form adds a
+  ;; single trailing newline.
+  (is (= "line one\nline two\nline three\n"
          (md/normalize-body "line one \nline two\t\nline three"))))
 
 (deftest normalize-body-preserves-markdown-hardbreaks
-  ;; Two trailing spaces = markdown hard-break per CommonMark §4.2.6
-  (is (= "line one  \nline two"
+  ;; Two trailing spaces = markdown hard-break per CommonMark §4.2.6.
+  ;; Canonical form adds a single trailing newline.
+  (is (= "line one  \nline two\n"
          (md/normalize-body "line one  \nline two")))
-  (is (= "line one   \nline two"
+  (is (= "line one   \nline two\n"
          (md/normalize-body "line one   \nline two"))
       "Three trailing spaces still preserves hard-break (2+ spaces)"))
 
 (deftest normalize-body-collapses-multi-blank-lines
-  (is (= "para one\n\npara two"
+  ;; Canonical form adds a single trailing newline; multi-blank
+  ;; collapsed between paragraphs.
+  (is (= "para one\n\npara two\n"
          (md/normalize-body "para one\n\n\n\npara two"))))
 
 (deftest normalize-body-handles-crlf
@@ -115,7 +119,8 @@
         src "# Heading\n\nJust body."
         result (proto/parse c src {:class :mm/Memory})]
     (is (= :mm/Memory (:dt/type result)))
-    (is (= "# Heading\n\nJust body." (:mm.memory/body-raw result)))
+    ;; normalize-body adds the canonical single trailing newline.
+    (is (= "# Heading\n\nJust body.\n" (:mm.memory/body-raw result)))
     (is (nil? (:mm.memory/name result)))))
 
 (deftest parse-rejects-without-class-opt
