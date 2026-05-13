@@ -1,6 +1,6 @@
 # Designing Workflows
 
-> How to author a workflow — declaring states + transitions, classifying terminal outcomes with `:terminal-kind`, starting processes, firing transitions, and supporting cancellation.  For the theoretical background see [`doc/concepts/workflow-substrate.md`](../concepts/workflow-substrate.md); for the workflow MCP verbs see [`doc/api/mcp-verbs.md`](../api/mcp-verbs.md#workflow-verbs).
+> How to author a workflow — declaring states + transitions, classifying terminal outcomes with `:terminal-kind`, starting processes, firing transitions, and supporting cancellation.  For the theoretical background see [`doc/concepts/workflow-substrate.md`](../concepts/workflow-substrate.md); for the workflow MCP verbs see [`doc/api/mcp-verbs.md`](../api/mcp-verbs.md#workflow-operation-verbs).
 
 ## The shape of a workflow
 
@@ -292,6 +292,6 @@ Workflows are pure data; testing them is straightforward:
 ## See also
 
 - [`doc/concepts/workflow-substrate.md`](../concepts/workflow-substrate.md) — the theoretical foundation
-- [`doc/api/mcp-verbs.md`](../api/mcp-verbs.md#workflow-verbs) — full MCP verb reference for workflows
+- [`doc/api/mcp-verbs.md`](../api/mcp-verbs.md#workflow-operation-verbs) — full MCP verb reference for workflows
 - [`writing-a-clojure-client.md`](writing-a-clojure-client.md#working-with-workflows) — Clojure API patterns
 - [`defining-new-classes.md`](defining-new-classes.md) — classes whose lifecycle this workflow models
