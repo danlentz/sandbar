@@ -155,9 +155,17 @@
    ;; plans/sandbar_codec_layer_arc_2026-05-12.md — when :format +
    ;; :source supplied, parse via the codec mediator first; explicit
    ;; props override parsed slots.
-   (let [props (if (and format source)
+   ;;
+   ;; Signal 3 (Stage G analysis) — when :source is provided WITHOUT
+   ;; explicit :format, fall back to the class's :dt/native-codec
+   ;; attribute (the mediator's class-default resolution semantics).
+   ;; Symmetric with codec/parse's class-aware default.
+   (let [resolved-format (or format
+                             (when source
+                               (:dt/native-codec (entity dt))))
+         props (if (and resolved-format source)
                  (let [parse-fn (requiring-resolve 'sandbar.codec/parse)
-                       parsed   (parse-fn source {:format format :class dt})]
+                       parsed   (parse-fn source {:format resolved-format :class dt})]
                    (merge (dissoc parsed :dt/type) props))
                  props)]
      (if-not validate?
@@ -167,6 +175,55 @@
            (log/debug :DT/VALIDATION-FAILED {:class dt :errors errors})
            (throw (ex-info "Validation failed" errors)))
          (make* dt props))))))
+
+(defn realize-with
+  "General-purpose entity realization helper — given a seed entity + a
+   `walk-fn`, returns a vector of entity-spec maps including the seed
+   plus all transitively-reachable related entities (BFS order).
+
+   Arguments:
+     entity  - the seed entity (Datomic Entity record OR ident OR :db/id)
+     walk-fn - fn entity → coll of related entities; defines the walk shape
+               (e.g., for mm/Memory: (:mm.memory/first-section + walks); for
+               mm/Section: (:mm.section/next-sibling + :_mm.section/parent)).
+               walk-fn should return ALREADY-DEDUPLICATED related entities;
+               realize-with dedupes by :db/id across the BFS visited-set.
+
+   Returns: vector of entity-spec maps; each map is `(into {:dt/type ...}
+   datomic-entity)` for the seed and each walked entity.
+
+   Codec arc Stage F Signal 6 per
+   plans/sandbar_codec_layer_arc_2026-05-12.md — addresses the friction
+   that `emit-entity`'s shallow `(into {} entity)` misses lazy-loaded
+   refs.  Composable with `sandbar.codec/emit` on collections + with
+   `sandbar.project-graph` entity-collection paths."
+  [entity walk-fn]
+  (let [seed (cond
+               (keyword? entity) (db/entity entity)
+               (number?  entity) (db/entity entity)
+               :else entity)]
+    (loop [acc      []
+           visited  #{}
+           frontier [seed]]
+      (if (empty? frontier)
+        acc
+        (let [next-frontier (atom [])
+              new-acc (reduce
+                        (fn [a e]
+                          (let [eid (:db/id e)]
+                            (if (or (nil? eid) (contains? visited eid))
+                              a
+                              (let [related (or (walk-fn e) [])
+                                    e-map   (into {:dt/type (:dt/type e)} e)]
+                                (doseq [r related
+                                        :let [r-eid (:db/id r)]]
+                                  (when (and r-eid (not (contains? visited r-eid)))
+                                    (swap! next-frontier conj r)))
+                                (conj a e-map)))))
+                        acc
+                        frontier)
+              new-visited (into visited (keep :db/id frontier))]
+          (recur new-acc new-visited @next-frontier))))))
 
 (defn emit-entity
   "Emit an entity in its native representation via the codec mediator.

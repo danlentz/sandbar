@@ -182,23 +182,53 @@
          (filter #(= entity-ident (:db/ident %)))
          first)))
 
+(defn- mm-walker
+  "Walker for `dt/realize-with` over mm/Memory + mm/Section trees.
+   From mm/Memory: walks to :mm.memory/first-section (top-of-chain).
+   From mm/Section: walks to (1) :mm.section/next-sibling (chain), and
+   (2) the first child via :_mm.section/parent reverse-index filtered
+   by 'no :previous-sibling' (first-child anchor of the children's
+   chain head).  Returns ALREADY-DEDUPLICATED related entities."
+  [entity]
+  (case (:dt/type entity)
+    :mm/Memory
+    (when-let [first-sec (:mm.memory/first-section entity)]
+      [first-sec])
+
+    :mm/Section
+    (concat (when-let [next-sib (:mm.section/next-sibling entity)]
+              [next-sib])
+            ;; First child of this section — the child with no :previous-sibling
+            (->> (:_mm.section/parent entity)
+                 (filter #(nil? (:mm.section/previous-sibling %)))
+                 (take 1)))
+
+    nil))
+
 (defn- render-entity-content
   "Render an entity's content for resources/read.  Per codec arc
-   Stage F (plans/sandbar_codec_layer_arc_2026-05-12.md F.4): mm/Memory
-   renders via the markdown codec; other entities render as canonical
-   EDN.
+   Stage F.4 + Signal 4 of the Stage G analysis: mm/Memory renders
+   via the markdown codec INCLUDING its section tree (walks
+   :mm.memory/first-section + :_mm.section/parent reverse-index for
+   children).  Other entities render as canonical EDN.
 
-   Section-tree decomposition on read (returning full memory + sections
-   chain) is a Stage F follow-up — current implementation emits
-   frontmatter + body-raw via the codec mediator, which is sufficient
-   for round-trip through the resources/read surface."
+   Uses `dt/realize-with` (Signal 6) to walk the entity graph from the
+   memory seed; passes the flat coll to codec.markdown's emit-document
+   for section-tree reconstruction."
   [entity cls-ident]
   (cond
     (= cls-ident :mm/Memory)
     (try
-      (let [emit-fn    (requiring-resolve 'sandbar.codec/emit)
-            entity-map (into {:dt/type :mm/Memory} entity)]
-        (emit-fn entity-map {:format :markdown}))
+      (let [realize-fn      (requiring-resolve 'sandbar.db.datatype/realize-with)
+            emit-doc-fn     (requiring-resolve 'sandbar.codec.markdown/emit-document)
+            emit-mediator   (requiring-resolve 'sandbar.codec/emit)
+            entity-vec      (realize-fn entity mm-walker)
+            ;; If sections exist, use the section-aware emit-document;
+            ;; otherwise the mediator (frontmatter + body-raw only).
+            sections-present? (some #(= :mm/Section (:dt/type %)) (rest entity-vec))]
+        (if sections-present?
+          (emit-doc-fn entity-vec)
+          (emit-mediator (first entity-vec) {:format :markdown})))
       (catch Exception e
         (log/warn e :MCP/render-mm-memory-fallback
                   {:entity-id (:db/id entity)})
