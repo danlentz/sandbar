@@ -1,18 +1,122 @@
 # Sandbar
 
-**Classes for your Clojure data.** Sandbar adds RDFS-style typing, inheritance, and validation to Datomic — because sometimes "it's just a map" isn't enough.
+**An integrated metamodel platform for typed Clojure data over Datomic — with first-class codecs, workflow substrate, and protocol surfaces (REST + MCP + RDF) derived from the same metacircular type system.**
 
-## Meet Zorp
+Sandbar lets you define classes, properties, and inheritance once; expose them through whatever wire protocol your consumer prefers; and trust the substrate to handle the translation. The type system describes itself using its own constructs (`:dt/Class` is itself an instance of `:dt/Class`), so the metamodel is queryable, evolvable, and introspectable at runtime — through Clojure, HTTP, or the Model Context Protocol — with no protocol-specific schema duplication.
 
-Zorp is a third-generation footwear merchant. His grandfather sold ice cleats to early Plutonian settlers; his mother expanded into vacuum-rated boots when the tourist trade took off. Now Zorp runs the Galactic Footwear Emporium from a crater on the dark side of Pluto — prime real estate if you cater to clientele who prefer their transactions unobserved.
+## The conceptual basis
 
-Business is booming. Beings from across the galaxy need footwear rated for vacuum, variable gravity, and tentacles. But Zorp has a problem: his inventory system is a mess of untyped maps.
+Three ideas hold the platform together:
+
+### 1. Metacircular metamodel
+
+The type system is data, stored in Datomic alongside the entities it describes. `:dt/Class` is itself a class, `:dt/Property` is itself a property. Adding a class is a transaction; introspecting the schema is a query. Evolution at runtime is a first-class case rather than a redeploy. The Clojure REPL, the REST API, and the MCP server all reach the metamodel through the same `dt/*` introspection layer (`dt/all-classes`, `dt/slots-of`, `dt/instance-of?`, `dt/make`).
+
+This is the *turtles all the way down* property: every layer above the kernel is expressed in terms of constructs the kernel already understands.
+
+### 2. Boundary-layer abstraction (consumer talks native)
+
+Sandbar absorbs substrate complexity at each layer so consumers can talk in their natural representation:
+
+| Consumer's native form | Boundary layer that absorbs it | Substrate underneath |
+|------------------------|-------------------------------|---------------------|
+| Markdown documents (`mm/Memory` consumer) | `sandbar.codec.markdown` | `dt/*` model |
+| TTL / RDF triples (graph-query clients) | `sandbar.codec.ttl` *(arc-pending)* | `dt/*` model |
+| EDN/TTL hybrid (Clojure-side Lisp) | `sandbar.codec.edn-ttl-hybrid` *(arc-pending)* | `dt/*` model |
+| JSON-RPC tool calls (AI clients) | `sandbar.mcp.*` (MCP server) | `dt/*` model |
+| HTTP REST (traditional clients) | `sandbar.api.*` | `dt/*` model |
+| Datalog queries | `dt/*` introspection API | `datomic.api` (peer / cloud) |
+
+Each layer adds expressivity without pushing complexity up the stack. The `dt/*` API abstracts Datomic so the MCP server never touches `d/q` / `d/transact`; the codec layer abstracts wire formats so the memory-corpus consumer never hand-rolls a YAML parser; the protocol layers abstract transport so the metamodel author never writes per-protocol glue.
+
+### 3. Multi-surface protocol exposure (bootstrap-by-discovery)
+
+The same metamodel is exposed through multiple wire protocols simultaneously. Every non-abstract `dt/Class` is automatically an MCP tool, a REST resource, and (when the codec arc completes) a TTL graph node — with no hand-curated mapping table. `tools/list` walks `dt/all-classes`; JSON Schema is reflected from `dt/range-of` + `dt/cardinality-many?`; resource URIs are computed from class metadata. New classes auto-surface across every protocol the moment they're transacted.
+
+The corollary: there's exactly one schema, one validation pass, one type system. Protocols are derived projections, not parallel models to keep in sync.
+
+## Architecture
+
+```
+                  ┌──────────────────────────────────────────────────────────────┐
+  Consumer        │  Claude (MCP client)   curl  bb  REPL  external RDF tools    │
+  surface         └──┬──────────────┬──────────┬─────┬──────────────┬────────────┘
+                     │              │          │     │              │
+                  ┌──▼─────┐   ┌────▼────┐ ┌───▼─┐ ┌─▼──┐    ┌──────▼─────┐
+  Protocol        │  MCP   │   │ REST API│ │ CLI │ │REPL│    │  TTL / EDN │
+  layer           │ server │   │  HTTP+  │ │     │ │    │    │   (codec   │
+                  │ JSON-  │   │ content-│ │     │ │    │    │   arc      │
+                  │ RPC +  │   │ negot.  │ │     │ │    │    │   pending) │
+                  │  SSE   │   └─────────┘ └─────┘ └────┘    └────────────┘
+                  └────┬───┘
+                       │
+                  ┌────▼──────────────────────────────────────────────────────────┐
+  Codec          │  sandbar.codec — mediator + per-class :dt/native-codec        │
+  layer          │  ┌──────────────────────────────────────────────────────────┐ │
+                 │  │  codec.markdown   codec.ttl*   codec.edn-ttl-hybrid*     │ │
+                 │  │  codec.json*                                             │ │
+                 │  └──────────────────────────────────────────────────────────┘ │
+                 │       (*arc-pending)                                          │
+                 └────┬──────────────────────────────────────────────────────────┘
+                      │
+                  ┌───▼────────────────────────────────────────────────────────┐
+  Model         │  sandbar.db.datatype  (dt/*)                                 │
+  layer         │  classes • properties • inheritance • validation • introsp.  │
+                │  workflow substrate • tasks • auth • events • jobs           │
+                └───┬──────────────────────────────────────────────────────────┘
+                    │
+                  ┌─▼─────────────────────────────────────────────────────────┐
+  Backend       │  Datomic (peer / cloud)                                     │
+  layer         └─────────────────────────────────────────────────────────────┘
+```
+
+Each layer composes through the layer below it. The protocol layer NEVER touches Datomic directly (per the layer-targeting discipline); the codec layer NEVER bypasses `dt/*`; the model layer is the only place that knows about transactions and peer connections. This invariant keeps protocols swappable and the model layer authoritative.
+
+## What's in the platform
+
+| Surface | Provides |
+|---------|----------|
+| **`dt/*` model API** | classes, properties, inheritance, validation, introspection, instance ops |
+| **REST API** | HTTP endpoints for class / property / entity introspection with content-type negotiation (EDN / JSON) |
+| **MCP server** | JSON-RPC 2.0 + SSE transport; bootstrap-by-discovery tool catalog; resources, prompts, tasks; bearer-token auth |
+| **Codec layer** | Modular extensible codecs (markdown, TTL\*, EDN-TTL-hybrid\*, JSON\*); per-class `:dt/native-codec` declares default format |
+| **Workflow substrate** | First-class state machines with transitions, guards, history, cancellation, terminal-kind classification |
+| **MCP Tasks** | Long-running operations as workflow processes — task-id-as-process-id correspondence; durable execution |
+| **Auth** | User / Group / ServiceAccount / Role / Permission with Buddy-hashers + bearer-token interceptor |
+| **Events** | Structured event log with correlation IDs + interceptor integration |
+| **Jobs** | Scheduled, triggered, and recurring background jobs |
+| **Context** | Hierarchical namespacing substrate for resource scoping |
+
+*Asterisk-marked surfaces are arc-pending; see the codec arc plan in the corpus.*
+
+## Quick start
+
+```bash
+# Prerequisites: Java 11+, Leiningen, running Datomic transactor
+git clone <repository-url> && cd sandbar
+lein deps
+lein repl
+```
 
 ```clojure
-;; Zorp's old code (bad)
-{:name "Moon Boot Pro"
- :price 299.99
- :tentacles 4}  ; Wait, is this required? What type is price? Can boots have tentacles?
+;; In the REPL
+(require '[sandbar.core :refer [go stop]])
+(go)  ; HTTP on :8080, nREPL on :28888
+```
+
+Then:
+
+- **REST**: `curl http://localhost:8080/api/store/classes` lists every class
+- **MCP**: issue a service-account token (`(sandbar.util.auth/issue-api-key! ...)` in the REPL), then `POST /mcp` with a JSON-RPC body
+- **REPL**: `(require '[sandbar.db.datatype :as dt])` and explore via `dt/all-classes`, `dt/slots-of`, etc.
+
+## A worked example — Zorp's footwear
+
+Zorp runs the Galactic Footwear Emporium from a crater on the dark side of Pluto. His inventory was a mess of untyped maps:
+
+```clojure
+{:name "Moon Boot Pro" :price 299.99 :tentacles 4}
+;; Wait — is `tentacles` required? Can boots have tentacles?
 ```
 
 With Sandbar, Zorp defines a proper type hierarchy:
@@ -22,249 +126,243 @@ With Sandbar, Zorp defines a proper type hierarchy:
           ________________|________________
          |                |                |
     zorp/Sneaker     zorp/Boot       zorp/Sandal
-    _____|_____       ____|____          |
-   |           |     |         |    zorp/FlipFlop
-zorp/HighTop  zorp/LowTop     |
-                    zorp/SpaceBoot
+                    ____|____             |
+                   |         |       zorp/FlipFlop
+              zorp/HighTop  zorp/SpaceBoot
 ```
 
-Now Zorp's code is type-safe:
-
 ```clojure
-;; Define the Boot class (inherits from Footwear)
+;; Define a class
 {:db/ident :zorp/Boot
  :dt/type :dt/Class
  :dt/subclass-of :zorp/Footwear
  :dt/slots [:boot/vacuum-rated? :boot/temperature-range]}
 
-;; Create a validated instance
+;; Create + validate an instance
 (dt/make :zorp/SpaceBoot
   {:footwear/name "Moon Boot Pro"
    :footwear/price 299.99M
-   :footwear/tentacle-count 4
    :boot/vacuum-rated? true})
-;; => Works! Returns entity with :dt/type :zorp/SpaceBoot
+;; => entity with :dt/type :zorp/SpaceBoot
 
-;; Try to instantiate the abstract class
-(dt/make :zorp/Footwear {:footwear/name "Generic"})
-;; => Throws! "Cannot instantiate abstract class"
+;; Abstract instantiation rejected
+(dt/make :zorp/Footwear {...})
+;; => throws "Cannot instantiate abstract class"
 
-;; Query: "What slots does a SpaceBoot have?"
+;; Introspect at runtime
 (dt/slots-of :zorp/SpaceBoot)
-;; => #{:footwear/name :footwear/price :footwear/tentacle-count
-;;      :boot/vacuum-rated? :boot/temperature-range ...}
+;; => #{:footwear/name :footwear/price :boot/vacuum-rated? ...}
 ```
 
-Zorp's inventory is now self-documenting, validated, and queryable. His customers are happy. His accountant is happy. The sentient footwear is... still plotting something, but that's a separate issue.
+The full tutorial walks Zorp through hierarchy design, validation, and the surfaces above — see [doc/zorp-example.md](doc/zorp-example.md).
 
-**Learn more:**
-- **[doc/zorp-example.md](doc/zorp-example.md)** — Full tutorial with Zorp
-- **[test/sandbar/zorp_test.clj](test/sandbar/zorp_test.clj)** — Executable examples
-- **[schema/zorp.edn](schema/zorp.edn)** — The complete footwear ontology
-
-## Quick Start
-
-```bash
-# Prerequisites: Java 11+, Leiningen, running Datomic transactor
-git clone <repository-url> && cd sandbar
-lein deps
-lein repl
-
-# In the REPL
-(require '[sandbar.core :refer [go stop]])
-(go)  ; HTTP on :8080, nREPL on :28888
-```
-
-Then visit `http://localhost:8080/api/store/classes` to see your type system.
-
-## Why Bother?
-
-Datomic gives you flexible, schema-on-read attributes. Sandbar groups them into *classes* with inheritance, so you get:
-
-| Without Sandbar | With Sandbar |
-|-----------------|--------------|
-| "Does this entity have all the fields it needs?" | `(dt/valid? entity)` |
-| "What properties can a User have?" | `(dt/slots-of :model/User)` |
-| "Is AdminUser a kind of User?" | `(dt/subclass-of? :model/User :model/AdminUser)` |
-| "Find all Users (including subclasses)" | `(dt/all-instances-of :model/User)` |
-| "Create a User with validation" | `(dt/make :model/User {...})` |
-
-The metamodel is itself stored as Datomic entities. It's turtles all the way down.
-
-## Core API
+## Core API (dt/*)
 
 ```clojure
 (require '[sandbar.db.datatype :as dt])
 
 ;; Classes
-(dt/all-classes)                         ; List all classes
-(dt/parents-of :model/User)              ; => (:dt/Ref)
-(dt/ancestors-of :model/User)            ; => (:dt/Ref :dt/Resource)
-(dt/subclasses-of :dt/Resource)          ; All descendants
-(dt/subclass-of? :dt/Resource :model/User) ; => true
-(dt/abstract? :zorp/Footwear)            ; => true
+(dt/all-classes)                          ; List all classes
+(dt/parents-of :model/User)               ; Direct parents
+(dt/ancestors-of :model/User)             ; Full chain
+(dt/subclasses-of :dt/Resource)           ; All descendants
+(dt/abstract? :zorp/Footwear)             ; true | false
 
 ;; Properties
-(dt/all-properties)                      ; List all properties
-(dt/slots-of :model/User)                ; All slots (inherited + direct)
-(dt/direct-slots-of :model/User)         ; Only declared on this class
-(dt/domain-of :user/login)               ; => :model/User
-(dt/range-of :user/login)                ; => :db.type/string
+(dt/all-properties)
+(dt/slots-of :model/User)                 ; inherited + direct
+(dt/direct-slots-of :model/User)          ; declared only
+(dt/domain-of :user/login)                ; => :model/User
+(dt/range-of :user/login)                 ; => :db.type/string
 
 ;; Instances
-(dt/make :model/User {:user/login "zorp"})  ; Create with validation
+(dt/make :model/User {:user/login "zorp"})  ; create with validation
 (dt/class-of some-entity)                   ; => :model/User
-(dt/instance-of? :model/User some-entity)   ; => true
-(dt/all-instances-of :model/User)           ; Includes subclass instances
-(dt/valid? some-entity)                     ; Validate against class
+(dt/instance-of? :model/User some-entity)   ; true | false
+(dt/all-instances-of :model/User)           ; includes subclass instances
+(dt/valid? some-entity)                     ; validate against class
 ```
+
+## MCP server
+
+Sandbar speaks the [Model Context Protocol](https://modelcontextprotocol.io/) for AI-client integration. The MCP surface is a peer of the REST API, not a wrapper — both protocols project the same metamodel through different wire formats, derived reflectively from `dt/*`.
+
+| Route | Method | Purpose |
+|-------|--------|---------|
+| `/mcp` | POST | JSON-RPC 2.0 request endpoint |
+| `/mcp/sse` | GET | Server-sent-events channel for notifications |
+
+**Capabilities declared at `initialize`**:
+
+- **tools** — operational verb catalog of stable Sandbar operations (`schema.classes`, `class.describe`, `class.instances`, `entity.create`, `entity.find`, `workflow.start-process`, `validation.start`, etc.) plus `listChanged` notifications for schema evolution
+- **resources** — every entity addressable at `mcp://sandbar/<class-ns>/<class-name>/<ident-or-eid>`; `subscribe` + per-subscriber routing
+- **prompts** — workflow definitions exposed as MCP prompts (workflows-as-prompts pattern)
+- **tasks** — long-running operations via the workflow substrate (task-id-as-process-id)
+- **logging** — reserved for per-tool log hooks
+
+```bash
+# Get a service-account token from the REPL first
+export SANDBAR_TOKEN="claude:..."
+
+# Discover the surface
+curl -X POST http://localhost:8080/mcp \
+  -H "Authorization: Bearer $SANDBAR_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+```
+
+For the full MCP surface (lifecycle, all methods, configuration, failure modes) see [doc/mcp-server.md](doc/mcp-server.md). For long-running operations see [doc/tasks-api.md](doc/tasks-api.md).
 
 ## REST API
 
-The metamodel is fully exposed via HTTP. Default format is EDN; request JSON with `Accept: application/json`.
+The metamodel is fully exposed via HTTP for traditional clients. Content-type negotiation picks EDN by default; request JSON with `Accept: application/json`.
 
 ```bash
-# Schema overview
-curl http://localhost:8080/api/store/schema
-
-# Class introspection
-curl http://localhost:8080/api/store/classes
-curl http://localhost:8080/api/store/classes/model/User
-curl http://localhost:8080/api/store/classes/model/User/slots
-curl http://localhost:8080/api/store/classes/model/User/hierarchy
-
-# Properties
-curl http://localhost:8080/api/store/properties
-curl http://localhost:8080/api/store/properties/user/login
-
-# Type checks
+curl http://localhost:8080/api/store/schema                              # overview
+curl http://localhost:8080/api/store/classes                             # list
+curl http://localhost:8080/api/store/classes/model/User                  # details
+curl http://localhost:8080/api/store/classes/model/User/slots            # all slots
+curl http://localhost:8080/api/store/classes/model/User/hierarchy        # tree
+curl http://localhost:8080/api/store/properties/user/login/range         # property range
 curl http://localhost:8080/api/store/types/instance-of/dt/Class/model/User
-curl http://localhost:8080/api/store/types/subclass-of/dt/Resource/model/User
 ```
 
-<details>
-<summary>Full endpoint reference</summary>
+Full endpoint table at [doc/store-api.md](doc/store-api.md).
 
-| Endpoint | Description |
-|----------|-------------|
-| `GET /api/status` | System status |
-| `GET /api/store/schema` | Schema overview |
-| `GET /api/store/classes` | List classes |
-| `GET /api/store/classes/:ns/:name` | Class details |
-| `GET /api/store/classes/:ns/:name/slots` | All slots |
-| `GET /api/store/classes/:ns/:name/slots/direct` | Direct slots only |
-| `GET /api/store/classes/:ns/:name/slots/required` | Required slots |
-| `GET /api/store/classes/:ns/:name/instances` | All instances |
-| `GET /api/store/classes/:ns/:name/instances/direct` | Direct instances |
-| `GET /api/store/classes/:ns/:name/hierarchy` | Full hierarchy |
-| `GET /api/store/classes/:ns/:name/subclasses` | All subclasses |
-| `GET /api/store/classes/:ns/:name/ancestors` | All ancestors |
-| `GET /api/store/classes/:ns/:name/parents` | Direct parents |
-| `GET /api/store/properties` | List properties |
-| `GET /api/store/properties/:ns/:name` | Property details |
-| `GET /api/store/properties/:ns/:name/domain` | Property domain |
-| `GET /api/store/properties/:ns/:name/range` | Property range |
-| `GET /api/store/entities/:ns/:name` | Entity by ident |
-| `GET /api/store/entities/:ns/:name/class` | Entity's class |
-| `GET /api/store/entities/:ns/:name/validate` | Validate entity |
-| `GET /api/store/types/instance-of/:class/:entity` | Instance check |
-| `GET /api/store/types/subclass-of/:parent/:child` | Subclass check |
+## Codec layer
 
-</details>
-
-### JSON Example
-
-```bash
-curl -H "Accept: application/json" http://localhost:8080/api/store/classes/dt/Resource
-```
-
-```json
-{
-  "class": "dt/Resource",
-  "abstract?": false,
-  "slots": ["db/doc", "db/ident", "dt/label", "dt/namespace", "dt/type"],
-  "parents": [],
-  "subclasses": ["dt/Class", "dt/List", "dt/Literal", "dt/Property", "dt/Ref"],
-  "instance-count": 85
-}
-```
-
-## Event Logging
-
-Sandbar includes a built-in event system that persists to Datomic. HTTP requests are logged automatically; you can also log programmatically.
+The codec layer is the wire-format boundary. Consumers pass native representation (markdown documents, TTL triples, JSON payloads, EDN values); the codec absorbs parse + class-binding + emit. Each class declares `:dt/native-codec :markdown` (or similar) and the mediator resolves the default at call time.
 
 ```clojure
-(require '[sandbar.util.event :as event])
+(require '[sandbar.codec :as codec]
+         '[sandbar.codec.markdown :as md])
 
-;; Simple logging
-(event/log! :info "User logged in")
-(event/log! :error "Payment failed" {:event/status :failure})
+(md/register!)                            ; one-time registration
 
-;; Typed events
-(event/log-http! {:http/method :get :http/path "/api/users" :http/status-code 200})
-(event/log-error! "Oops" ex)  ; Captures exception + stacktrace
+;; Parse markdown → entity-spec
+(codec/parse markdown-source
+             {:format :markdown :class :mm/Memory})
 
-;; Query via API
-;; GET /api/events?level=error&limit=50
-;; GET /api/events/correlation/550e8400-e29b-41d4-a716-446655440000
+;; Emit entity → markdown
+(codec/emit entity {:format :markdown})
+
+;; Mime-type-driven dispatch
+(codec/parse-mime "text/markdown" source)
 ```
 
-Events support correlation IDs for distributed tracing. See [doc/event.md](doc/event.md) for details.
+Document chunks are first-class addressable entities — for `mm/Memory`, the markdown codec decomposes headings into `mm/Section` entities with bidirectional sibling-chain navigation (`:next-sibling` / `:previous-sibling`), parent-child nesting, and path-derived idents (e.g., `:decisions/foo__context__decision`). The chain shape gives O(1) point-local neighbor lookup; at the TTL emission boundary it can dual-emit as canonical `rdf:List`.
 
-## Project Structure
+## Workflows + Tasks
+
+Workflows are first-class entities. A workflow definition has states + transitions + guards + history. A process is a running instance attached to a subject entity. Terminal states carry a `:workflow/terminal-kind` classification (`:success` / `:failure` / `:cancel`) — the workflow substrate knows the outcome shape, not just "process ended."
+
+```clojure
+(require '[sandbar.util.workflow :as wf])
+
+(wf/define-workflow! :order/fulfillment
+  {:states [{:name :order/pending :initial? true}
+            {:name :order/shipped}
+            {:name :order/delivered :terminal? true :terminal-kind :success}
+            {:name :order/cancelled :terminal? true :terminal-kind :cancel}]
+   :transitions [{:name :ship   :from :order/pending  :to :order/shipped}
+                 {:name :deliver :from :order/shipped :to :order/delivered}
+                 {:name :cancel :from :order/pending  :to :order/cancelled}]})
+
+(def proc (wf/start-process! :order/fulfillment order-entity))
+(wf/transition! proc :ship)
+(wf/can-cancel? proc)         ; checks for a :terminal-kind :cancel transition
+(wf/cancel-process! proc)     ; deliberate stop with full history
+```
+
+MCP Tasks build on this substrate — every long-running tool-call becomes a workflow process, the task-id IS the process's `:db/id` (no parallel registry), and `tasks/cancel` is just `workflow/cancel-process!`. The validation service `validation/start` / `validation/run` / `validation/cancel` follows the same shape — see [doc/workflow.md](doc/workflow.md).
+
+## Project layout
 
 ```
 sandbar/
 ├── config/             # EDN configuration
 ├── schema/             # Type definitions
-│   ├── meta.edn        # Core metamodel (Class, Property, etc.)
+│   ├── meta.edn        # Core metamodel (Class, Property, Resource, ...)
+│   ├── auth.edn        # User / Group / ServiceAccount / Role / Permission
 │   ├── event.edn       # Event types
+│   ├── workflow.edn    # Workflow state machines + terminal-kind
+│   ├── context.edn     # Hierarchical scoping
+│   ├── job.edn         # Background-job schema
 │   └── zorp.edn        # Example: Galactic Footwear Emporium
 ├── src/sandbar/
-│   ├── api/            # REST handlers
+│   ├── codec.clj            # Mediator + format resolution
+│   ├── codec/
+│   │   ├── protocol.clj     # Codec defprotocol
+│   │   └── markdown.clj     # Markdown + YAML frontmatter codec
 │   ├── db/
-│   │   ├── datatype.clj   # The good stuff (dt/make, dt/slots-of, etc.)
-│   │   └── datomic.clj    # Database connection
-│   ├── server/         # HTTP + nREPL
-│   ├── service/        # Routing, interceptors
+│   │   ├── datatype.clj     # dt/* API — model layer
+│   │   ├── datomic.clj      # peer connection
+│   │   └── rules.clj        # recursive Datalog rules
+│   ├── mcp/                 # Model Context Protocol server
+│   │   ├── envelope.clj     # JSON-RPC 2.0 envelope (leaf ns)
+│   │   ├── protocol.clj     # initialize + dispatch table
+│   │   ├── transport.clj    # POST /mcp + GET /mcp/sse
+│   │   ├── auth.clj         # bearer-token Pedestal interceptor
+│   │   ├── tools.clj        # operational verb catalog
+│   │   ├── resources.clj    # URI codec + list/read/subscribe (per-sub routing)
+│   │   ├── prompts.clj      # workflows-as-prompts
+│   │   ├── tasks.clj        # workflow-backed Tasks primitive
+│   │   └── notifications.clj # subscriber registry + SSE notifications
+│   ├── api/                 # REST handlers (store, auth, event, job, workflow)
+│   ├── server/              # HTTP + nREPL component
+│   ├── service/             # routing, interceptors, validation-as-workflow
 │   └── util/
-│       └── event.clj   # Event logging
-└── test/               # 200+ tests, because we're not animals
+│       ├── auth.clj         # Buddy-hashers + service-account lifecycle
+│       ├── event.clj        # event logging + correlation
+│       └── workflow.clj     # process lifecycle, transition!, cancel-process!
+└── test/                    # comprehensive test suite (~470 tests)
 ```
 
 ## Documentation
 
-| Document | What You'll Learn |
-|----------|-------------------|
+| Document | Topic |
+|----------|-------|
 | [Quick Start](doc/quickstart.md) | Zero to running in 5 minutes |
-| [Architecture](doc/architecture.md) | How the pieces fit together |
-| [Metamodel](doc/meta-model.md) | Classes, properties, inheritance |
+| [Architecture](doc/architecture.md) | How the layers compose |
+| [Metamodel](doc/meta.md) | Classes, properties, inheritance, validation |
+| [MCP Server](doc/mcp-server.md) | Tools, resources, prompts, tasks; lifecycle + configuration |
+| [MCP Tasks API](doc/tasks-api.md) | Long-running operations via workflow-backed tasks |
+| [Store API](doc/store-api.md) | REST surface for classes / properties / entities |
+| [Authentication](doc/auth.md) | Users, sessions, API keys, bearer tokens |
+| [Workflow API](doc/workflow.md) | State machines, transitions, cancellation, terminal-kind |
+| [Background Jobs](doc/jobs-api.md) | Scheduled / triggered / recurring jobs |
 | [Event System](doc/event.md) | Logging, correlation, interceptors |
-| [Zorp Tutorial](doc/zorp-example.md) | Learn by selling alien footwear |
+| [Zorp Tutorial](doc/zorp-example.md) | Worked example — alien footwear inventory |
 
-## Running Tests
+## Running tests
 
 ```bash
-lein test                                    # All 200+ tests
-lein test sandbar.zorp-test                  # Just the fun ones
-lein test :only sandbar.datatype-test/make-test  # Specific test
+lein test                                       # full suite
+lein test sandbar.codec.markdown-test           # one namespace
+lein test :only sandbar.datatype-test/make-test # one deftest
 ```
 
 ## FAQ
 
 **Q: Why not just use Datomic's schema?**
-A: Datomic schemas define attributes, not types. You can say "there's an attribute called `:user/login`" but not "a User has login, email, and inherits from Person." Sandbar adds that layer.
+A: Datomic schemas define attributes, not types. You can say "there's an attribute called `:user/login`" but not "a User has login, email, and inherits from Person." Sandbar adds the class layer + the inheritance + the validation, and stores the type system as data so it's queryable like everything else.
 
-**Q: Is this like OWL/RDF?**
-A: Inspired by RDFS, but simpler. No open-world assumption, no inference engine, no PhD required. Just classes, properties, and inheritance.
+**Q: Is this RDFS / OWL?**
+A: Inspired by RDFS, but simpler. Closed-world (no open-world assumption), no inference engine, no PhD required. Just classes, properties, inheritance, and a small set of metacircular primitives.
+
+**Q: Why both REST and MCP?**
+A: Different consumers, same metamodel. Traditional HTTP clients want REST; AI clients want JSON-RPC with reflective tool discovery + push notifications for schema evolution. Both projections come for free from the same `dt/*` introspection — no parallel models to keep in sync.
+
+**Q: What's the codec layer for?**
+A: So consumers can talk to Sandbar in their native representation. A memory-corpus consumer passes markdown; an RDF tool passes Turtle; an MCP client passes JSON. Sandbar absorbs the wire format and binds to the model. Same architectural shape as `dt/*` absorbing Datomic.
 
 **Q: What's with the turtle jokes?**
-A: The metamodel describes itself using its own constructs. `dt/Class` is an instance of `dt/Class`. It's self-referential. Turtles. All the way down. We're very sorry.
+A: The metamodel describes itself using its own constructs. `dt/Class` is an instance of `dt/Class`. It's self-referential. Turtles, all the way down. We're not sorry.
 
 **Q: Can I use this in production?**
-A: Zorp has been selling moon boots on Pluto for years with zero incidents.*
+A: Zorp has been selling moon boots on Pluto for years with zero incidents.\*
 
-<sub>*Incidents involving sentient footwear are tracked separately.</sub>
+<sub>\* Incidents involving sentient footwear are tracked separately.</sub>
 
 ## License
 
