@@ -69,10 +69,16 @@
               (instance-of ?dt ?e)]
             (db/db) (all-rules) dt)))
 
-(defn all-named-instances-of
-  "Returns the :db/ident keywords of all named entities that are instances
-  of class dt or any of its subclasses. Useful for finding class and property
-  definitions rather than data instances."
+(defn named-idents-of
+  "Returns the :db/ident KEYWORDS of all named entities that are
+  instances of class dt or any of its subclasses.
+
+  Return shape (idents) is explicit in the name.  When you need
+  entity maps, use `named-entities-of` instead.
+
+  Replaces the older `all-named-instances-of` (kept as deprecated alias
+  for one-release migration window per
+  decisions/sandbar_dt_star_explicit_ident_entity_helper_split_2026_05_13.md)."
   [dt]
   (map first
        (d/q '[:find ?ident :in $ % ?dt :where
@@ -80,17 +86,45 @@
               (instance-of ?dt ?e)]
             (db/db) (all-rules) dt)))
 
+(defn named-entities-of
+  "Returns entity MAPS for all named entities that are instances of
+  class dt or any of its subclasses.
+
+  Return shape (entity maps) is explicit in the name.  Use this when
+  you need to read metadata off the entities (`:db/ident`,
+  `:dt/native-codec`, slot values, etc.).  When you only need idents,
+  use `named-idents-of` instead.
+
+  Per decisions/sandbar_dt_star_explicit_ident_entity_helper_split_2026_05_13.md."
+  [dt]
+  (map (comp db/entity first)
+       (d/q '[:find ?ident :in $ % ?dt :where
+              [?e :db/ident ?ident]
+              (instance-of ?dt ?e)]
+            (db/db) (all-rules) dt)))
+
+(defn ^{:deprecated "0.1.0"} all-named-instances-of
+  "DEPRECATED: name does not disambiguate return shape.  Use:
+    - `named-idents-of`     when you want idents (current behavior)
+    - `named-entities-of`   when you want entity maps
+
+  Kept as an alias for `named-idents-of` for one-release migration window
+  per decisions/sandbar_dt_star_explicit_ident_entity_helper_split_2026_05_13.md.
+  Slated for removal post-0.1.x."
+  [dt]
+  (named-idents-of dt))
+
 (defn all-classes
   "Returns the :db/ident keywords of all classes in the metamodel.
-  Equivalent to (all-named-instances-of :dt/Class)."
+  Equivalent to (named-idents-of :dt/Class)."
   []
-  (all-named-instances-of :dt/Class))
+  (named-idents-of :dt/Class))
 
 (defn all-properties
   "Returns the :db/ident keywords of all properties in the metamodel.
-  Equivalent to (all-named-instances-of :dt/Property)."
+  Equivalent to (named-idents-of :dt/Property)."
   []
-  (all-named-instances-of :dt/Property))
+  (named-idents-of :dt/Property))
 
 (defn make*
   "Creates a typed instance without validation.
@@ -257,11 +291,109 @@
                       :else (into {} entity))]
      (emit-fn entity-map opts))))
 
-(defn class-of
-  "Returns the class (:dt/type) of entity e.
-  Works with entity maps, entity IDs, or idents."
+(defn class-ident-of
+  "Returns the class IDENT (keyword) for entity e — the `:dt/type`
+  value as an ident.
+
+  Return shape (ident keyword) is explicit in the name.  When you
+  need the class's full entity map (to read class-level metadata
+  like `:dt/native-codec`, `:dt/slots`, `:dt/aliases`), use
+  `class-entity-of` instead.
+
+  For an instance:  returns the class the instance is in.
+  For a class itself: returns the meta-class (`:dt/Class`).
+  For a property: returns `:dt/Property`.
+
+  Per decisions/sandbar_dt_star_explicit_ident_entity_helper_split_2026_05_13.md."
   [e]
   (-> e entity :dt/type))
+
+(defn class-entity-of
+  "Returns the class ENTITY map for class-ident.
+
+  Resolves a class-ident keyword (e.g., `:mm/Memory`) to its entity
+  for reading class-level metadata: `:dt/native-codec`, `:dt/slots`,
+  `:dt/aliases`, `:dt/abstract?`, `:dt/subclass-of`.
+
+  IMPORTANT: this does NOT follow `:dt/type` — it returns the entity
+  for the class itself.  If you have an instance and want its class's
+  metadata, compose: `(-> instance class-ident-of class-entity-of)`.
+
+  This explicit helper exists because the duplicate `(-> x entity
+  :dt/type)`-then-read pattern was the source of the codex MUST-FIX
+  #1 + ultrareview bug class at `codec.clj:116`.
+
+  Per decisions/sandbar_dt_star_explicit_ident_entity_helper_split_2026_05_13.md."
+  [class-ident]
+  (db/entity class-ident))
+
+(defn ^{:deprecated "0.1.0"} class-of
+  "DEPRECATED: name does not disambiguate return shape.  Use:
+    - `class-ident-of`   when you want the class ident (current behavior)
+    - `class-entity-of`  when you want the class entity (for metadata)
+
+  Kept as an alias for `class-ident-of` for one-release migration window
+  per decisions/sandbar_dt_star_explicit_ident_entity_helper_split_2026_05_13.md.
+  Slated for removal post-0.1.x."
+  [e]
+  (class-ident-of e))
+
+(defn find-by-ident
+  "Returns the entity map for the given `:db/ident`, or nil if no
+  entity has that ident.
+
+  Convenience helper used when callsites have an ident in hand and
+  need the entity (most often: realizing idents returned by
+  `named-idents-of` into entities suitable for projection).
+
+  Per decisions/sandbar_dt_star_explicit_ident_entity_helper_split_2026_05_13.md."
+  [ident]
+  (db/entity ident))
+
+(defn native-codec-of-class
+  "Returns the `:dt/native-codec` format keyword declared on the class,
+  or nil if none.
+
+  Resolves the per-class default codec for the codec mediator's
+  class-default routing path (`sandbar.codec/native-codec-for-class`).
+  Purpose-built helper that does NOT traverse `:dt/type` — it reads
+  the codec directly off the class entity.
+
+  Replaces the buggy `(:dt/native-codec (entity (dt/class-of class)))`
+  pattern that triggered codex MUST-FIX #1 (the `class-of` call
+  resolved to `:dt/Class`, and `:dt/Class` has no `:dt/native-codec`).
+
+  Per decisions/sandbar_dt_star_explicit_ident_entity_helper_split_2026_05_13.md."
+  [class-ident]
+  (:dt/native-codec (db/entity class-ident)))
+
+(defn codec-aliases-of
+  "Returns the codec-layer alias map declared on the class via the
+  `:dt/codec-aliases` schema attribute, or `{}` if none.
+
+  Schema shape: `:dt/codec-aliases` is cardinality-many; each entry
+  is a `[short-key slot-ident]` keyword-pair tuple.  This function
+  reconstructs the map for codec consumers.
+
+  IMPORTANT — these are NOT `owl:sameAs`-shaped identity aliases.
+  They are context-specific naming conventions for the codec layer
+  ONLY: when a class is encoded via a codec, the short-key surfaces
+  in the wire form as a stand-in for the canonical namespaced slot
+  ident.  The slot retains its full canonical identity in the model;
+  only the wire-form name is `short-key`.  Per
+  interaction/check_substrate_schema_attribute_names_against_rdf_owl_semantics_2026_05_13.md
+  the attribute is named `:dt/codec-aliases` (not `:dt/aliases`) to
+  disambiguate from OWL identity-relation semantics + to match the
+  `:dt/native-codec` sister-attribute naming pattern.
+
+  Used by codecs (e.g., `sandbar.codec.markdown/frontmatter-key->slot`)
+  for class-declared alias resolution — replaces the prior hardcoded
+  `known-class-slot-aliases` map in the codec implementation, per
+  interaction/no_hardcoded_consumer_class_knowledge_in_substrate_2026_05_13.md.
+
+  Per decisions/sandbar_dt_star_explicit_ident_entity_helper_split_2026_05_13.md."
+  [class-ident]
+  (into {} (or (:dt/codec-aliases (db/entity class-ident)) [])))
 
 (defn parents-of
   "Returns the direct parent classes of class dt.

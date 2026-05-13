@@ -85,6 +85,35 @@
     (is (= :dt/Class (dt/class-of :model/User)) ":model/User should be instance of :dt/Class")
     (is (= :dt/Property (dt/class-of :dt/type)) ":dt/type should be instance of :dt/Property")))
 
+(deftest class-ident-of-test
+  (testing "class-ident-of returns the class IDENT (keyword)"
+    (is (= :dt/Class (dt/class-ident-of :dt/Property)))
+    (is (= :dt/Class (dt/class-ident-of :model/User)))
+    (is (= :dt/Property (dt/class-ident-of :dt/type)))
+    (is (keyword? (dt/class-ident-of :dt/Property)) "Return is a keyword ident")))
+
+(deftest class-entity-of-test
+  (testing "class-entity-of returns the class ENTITY (full map) for a class-ident"
+    (let [ent (dt/class-entity-of :dt/Property)]
+      (is (some? ent) "Returns a non-nil entity for a real class ident")
+      (is (= :dt/Property (:db/ident ent))
+          ":db/ident on the result matches the class ident")
+      (is (or (associative? ent) (instance? datomic.Entity ent))
+          "Result behaves like a map (entity)")
+      ;; The critical regression test: the prior `(:dt/native-codec
+      ;; (class-of x))` pattern returned nil because class-of resolved to
+      ;; :dt/Class.  class-entity-of resolves to the class itself, so
+      ;; reading metadata works.
+      (is (nil? (:dt/native-codec ent))
+          ":dt/Property has no :dt/native-codec declared")))
+  (testing "class-entity-of on :dt/Class returns the meta-class entity itself"
+    (let [ent (dt/class-entity-of :dt/Class)]
+      (is (= :dt/Class (:db/ident ent)))))
+  (testing "class-entity-of on nonexistent ident returns nil-equivalent"
+    (let [ent (dt/class-entity-of :nonexistent/SomeClass)]
+      (is (or (nil? ent) (nil? (:db/ident ent)))
+          "Returns nil or a sentinel-empty entity for unknown ident"))))
+
 (deftest instance-of?-test
   (testing "instance-of? checks instance relationship"
     (is (dt/instance-of? :dt/Class :model/User) "User is instance of Class")
@@ -111,6 +140,73 @@
       (is (seq class-instances) "Should have some named instances")
       (is (some #{:model/User} class-instances) "Should include :model/User")
       (is (every? keyword? class-instances) "All results should be keywords"))))
+
+(deftest named-idents-of-test
+  (testing "named-idents-of returns idents (keywords)"
+    (let [class-instances (dt/named-idents-of :dt/Class)]
+      (is (seq class-instances))
+      (is (some #{:model/User} class-instances))
+      (is (every? keyword? class-instances) "All results are keywords")))
+  (testing "named-idents-of is the canonical name; all-named-instances-of is a deprecated alias"
+    (is (= (set (dt/named-idents-of :dt/Class))
+           (set (dt/all-named-instances-of :dt/Class))))))
+
+(deftest named-entities-of-test
+  (testing "named-entities-of returns entity MAPS (not idents)"
+    (let [class-entities (dt/named-entities-of :dt/Class)]
+      (is (seq class-entities))
+      (is (every? (fn [e] (or (associative? e) (instance? datomic.Entity e)))
+                  class-entities)
+          "All results are entity-shaped (associative)")
+      (is (some (fn [e] (= :model/User (:db/ident e))) class-entities)
+          "Reading :db/ident off an entity result works")
+      (is (every? (fn [e] (some? (:db/ident e))) class-entities)
+          ":db/ident is readable on every result")))
+  (testing "named-idents-of and named-entities-of return the same set when projected to idents"
+    (is (= (set (dt/named-idents-of :dt/Class))
+           (set (map :db/ident (dt/named-entities-of :dt/Class)))))))
+
+(deftest find-by-ident-test
+  (testing "find-by-ident returns the entity for a known ident"
+    (let [ent (dt/find-by-ident :model/User)]
+      (is (some? ent))
+      (is (= :model/User (:db/ident ent)))))
+  (testing "find-by-ident on unknown ident returns nil-equivalent"
+    (is (or (nil? (dt/find-by-ident :nonexistent/Thing))
+            (nil? (:db/ident (dt/find-by-ident :nonexistent/Thing)))))))
+
+(deftest native-codec-of-class-test
+  (testing "native-codec-of-class returns nil for classes with no :dt/native-codec"
+    ;; :dt/Property + :model/User do not declare :dt/native-codec in the
+    ;; default-loaded schema.  After Stage B (mm/* schema landing),
+    ;; :mm/Memory will return :codec/markdown — covered there.
+    (is (nil? (dt/native-codec-of-class :dt/Property)))
+    (is (nil? (dt/native-codec-of-class :model/User))))
+  (testing "native-codec-of-class does NOT traverse :dt/type (the codex MUST-FIX #1 regression)"
+    ;; Regression test: the prior `(:dt/native-codec (entity (dt/class-of x)))`
+    ;; bug resolved to :dt/Class and returned nil.  The new helper reads
+    ;; the codec off the class entity directly — no :dt/type traversal.
+    ;; This test asserts shape: when :dt/native-codec is set on a class,
+    ;; the new helper finds it.  Full positive-path coverage lands with
+    ;; Stage B mm/* schema.
+    (is (nil? (dt/native-codec-of-class :nonexistent/Class))
+        "Returns nil for nonexistent class, not an error")))
+
+(deftest codec-aliases-of-test
+  (testing "codec-aliases-of returns {} for classes with no :dt/codec-aliases declared"
+    (is (= {} (dt/codec-aliases-of :dt/Property)))
+    (is (= {} (dt/codec-aliases-of :model/User)))
+    (is (= {} (dt/codec-aliases-of :nonexistent/Class))))
+  (testing "codec-aliases-of return shape is always a map (never nil, never seq)"
+    (is (map? (dt/codec-aliases-of :dt/Property))
+        "Empty case is {} so consumers can `(get aliases k)` without nil-check")))
+  ;; Positive-path coverage (class with declared :dt/codec-aliases) lands
+  ;; with Stage B mm/* schema — :mm/Memory will declare
+  ;; :dt/codec-aliases [[:type :mm.memory/memory-type]] etc.
+  ;;
+  ;; Attribute named :dt/codec-aliases (not :dt/aliases) to disambiguate
+  ;; from OWL sameAs-shaped identity relations per
+  ;; interaction/check_substrate_schema_attribute_names_against_rdf_owl_semantics_2026_05_13.md.
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Slot Tests

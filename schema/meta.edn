@@ -259,7 +259,43 @@
    :db/doc "Per-class default codec format hint. The codec mediator
             (sandbar.codec) uses this when no explicit :format hint is
             provided. E.g., :mm/Memory → :markdown. Per
-            decisions/sandbar_codec_layer_owns_wire_format_concerns_consumer_native_representation_2026_05_12.md §2.5."}]
+            decisions/sandbar_codec_layer_owns_wire_format_concerns_consumer_native_representation_2026_05_12.md §2.5."}
+
+  {:db/ident :dt/codec-aliases
+   :dt/type  :dt/Property
+   :dt/domain :dt/Class
+   :dt/range :db.type/tuple
+   :db/valueType :db.type/tuple
+   :db/tupleType :db.type/keyword
+   :db/cardinality :db.cardinality/many
+   :db/doc "Per-class codec-layer alias map.  Each tuple is
+            [short-key slot-ident] — a codec wire-form short name
+            paired with the canonical namespaced slot ident.  Codecs
+            read this via `sandbar.db.datatype/codec-aliases-of` for
+            class-declared alias resolution.
+
+            NOTE — these are NOT owl:sameAs-shaped identity aliases.
+            They are context-specific naming conventions for the codec
+            layer ONLY: when a class is encoded via a codec, short-key
+            surfaces in the wire form as a stand-in for the canonical
+            namespaced slot.  The slot retains its full canonical
+            identity in the model; only the wire-form name is short.
+
+            Attribute name `:dt/codec-aliases` (not `:dt/aliases`)
+            chosen to disambiguate from OWL identity-relation
+            semantics + to match the `:dt/native-codec` sister
+            attribute naming pattern, per
+            interaction/check_substrate_schema_attribute_names_against_rdf_owl_semantics_2026_05_13.md.
+
+            Example: on :mm/Memory, [:type :mm.memory/memory-type]
+            tells the markdown codec that frontmatter key `type:` maps
+            to slot :mm.memory/memory-type (avoiding collision with
+            the :dt/type system attribute).
+
+            Replaces the prior hardcoded `known-class-slot-aliases`
+            map in `sandbar.codec.markdown` per
+            interaction/no_hardcoded_consumer_class_knowledge_in_substrate_2026_05_13.md
+            + decisions/sandbar_dt_star_explicit_ident_entity_helper_split_2026_05_13.md."}]
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Fundamental Classes
@@ -277,7 +313,7 @@
    :dt/context "meta"
    :dt/subclass-of :dt/Resource
    :dt/label "Class"
-   :dt/slots [:dt/subclass-of :dt/abstract? :dt/list :dt/component :dt/slots :dt/validator :dt/native-codec]}
+   :dt/slots [:dt/subclass-of :dt/abstract? :dt/list :dt/component :dt/slots :dt/validator :dt/native-codec :dt/codec-aliases]}
 
   {:db/ident :dt/Property
    :dt/type :dt/Class
