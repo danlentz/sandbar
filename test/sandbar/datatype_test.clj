@@ -177,18 +177,22 @@
 
 (deftest native-codec-of-class-test
   (testing "native-codec-of-class returns nil for classes with no :dt/native-codec"
-    ;; :dt/Property + :model/User do not declare :dt/native-codec in the
-    ;; default-loaded schema.  After Stage B (mm/* schema landing),
-    ;; :mm/Memory will return :codec/markdown — covered there.
     (is (nil? (dt/native-codec-of-class :dt/Property)))
     (is (nil? (dt/native-codec-of-class :model/User))))
-  (testing "native-codec-of-class does NOT traverse :dt/type (the codex MUST-FIX #1 regression)"
-    ;; Regression test: the prior `(:dt/native-codec (entity (dt/class-of x)))`
-    ;; bug resolved to :dt/Class and returned nil.  The new helper reads
-    ;; the codec off the class entity directly — no :dt/type traversal.
-    ;; This test asserts shape: when :dt/native-codec is set on a class,
-    ;; the new helper finds it.  Full positive-path coverage lands with
-    ;; Stage B mm/* schema.
+  (testing "native-codec-of-class returns the declared codec for classes that have one"
+    ;; Positive-path: :mm/Memory + :mm/Section declare :dt/native-codec :markdown
+    ;; in schema/mm.edn.
+    (is (= :markdown (dt/native-codec-of-class :mm/Memory))
+        ":mm/Memory declares :dt/native-codec :markdown")
+    (is (= :markdown (dt/native-codec-of-class :mm/Section))
+        ":mm/Section declares :dt/native-codec :markdown"))
+  (testing "native-codec-of-class does NOT traverse :dt/type (codex MUST-FIX #1 regression test)"
+    ;; The prior `(:dt/native-codec (entity (dt/class-of x)))` bug
+    ;; resolved to :dt/Class and returned nil.  This helper reads the
+    ;; codec off the class entity directly — no :dt/type traversal.
+    ;; The test above (= :markdown ...) proves this works correctly:
+    ;; if we WERE traversing :dt/type, we'd get nil (since :dt/Class
+    ;; doesn't declare :dt/native-codec).
     (is (nil? (dt/native-codec-of-class :nonexistent/Class))
         "Returns nil for nonexistent class, not an error")))
 
@@ -196,17 +200,52 @@
   (testing "codec-aliases-of returns {} for classes with no :dt/codec-aliases declared"
     (is (= {} (dt/codec-aliases-of :dt/Property)))
     (is (= {} (dt/codec-aliases-of :model/User)))
-    (is (= {} (dt/codec-aliases-of :nonexistent/Class))))
+    (is (= {} (dt/codec-aliases-of :mm/Section))
+        ":mm/Section has :dt/native-codec but no :dt/codec-aliases"))
+  (testing "codec-aliases-of returns the declared alias map for classes that have one"
+    ;; Positive-path: :mm/Memory declares :dt/codec-aliases for :type
+    ;; (avoids collision with :dt/type system attribute).
+    (let [aliases (dt/codec-aliases-of :mm/Memory)]
+      (is (= {:type :mm.memory/memory-type} aliases)
+          ":mm/Memory's :dt/codec-aliases map [:type :mm.memory/memory-type] reconstructs as a map")))
   (testing "codec-aliases-of return shape is always a map (never nil, never seq)"
     (is (map? (dt/codec-aliases-of :dt/Property))
-        "Empty case is {} so consumers can `(get aliases k)` without nil-check")))
-  ;; Positive-path coverage (class with declared :dt/codec-aliases) lands
-  ;; with Stage B mm/* schema — :mm/Memory will declare
-  ;; :dt/codec-aliases [[:type :mm.memory/memory-type]] etc.
-  ;;
+        "Empty case is {}")
+    (is (map? (dt/codec-aliases-of :mm/Memory))
+        "Non-empty case is a map of [short-key slot-ident] pairs")
+    (is (map? (dt/codec-aliases-of :nonexistent/Class))
+        "Nil-equivalent input still returns {}"))
   ;; Attribute named :dt/codec-aliases (not :dt/aliases) to disambiguate
   ;; from OWL sameAs-shaped identity relations per
   ;; interaction/check_substrate_schema_attribute_names_against_rdf_owl_semantics_2026_05_13.md.
+  )
+
+(deftest mm-schema-loaded-test
+  (testing "mm/* classes are registered in the metamodel"
+    (let [classes (set (dt/all-classes))]
+      (is (contains? classes :mm/Memory))
+      (is (contains? classes :mm/Section))
+      (is (contains? classes :mm/Tag))
+      (is (contains? classes :mm/Link))
+      (is (contains? classes :mm/Frontmatter))))
+  (testing "mm/* classes inherit from :dt/Resource"
+    (is (dt/subclass-of? :dt/Resource :mm/Memory))
+    (is (dt/subclass-of? :dt/Resource :mm/Section)))
+  (testing "mm/Memory has the expected slot set"
+    (let [slots (dt/slots-of :mm/Memory)]
+      (is (contains? slots :mm.memory/rel-path))
+      (is (contains? slots :mm.memory/name))
+      (is (contains? slots :mm.memory/memory-type))
+      (is (contains? slots :mm.memory/first-section))
+      (is (contains? slots :mm.memory/body-raw))))
+  (testing "mm/Section has the expected slot set"
+    (let [slots (dt/slots-of :mm/Section)]
+      (is (contains? slots :mm.section/heading))
+      (is (contains? slots :mm.section/heading-level))
+      (is (contains? slots :mm.section/body))
+      (is (contains? slots :mm.section/parent))
+      (is (contains? slots :mm.section/next-sibling))
+      (is (contains? slots :mm.section/previous-sibling)))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Slot Tests
