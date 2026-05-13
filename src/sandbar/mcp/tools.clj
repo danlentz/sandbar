@@ -36,6 +36,8 @@
   (:require [cheshire.core              :as json]
             [clojure.string             :as str]
             [clojure.tools.logging      :as log]
+            [sandbar.codec              :as codec]
+            [sandbar.project-graph      :as pg]
             [sandbar.db.datatype        :as dt]
             [sandbar.db.datomic         :as db]
             [sandbar.mcp.envelope       :as envelope]
@@ -269,7 +271,12 @@
 
 (defn- entity-create-handler [args]
   (let [class-ident (->ident (or (get args "class") (get args :class)))
-        slots       (or (get args "slots") (get args :slots) {})]
+        slots       (or (get args "slots") (get args :slots) {})
+        ;; Codec arc Stage F.3a per
+        ;; plans/sandbar_codec_layer_arc_2026-05-12.md — optional
+        ;; :format + :source opts for codec-driven entity construction.
+        format-arg  (or (get args "format") (get args :format))
+        source-arg  (or (get args "source") (get args :source))]
     (when (nil? class-ident)
       (throw (ex-info "Missing required argument: class" {:args args})))
     (let [cls (db/entity class-ident)]
@@ -278,10 +285,18 @@
       (when (dt/abstract? class-ident)
         (throw (ex-info (str "Cannot instantiate abstract class: " class-ident)
                         {:class class-ident :reason :abstract})))
-      (let [props      (coerce-slot-map class-ident slots)
-            new-entity (dt/make class-ident props)]
+      (let [props        (coerce-slot-map class-ident slots)
+            ;; When format + source provided, dt/make's :format opt
+            ;; parses via codec mediator; explicit slots override.
+            make-opts    (cond-> {}
+                           (and format-arg source-arg)
+                           (assoc :format (keyword format-arg)
+                                  :source source-arg))
+            new-entity   (dt/make class-ident props make-opts)]
         (log/info :MCP/entity-create
-                  {:class class-ident :entity-id (:db/id new-entity)})
+                  {:class  class-ident
+                   :entity-id (:db/id new-entity)
+                   :format (when format-arg (keyword format-arg))})
         ;; Per ADR B.1.4: a new dt/Class or dt/Property changes the
         ;; schema surface (visible to schema.* + class.* verbs).
         ;; tools/list itself doesn't change (verb catalog is stable),
@@ -311,6 +326,40 @@
       (if (some? e)
         {:entity (entity-projection e)}
         {:entity nil :missing? true :lookup (str ident-or-id)}))))
+
+;; ---------- Codec + project-graph operations (Stage F.3b) ----------
+
+(defn- codec-list-handler [_args]
+  {:codecs (codec/list-codecs)})
+
+(defn- project-export-handler [args]
+  (let [to (or (get args "to") (get args :to))]
+    (when-not to
+      (throw (ex-info "project.export requires :to (output directory path)"
+                      {:args args})))
+    ;; Stage F minimum-viable — exports ALL mm/Memory instances.
+    ;; Class-filter + per-attribute-filter mechanisms are Stage F/D follow-up.
+    (let [memories (dt/all-instances-of :mm/Memory)
+          ;; Project-graph operates on entity-spec maps; realize Datomic
+          ;; entities to plain maps before passing.
+          entity-maps (mapv #(into {:dt/type :mm/Memory} %) memories)
+          result   (pg/project-graph entity-maps {:to to})]
+      {:to to
+       :exported (count result)
+       :files (mapv :rel-path result)})))
+
+(defn- project-import-handler [args]
+  (let [from (or (get args "from") (get args :from))]
+    (when-not from
+      (throw (ex-info "project.import requires :from (input directory path)"
+                      {:args args})))
+    (let [entities (pg/ingest-graph from)]
+      {:from from
+       :imported (count entities)
+       :entities (mapv (fn [e]
+                         {:dt/type (:dt/type e)
+                          :ident   (:db/ident e)})
+                       entities)})))
 
 (defn- entity-update-handler [args]
   ;; Entity update via dt/make-equivalent: this requires a primitive
@@ -556,10 +605,12 @@
    ;; Entity operations
    {:name "sandbar.entity.create"
     :title "Create an entity"
-    :description "Create a new entity of `:class` with `:slots`; validated via `dt/make`."
+    :description "Create a new entity of `:class` with `:slots`; validated via `dt/make`.  Optionally accepts `:format` + `:source` — when both are provided, the codec mediator parses `:source` as the named wire format (e.g., :markdown) and merges the parsed slots with the explicit `:slots` map (explicit wins).  Codec arc Stage F.3a per plans/sandbar_codec_layer_arc_2026-05-12.md."
     :inputSchema (one-required
-                   {:class {:type "string" :description "Class ident"}
-                    :slots {:type "object" :description "Slot map (slot-ident-string → value)"}}
+                   {:class  {:type "string" :description "Class ident"}
+                    :slots  {:type "object" :description "Slot map (slot-ident-string → value); optional when :source is provided"}
+                    :format {:type "string" :description "Optional codec format keyword (e.g., :markdown / :json); requires :source"}
+                    :source {:type "string" :description "Optional raw native-representation string parsed via :format codec"}}
                    [:class])
     :handler entity-create-handler}
    {:name "sandbar.entity.find"
@@ -666,7 +717,28 @@
     :inputSchema {:type "object"
                   :properties (merge class-arg-schema {})
                   :required []}
-    :handler validation-history-handler}])
+    :handler validation-history-handler}
+
+   ;; Codec + project-graph operations (Stage F.3b)
+   {:name "sandbar.codec.list"
+    :title "List registered codecs"
+    :description "Return the set of codecs registered with the Sandbar codec mediator (format keyword + supported MIME types).  Per codec arc Stage F.3b."
+    :inputSchema {:type "object" :properties {} :required []}
+    :handler codec-list-handler}
+   {:name "sandbar.project.export"
+    :title "Project entities to filesystem hierarchy"
+    :description "Project every mm/Memory instance to a filesystem hierarchy at `:to` (output directory) via sandbar.project-graph.  Each entity emits as native representation per its class's `:dt/native-codec`.  Anderson de.setf.rdf:project-graph lineage per the codec ADR §1.1."
+    :inputSchema (one-required
+                   {:to {:type "string" :description "Output directory path"}}
+                   [:to])
+    :handler project-export-handler}
+   {:name "sandbar.project.import"
+    :title "Ingest entities from filesystem hierarchy"
+    :description "Walk `:from` directory; parse each .md file via sandbar.codec.markdown; return the entity-spec maps.  Inverse of project.export."
+    :inputSchema (one-required
+                   {:from {:type "string" :description "Input directory path"}}
+                   [:from])
+    :handler project-import-handler}])
 
 (def ^:private verb-by-name
   (into {} (map (juxt :name identity)) verb-catalog))

@@ -123,6 +123,13 @@
     props - Optional map of property values
     opts  - Optional options map:
             :validate? - if false, skips validation (default true)
+            :format    - codec format keyword (e.g., :markdown / :json)
+                         When provided with :source, parses source via
+                         the codec mediator and uses the resulting
+                         entity-spec as the props base; explicit `props`
+                         keys override parsed slots
+            :source    - raw native-representation string to parse via
+                         :format codec (e.g., markdown text for :markdown)
 
   Returns the newly created entity map.
 
@@ -136,17 +143,62 @@
 
   Example:
     (make :User {:user/login \"dan\"})
-    (make :User {:user/login \"dan\"} {:validate? false})"
+    (make :User {:user/login \"dan\"} {:validate? false})
+
+    ;; Parse markdown via codec.markdown; transact result
+    (make :mm/Memory {} {:format :markdown
+                          :source \"---\\nname: Foo\\n---\\n# Body\\n\"})"
   ([dt] (make dt {} {}))
   ([dt props] (make dt props {}))
-  ([dt props {:keys [validate?] :or {validate? true}}]
-   (if-not validate?
-     (make* dt props)
-     (if-let [errors (validate-data dt props)]
-       (do
-         (log/debug :DT/VALIDATION-FAILED {:class dt :errors errors})
-         (throw (ex-info "Validation failed" errors)))
-       (make* dt props)))))
+  ([dt props {:keys [validate? format source] :or {validate? true}}]
+   ;; F.1 codec arc Stage F per
+   ;; plans/sandbar_codec_layer_arc_2026-05-12.md — when :format +
+   ;; :source supplied, parse via the codec mediator first; explicit
+   ;; props override parsed slots.
+   (let [props (if (and format source)
+                 (let [parse-fn (requiring-resolve 'sandbar.codec/parse)
+                       parsed   (parse-fn source {:format format :class dt})]
+                   (merge (dissoc parsed :dt/type) props))
+                 props)]
+     (if-not validate?
+       (make* dt props)
+       (if-let [errors (validate-data dt props)]
+         (do
+           (log/debug :DT/VALIDATION-FAILED {:class dt :errors errors})
+           (throw (ex-info "Validation failed" errors)))
+         (make* dt props))))))
+
+(defn emit-entity
+  "Emit an entity in its native representation via the codec mediator.
+
+  Arguments:
+    entity - the entity (or entity map / entity ID)
+    opts   - optional codec opts:
+             :format — format keyword (default: from the class's
+                       :dt/native-codec attribute)
+             others  — forwarded to the codec's emit method
+                       (e.g., :pretty?, :include-id?)
+
+  Returns the native-representation string (typically markdown / JSON
+  / TTL depending on the resolved codec).
+
+  Per codec arc Stage F (plans/sandbar_codec_layer_arc_2026-05-12.md):
+  the inverse of `dt/make` with `:format` opt — together they form a
+  full codec round-trip surface at the model layer.
+
+  Example:
+    (emit-entity my-memory)               ; uses :dt/native-codec default
+    (emit-entity my-memory {:format :json})"
+  ([entity] (emit-entity entity {}))
+  ([entity opts]
+   (let [emit-fn (requiring-resolve 'sandbar.codec/emit)
+         ;; Realize Datomic entity → plain map (codecs operate on
+         ;; entity-spec maps, not Entity records).
+         entity-map (cond
+                      (map? entity) entity
+                      (number? entity) (into {} (db/entity entity))
+                      :else (into {} entity))]
+     (emit-fn entity-map opts))))
 
 (defn class-of
   "Returns the class (:dt/type) of entity e.

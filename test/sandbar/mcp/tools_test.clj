@@ -89,7 +89,13 @@
       (is (contains? names "sandbar.validation.cancel"))
       (is (contains? names "sandbar.validation.retry"))
       (is (contains? names "sandbar.validation.results"))
-      (is (contains? names "sandbar.validation.history")))))
+      (is (contains? names "sandbar.validation.history"))))
+
+  (testing "codec + project-graph verbs (Stage F.3b)"
+    (let [names (set (map :name tools/verb-catalog))]
+      (is (contains? names "sandbar.codec.list"))
+      (is (contains? names "sandbar.project.export"))
+      (is (contains? names "sandbar.project.import")))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; tools/list response shape

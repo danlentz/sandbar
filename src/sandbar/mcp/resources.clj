@@ -183,18 +183,26 @@
          first)))
 
 (defn- render-entity-content
-  "Render an entity's content for resources/read. Per B.1.5 +
-   B.1.7: mm/Memory renders as markdown (composes with export ADR M.3
-   when that emitter lands); other entities render as canonical EDN."
+  "Render an entity's content for resources/read.  Per codec arc
+   Stage F (plans/sandbar_codec_layer_arc_2026-05-12.md F.4): mm/Memory
+   renders via the markdown codec; other entities render as canonical
+   EDN.
+
+   Section-tree decomposition on read (returning full memory + sections
+   chain) is a Stage F follow-up — current implementation emits
+   frontmatter + body-raw via the codec mediator, which is sufficient
+   for round-trip through the resources/read surface."
   [entity cls-ident]
   (cond
     (= cls-ident :mm/Memory)
-    ;; Placeholder: real markdown rendering composes with the corpus-side
-    ;; sandbar-export-markdown emitter (Stage C.5.1 follow-up).
-    (str "# " (entity->resource-name entity) "\n\n"
-         "_(mm/Memory markdown rendering pending Stage C.5.1; "
-         "EDN projection below.)_\n\n"
-         "```edn\n" (pr-str (into {} entity)) "\n```\n")
+    (try
+      (let [emit-fn    (requiring-resolve 'sandbar.codec/emit)
+            entity-map (into {:dt/type :mm/Memory} entity)]
+        (emit-fn entity-map {:format :markdown}))
+      (catch Exception e
+        (log/warn e :MCP/render-mm-memory-fallback
+                  {:entity-id (:db/id entity)})
+        (pr-str (into {} entity))))
 
     :else
     (pr-str (into {} entity))))
