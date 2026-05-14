@@ -18,12 +18,42 @@
   "Every sandbar.mcp.* namespace + adjacent substrate namespaces the
    protocol layer depends on at runtime.  Adding a new namespace here
    when one is introduced is part of the F-M-005 substage acceptance
-   discipline."
-  '[sandbar.codec
+   discipline.
+
+   Extended at fulltext arc (2026-05-14) to cover the comprehensive
+   four-axis retrieval surface namespaces — these are public-API
+   namespaces that ship at 0.1.0; a compile failure here is a
+   release blocker."
+  '[;; Codec layer (Stage F.x of codec arc)
+    sandbar.codec
     sandbar.codec.json
     sandbar.codec.markdown
     sandbar.codec.protocol
+
+    ;; Projection (Anderson boundary-layer primitive; renamed from project-graph 2026-05-14)
     sandbar.projection
+
+    ;; Four-axis retrieval surface (fulltext arc, 2026-05-13/14)
+    sandbar.search
+    sandbar.search.analysis
+    sandbar.search.bm25f
+    sandbar.aggregate
+    sandbar.navigate.edges
+    sandbar.navigate.walk
+    sandbar.navigate.siblings
+    sandbar.navigate.path
+    sandbar.navigate.path.ast
+    sandbar.navigate.path.ir
+    sandbar.navigate.path.datomic
+    sandbar.navigate.path.value
+    sandbar.orient
+
+    ;; REST API namespaces for the new retrieval surface
+    sandbar.api.aggregate
+    sandbar.api.navigate
+    sandbar.api.orient
+
+    ;; MCP server
     sandbar.mcp.auth
     sandbar.mcp.envelope
     sandbar.mcp.notifications
