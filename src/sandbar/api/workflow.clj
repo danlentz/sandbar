@@ -23,6 +23,7 @@
      ?subject=12345               - Filter by subject entity ID
      ?limit=100                   - Max results"
   (:require [clojure.string :as str]
+            [sandbar.entity-ref :as eref]
             [clojure.tools.logging :as log]
             [datomic.api :as d]
             [sandbar.db.datomic :as db]
@@ -299,18 +300,23 @@
 
       :else
       (if-let [workflow-def (wf/find-workflow wf-name)]
-        (if-let [subject-entity (db/entity subject-id)]
-          (try
-            (let [process (wf/start-process! workflow-def subject-entity :data data)]
-              (log/info :API/PROCESS-STARTED {:process-id (:db/id process)
-                                               :workflow wf-name
-                                               :subject subject-id})
-              (return http-status/created
-                      {:created true
-                       :process (process->response process)}))
-            (catch Exception e
-              (return http-status/bad-request {:error (.getMessage e)})))
-          (return http-status/not-found {:error "Subject entity not found" :id subject-id}))
+        (let [{:keys [valid? entity reasons message]} (eref/validate subject-id)]
+          (if valid?
+            (try
+              (let [process (wf/start-process! workflow-def entity :data data)]
+                (log/info :API/PROCESS-STARTED {:process-id (:db/id process)
+                                                 :workflow wf-name
+                                                 :subject subject-id})
+                (return http-status/created
+                        {:created true
+                         :process (process->response process)}))
+              (catch Exception e
+                (return http-status/bad-request {:error (.getMessage e)})))
+            (return http-status/not-found
+                    {:error "Subject entity not found"
+                     :id subject-id
+                     :reasons reasons
+                     :message message})))
         (return http-status/not-found {:error "Workflow not found" :name wf-name})))))
 
 (defhandler get-available-transitions
