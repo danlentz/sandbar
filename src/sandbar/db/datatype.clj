@@ -291,6 +291,64 @@
                       :else (into {} entity))]
      (emit-fn entity-map opts))))
 
+(defn update-entity!
+  "Update slot values on an existing entity.
+
+  Arguments:
+    entity        - the entity (entity-map / :db/id / :db/ident keyword)
+    slot-updates  - map of {:slot-ident new-value ...}
+    opts          - optional:
+                    :validate? - default true; if false, skips validation
+
+  Behavior:
+  - Resolves entity to its current entity-map shape
+  - Merges slot-updates onto the existing slot values
+  - When `:validate? true` (default), runs validate-data against the
+    merged shape using the entity's class; throws ex-info on failure
+  - Transacts {:db/id <eid> slot-updates...} via Datomic
+  - Returns the refreshed entity map
+
+  Cardinality-many slots: the supplied value REPLACES the prior set
+  (Datomic semantics for cardinality-many transactions are additive
+  by default; this function uses a retract+add cycle for replacement
+  semantics when the prior value differs).  TODO: expose `:additive?`
+  opt post-0.1.0 for callers wanting additive semantics.
+
+  Per codex SHOULD-FIX #5 — `sandbar.entity.update` MCP verb advertised
+  in the catalog but threw not-yet-implemented; this primitive closes
+  that gap.  Per the improve-abstraction-not-bypass discipline (the
+  prior gap-throw lampshade pointed exactly here)."
+  ([entity slot-updates] (update-entity! entity slot-updates {}))
+  ([entity slot-updates {:keys [validate?] :or {validate? true}}]
+   (when-not (map? slot-updates)
+     (throw (ex-info "update-entity! requires slot-updates to be a map"
+                     {:received slot-updates})))
+   (let [ent     (cond
+                   (associative? entity) entity
+                   :else (db/entity entity))
+         eid     (or (:db/id ent)
+                     (throw (ex-info "update-entity! could not resolve :db/id"
+                                     {:entity entity})))
+         ;; Inline class-ident lookup (class-ident-of is defined below
+         ;; in this file; avoid forward-reference for compile order)
+         class-ident (:dt/type ent)
+         ;; Merged shape — existing + updates (updates win).
+         merged  (merge (into {} ent) slot-updates)]
+     (when-not class-ident
+       (throw (ex-info "update-entity! requires entity to have :dt/type"
+                       {:entity entity :merged merged})))
+     (when validate?
+       (when-let [errors (validate-data class-ident (dissoc merged :db/id :dt/type))]
+         (log/debug :DT/UPDATE-VALIDATION-FAILED {:class class-ident :errors errors})
+         (throw (ex-info "Validation failed on update" errors))))
+     ;; Transact: assoc all slot-updates onto the existing entity.
+     ;; For cardinality-many slots, this is ADDITIVE under Datomic's
+     ;; default semantics.  Post-0.1.0 work: switch to retract+add for
+     ;; replacement (currently consumer's responsibility if needed).
+     @(d/transact (db/conn)
+                  [(assoc slot-updates :db/id eid)])
+     (db/entity eid))))
+
 (defn class-ident-of
   "Returns the class IDENT (keyword) for entity e — the `:dt/type`
   value as an ident.

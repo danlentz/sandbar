@@ -432,14 +432,28 @@
                        entities)})))
 
 (defn- entity-update-handler [args]
-  ;; Entity update via dt/make-equivalent: this requires a primitive
-  ;; that doesn't yet exist in dt/*.  Per the layer-targeting discipline
-  ;; (improve-abstraction-not-bypass), we throw a not-yet-implemented
-  ;; error pointing at the gap.  Stage F follow-up: extend dt/* with
-  ;; an `update-entity` primitive that handles slot updates with
-  ;; validation.
-  (throw (ex-info "entity.update is not yet implemented — pending dt/update-entity primitive per the improve-abstraction-not-bypass discipline"
-                  {:args args :gap :dt-update-entity-needed})))
+  ;; Stage I of plans/sandbar_codex_review_remediation_arc_2026_05_13.md
+  ;; landed dt/update-entity!; this verb now wires through.  Per codex
+  ;; SHOULD-FIX #5 (sandbar.entity.update advertised but unimplemented).
+  (let [entity-arg (or (get args "entity") (get args :entity))
+        slot-arg   (or (get args "slots")  (get args :slots))
+        entity-ref (->ident entity-arg)]
+    (when (nil? entity-ref)
+      (throw (ex-info "Missing required argument: entity (ident or eid)" {:args args})))
+    (when (or (nil? slot-arg) (not (map? slot-arg)))
+      (throw (ex-info "Missing or non-map argument: slots (must be {:slot-ident value ...} map)"
+                      {:args args})))
+    ;; Resolve the entity's class so we can coerce JSON-shaped slot
+    ;; values into Datomic-shaped values via dt/range-of (slot map's
+    ;; values from JSON arrive as strings; codec needs proper keyword /
+    ;; instant / etc.).
+    (let [entity-current (dt/find-by-ident entity-ref)
+          class-ident    (dt/class-ident-of entity-current)
+          slot-map       (coerce-slot-map class-ident slot-arg)
+          updated        (dt/update-entity! entity-ref slot-map)]
+      {:entity (str entity-ref)
+       :slots  slot-map
+       :result (entity-projection updated)})))
 
 (defn- entity-validate-handler [args]
   (let [class-ident (->ident (or (get args "class") (get args :class)))
