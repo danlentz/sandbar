@@ -40,3 +40,9 @@ out/
 build/
 
 /tmp/
+
+# Local review artifacts (codex / ultrareview prompt files + working pre-pass notes).
+# These are held at branch root during in-flight external-review cycles and folded
+# into final memorial documents post-review.  Not for commit.
+.codex-*
+.pre-codex-*
