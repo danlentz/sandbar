@@ -667,6 +667,105 @@
        (sort-by second)
        (mapv (fn [[eid t]] [(db/entity eid) t]))))
 
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Navigation primitives — Stage 16 (fulltext arc Phase N)
+;;
+;; Edge = a (predicate-attribute, entity) pair where predicate-attribute is
+;; a `:db.type/ref`-typed attribute.  Outbound = edges originating FROM the
+;; subject; inbound = edges pointing AT the subject.  Substrate-quality
+;; discipline: no hardcoded class/predicate knowledge in primitives.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defn outbound-edges-of
+  "Outbound typed-edges from `entity-ident` — `:db.type/ref` attribute
+  pairs originating FROM the entity.  Returns a vec of maps:
+
+    [{:predicate <pred-ident> :target <entity-map>} ...]
+
+  Optional opts:
+    :predicate   — keyword OR collection of keywords; restricts results
+                   to edges whose attribute-ident is in the set
+    :target-type — class ident; restricts results to edges whose target
+                   is an instance-of the class (via `instance-of` rule)
+
+  Substrate-quality: class-agnostic; predicate-set + target-type are
+  caller-supplied.  Per fulltext arc Stage 16."
+  ([entity-ident]
+   (outbound-edges-of entity-ident nil))
+  ([entity-ident {:keys [predicate target-type]}]
+   (let [eid       (:db/id (db/entity entity-ident))
+         rows      (if target-type
+                     (d/q '[:find ?a ?v
+                            :in $ % ?e ?target-type
+                            :where
+                            [?e ?a ?v]
+                            [?a :db/valueType :db.type/ref]
+                            (instance-of ?target-type ?v)]
+                          (db/db) (all-rules) eid target-type)
+                     (d/q '[:find ?a ?v
+                            :in $ ?e
+                            :where
+                            [?e ?a ?v]
+                            [?a :db/valueType :db.type/ref]]
+                          (db/db) eid))
+         pred-set  (when predicate
+                     (set (if (sequential? predicate) predicate [predicate])))
+         project   (fn [[a v]]
+                     {:predicate (or (:db/ident (db/entity a)) a)
+                      :target    (db/entity v)})
+         match?    (if pred-set
+                     (fn [edge] (pred-set (:predicate edge)))
+                     (constantly true))]
+     (->> rows
+          (map project)
+          (filter match?)
+          vec))))
+
+(defn inbound-edges-of
+  "Inbound typed-edges to `entity-ident` — `:db.type/ref` attribute
+  pairs pointing AT the entity.  Returns a vec of maps:
+
+    [{:predicate <pred-ident> :source <entity-map>} ...]
+
+  Optional opts:
+    :predicate   — keyword OR collection of keywords; restricts results
+                   to edges whose attribute-ident is in the set
+    :source-type — class ident; restricts results to edges whose source
+                   is an instance-of the class (via `instance-of` rule)
+
+  Substrate-quality: class-agnostic; predicate-set + source-type are
+  caller-supplied.  Per fulltext arc Stage 16."
+  ([entity-ident]
+   (inbound-edges-of entity-ident nil))
+  ([entity-ident {:keys [predicate source-type]}]
+   (let [eid       (:db/id (db/entity entity-ident))
+         rows      (if source-type
+                     (d/q '[:find ?s ?a
+                            :in $ % ?e ?source-type
+                            :where
+                            [?s ?a ?e]
+                            [?a :db/valueType :db.type/ref]
+                            (instance-of ?source-type ?s)]
+                          (db/db) (all-rules) eid source-type)
+                     (d/q '[:find ?s ?a
+                            :in $ ?e
+                            :where
+                            [?s ?a ?e]
+                            [?a :db/valueType :db.type/ref]]
+                          (db/db) eid))
+         pred-set  (when predicate
+                     (set (if (sequential? predicate) predicate [predicate])))
+         project   (fn [[s a]]
+                     {:predicate (or (:db/ident (db/entity a)) a)
+                      :source    (db/entity s)})
+         match?    (if pred-set
+                     (fn [edge] (pred-set (:predicate edge)))
+                     (constantly true))]
+     (->> rows
+          (map project)
+          (filter match?)
+          vec))))
+
 (defn search-fulltext
   "Single-attribute fulltext search via Datomic + Lucene.
 
