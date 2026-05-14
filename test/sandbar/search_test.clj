@@ -332,6 +332,92 @@
       (is (= (:total no-where) (:total empty-where)))
       (is (= (:returned no-where) (:returned empty-where))))))
 
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Stage 6 — snippets + highlights (:include [:snippets])
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(deftest search-bm25f-snippets-include-test
+  (testing ":include [:snippets] adds per-slot snippet with markdown highlight"
+    (make-memory-with-name+body!
+      "alpha"
+      "The datomic project graph realizes the Anderson lineage of mediator patterns from the de.setf.rdf library")
+    (let [result (search/search-bm25f
+                   {:query "datomic"
+                    :class :mm/Memory
+                    :include [:snippets]})
+          hit    (first (:hits result))]
+      (is (contains? hit :snippets))
+      (is (map? (:snippets hit)))
+      (testing "snippet present for slot whose value contains matched term"
+        (let [body-snippet (get-in hit [:snippets :mm.memory/body-raw])]
+          (is (string? body-snippet))
+          (is (clojure.string/includes? body-snippet "**datomic**")
+              "Matched term highlighted via **term** markdown")))
+      (testing "snippets map only includes slots with matches"
+        ;; description was not populated; should not appear
+        (is (not (contains? (:snippets hit) :mm.memory/description)))))))
+
+(deftest search-bm25f-snippets-multi-term-highlight-test
+  (testing "multi-word queries highlight each matched term within the snippet window"
+    (make-memory-with-name+body!
+      "beta"
+      "Datomic provides indexed search via Lucene fulltext on declared attributes")
+    (let [result (search/search-bm25f
+                   {:query "datomic lucene"
+                    :class :mm/Memory
+                    :include [:snippets]})
+          hit    (first (:hits result))
+          body-snippet (get-in hit [:snippets :mm.memory/body-raw])]
+      (is (string? body-snippet))
+      (is (clojure.string/includes? body-snippet "**Datomic**")
+          "First query word highlighted")
+      (is (clojure.string/includes? body-snippet "**Lucene**")
+          "Second query word highlighted"))))
+
+(deftest search-bm25f-snippets-case-insensitive-test
+  (testing "snippet highlighting is case-insensitive (preserves original casing)"
+    (make-memory-with-name+body!
+      "gamma"
+      "DATOMIC IS UPPER CASE HERE but query is lowercase")
+    (let [result (search/search-bm25f
+                   {:query "datomic"
+                    :class :mm/Memory
+                    :include [:snippets]})
+          hit    (first (:hits result))
+          body-snippet (get-in hit [:snippets :mm.memory/body-raw])]
+      (is (clojure.string/includes? body-snippet "**DATOMIC**")
+          "Original UPPER casing preserved in highlight; match case-insensitive"))))
+
+(deftest search-bm25f-snippets-window-bounds-test
+  (testing "snippet windows are bounded by snippet-width; ellipsis markers added when text was truncated"
+    ;; Long body with target term in the middle; snippet should be windowed.
+    (let [pre   (apply str (repeat 200 "x "))   ; 400 chars before target
+          post  (apply str (repeat 200 " y"))    ; 400 chars after target
+          body  (str pre "datomic" post)]
+      (make-memory-with-name+body! "delta" body)
+      (let [result (search/search-bm25f
+                     {:query "datomic"
+                      :class :mm/Memory
+                      :include [:snippets]})
+            hit    (first (:hits result))
+            body-snippet (get-in hit [:snippets :mm.memory/body-raw])]
+        (is (< (count body-snippet) 400)
+            "Snippet truncated to roughly the snippet-width window")
+        (is (clojure.string/starts-with? body-snippet "...")
+            "Ellipsis prefix when text continues before window")
+        (is (clojure.string/ends-with? body-snippet "...")
+            "Ellipsis suffix when text continues after window")))))
+
+(deftest search-bm25f-no-snippets-when-not-included-test
+  (testing "search-bm25f does NOT include :snippets when not requested"
+    (make-memory-with-name+body! "epsilon" "datomic in body")
+    (let [result (search/search-bm25f
+                   {:query "datomic"
+                    :class :mm/Memory})
+          hit    (first (:hits result))]
+      (is (not (contains? hit :snippets))
+          "No :snippets key on hits when :include opt is missing or doesn't request it"))))
+
 (deftest search-attribute-lucene-syntax-test
   (testing "search-attribute accepts Lucene query syntax"
     (make-memory! "test/a.md" "datomic project graph realizes Anderson lineage")

@@ -152,6 +152,89 @@
                 (all-rules)
                 class)))))
 
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Stage 6 — snippets + highlights (regex-based; approximate)
+;;
+;; Per fulltext arc plan §8.1 + §13 Stage 6.  Approximate snippet
+;; extraction around the first matching term in each slot's raw text,
+;; with `**term**` markdown highlighting of all matched-term
+;; occurrences within the window.
+;;
+;; Approximation caveat: matching uses raw-substring (case-insensitive)
+;; against the original query string's tokens, not against Porter-
+;; stemmed forms.  This means a query for "running" will highlight
+;; "running" in the body but NOT "ran" (even though BM25F would have
+;; scored both as matching via the Porter pipeline).  Lucene-native
+;; positional highlighters address this; deferred to β-scope per
+;; §17 out-of-scope.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(def ^:private +snippet-width+
+  "Approximate width of generated snippets in characters (window centers
+  on first match; expands halfwidth on each side)."
+  240)
+
+(defn- raw-query-words
+  "Split raw query string into lowercase non-empty word tokens for
+  substring matching.  Splits on the same regex the analyzer tokenizer
+  uses (`[^\\p{L}\\p{N}]+`) but does NOT stem — substring matching
+  needs the raw form so it can match against raw slot text."
+  [query]
+  (->> (clojure.string/split (clojure.string/lower-case query)
+                             #"[^\p{L}\p{N}]+")
+       (remove empty?)
+       distinct
+       vec))
+
+(defn- snippet-for-slot
+  "Extract a ~snippet-width-char window around the first occurrence of
+  any query-word in `text`.  Returns nil when text is nil/blank OR
+  contains no matching word.  Highlights each matched word with
+  `**word**` markdown."
+  [text query-words]
+  (when (and (string? text) (not (clojure.string/blank? text)) (seq query-words))
+    (let [lower (clojure.string/lower-case text)
+          ;; For each word: position of first occurrence (or nil)
+          positions (keep (fn [w]
+                            (when-let [idx (clojure.string/index-of lower w)]
+                              [w idx]))
+                          query-words)]
+      (when (seq positions)
+        (let [[_ first-pos] (apply min-key second positions)
+              half          (quot +snippet-width+ 2)
+              start         (max 0 (- first-pos half))
+              end           (min (count text) (+ first-pos half))
+              window        (subs text start end)
+              prefix        (if (zero? start) "" "...")
+              suffix        (if (= end (count text)) "" "...")
+              ;; Highlight each query-word within the window (case-insensitive)
+              highlighted   (reduce
+                              (fn [acc word]
+                                (clojure.string/replace
+                                  acc
+                                  (re-pattern (str "(?i)"
+                                                   (java.util.regex.Pattern/quote word)))
+                                  #(str "**" % "**")))
+                              window
+                              query-words)]
+          (str prefix highlighted suffix))))))
+
+(defn- per-slot-snippets
+  "For each slot in field-weights, generate a snippet (or nil if no
+  match).  Returns a map of {slot-ident snippet-string} pruned of nil
+  entries — only slots with matches appear."
+  [entity-map query-words field-weights]
+  (into {}
+        (keep (fn [[slot _weight]]
+                (let [v (get entity-map slot)
+                      text (cond
+                             (string? v)     v
+                             (sequential? v) (clojure.string/join " " (filter string? v))
+                             :else           nil)]
+                  (when-let [snippet (snippet-for-slot text query-words)]
+                    [slot snippet]))))
+        field-weights))
+
 (defn- per-slot-field-scores
   "Compute per-slot single-slot-equivalent score for one analyzed entity.
   For each slot in `field-weights`, re-score with only that slot's weight
@@ -191,6 +274,10 @@
                      Example: `[[?e :mm.memory/memory-type :decision]]`
     :include       — vec of result-projection options:
                        :field-scores  per-slot single-slot-equivalent scores
+                       :snippets      per-slot ~240-char window around the
+                                      first matched term in each slot,
+                                      with `**term**` markdown highlighting
+                                      of all matched-term occurrences
 
   Returns:
     {:hits     [{:entity <entity-map> :eid <id> :score <double>
@@ -243,6 +330,7 @@
         total           (count sorted)
         limited         (if (zero? limit) sorted (take limit sorted))
         include-set     (set include)
+        q-raw-words     (when (include-set :snippets) (raw-query-words query))
         hits            (mapv (fn [{:keys [entity eid score analyzed]}]
                                 (cond-> {:entity entity
                                          :eid    eid
@@ -250,7 +338,11 @@
                                   (include-set :field-scores)
                                   (assoc :field-scores
                                          (per-slot-field-scores
-                                          q-tokens analyzed stats weights))))
+                                          q-tokens analyzed stats weights))
+                                  (include-set :snippets)
+                                  (assoc :snippets
+                                         (per-slot-snippets
+                                          entity q-raw-words weights))))
                               limited)
         t-end           (System/currentTimeMillis)]
     {:hits     hits
