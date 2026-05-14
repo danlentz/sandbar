@@ -3,6 +3,7 @@
             [clojure.tools.logging        :as log]
             [io.pedestal.http.body-params :as body-params]
             [io.pedestal.http.route       :as route]
+            [sandbar.api.aggregate        :as aggregate-api]
             [sandbar.api.auth             :as auth-api]
             [sandbar.api.event            :as event]
             [sandbar.api.job              :as job-api]
@@ -129,6 +130,14 @@
          ["/transitions" {:get workflow-api/get-available-transitions}]
          ["/transition" {:post workflow-api/execute-transition}]
          ["/history" {:get workflow-api/get-process-history}]]]
+
+       ;; Aggregation API (Stage 15 — fulltext arc Phase G)
+       ;; Per plans/sandbar_fulltext_search_substrate_arc_2026_05_13.md.
+       ;; Thin HTTP wrappers around sandbar.aggregate's three public verbs.
+       ["/aggregate"
+        ["/count"    {:get aggregate-api/count}]
+        ["/group-by" {:get aggregate-api/group-by}]
+        ["/rank-by"  {:get aggregate-api/rank-by}]]
        ]
 
       ;; MCP (Model Context Protocol) endpoint — per
