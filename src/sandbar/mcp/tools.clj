@@ -520,23 +520,26 @@
     (aggregate/count-by {:class class-ident :where where})))
 
 (defn- aggregate-group-by-handler [args]
-  (let [class-ident  (class-arg args)
-        group-by-arg (->ident (or (get args "group-by") (get args :group-by)))
-        where        (->where-clauses
-                       (or (get args "where") (get args :where)))]
-    (when (nil? group-by-arg)
+  (let [class-ident      (class-arg args)
+        group-by-raw     (or (get args "group-by") (get args :group-by))]
+    (when (nil? group-by-raw)
       (throw (ex-info "Missing required argument: group-by" {:args args})))
-    (aggregate/group-by {:class class-ident :group-by group-by-arg :where where})))
+    (let [group-by-ident (eref/resolve-ident group-by-raw)
+          where          (->where-clauses
+                           (or (get args "where") (get args :where)))]
+      (aggregate/group-by {:class class-ident :group-by group-by-ident :where where}))))
 
 (defn- aggregate-rank-by-handler [args]
-  (let [class-ident   (class-arg args)
-        rank-by-arg   (->ident (or (get args "rank-by") (get args :rank-by)))
-        limit-arg     (or (get args "limit") (get args :limit))
-        temporal-slot (->ident
-                        (or (get args "temporal-slot") (get args :temporal-slot)))]
-    (when (nil? rank-by-arg)
+  (let [class-ident        (class-arg args)
+        rank-by-raw        (or (get args "rank-by") (get args :rank-by))
+        limit-arg          (or (get args "limit") (get args :limit))
+        temporal-slot-raw  (or (get args "temporal-slot") (get args :temporal-slot))]
+    (when (nil? rank-by-raw)
       (throw (ex-info "Missing required argument: rank-by" {:args args})))
-    (let [opts (cond-> {:class class-ident :rank-by rank-by-arg}
+    (let [rank-by-ident      (eref/resolve-ident rank-by-raw)
+          temporal-slot      (when (some? temporal-slot-raw)
+                               (eref/resolve-ident temporal-slot-raw))
+          opts (cond-> {:class class-ident :rank-by rank-by-ident}
                  (some? limit-arg)     (assoc :limit limit-arg)
                  (some? temporal-slot) (assoc :temporal-slot temporal-slot))]
       (aggregate/rank-by opts))))
