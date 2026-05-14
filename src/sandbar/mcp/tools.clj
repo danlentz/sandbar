@@ -34,8 +34,10 @@
    `->ident-str` helper coerces either shape to a string at the
    projection boundary."
   (:require [cheshire.core              :as json]
+            [clojure.edn                :as edn]
             [clojure.string             :as str]
             [clojure.tools.logging      :as log]
+            [sandbar.aggregate          :as aggregate]
             [sandbar.codec              :as codec]
             [sandbar.project-graph      :as pg]
             [sandbar.db.datatype        :as dt]
@@ -154,6 +156,37 @@
             acc)))
       {}
       slots)))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Datalog :where coercion (used by aggregate verbs; will extend to
+;; search verbs in Stage 27).  At the MCP boundary, :where typically
+;; arrives as an EDN string because JSON has no native representation
+;; for Datalog symbols (`?e`, `?v`).  In-process callers may pass an
+;; already-parsed vector directly.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defn- ->where-clauses
+  "Coerce a `:where` argument to a vector of Datalog clauses.
+
+   Accepts:
+     nil          → nil
+     vector/seq   → returned as a vector (in-process callers)
+     EDN string   → read via clojure.edn/read-string (MCP boundary)
+
+   Throws ex-info on any other shape."
+  [where]
+  (cond
+    (nil? where)        nil
+    (sequential? where) (vec where)
+    (string? where)     (try
+                          (edn/read-string where)
+                          (catch Exception e
+                            (throw (ex-info (str "Invalid :where EDN: "
+                                                 (.getMessage e))
+                                            {:received where}))))
+    :else
+    (throw (ex-info "Invalid :where shape — must be EDN string or sequential"
+                    {:received where :type (type where)}))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Per-verb handlers
@@ -430,6 +463,43 @@
                          {:dt/type (:dt/type e)
                           :ident   (:db/ident e)})
                        entities)})))
+
+;; ---------- Aggregation operations (Stage 14 — fulltext arc Phase G) ----------
+;;
+;; Per fulltext arc Stage 14 of
+;; plans/sandbar_fulltext_search_substrate_arc_2026_05_13.md.
+;; MCP boundary wrappers around sandbar.aggregate's three public verbs:
+;; count-by / group-by / rank-by.  Substrate-quality discipline preserved:
+;; handlers route through the consumer-facing aggregate namespace, never
+;; raw datatype primitives.
+
+(defn- aggregate-count-handler [args]
+  (let [class-ident (class-arg args)
+        where       (->where-clauses
+                      (or (get args "where") (get args :where)))]
+    (aggregate/count-by {:class class-ident :where where})))
+
+(defn- aggregate-group-by-handler [args]
+  (let [class-ident  (class-arg args)
+        group-by-arg (->ident (or (get args "group-by") (get args :group-by)))
+        where        (->where-clauses
+                       (or (get args "where") (get args :where)))]
+    (when (nil? group-by-arg)
+      (throw (ex-info "Missing required argument: group-by" {:args args})))
+    (aggregate/group-by {:class class-ident :group-by group-by-arg :where where})))
+
+(defn- aggregate-rank-by-handler [args]
+  (let [class-ident   (class-arg args)
+        rank-by-arg   (->ident (or (get args "rank-by") (get args :rank-by)))
+        limit-arg     (or (get args "limit") (get args :limit))
+        temporal-slot (->ident
+                        (or (get args "temporal-slot") (get args :temporal-slot)))]
+    (when (nil? rank-by-arg)
+      (throw (ex-info "Missing required argument: rank-by" {:args args})))
+    (let [opts (cond-> {:class class-ident :rank-by rank-by-arg}
+                 (some? limit-arg)     (assoc :limit limit-arg)
+                 (some? temporal-slot) (assoc :temporal-slot temporal-slot))]
+      (aggregate/rank-by opts))))
 
 (defn- entity-update-handler [args]
   ;; Stage I of plans/sandbar_codex_review_remediation_arc_2026_05_13.md
@@ -859,7 +929,45 @@
                     :filter {:type "object"
                               :description "Optional filter spec (same shape as project.export)"}}
                    [:from])
-    :handler project-import-handler}])
+    :handler project-import-handler}
+
+   ;; Aggregation operations (Stage 14 — fulltext arc Phase G)
+   {:name "sandbar.aggregate.count"
+    :title "Count instances of a class"
+    :description "Count entities matching `:class` with optional `:where` Datalog filter.  `:where` is an EDN string of Datalog clauses (e.g. \"[[?e :mm.memory/memory-type :decision]]\") because JSON has no native representation for Datalog symbols; in-process callers may pass an already-parsed vector.  Result: `{:count <int>}`.  Per fulltext arc Stage 14 of plans/sandbar_fulltext_search_substrate_arc_2026_05_13.md."
+    :inputSchema (one-required
+                   {:class {:type "string"
+                            :description "Class ident (e.g. ':mm/Memory')"}
+                    :where {:type "string"
+                            :description "Optional EDN-string of Datalog clauses (e.g. \"[[?e :mm.memory/memory-type :decision]]\")"}}
+                   [:class])
+    :handler aggregate-count-handler}
+   {:name "sandbar.aggregate.group-by"
+    :title "Group-by-count facet aggregation"
+    :description "Group instances of `:class` by `:group-by` slot value; count per group.  Optional `:where` Datalog filter (EDN-string).  Result: `{:groups {value count} :total <int>}`.  Per fulltext arc Stage 14."
+    :inputSchema (one-required
+                   {:class    {:type "string"
+                               :description "Class ident"}
+                    :group-by {:type "string"
+                               :description "Slot ident to group by (e.g. ':mm.memory/memory-type')"}
+                    :where    {:type "string"
+                               :description "Optional EDN-string of Datalog clauses"}}
+                   [:class :group-by])
+    :handler aggregate-group-by-handler}
+   {:name "sandbar.aggregate.rank-by"
+    :title "Structural-rank re-ordering"
+    :description "Re-order instances of `:class` by structural-rank axis: `:degree` / `:backlink-density` / `:recency` / `:freshness`.  Required `:temporal-slot` for `:recency` and `:freshness` axes (the slot ident carrying the temporal value, e.g. ':mm.memory/last-touched'); substrate does not hardcode class-specific temporal axes per substrate-quality discipline.  Result: `{:hits [{:entity ... :rank-score ...}] :total <int> :returned <int>}`.  Per fulltext arc Stage 14."
+    :inputSchema (one-required
+                   {:class         {:type "string"
+                                    :description "Class ident"}
+                    :rank-by       {:type "string"
+                                    :description "Axis: ':degree' / ':backlink-density' / ':recency' / ':freshness'"}
+                    :limit         {:type "integer"
+                                    :description "Max hits to return (default 20; 0 = no cap)"}
+                    :temporal-slot {:type "string"
+                                    :description "Required for :recency / :freshness — temporal-axis slot ident"}}
+                   [:class :rank-by])
+    :handler aggregate-rank-by-handler}])
 
 (def ^:private verb-by-name
   (into {} (map (juxt :name identity)) verb-catalog))

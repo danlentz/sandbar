@@ -97,7 +97,74 @@
     (let [names (set (map :name tools/verb-catalog))]
       (is (contains? names "sandbar.codec.list"))
       (is (contains? names "sandbar.project.export"))
-      (is (contains? names "sandbar.project.import")))))
+      (is (contains? names "sandbar.project.import"))))
+
+  (testing "aggregation verbs (Stage 14 — fulltext arc Phase G)"
+    (let [names (set (map :name tools/verb-catalog))]
+      (is (contains? names "sandbar.aggregate.count"))
+      (is (contains? names "sandbar.aggregate.group-by"))
+      (is (contains? names "sandbar.aggregate.rank-by")))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Aggregation verb input-schema + handler-error tests (Stage 14)
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defn- aggregate-verb [verb-name]
+  (->> tools/verb-catalog
+       (some (fn [v] (when (= verb-name (:name v)) v)))))
+
+(deftest aggregation-verb-input-schemas-shape
+  (testing "sandbar.aggregate.count requires :class only"
+    (let [schema (:inputSchema (aggregate-verb "sandbar.aggregate.count"))]
+      (is (= ["class"] (:required schema)))
+      (is (contains? (:properties schema) :class))
+      (is (contains? (:properties schema) :where))))
+
+  (testing "sandbar.aggregate.group-by requires :class + :group-by"
+    (let [schema (:inputSchema (aggregate-verb "sandbar.aggregate.group-by"))]
+      (is (= #{"class" "group-by"} (set (:required schema))))
+      (is (contains? (:properties schema) :class))
+      (is (contains? (:properties schema) :group-by))
+      (is (contains? (:properties schema) :where))))
+
+  (testing "sandbar.aggregate.rank-by requires :class + :rank-by"
+    (let [schema (:inputSchema (aggregate-verb "sandbar.aggregate.rank-by"))]
+      (is (= #{"class" "rank-by"} (set (:required schema))))
+      (is (contains? (:properties schema) :class))
+      (is (contains? (:properties schema) :rank-by))
+      (is (contains? (:properties schema) :limit))
+      (is (contains? (:properties schema) :temporal-slot)))))
+
+(deftest aggregation-handler-required-args
+  (testing "sandbar.aggregate.count rejects missing :class with isError"
+    (let [response (tools/handle-call 1 {:name "sandbar.aggregate.count"
+                                         :arguments {}})]
+      (is (true? (-> response :result :isError)))
+      (is (re-find #"(?i)class"
+                   (-> response :result :content first :text)))))
+
+  (testing "sandbar.aggregate.group-by rejects missing :group-by with isError"
+    (let [response (tools/handle-call 1 {:name "sandbar.aggregate.group-by"
+                                         :arguments {"class" ":mm/Memory"}})]
+      (is (true? (-> response :result :isError)))
+      (is (re-find #"(?i)group-by"
+                   (-> response :result :content first :text)))))
+
+  (testing "sandbar.aggregate.rank-by rejects missing :rank-by with isError"
+    (let [response (tools/handle-call 1 {:name "sandbar.aggregate.rank-by"
+                                         :arguments {"class" ":mm/Memory"}})]
+      (is (true? (-> response :result :isError)))
+      (is (re-find #"(?i)rank-by"
+                   (-> response :result :content first :text))))))
+
+(deftest aggregation-where-malformed-edn-rejected
+  (testing "malformed :where EDN string raises isError before substrate call"
+    (let [response (tools/handle-call 1 {:name "sandbar.aggregate.count"
+                                         :arguments {"class" ":mm/Memory"
+                                                     "where" "["}})]
+      (is (true? (-> response :result :isError)))
+      (is (re-find #"(?i):where|EDN"
+                   (-> response :result :content first :text))))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; tools/list response shape
