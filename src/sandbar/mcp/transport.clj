@@ -73,7 +73,21 @@
 (defn sse-stream-ready
   "Pedestal SSE setup callback. Called once when the SSE connection
    opens; receives the event-channel + Pedestal context. Registers the
-   subscriber + arranges cleanup on disconnect."
+   subscriber.
+
+   Subscriber cleanup on disconnect is lazy — when the channel is
+   closed (client disconnects), the next `notifications/publish-to!`
+   (or `publish!`) call's `send!` will throw on the closed channel;
+   the catch-clause in `notifications.clj` then unregisters the
+   subscriber.
+
+   The prior implementation ran a `(async/go ... (loop [] (<! channel)))`
+   monitor that competed with Pedestal's own take-from-channel for
+   delivering events to the client — per ultrareview #4 at
+   transport.clj:84.  Pedestal's SSE infrastructure OWNS the read end
+   of this channel; competing with it racially dropped notifications
+   to whichever taker won.  Removed entirely — lazy cleanup on next
+   publish-to is the correct shape."
   [event-channel context]
   (let [identity-info (:identity context)
         send-fn       (fn [notification]
@@ -89,16 +103,7 @@
     (send-sse-event! event-channel
                      (envelope/jsonrpc-notification
                        "notifications/sandbar/sse-ready"
-                       {:subscriber-id sub-id}))
-
-    ;; Watch the channel close; unregister on disconnect.
-    (async/go
-      (async/<! (async/timeout 1000)) ;; brief delay before take-loop
-      (loop []
-        (let [v (async/<! event-channel)]
-          (when (nil? v) ;; channel closed
-            (notifications/unregister! sub-id))
-          (when v (recur)))))))
+                       {:subscriber-id sub-id}))))
 
 (def sse-handler
   "GET `/mcp/sse` — opens a Server-Sent Events channel for server →

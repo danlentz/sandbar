@@ -154,12 +154,21 @@
 
         :else
         (let [status (process->task-status process)
-              base   {:taskId task-id
-                      :status (:status status)
-                      :state  (:state status)}
-              result (if (= "completed" (:status status))
-                       (assoc base :content (task-result-data process))
-                       base)]
+              ;; All terminal states return :content (success / failure /
+              ;; cancelled) so clients can read the final process data
+              ;; for each terminal kind.  Per ultrareview #8 at
+              ;; tasks.clj:155 — the prior shape only attached :content
+              ;; when status was "completed", silently dropping content
+              ;; for "failed" and "cancelled" terminal kinds; downstream
+              ;; clients couldn't distinguish "I have an error to read"
+              ;; from "I have no information."
+              terminal-statuses #{"completed" "failed" "cancelled"}
+              base    {:taskId task-id
+                       :status (:status status)
+                       :state  (:state status)}
+              result  (if (contains? terminal-statuses (:status status))
+                        (assoc base :content (task-result-data process))
+                        base)]
           {:jsonrpc "2.0"
            :id      id
            :result  result})))
