@@ -114,6 +114,7 @@
    "resources/unsubscribe"       (fn [id params] (resources/handle-unsubscribe id params))
    "prompts/list"                (fn [id params] (prompts/handle-list id params))
    "prompts/get"                 (fn [id params] (prompts/handle-get id params))
+   "tasks/list"                  (fn [id params] (tasks/handle-list id params))
    "tasks/get"                   (fn [id params] (tasks/handle-get id params))
    "tasks/cancel"                (fn [id params] (tasks/handle-cancel id params))})
 

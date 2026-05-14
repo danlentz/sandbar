@@ -125,6 +125,52 @@
                  "Process data: " (pr-str data))}]))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; tasks/list handler — UR-5 (Phase U Stage U-4) closing the
+;; documented-but-unregistered gap surfaced by the 2026-05-14 ultrareview.
+
+(defn handle-list
+  "MCP `tasks/list` — enumerate workflow processes as MCP tasks.
+
+   Response shape per MCP Tasks (experimental):
+   - `:tasks` is a vector of `{:taskId :status :state}` maps; terminal
+     tasks additionally carry `:content`.
+
+   Optional `:active-only` arg filters out terminal-state processes
+   (via `workflow/list-active-processes`); default lists all processes
+   (via `workflow/list-processes`).
+
+   Per Dan-directive 2026-05-14 PM endorsing process-enumeration as a
+   substrate-quality feature.  Closes ultrareview UR-5 (documented
+   verb without dispatch entry)."
+  [id params]
+  (try
+    (let [active-only? (boolean (:active-only params))
+          processes (if active-only?
+                      (workflow/list-active-processes)
+                      (workflow/list-processes))
+          terminal-statuses #{"completed" "failed" "cancelled"}
+          tasks (mapv (fn [process]
+                        (let [task-id (process->task-id process)
+                              {:keys [status state]} (process->task-status process)
+                              base    {:taskId task-id :status status :state state}]
+                          (if (contains? terminal-statuses status)
+                            (assoc base :content (task-result-data process))
+                            base)))
+                      processes)]
+      {:jsonrpc "2.0"
+       :id      id
+       :result  {:tasks tasks
+                 :total (count tasks)
+                 :active-only active-only?}})
+    (catch Exception e
+      (log/error e :MCP/tasks-list-error)
+      {:jsonrpc "2.0"
+       :id      id
+       :error   {:code    jsonrpc-status/internal-error
+                 :message "Tasks/list failed"
+                 :data    {:exception-message (.getMessage e)}}})))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; tasks/get handler
 
 (defn handle-get

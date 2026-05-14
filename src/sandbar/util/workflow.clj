@@ -384,6 +384,46 @@
                   (db/db) subject-id)]
     (map db/entity eids)))
 
+(declare get-current-state)
+
+(defn list-processes
+  "Enumerate all workflow processes in the system.
+
+   Returns: vector of process entity maps, sorted by `:workflow/started-at`
+   descending (most-recently-started first).
+
+   Per Dan-directive 2026-05-14 PM endorsing process-enumeration as a
+   valuable feature — the substrate had no public primitive for listing
+   workflow processes prior to this addition.
+
+   Consumers: `sandbar.mcp.tasks/handle-list` (MCP `tasks/list` verb);
+   future REST listing endpoint + admin tooling."
+  []
+  (let [eids (d/q '[:find [?p ...]
+                    :where [?p :workflow/started-at _]]
+                  (db/db))]
+    (->> eids
+         (map db/entity)
+         (sort-by :workflow/started-at)
+         reverse
+         vec)))
+
+(defn list-active-processes
+  "Enumerate workflow processes whose current state is NOT terminal —
+   i.e., processes still in-flight.
+
+   Returns: vector of process entity maps, sorted by `:workflow/started-at`
+   descending.  A non-active process is one whose current state has
+   `:workflow/terminal? true` (per the workflow-state-machine
+   convention).
+
+   Companion to `list-processes` (which returns all processes
+   regardless of terminal state).  Per Dan-directive 2026-05-14 PM."
+  []
+  (->> (list-processes)
+       (remove #(boolean (:workflow/terminal? (get-current-state %))))
+       vec))
+
 (defn get-current-state
   "Get the current state of a process."
   [process]

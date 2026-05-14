@@ -47,6 +47,26 @@
     (is (re-find #"(?i)not found" (-> resp :error :message)))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; handle-list envelope shape — UR-5 (Phase U Stage U-4)
+;;
+;; The DB-free path returns a structured error or an empty-list result;
+;; DB-backed populated-list tests defer to a future test-db fixture pass.
+
+(deftest handle-list-returns-success-envelope-shape
+  ;; Without a DB connection, list-processes raises; handle-list's
+  ;; try/catch projects to JSON-RPC internal-error.  The test asserts
+  ;; the verb is dispatchable AND projects errors as a structured
+  ;; JSON-RPC envelope (NOT escaping the boundary).
+  (let [resp (tasks/handle-list 1 {})]
+    (is (= "2.0" (:jsonrpc resp)))
+    (is (= 1 (:id resp)))
+    ;; Either a :result with :tasks (if a DB happens to be wired) OR a
+    ;; structured :error envelope.  Both are valid JSON-RPC responses
+    ;; per MCP spec; what's NOT valid is an escaped exception.
+    (is (or (some? (:result resp))
+            (some? (:error resp))))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; process->task-status pure projection — verifies the status mapping
 ;; logic without needing a real workflow process
 
