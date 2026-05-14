@@ -58,6 +58,20 @@
     (is (= "" fm))
     (is (= "# Body\n" body))))
 
+(deftest split-frontmatter-with-horizontal-rule-in-body
+  ;; UR-12 (Phase U Stage U-2): when the body contains a `---`
+  ;; horizontal-rule line, the prior implementation's
+  ;; (str/index-of after-open close-match) substring search could
+  ;; locate the body's `---` before the regex-matched closing marker
+  ;; and split at the wrong offset.  The re-matcher fix uses
+  ;; .start() to read the correct position directly from the matcher.
+  (let [src "---\nname: test\n---\n\nbody line one\n\n---\n\nbody line two\n"
+        [fm body] (md/split-frontmatter src)]
+    (is (= "name: test\n" fm)
+        "frontmatter is everything between the FIRST opening and closing `---`")
+    (is (= "\nbody line one\n\n---\n\nbody line two\n" body)
+        "body contains the recurring `---` as a horizontal-rule line")))
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Whitespace normalization
 
@@ -517,3 +531,32 @@
       (is (< per-run-ms 500.0)
           (format "Performance baseline severely exceeded: %.2f ms/run > 500 ms target"
                   per-run-ms)))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; UR-6 + UR-7 (Phase U Stage U-2): emit must not leak internal-ns keys
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(deftest emit-excludes-db-internal-and-rel-path-keys
+  ;; A persisted entity carries :db/id + :db/ident + :mm.memory/rel-path
+  ;; (from parse-document materialization).  Pre-fix, these survived the
+  ;; emit dissoc-filter and landed in YAML frontmatter; post-fix, the
+  ;; internal-key? filter strips them.
+  (let [c (md/make-codec)
+        persisted-entity {:dt/type :mm/Memory
+                          :db/id 17592186045511
+                          :db/ident :decisions/example
+                          :mm.memory/name "Example"
+                          :mm.memory/memory-type :decision
+                          :mm.memory/rel-path "decisions/example.md"
+                          :mm.memory/body-raw "# Body\n"}
+        emitted (proto/emit c persisted-entity {})]
+    (is (not (str/includes? emitted "db/id"))
+        (str "emit must not leak :db/id; got:\n" emitted))
+    (is (not (str/includes? emitted "db/ident"))
+        (str "emit must not leak :db/ident; got:\n" emitted))
+    (is (not (str/includes? emitted "rel-path"))
+        (str "emit must not leak :mm.memory/rel-path; got:\n" emitted))
+    (is (str/includes? emitted "name")
+        "non-internal frontmatter keys should still emit")
+    (is (str/includes? emitted "# Body")
+        "body should still emit")))

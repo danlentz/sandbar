@@ -94,17 +94,26 @@
    Frontmatter is detected by an opening `---` line at position 0 +
    a closing `---` line later.  The frontmatter-text is the content
    BETWEEN those fences (exclusive); body-text is everything after
-   the closing fence + its trailing newline."
+   the closing fence + its trailing newline.
+
+   Phase U Stage U-2 fix (UR-12): the closing-marker position is read
+   directly from the regex matcher via `.start()` instead of doing a
+   secondary `str/index-of` substring search.  The prior pattern was
+   vulnerable to `---` recurring inside the body (e.g., markdown
+   horizontal-rule lines, fenced-code-block delimiters), which could
+   make the substring search find an earlier match than the regex did
+   and corrupt the split.  Using the matcher's match state is
+   position-correct."
   [source]
   (let [s (normalize-line-endings source)]
     (if (and s (str/starts-with? s (str frontmatter-delim "\n")))
       (let [after-open (subs s (inc (count frontmatter-delim)))
-            ;; Find the closing `---` line — must be at line-start
             close-pattern #"(?m)^---\n?"
-            close-match (re-find close-pattern after-open)]
-        (if close-match
-          (let [close-idx (str/index-of after-open close-match)
-                fm (subs after-open 0 close-idx)
+            matcher (re-matcher close-pattern after-open)]
+        (if (.find matcher)
+          (let [close-idx   (.start matcher)
+                close-match (.group matcher)
+                fm   (subs after-open 0 close-idx)
                 body (subs after-open (+ close-idx (count close-match)))]
             [fm body])
           ;; Unterminated frontmatter — treat whole thing as body
@@ -331,8 +340,22 @@
                                             {:entity entity})))
           body-slot     (body-slot-for class-ident)
           body-text     (get entity body-slot "")
-          ;; Frontmatter slots = all keys except :dt/type + body-slot
-          fm-slots      (dissoc entity :dt/type body-slot)
+          ;; Frontmatter slots = all keys except :dt/type + body-slot,
+          ;; PLUS exclude Datomic-internal + entity-locator namespaces
+          ;; so persisted entities don't leak :db/id / :db/ident /
+          ;; :mm.memory/rel-path into wire format.  Phase U Stage U-2
+          ;; UR-6 + UR-7 fix per
+          ;; observations/sandbar_codec_emit_leaks_db_internal_attrs_wire_format_2026_05_14.md
+          fm-slots      (into {}
+                              (remove (fn [[k _]]
+                                        (or (= :dt/type k)
+                                            (= body-slot k)
+                                            (and (keyword? k)
+                                                 (when-let [ns (namespace k)]
+                                                   (or (= "db" ns)
+                                                       (str/starts-with? ns "db.")
+                                                       (= :mm.memory/rel-path k)))))))
+                              entity)
           fm-yaml       (emit-frontmatter fm-slots class-ident)
           normalized    (normalize-body body-text)
           ;; Empty body emits no trailing newline; non-empty body

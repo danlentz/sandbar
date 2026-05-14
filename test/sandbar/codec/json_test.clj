@@ -160,3 +160,31 @@
   (cjson/register!)
   (let [[fmt _codec] (codec/codec-for-mime "application/json")]
     (is (= :json fmt))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; UR-6 + UR-7 (Phase U Stage U-2): emit must not leak internal-ns keys
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(deftest emit-excludes-db-internal-and-rel-path-keys
+  ;; A persisted entity carries :db/id + :db/ident + :mm.memory/rel-path.
+  ;; Pre-fix, these survived `entity->json-obj`'s key-filter and landed
+  ;; in JSON output.  Post-fix, the `internal-key?` filter strips them.
+  (let [c (cjson/make-codec)
+        persisted-entity {:dt/type :mm/Memory
+                          :db/id 17592186045511
+                          :db/ident :decisions/example
+                          :mm.memory/name "Example"
+                          :mm.memory/memory-type :decision
+                          :mm.memory/rel-path "decisions/example.md"}
+        emitted (proto/emit c persisted-entity {})
+        parsed  (ch/parse-string emitted)]
+    (is (not (contains? parsed "db/id"))
+        (str "JSON emit must not leak db/id; got: " emitted))
+    (is (not (contains? parsed "db/ident"))
+        (str "JSON emit must not leak db/ident; got: " emitted))
+    (is (not (contains? parsed "rel-path"))
+        (str "JSON emit must not leak mm.memory/rel-path; got: " emitted))
+    (is (contains? parsed "name")
+        "non-internal slot keys should still emit")
+    (is (= "mm/Memory" (get parsed "_class"))
+        "_class reserved key should still emit")))

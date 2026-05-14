@@ -166,11 +166,28 @@
       {:dt/type class-ident}
       json-obj)))
 
+(defn- internal-key?
+  "True if a key is in a Datomic-internal or entity-locator namespace
+   that should NOT leak into wire format.  Excludes `:db/*` /
+   `:db.*` / `:mm.memory/rel-path`.  Phase U Stage U-2 UR-6 + UR-7
+   fix per
+   observations/sandbar_codec_emit_leaks_db_internal_attrs_wire_format_2026_05_14.md."
+  [k]
+  (and (keyword? k)
+       (or (= :mm.memory/rel-path k)
+           (when-let [ns (namespace k)]
+             (or (= "db" ns)
+                 (str/starts-with? ns "db."))))))
+
 (defn- entity->json-obj
   "Build a JSON object map from an entity-spec.  Uses `_class` to carry
    the type ident.  Slot keys are projected via
    `dt/codec-aliases-of` (runtime metamodel lookup); keyword-typed
-   values (detected via `dt/range-of`) are coerced keyword → string."
+   values (detected via `dt/range-of`) are coerced keyword → string.
+
+   Datomic-internal keys (`:db/id`, `:db/ident`) + the entity-locator
+   `:mm.memory/rel-path` are filtered out via `internal-key?` so
+   persisted entities don't leak these to the wire format."
   [entity]
   (let [class-ident (or (:dt/type entity)
                         (throw (ex-info "Entity missing :dt/type" {:entity entity})))]
@@ -178,6 +195,7 @@
       (fn [acc k v]
         (cond
           (= :dt/type k) acc
+          (internal-key? k) acc
           :else
           (let [wire-key (slot->wire-key class-ident k)
                 v'       (if (wire-coerced-as-keyword? k)
