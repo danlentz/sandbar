@@ -58,7 +58,8 @@
    :db/valueType   :db.type/string
    :db/cardinality :db.cardinality/one
    :db/unique      :db.unique/identity
-   :db/doc "The tag string itself (e.g. 'audit', 'datomic-multi-store').  Unique identity so multiple memorials with the same tag value reference one mm/Tag entity."}]
+   :db/fulltext    true
+   :db/doc "The tag string itself (e.g. 'audit', 'datomic-multi-store').  Unique identity so multiple memorials with the same tag value reference one mm/Tag entity.  Fulltext-indexed for tag-keyword search via sandbar.search/search-bm25f."}]
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; mm.link/* Properties
@@ -114,7 +115,8 @@
    :dt/range       :db.type/string
    :db/valueType   :db.type/string
    :db/cardinality :db.cardinality/one
-   :db/doc "The markdown heading text of the section (e.g. 'Context'); no leading hash marks."}
+   :db/fulltext    true
+   :db/doc "The markdown heading text of the section (e.g. 'Context'); no leading hash marks.  Fulltext-indexed for section-heading-targeted BM25F search."}
 
   {:db/ident       :mm.section/heading-level
    :dt/type        :dt/Property
@@ -130,7 +132,8 @@
    :dt/range       :db.type/string
    :db/valueType   :db.type/string
    :db/cardinality :db.cardinality/one
-   :db/doc "The markdown body of the section EXCLUDING any child sections (which are separate mm/Section entities reachable via :_mm.section/parent reverse-walk).  Whitespace-normalized per B.0 ADR §4."}
+   :db/fulltext    true
+   :db/doc "The markdown body of the section EXCLUDING any child sections (which are separate mm/Section entities reachable via :_mm.section/parent reverse-walk).  Whitespace-normalized per B.0 ADR §4.  Fulltext-indexed for section-body-targeted BM25F search; child-section text is indexed on its own mm/Section entity, so query relevance attributes correctly to the section that owns the matching text."}
 
   {:db/ident       :mm.section/parent
    :dt/type        :dt/Property
@@ -195,7 +198,8 @@
    :dt/range       :db.type/string
    :db/valueType   :db.type/string
    :db/cardinality :db.cardinality/one
-   :db/doc "Human-readable name (frontmatter `name:`)."}
+   :db/fulltext    true
+   :db/doc "Human-readable name (frontmatter `name:`).  Fulltext-indexed for high-weight name-targeted BM25F search."}
 
   {:db/ident       :mm.memory/description
    :dt/type        :dt/Property
@@ -203,7 +207,8 @@
    :dt/range       :db.type/string
    :db/valueType   :db.type/string
    :db/cardinality :db.cardinality/one
-   :db/doc "One-line description (frontmatter `description:`)."}
+   :db/fulltext    true
+   :db/doc "One-line description (frontmatter `description:`).  Fulltext-indexed for description-targeted BM25F search."}
 
   {:db/ident       :mm.memory/memory-type
    :dt/type        :dt/Property
@@ -307,7 +312,8 @@
    :dt/range       :db.type/string
    :db/valueType   :db.type/string
    :db/cardinality :db.cardinality/one
-   :db/doc "The raw markdown body (everything after the frontmatter ---).  Preserved for byte-stability round-trip + cases where structural decomposition loses information."}]
+   :db/fulltext    true
+   :db/doc "The raw markdown body (everything after the frontmatter ---).  Preserved for byte-stability round-trip + cases where structural decomposition loses information.  Fulltext-indexed as a fallback search axis for content that doesn't decompose cleanly into sections; per-section indexing on mm.section/body is preferred for relevance attribution."}]
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Class Definitions
@@ -345,6 +351,8 @@
    :dt/context       "mm"
    :dt/label         "Section"
    :dt/native-codec  :markdown
+   :dt/bm25f-weights [[:mm.section/heading 6.0]
+                      [:mm.section/body    1.0]]
    :dt/slots         [:mm.section/heading :mm.section/heading-level
                       :mm.section/body :mm.section/parent
                       :mm.section/next-sibling :mm.section/previous-sibling]
@@ -367,6 +375,9 @@
    :dt/label         "Memory"
    :dt/native-codec  :markdown
    :dt/codec-aliases [[:type :mm.memory/memory-type]]
+   :dt/bm25f-weights [[:mm.memory/name        12.0]
+                      [:mm.memory/description  8.0]
+                      [:mm.memory/body-raw     1.0]]
    :dt/slots         [:mm.memory/identity :mm.memory/rel-path :mm.memory/name
                       :mm.memory/description :mm.memory/memory-type
                       :mm.memory/scope :mm.memory/status

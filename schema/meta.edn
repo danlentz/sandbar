@@ -295,7 +295,45 @@
             Replaces the prior hardcoded `known-class-slot-aliases`
             map in `sandbar.codec.markdown` per
             interaction/no_hardcoded_consumer_class_knowledge_in_substrate_2026_05_13.md
-            + decisions/sandbar_dt_star_explicit_ident_entity_helper_split_2026_05_13.md."}]
+            + decisions/sandbar_dt_star_explicit_ident_entity_helper_split_2026_05_13.md."}
+
+  {:db/ident :dt/bm25f-weights
+   :dt/type  :dt/Property
+   :dt/domain :dt/Class
+   :dt/range :db.type/tuple
+   :db/valueType :db.type/tuple
+   :db/tupleTypes [:db.type/keyword :db.type/double]
+   :db/cardinality :db.cardinality/many
+   :db/doc "Per-class default BM25F field-weights for fulltext search.
+            Each entry is [slot-ident weight] — a heterogeneous tuple
+            pairing the canonical namespaced slot ident with its
+            multi-field BM25F scoring weight.  Consumed by
+            sandbar.search/search-bm25f when no :field-weights opt is
+            provided on the query; a per-query :field-weights opt
+            overrides.
+
+            Algorithm-specific name (`bm25f-weights`) chosen over a
+            bare `weights` to disambiguate from any RDF/OWL weighted-
+            axiom semantics, per
+            interaction/check_substrate_schema_attribute_names_against_rdf_owl_semantics_2026_05_13.md.
+
+            Heterogeneous tuple shape ([keyword double]) declared via
+            :db/tupleTypes (plural) — Datomic's fixed-length typed-pair
+            form, distinct from :db/tupleType (singular, homogeneous).
+            Sister attribute :dt/codec-aliases uses the homogeneous
+            form (two keywords); :dt/bm25f-weights mixes keyword +
+            double so requires the plural form.
+
+            Example: on :mm/Memory,
+              [[:mm.memory/name 12.0]
+               [:mm.memory/description 8.0]
+               [:mm.memory/body-raw 1.0]]
+            tells sandbar.search/search-bm25f to weight name-matches
+            12x, description-matches 8x, and body-matches 1x when
+            scoring fulltext hits against the memory class.
+
+            Per fulltext arc Stage 1 of
+            plans/sandbar_fulltext_search_substrate_arc_2026_05_13.md."}]
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Fundamental Classes
@@ -313,7 +351,7 @@
    :dt/context "meta"
    :dt/subclass-of :dt/Resource
    :dt/label "Class"
-   :dt/slots [:dt/subclass-of :dt/abstract? :dt/list :dt/component :dt/slots :dt/validator :dt/native-codec :dt/codec-aliases]}
+   :dt/slots [:dt/subclass-of :dt/abstract? :dt/list :dt/component :dt/slots :dt/validator :dt/native-codec :dt/codec-aliases :dt/bm25f-weights]}
 
   {:db/ident :dt/Property
    :dt/type :dt/Class
