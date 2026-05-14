@@ -362,18 +362,16 @@
 ;; ---------- Entity operations ----------
 
 (defn- entity-create-handler [args]
-  (let [class-ident (->ident (or (get args "class") (get args :class)))
+  (let [class-arg   (or (get args "class") (get args :class))
         slots       (or (get args "slots") (get args :slots) {})
         ;; Codec arc Stage F.3a per
         ;; plans/sandbar_codec_layer_arc_2026-05-12.md — optional
         ;; :format + :source opts for codec-driven entity construction.
         format-arg  (or (get args "format") (get args :format))
         source-arg  (or (get args "source") (get args :source))]
-    (when (nil? class-ident)
+    (when (nil? class-arg)
       (throw (ex-info "Missing required argument: class" {:args args})))
-    (let [cls (db/entity class-ident)]
-      (when (nil? cls)
-        (throw (ex-info (str "Class not found: " class-ident) {:class class-ident})))
+    (let [class-ident (eref/resolve-ident class-arg)]
       (when (dt/abstract? class-ident)
         (throw (ex-info (str "Cannot instantiate abstract class: " class-ident)
                         {:class class-ident :reason :abstract})))
@@ -409,15 +407,24 @@
         {:entity (entity-projection new-entity)}))))
 
 (defn- entity-find-handler [args]
+  ;; Find-or-missing semantic — does NOT throw on not-found; returns a
+  ;; structured `{:missing? true}` response.  Uses `eref/validate` (the
+  ;; never-raises predicate-style entry point) instead of `eref/resolve`
+  ;; to preserve that contract.
+  ;;
+  ;; Previously called `(db/entity lookup)` then checked `(some? e)`,
+  ;; but `db/entity` returns a non-nil EntityMap for ANY input — so the
+  ;; `(some? e)` branch was vacuously true and `:missing? true` never
+  ;; fired (latent bug; reported entity maps for non-existent eids).
+  ;; `eref/validate` correctly distinguishes existing vs missing.
   (let [ident-or-id (or (get args "ident") (get args :ident)
                         (get args "id")    (get args :id))]
     (when (nil? ident-or-id)
       (throw (ex-info "Missing required argument: ident (or id)" {:args args})))
-    (let [lookup (if (number? ident-or-id) ident-or-id (->ident ident-or-id))
-          e      (db/entity lookup)]
-      (if (some? e)
-        {:entity (entity-projection e)}
-        {:entity nil :missing? true :lookup (str ident-or-id)}))))
+    (let [{:keys [valid? entity reasons]} (eref/validate ident-or-id)]
+      (if valid?
+        {:entity (entity-projection entity)}
+        {:entity nil :missing? true :lookup (str ident-or-id) :reasons reasons}))))
 
 ;; ---------- Codec + project-graph operations (Stage F.3b) ----------
 
@@ -621,9 +628,8 @@
   ;; landed dt/update-entity!; this verb now wires through.  Per codex
   ;; SHOULD-FIX #5 (sandbar.entity.update advertised but unimplemented).
   (let [entity-arg (or (get args "entity") (get args :entity))
-        slot-arg   (or (get args "slots")  (get args :slots))
-        entity-ref (->ident entity-arg)]
-    (when (nil? entity-ref)
+        slot-arg   (or (get args "slots")  (get args :slots))]
+    (when (nil? entity-arg)
       (throw (ex-info "Missing required argument: entity (ident or eid)" {:args args})))
     (when (or (nil? slot-arg) (not (map? slot-arg)))
       (throw (ex-info "Missing or non-map argument: slots (must be {:slot-ident value ...} map)"
@@ -632,21 +638,23 @@
     ;; values into Datomic-shaped values via dt/range-of (slot map's
     ;; values from JSON arrive as strings; codec needs proper keyword /
     ;; instant / etc.).
-    (let [entity-current (dt/find-by-ident entity-ref)
+    (let [entity-ident   (eref/resolve-ident entity-arg)
+          entity-current (dt/find-by-ident entity-ident)
           class-ident    (dt/class-ident-of entity-current)
           slot-map       (coerce-slot-map class-ident slot-arg)
-          updated        (dt/update-entity! entity-ref slot-map)]
-      {:entity (str entity-ref)
+          updated        (dt/update-entity! entity-ident slot-map)]
+      {:entity (str entity-ident)
        :slots  slot-map
        :result (entity-projection updated)})))
 
 (defn- entity-validate-handler [args]
-  (let [class-ident (->ident (or (get args "class") (get args :class)))
-        slots       (or (get args "slots") (get args :slots) {})]
-    (when (nil? class-ident)
+  (let [class-arg (or (get args "class") (get args :class))
+        slots     (or (get args "slots") (get args :slots) {})]
+    (when (nil? class-arg)
       (throw (ex-info "Missing required argument: class" {:args args})))
-    (let [props  (coerce-slot-map class-ident slots)
-          errors (dt/validate-data class-ident props)]
+    (let [class-ident (eref/resolve-ident class-arg)
+          props       (coerce-slot-map class-ident slots)
+          errors      (dt/validate-data class-ident props)]
       (if errors
         {:valid? false :errors errors}
         {:valid? true}))))
