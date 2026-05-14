@@ -777,86 +777,87 @@
   "The stable operational verb catalog.  Adding a verb is one entry
    here + one handler function above + (optionally) a test in
    `test/sandbar/mcp/tools_test.clj`."
-  [;; Schema introspection
+  [;; Schema introspection — verbs follow the LLM-consumability discipline
+   ;; per authorizations/sandbar_focus_for_0_1_0_release_plus_mcp_llm_consumability_discipline_2026_05_14.md
    {:name "sandbar.schema.classes"
-    :title "List all classes"
-    :description "Return all `:dt/Class` instances (idents) in the metamodel."
+    :title "List every class ident in the metamodel"
+    :description "WHICH: returns the sorted vec of every `:dt/Class` instance ident (e.g. `:mm/Memory`, `:dt/Property`, `:auth/User`) registered in the metamodel.\n\nWHEN: use as the FIRST DISCOVERY CALL when an AI client needs to understand what kinds of entities the substrate manages.  Foundational for bootstrap-by-discovery — the catalog at `tools/list` is the verb surface; this verb is the class surface.  When NOT to use: (a) you only need ONE class's details — call `sandbar.class.describe` directly; (b) you need INSTANCES rather than class idents — `sandbar.class.instances` after picking a class.\n\nHOW: no arguments.  Returns `{:classes [<ident-string>...]}`.\n\nORDER: typical bootstrap sequence — `sandbar.schema.classes` (this verb; discover classes) → `sandbar.class.describe :class :foo/X` (inspect one) → `sandbar.class.instances :class :foo/X` (enumerate its entities).\n\nCOMBINATION: pairs with `sandbar.schema.properties` (parallel — property surface) and `sandbar.schema.datatypes` (the value-type surface beneath classes).  For a single-call batch alternative to multiple `sandbar.class.instances` invocations, use `sandbar.schema.entities` instead."
     :inputSchema no-args-schema
     :handler schema-classes-handler}
    {:name "sandbar.schema.properties"
-    :title "List all properties"
-    :description "Return all `:dt/Property` instances (idents) in the metamodel."
+    :title "List every property ident in the metamodel"
+    :description "WHICH: returns the sorted vec of every `:dt/Property` instance ident (e.g. `:mm.memory/name`, `:dt/subclass-of`, `:auth/email`).  Every attribute that has been declared at the metamodel layer — both the substrate's own (`:dt/*`) and consumer-class declarations (`:mm.memory/*` etc.).\n\nWHEN: use to discover the PREDICATE vocabulary available for typed-edge navigation, structured queries, or schema introspection.  Foundational discovery call — companion to `sandbar.schema.classes`.  When NOT to use: (a) you want a SPECIFIC property's domain/range/cardinality — `sandbar.property.{domain,range,cardinality}`; (b) you want only the properties declared on ONE class — `sandbar.class.slots :class :foo/X` (returns inherited + direct); (c) you want properties whose domain IS a specific class — no direct verb; query via `sandbar.property.domain` over a candidate set.\n\nHOW: no arguments.  Returns `{:properties [<ident-string>...]}`.\n\nORDER: typical sequence — `sandbar.schema.properties` (discover) → `sandbar.property.range :property :foo/bar` (inspect one's value type) → `sandbar.property.domain :property :foo/bar` (its applicable class).\n\nCOMBINATION: pairs with `sandbar.schema.classes` (the class surface) and `sandbar.class.slots` (per-class subset).  Predicate-set values feed `sandbar.navigate.*` verbs (path-grammar / edges / walk) as the `:predicates` opt."
     :inputSchema no-args-schema
     :handler schema-properties-handler}
    {:name "sandbar.schema.entities"
-    :title "Batch fetch entities across classes"
-    :description "Return entity-spec maps grouped by class for all non-abstract classes (default) or a `:classes` filter.  Single round-trip alternative to N+1 sandbar.class.instances calls.  Result shape: `{:by-class {class-ident-string [entity-map ...]} :total-classes int :total-entities int}`.  Per Stage G Signal 8 (corpus-side friction-discovery)."
+    :title "Batch fetch entity-spec maps grouped by class (N+1 elimination)"
+    :description "WHICH: returns entity-spec maps grouped by class — one substrate round-trip instead of N+1 separate `sandbar.class.instances` calls.  Default fetches every non-abstract class's instances; optional `:classes` filter restricts to a specified subset.\n\nWHEN: use when you need to enumerate the substrate's entire entity state (or a slice across multiple classes) in one call — e.g., for bulk export, schema visualization, full-corpus reporting.  This verb exists specifically to eliminate the N+1 round-trip cost of iterating over classes and calling `sandbar.class.instances` per class.  When NOT to use: (a) you only need one class's instances — call `sandbar.class.instances` directly (smaller payload); (b) you need ranked / filtered instances — use `sandbar.aggregate.rank-by` or `sandbar.search.bm25f` instead.\n\nHOW: `:classes` (optional) is a JSON array of class-ident strings.  If omitted, fetches all non-abstract classes.  Returns `{:by-class {<class-ident-string> [<entity-map>...] ...} :total-classes <int> :total-entities <int>}`.\n\nORDER: discover classes via `sandbar.schema.classes` first (if you don't already know them).  After this call, you have the full per-class entity inventory; downstream operations (per-entity inspection, projection, etc.) follow.\n\nCOMBINATION: alternative to N × `sandbar.class.instances`.  Composes with downstream filtering: take the result's `:by-class` map and apply consumer-side predicates.  For structured filtering at the substrate, use `sandbar.aggregate.count` / `.group-by` with a `:where` Datalog clause instead.  Per Stage G Signal 8 (corpus-side friction-discovery)."
     :inputSchema {:type "object"
                   :properties {:classes {:type "array"
                                           :items {:type "string"}
-                                          :description "Optional list of class-ident strings to fetch; default fetches all non-abstract classes"}}
+                                          :description "Optional array of class-ident strings to fetch; default fetches all non-abstract classes"}}
                   :required []}
     :handler schema-entities-handler}
    {:name "sandbar.schema.datatypes"
-    :title "List all Datomic value types"
-    :description "Return all `:db.type/*` value types available."
+    :title "List every Datomic value type (`:db.type/*`) registered"
+    :description "WHICH: returns the sorted vec of every `:db.type/*` value type registered in the metamodel — primitives (`:db.type/string`, `:db.type/long`, `:db.type/boolean`, `:db.type/instant`, `:db.type/keyword`, `:db.type/uuid`, `:db.type/uri`), refs (`:db.type/ref`), and Sandbar-specific extensions if present.\n\nWHEN: use when introspecting the SUBSTRATE layer — what primitive types can attributes carry?  Less commonly needed than `sandbar.schema.classes` (which inspects the user-facing class surface); useful for tooling that needs to understand the underlying type system.  When NOT to use: (a) you want a specific property's value type — `sandbar.property.range :property :foo/bar`; (b) you want consumer-class types — `sandbar.schema.classes`.\n\nHOW: no arguments.  Returns `{:datatypes [<ident-string>...]}`.\n\nORDER: no prerequisites; foundational discovery call.\n\nCOMBINATION: pairs with `sandbar.property.range` (which returns one of these datatype idents for a property).  Rarely needed at the AI-client level — most reads stay at the class / property layer."
     :inputSchema no-args-schema
     :handler schema-datatypes-handler}
 
    ;; Class introspection
    {:name "sandbar.class.describe"
-    :title "Describe a class"
-    :description "Return abstract? + parents + ancestors + subclasses + slots for a class."
+    :title "Full class description — abstract? + parents + ancestors + subclasses + slots"
+    :description "WHICH: returns the comprehensive descriptor for a class — its abstract-flag, direct parents, all ancestors, direct subclasses, and effective slot set.  The 'inspect this class' verb.\n\nWHEN: use after picking a class from `sandbar.schema.classes` to understand its full shape before creating instances or composing queries.  Most useful first-touch verb for a new-to-you class.  When NOT to use: (a) only the slot set is needed — `sandbar.class.slots` (lighter); (b) only the hierarchy is needed — `sandbar.class.hierarchy` (via the REST endpoint; not in MCP catalog) or compose `parents` + `subclasses`; (c) you want the INSTANCES — `sandbar.class.instances`.\n\nHOW: `:class` is the class ident string (e.g. `:mm/Memory`).  Returns `{:class <ident-string> :abstract? <bool> :parents [...] :ancestors [...] :subclasses [...] :slots [...]}`.\n\nORDER: typical sequence — `sandbar.schema.classes` (discover) → `sandbar.class.describe :class :foo/X` (this verb; inspect) → `sandbar.class.instances` or `sandbar.entity.create`.\n\nCOMBINATION: the slot list feeds `sandbar.property.{domain,range,cardinality}` for per-slot deep inspection.  Subclass list feeds polymorphic `sandbar.class.instances` calls.  Per-class typed-edge composition feeds `sandbar.orient.library-card` axis-specs."
     :inputSchema (one-required class-arg-schema [:class])
     :handler class-describe-handler}
    {:name "sandbar.class.slots"
-    :title "All slots of a class (inherited + direct)"
-    :description "Return the effective slot set for a class (inherited from parents + directly declared)."
+    :title "Effective slot set of a class (inherited + directly-declared)"
+    :description "WHICH: returns the sorted vec of slot idents that apply to instances of this class — including slots inherited from `:dt/subclass-of` ancestors PLUS slots declared directly on the class.\n\nWHEN: use to enumerate the FULL attribute surface available for instances of a class — for entity creation, validation, or query composition.  This is the 'what fields does this class have' question.  When NOT to use: (a) you want only the directly-declared slots (excluding inherited) — `sandbar.class.direct-slots`; (b) you want only REQUIRED slots — `sandbar.class.required-slots`; (c) you want to know which classes a property applies to — `sandbar.property.domain`.\n\nHOW: `:class` is the class ident.  Returns `{:class <ident-string> :slots [<slot-ident-string>...]}`.\n\nORDER: foundational; no prerequisites beyond knowing the class ident (discover via `sandbar.schema.classes` if needed).\n\nCOMBINATION: feeds `sandbar.property.range` (per-slot value type for entity construction), `sandbar.entity.create` (slot map keys), and `sandbar.aggregate.group-by` (`:group-by` candidate slots).  For each slot's typed-edge nature (is it a `:db.type/ref` for navigation purposes?), call `sandbar.property.range`."
     :inputSchema (one-required class-arg-schema [:class])
     :handler class-slots-handler}
    {:name "sandbar.class.direct-slots"
-    :title "Direct slots only (no inheritance)"
-    :description "Return only the slots declared directly on a class (no inherited slots)."
+    :title "Directly-declared slots only (no inheritance)"
+    :description "WHICH: returns slots declared directly on `:class` — EXCLUDING inherited slots from `:dt/subclass-of` ancestors.\n\nWHEN: use when you need to know what THIS class adds beyond its parents — e.g., for class-evolution analysis, schema-shape comparison between siblings, or understanding the class's own contribution to the surface.  When NOT to use: (a) you want the full effective set (inherited + direct) — `sandbar.class.slots`; (b) you want just the required subset — `sandbar.class.required-slots`.\n\nHOW: `:class` is the class ident.  Returns `{:class <ident-string> :slots [<slot-ident-string>...]}`.\n\nORDER: no prerequisites.\n\nCOMBINATION: subtract from `sandbar.class.slots` result to derive the INHERITED slots.  Use alongside `sandbar.class.parents` to understand how the class augments its ancestors."
     :inputSchema (one-required class-arg-schema [:class])
     :handler class-direct-slots-handler}
    {:name "sandbar.class.required-slots"
-    :title "Required slots of a class"
-    :description "Return the subset of slots that are required (`:dt/required true`)."
+    :title "Required slots of a class (`:dt/required? true`)"
+    :description "WHICH: returns the subset of effective slots flagged `:dt/required? true` on `:class`.  Required slots must be supplied when creating instances via `sandbar.entity.create`.\n\nWHEN: use as a PREREQUISITE check before calling `sandbar.entity.create` — to confirm the slot map contains every required key.  Also useful for documentation generation and error-message authoring (\"missing required slot X\").  When NOT to use: (a) you want all slots — `sandbar.class.slots`; (b) you want validation FEEDBACK after providing a slot map — `sandbar.entity.validate` (pre-transaction validation with error details).\n\nHOW: `:class` is the class ident.  Returns `{:class <ident-string> :slots [<slot-ident-string>...]}`.\n\nORDER: critical pre-step before `sandbar.entity.create`.  After this verb, you know the minimum slot set; gather values for those, then call create.\n\nCOMBINATION: pairs with `sandbar.entity.validate` (full pre-transaction validation including required-check AND type-conformance) and `sandbar.entity.create` (the actual mutation)."
     :inputSchema (one-required class-arg-schema [:class])
     :handler class-required-slots-handler}
    {:name "sandbar.class.instances"
-    :title "All instances of a class"
-    :description "Return all entities that are instances of a class (including subclass instances)."
+    :title "All instances of a class (incl. subclass instances)"
+    :description "WHICH: returns every entity that is an instance of `:class` — directly OR via `:dt/subclass-of` (i.e., subclass instances are included; instance-of relation is transitive through inheritance).\n\nWHEN: use to enumerate a class's full instance population.  Foundational read for any class-based traversal.  When NOT to use: (a) the population is large and you only want top-K by some rank — `sandbar.aggregate.rank-by`; (b) you want only DIRECT instances (no subclass instances) — there's no MCP verb for this in the current catalog; substrate has `dt/direct-instances-of` accessible via in-process Clojure; (c) you want a count, not the entities — `sandbar.aggregate.count`; (d) you want to filter by some predicate — `sandbar.aggregate.count` / `.group-by` with `:where` Datalog, or `sandbar.search.bm25f` for fulltext-filtered instances.\n\nHOW: `:class` is the class ident.  Returns `{:class <ident-string> :instances [<entity-map>...]}`.  Each entity-map has `:db/id`, `:db/ident` (if interned), and namespaced-keyword slots.\n\nORDER: typical sequence — `sandbar.schema.classes` (discover class) → `sandbar.class.describe` (inspect) → `sandbar.class.instances` (this verb; enumerate).  No strict prerequisites.\n\nCOMBINATION: pairs with `sandbar.aggregate.rank-by` (rank the enumerated set), `sandbar.aggregate.group-by` (faceted counts), `sandbar.search.bm25f` (fulltext-search within a class's instances).  For batch fetch across multiple classes, use `sandbar.schema.entities` (N+1 elimination) instead."
     :inputSchema (one-required class-arg-schema [:class])
     :handler class-instances-handler}
    {:name "sandbar.class.subclasses"
-    :title "All subclasses (transitive)"
-    :description "Return all transitive subclasses of a class."
+    :title "All transitive subclasses of a class"
+    :description "WHICH: returns the sorted vec of every class that is a `:dt/subclass-of` descendant of `:class` (direct + transitive).\n\nWHEN: use to discover the polymorphic surface of a class — what concrete classes might satisfy 'instance of `:class`'?  E.g., subclasses of `:dt/Resource` is essentially every domain class.  When NOT to use: (a) you want only DIRECT subclasses — no MCP verb in current catalog (substrate has `dt/direct-subclasses-of`); (b) you want to test 'is X a subclass of Y' specifically — `sandbar.types.subclass-of` predicate.\n\nHOW: `:class` is the parent class ident.  Returns `{:class <ident-string> :subclasses [<ident-string>...]}`.\n\nORDER: no prerequisites.\n\nCOMBINATION: with `sandbar.class.instances` over each subclass for instance enumeration; with `sandbar.aggregate.group-by` (`:group-by :dt/subclass-of`) for hierarchy distribution analysis."
     :inputSchema (one-required class-arg-schema [:class])
     :handler class-subclasses-handler}
    {:name "sandbar.class.parents"
-    :title "Direct parents + all ancestors"
-    :description "Return direct parents + all ancestor classes."
+    :title "Direct parents + transitive ancestors of a class"
+    :description "WHICH: returns the class's direct `:dt/subclass-of` parents AND the full transitive-ancestor list (walks up to `:dt/Resource` typically).\n\nWHEN: use to understand a class's inheritance lineage — what slots / behaviors does it inherit?  Especially useful when debugging unexpected attribute behavior (slot might be declared on an ancestor).  When NOT to use: (a) you only want the DIRECT parents — currently returned alongside ancestors in this verb's result (filter result-side); (b) you want a subclass-of predicate test — `sandbar.types.subclass-of`.\n\nHOW: `:class` is the class ident.  Returns `{:class <ident-string> :parents [<direct-parents>...] :ancestors [<all-ancestors>...]}`.\n\nORDER: no prerequisites.\n\nCOMBINATION: pairs with `sandbar.class.direct-slots` per ancestor to trace inherited slot origins.  Use alongside `sandbar.types.subclass-of` for polymorphic-dispatch decisions."
     :inputSchema (one-required class-arg-schema [:class])
     :handler class-parents-handler}
    {:name "sandbar.class.validate-all-instances"
-    :title "Validate all instances of a class"
-    :description "Run validation against every instance of a class; return the report."
+    :title "Run validation against every instance of a class; return the report"
+    :description "WHICH: validates every entity that is an instance of `:class` (including subclass instances) against the class's declared slot constraints (required, range, custom validators).  Returns a per-entity validation report.\n\nWHEN: use for batch schema-conformance checking — e.g., after a schema change, before a migration, or for periodic substrate-health audits.  When NOT to use: (a) you want to validate ONE entity's proposed slot map without committing — `sandbar.entity.validate` (pre-transaction); (b) you want CANCELLABLE / long-running validation with workflow-backed history — `sandbar.validation.start` (the workflow-backed equivalent for large classes).\n\nHOW: `:class` is the class ident.  Returns `{:class <ident-string> :report <validation-report>}`.\n\nORDER: no prerequisites.  Synchronous — for large classes this can be slow; consider `sandbar.validation.start` for the workflow-backed equivalent.\n\nCOMBINATION: alternative to `sandbar.validation.start` (workflow-backed; better for large classes).  Pairs with `sandbar.entity.validate` (per-entity pre-transaction check) and `sandbar.entity.update` (after fixing failures, update affected entities)."
     :inputSchema (one-required class-arg-schema [:class])
     :handler class-validate-all-instances-handler}
 
    ;; Type predicates
    {:name "sandbar.types.instance-of"
-    :title "Is entity an instance of class?"
-    :description "Predicate: returns true if entity is an instance of class (direct or subclass)."
+    :title "Predicate — is `:entity` an instance of `:class`?"
+    :description "WHICH: returns boolean true if `:entity` is an instance of `:class` (directly via `:dt/type` OR transitively via `:dt/subclass-of` to an ancestor that's `:dt/type :class`).\n\nWHEN: use for dispatch / branching decisions in consumer code — 'if this entity is a :mm/Memory, handle it as a memory; else handle generically'.  When NOT to use: (a) you want the entity's actual class — `sandbar.entity.find` then read `:dt/type`; (b) you want ALL instances of a class — `sandbar.class.instances`; (c) you want polymorphic instance enumeration — `sandbar.class.instances` already includes subclass instances.\n\nHOW: `:class` is the candidate class ident; `:entity` is the entity ident or eid.  Returns `{:class :entity :instance-of? <bool>}`.\n\nORDER: no prerequisites; predicate-form leaf call.\n\nCOMBINATION: pairs with `sandbar.types.subclass-of` (class-level analog: is X a subclass of Y).  For filtering a candidate-set by instance-of relation, use `sandbar.aggregate.count` / `.group-by` with `:where '[[?e :dt/type :foo/X]]'` Datalog clause."
     :inputSchema (one-required
                    (merge class-arg-schema
                           {:entity {:type "string" :description "Entity ident or eid"}})
                    [:class :entity])
     :handler types-instance-of-handler}
    {:name "sandbar.types.subclass-of"
-    :title "Is child a subclass of parent?"
-    :description "Predicate: returns true if child is a transitive subclass of parent."
+    :title "Predicate — is `:child` a (transitive) subclass of `:parent`?"
+    :description "WHICH: returns boolean true if `:child` class is a transitive `:dt/subclass-of` descendant of `:parent` class — direct OR through any chain of ancestors.\n\nWHEN: use for class-hierarchy dispatch logic — 'if this class extends :auth/User, apply auth-flavored behavior'.  Companion to `sandbar.types.instance-of` (entity-level) — this is the class-level equivalent.  When NOT to use: (a) you want the full ancestor list — `sandbar.class.parents`; (b) you want all subclasses — `sandbar.class.subclasses`.\n\nHOW: `:parent` + `:child` are class ident strings.  Returns `{:parent :child :subclass-of? <bool>}`.\n\nORDER: no prerequisites.\n\nCOMBINATION: pairs with `sandbar.types.instance-of` (entity-of-class flavor)."
     :inputSchema (one-required
                    {:parent {:type "string" :description "Parent class ident"}
                     :child  {:type "string" :description "Child class ident"}}
@@ -865,147 +866,147 @@
 
    ;; Property introspection
    {:name "sandbar.property.domain"
-    :title "Property domain"
-    :description "Return the domain class of a property (`:dt/domain`)."
+    :title "Domain class of a property (`:dt/domain`)"
+    :description "WHICH: returns the declared domain class of a property — the class whose instances may carry this attribute (per RDFS / KL-ONE semantics).  For SPARQL-fluent readers: the `rdfs:domain` analogue.\n\nWHEN: use to discover which class a property applies to — useful when authoring `:where` clauses (you need to know which entity type carries the slot) or when validating that a slot map's keys are appropriate for a target class.  When NOT to use: (a) you want the VALUE type of the property — `sandbar.property.range`; (b) you want every slot on a class — `sandbar.class.slots`.\n\nHOW: `:property` is the attribute ident.  Returns `{:property <ident-string> :domain <class-ident-string-or-nil>}`.  Returns nil if no domain declared.\n\nORDER: no prerequisites; foundational property-introspection call.\n\nCOMBINATION: triad with `sandbar.property.range` + `sandbar.property.cardinality` — all three together describe the property's shape.  Domain + range together let you reason about a typed-edge: 'edges of predicate :p go from class :D to class :R'."
     :inputSchema (one-required property-arg-schema [:property])
     :handler property-domain-handler}
    {:name "sandbar.property.range"
-    :title "Property range"
-    :description "Return the value-type range of a property (`:dt/range` / `:db/valueType`)."
+    :title "Value-type range of a property (`:dt/range` / `:db/valueType`)"
+    :description "WHICH: returns the value-type range of a property — what kind of value the property holds.  For `:db.type/ref` properties, the range is a class ident (the target's class).  For primitive properties, the range is a `:db.type/*` keyword (`:db.type/string`, `:db.type/long`, etc.).\n\nWHEN: use when constructing slot maps for `sandbar.entity.create` (you need to know what type each slot expects) or when authoring path-grammar expressions (typed-edge predicates have `:db.type/ref` range; primitive-valued slots don't).  When NOT to use: (a) you want which class CARRIES the property — `sandbar.property.domain`; (b) you want every value type registered — `sandbar.schema.datatypes`.\n\nHOW: `:property` is the attribute ident.  Returns `{:property <ident-string> :range <class-or-datatype-ident-string>}`.\n\nORDER: no prerequisites.  Critical pre-step for `sandbar.entity.create` slot construction.\n\nCOMBINATION: triad with `sandbar.property.domain` + `.cardinality`.  For ref-typed properties, the range class can be inspected via `sandbar.class.describe`.  Identifies which properties are typed-edges (range is a class) vs primitive-valued (range is `:db.type/*`)."
     :inputSchema (one-required property-arg-schema [:property])
     :handler property-range-handler}
    {:name "sandbar.property.cardinality"
-    :title "Property cardinality"
-    :description "Return the cardinality of a property (`:db.cardinality/one` or `/many`)."
+    :title "Cardinality of a property (`:db.cardinality/one` or `/many`)"
+    :description "WHICH: returns the cardinality of a property — either `:db.cardinality/one` (scalar; at most one value per entity) or `:db.cardinality/many` (set-valued; multiple values per entity).\n\nWHEN: use when constructing slot maps — `:cardinality/many` slots accept vec / set; `:cardinality/one` slots accept the scalar value directly.  Critical for `sandbar.entity.create` slot construction and for authoring `:where` Datalog clauses that traverse multi-cardinality attributes.  When NOT to use: (a) you want the value type — `sandbar.property.range`; (b) you want the domain — `sandbar.property.domain`.\n\nHOW: `:property` is the attribute ident.  Returns `{:property <ident-string> :cardinality <ident-string>}`.\n\nORDER: no prerequisites.\n\nCOMBINATION: triad with `sandbar.property.domain` + `.range`.  Many-cardinality ref properties (e.g., `:mm.memory/tags`) are natural targets for navigation verbs (`sandbar.navigate.outbound` with `:predicates [:mm.memory/tags]`)."
     :inputSchema (one-required property-arg-schema [:property])
     :handler property-cardinality-handler}
 
    ;; Entity operations
    {:name "sandbar.entity.create"
-    :title "Create an entity"
-    :description "Create a new entity of `:class` with `:slots`; validated via `dt/make`.  Optionally accepts `:format` + `:source` — when both are provided, the codec mediator parses `:source` as the named wire format (e.g., :markdown) and merges the parsed slots with the explicit `:slots` map (explicit wins).  Codec arc Stage F.3a per plans/sandbar_codec_layer_arc_2026-05-12.md."
+    :title "Create a new validated entity of a class (with optional codec parsing)"
+    :description "WHICH: creates a new entity of `:class` from a slot map (or from a raw wire-format source via the codec mediator), validates it against the class's declared constraints, and transacts it into the substrate.  The primary mutation verb.\n\nWHEN: use to bring a new entity into the substrate — whether constructing from explicit slot values (programmatic) or from a raw representation (e.g., markdown source for `:mm/Memory`, JSON for any class).  When NOT to use: (a) updating an EXISTING entity — `sandbar.entity.update`; (b) you want to validate without committing — `sandbar.entity.validate` (pre-transaction); (c) entity already exists and you want to read it back — `sandbar.entity.find`.\n\nHOW: `:class` is the target class ident (REQUIRED; abstract classes rejected).  `:slots` is a slot-ident-string → value map (optional if `:source` is provided).  `:format` + `:source` (both optional, must come together) invoke the codec mediator: `:source` is parsed as the named wire format (e.g., `:markdown`), parsed slots merge with explicit `:slots` (explicit wins on conflict).  Validates required slots, type-conformance, custom validators before transacting; raises ex-info on validation failure.\n\nORDER: prerequisites — discover `:class` via `sandbar.schema.classes`; understand required slots via `sandbar.class.required-slots`; understand slot value types via `sandbar.property.range`.  Optional pre-check: `sandbar.entity.validate` (validates a slot map WITHOUT committing).\n\nCOMBINATION: paired with `sandbar.entity.validate` (pre-check), `sandbar.entity.find` (read back), `sandbar.entity.update` (subsequent mutations).  For codec-driven creation, ensure the codec is registered via `sandbar.codec.list`.  Per codec arc Stage F.3a of plans/sandbar_codec_layer_arc_2026-05-12.md."
     :inputSchema (one-required
-                   {:class  {:type "string" :description "Class ident"}
+                   {:class  {:type "string" :description "Class ident (concrete, not abstract)"}
                     :slots  {:type "object" :description "Slot map (slot-ident-string → value); optional when :source is provided"}
                     :format {:type "string" :description "Optional codec format keyword (e.g., :markdown / :json); requires :source"}
                     :source {:type "string" :description "Optional raw native-representation string parsed via :format codec"}}
                    [:class])
     :handler entity-create-handler}
    {:name "sandbar.entity.find"
-    :title "Find an entity by ident or id"
-    :description "Look up an entity by `:ident` (keyword string) or `:id` (eid)."
+    :title "Look up an entity by ident or eid"
+    :description "WHICH: looks up an entity by `:ident` (interned keyword) or `:id` (numeric eid).  Returns the entity-map projection (`:db/id`, `:db/ident` if interned, namespaced-keyword slots).\n\nWHEN: use to fetch the current state of a known entity.  Most common 'read one entity' verb.  When NOT to use: (a) you want all instances of a class — `sandbar.class.instances`; (b) you want fulltext search — `sandbar.search.bm25f`; (c) you don't know the ident — discover via `sandbar.class.instances` first.\n\nHOW: provide ONE of `:ident` (keyword-form string like `\":decisions/foo\"`) OR `:id` (numeric eid).  Returns `{:entity <entity-map>}` if found, or `{:entity nil :missing? true :lookup <provided>}` if not found.\n\nORDER: leaf-call; no prerequisites.\n\nCOMBINATION: pre-step before `sandbar.entity.update` (confirm the entity exists); after `sandbar.entity.create` (read back the created entity, though create returns the entity directly so this is rarely needed).  For RELATED entities, use `sandbar.navigate.{outbound,inbound,siblings-of}` or `sandbar.orient.library-card`."
     :inputSchema {:type "object"
-                  :properties {:ident {:type "string" :description "Entity ident"}
-                               :id    {:type "integer" :description "Entity eid"}}
+                  :properties {:ident {:type "string" :description "Entity ident (keyword string)"}
+                               :id    {:type "integer" :description "Entity eid (numeric)"}}
                   :required []}
     :handler entity-find-handler}
    {:name "sandbar.entity.update"
-    :title "Update an entity's slots"
-    :description "Update slot values on an existing entity (NOT YET IMPLEMENTED — pending dt/update-entity primitive)."
+    :title "Update slots on an existing entity"
+    :description "WHICH: applies slot-value updates to an existing entity.  Validates the updated slot map against the entity's class constraints before transacting.\n\nWHEN: use to MUTATE an existing entity — change a slot value, set a previously-empty slot, etc.  When NOT to use: (a) creating a new entity — `sandbar.entity.create`; (b) you want to validate proposed updates WITHOUT committing — `sandbar.entity.validate` (against the class with the merged slot map); (c) you want to retract a slot value entirely — Datomic retraction is a separate concern not currently exposed via MCP.\n\nHOW: `:entity` is the target entity ident or eid (REQUIRED).  `:slots` is a slot-ident-string → new-value map (REQUIRED; non-map values rejected).  Substrate auto-coerces JSON-shaped values via `dt/range-of` (e.g., `:db.type/keyword` slots accept either keyword strings or already-coerced keywords).  Cardinality-many slots accept either a single value (wrapped to vec) or a vec / array.\n\nORDER: prerequisite — `sandbar.entity.find` to confirm the entity exists.  Optional pre-check: `sandbar.entity.validate` against the FULL merged slot map (current slots ∪ updates).\n\nCOMBINATION: pairs with `sandbar.entity.find` (pre-confirm + post-read-back).  For bulk class-wide updates, no single-call alternative; iterate `sandbar.class.instances` and apply per-entity.  Per Stage I of plans/sandbar_codex_review_remediation_arc_2026_05_13.md (`dt/update-entity!` substrate primitive)."
     :inputSchema (one-required
-                   {:entity {:type "string" :description "Entity ident or eid"}
-                    :slots  {:type "object" :description "Slot updates"}}
+                   {:entity {:type "string" :description "Entity ident (keyword string) or eid (numeric)"}
+                    :slots  {:type "object" :description "Slot-ident-string → new-value map"}}
                    [:entity :slots])
     :handler entity-update-handler}
    {:name "sandbar.entity.validate"
-    :title "Validate a slot map against a class"
-    :description "Pre-transaction validation: check that `:slots` would be valid for `:class`. No write."
+    :title "Pre-transaction validation of a slot map against a class"
+    :description "WHICH: checks that `:slots` would constitute a valid instance of `:class` — required-slot presence, range-conformance, custom-validator pass — WITHOUT transacting.  Returns the validation report (errors, if any) without side effect.\n\nWHEN: use as a PRE-FLIGHT CHECK before `sandbar.entity.create` (especially when constructing from external input where validation feedback drives consumer-side error messages).  Also useful for `sandbar.entity.update` proposals (validate the merged slot map before committing).  When NOT to use: (a) you want to CREATE the entity once valid — `sandbar.entity.create` (which validates internally); (b) you want to validate ALL existing instances of a class — `sandbar.class.validate-all-instances` (or `sandbar.validation.start` for workflow-backed).\n\nHOW: `:class` is the target class ident.  `:slots` is the slot-ident-string → value map to validate.  Returns `{:valid? <bool> :errors <error-detail-or-nil>}`.\n\nORDER: typical use — `sandbar.class.required-slots` (discover requirements) → `sandbar.entity.validate` (pre-check) → `sandbar.entity.create` (commit).\n\nCOMBINATION: pairs with `sandbar.entity.create` (the actual mutation; uses the same validation under the hood) and `sandbar.class.validate-all-instances` (sibling read-only verb at the class population level)."
     :inputSchema (one-required
                    {:class {:type "string" :description "Class ident"}
                     :slots {:type "object" :description "Slot map to validate"}}
                    [:class :slots])
     :handler entity-validate-handler}
 
-   ;; Workflow operations
+   ;; Workflow operations — sandbar's first-class state-machine substrate
    {:name "sandbar.workflow.define"
-    :title "Define a workflow"
-    :description "Register a new workflow definition from a spec (states + transitions)."
-    :inputSchema (one-required {:spec {:type "object" :description "Workflow spec"}} [:spec])
+    :title "Register a new workflow definition (states + transitions)"
+    :description "WHICH: registers a new workflow definition from a spec.  A workflow is a named state machine — states (with terminal-kind classification: `:success` / `:failure` / `:cancel` for terminal states) + transitions (named actions moving between states, optionally guarded).  Per Sandbar's first-class-workflow substrate.\n\nWHEN: use to introduce a new state-machine model — order fulfillment, validation flow, approval pipeline, etc.  Workflows are entities in the substrate (queryable, evolvable).  When NOT to use: (a) inspecting an existing workflow — `sandbar.workflow.find`; (b) starting a process on an existing workflow — `sandbar.workflow.start-process`.\n\nHOW: `:spec` is a JSON object describing the workflow shape — `:workflow/states` vec with `:db/ident` + `:workflow/terminal-kind` (for terminals); `:workflow/transitions` vec with `:db/ident` + source/target state refs + optional guard.\n\nORDER: PRECEDES any `sandbar.workflow.start-process` for this workflow — the workflow must exist before processes can run.  Inspect existing workflows via `sandbar.workflow.find` to avoid duplicate idents.\n\nCOMBINATION: pairs with `sandbar.workflow.find` (lookup), `sandbar.workflow.start-process` (instantiate process), and the validation-service verbs (`sandbar.validation.*`) which are workflow-backed.  Workflows are visible as `:workflow/Definition` instances via `sandbar.class.instances :class :workflow/Definition`."
+    :inputSchema (one-required {:spec {:type "object" :description "Workflow spec (states + transitions)"}} [:spec])
     :handler workflow-define-handler}
    {:name "sandbar.workflow.find"
-    :title "Find a workflow definition"
-    :description "Look up a workflow definition by ident."
+    :title "Look up a workflow definition by ident"
+    :description "WHICH: returns the entity-map of a workflow definition (its states + transitions + metadata) given the workflow ident.\n\nWHEN: use to inspect an existing workflow — discover its state-machine shape before starting a process or analyzing process histories.  When NOT to use: (a) you want all workflows — `sandbar.class.instances :class :workflow/Definition`; (b) you want process-state inspection — `sandbar.workflow.process-state`.\n\nHOW: `:workflow` is the workflow ident string.  Returns `{:workflow <ident-string> :definition <entity-map>}`.\n\nORDER: typical sequence — `sandbar.class.instances :class :workflow/Definition` (discover) → `sandbar.workflow.find :workflow :foo/wf` (inspect).\n\nCOMBINATION: pairs with `sandbar.workflow.start-process` (start a new process against this definition) and `sandbar.workflow.active-processes` (current processes against this workflow)."
     :inputSchema (one-required {:workflow {:type "string"}} [:workflow])
     :handler workflow-find-handler}
    {:name "sandbar.workflow.start-process"
-    :title "Start a workflow process"
-    :description "Create a new workflow process attached to a subject; returns the new process id."
+    :title "Start a new workflow process attached to a subject entity"
+    :description "WHICH: instantiates a new workflow process — a running instance of a workflow definition — attached to a subject entity (the entity the workflow operates on).  Returns the new process id.\n\nWHEN: use to BEGIN a state-machine flow against a target entity — e.g., start an order-fulfillment workflow for a `:order/Order`, start a validation workflow for a `:dt/Class` instance set.  When NOT to use: (a) the workflow definition doesn't exist yet — `sandbar.workflow.define` first; (b) you want to transition an EXISTING process — `sandbar.workflow.transition`.\n\nHOW: `:workflow` is the workflow definition ident (REQUIRED).  `:subject` is the subject entity ident or eid (REQUIRED).  `:data` is an optional initial process-data object (kwarg-shaped; merged into the process's initial state).\n\nORDER: PREREQUISITE — workflow defined (via `sandbar.workflow.define` or pre-seed).  After this verb, the process is in its initial state; advance via `sandbar.workflow.transition`.\n\nCOMBINATION: pairs with `sandbar.workflow.transition` (advance state), `sandbar.workflow.process-state` (current state read), `sandbar.workflow.process-history` (transition log).  MCP Tasks (long-running operations) are workflow processes — task-id IS process-id."
     :inputSchema (one-required
-                   {:workflow {:type "string"}
+                   {:workflow {:type "string" :description "Workflow definition ident"}
                     :subject  {:type "string" :description "Subject entity ident or eid"}
-                    :data     {:type "object" :description "Initial process data"}}
+                    :data     {:type "object" :description "Initial process data (kwargs-merged into initial state)"}}
                    [:workflow :subject])
     :handler workflow-start-process-handler}
    {:name "sandbar.workflow.transition"
-    :title "Transition a workflow process"
-    :description "Apply a named transition to a workflow process."
+    :title "Apply a named transition to a workflow process"
+    :description "WHICH: advances a workflow process by applying a named transition — moves the process from its current state to the transition's target state (subject to guard validation).  Returns the new state + terminal flag.\n\nWHEN: use to advance a process through its state machine — invoke a transition by name.  When NOT to use: (a) just reading the current state — `sandbar.workflow.process-state`; (b) starting a process — `sandbar.workflow.start-process`; (c) cancelling — there's no separate cancel verb; transitions whose target state has `:workflow/terminal-kind :cancel` are the cancellation path.\n\nHOW: `:process-id` (REQUIRED) is the numeric eid of the process.  `:transition` is the transition ident (REQUIRED).  `:reason` (optional) is a human-readable rationale carried in the history.\n\nORDER: PREREQUISITE — process started via `sandbar.workflow.start-process`.  Discover the available transitions from the current state via `sandbar.workflow.process-state` + workflow-definition inspection.\n\nCOMBINATION: pairs with `sandbar.workflow.process-state` (current state read) + `sandbar.workflow.process-history` (history after transitions).  For validation flows specifically, the validation-service verbs (`sandbar.validation.run` etc.) are workflow-backed and call this internally."
     :inputSchema (one-required
-                   {:process-id {:type "integer"}
-                    :transition {:type "string"}
-                    :reason     {:type "string" :description "Optional human-readable reason"}}
+                   {:process-id {:type "integer" :description "Process eid"}
+                    :transition {:type "string" :description "Transition ident"}
+                    :reason     {:type "string" :description "Optional human-readable reason (carried in history)"}}
                    [:process-id :transition])
     :handler workflow-transition-handler}
    {:name "sandbar.workflow.process-state"
-    :title "Current state of a process"
-    :description "Return the current state + terminal flag + completion flag for a workflow process."
-    :inputSchema (one-required {:process-id {:type "integer"}} [:process-id])
+    :title "Current state + terminal flag + completion flag of a workflow process"
+    :description "WHICH: returns the current-state ident, terminal-flag (is this a terminal state?), and completion-flag (did this process reach a `:success` terminal?) of a workflow process.\n\nWHEN: use to read the live state of a process — for status displays, conditional logic, post-completion handling.  When NOT to use: (a) you want the full transition history — `sandbar.workflow.process-history`; (b) you want to ADVANCE the state — `sandbar.workflow.transition`.\n\nHOW: `:process-id` is the numeric process eid.  Returns `{:process-id :state :terminal? :completed?}`.\n\nORDER: leaf-call; no prerequisites beyond knowing the process-id (from `start-process` return or from `sandbar.workflow.active-processes` enumeration).\n\nCOMBINATION: pairs with `sandbar.workflow.transition` (call after a transition to confirm new state); `sandbar.workflow.process-history` (full log of how we got here)."
+    :inputSchema (one-required {:process-id {:type "integer" :description "Process eid"}} [:process-id])
     :handler workflow-process-state-handler}
    {:name "sandbar.workflow.process-history"
-    :title "Process transition history"
-    :description "Return the full transition history of a workflow process."
-    :inputSchema (one-required {:process-id {:type "integer"}} [:process-id])
+    :title "Full transition history of a workflow process"
+    :description "WHICH: returns the chronological transition history of a workflow process — every state transition that's been applied, with timestamps, transition idents, and any `:reason` notes.\n\nWHEN: use for audit logging, debugging unexpected process states, or rendering a process timeline for UI.  When NOT to use: (a) you only need the CURRENT state — `sandbar.workflow.process-state` (lighter); (b) you want active processes across a workflow — `sandbar.workflow.active-processes`.\n\nHOW: `:process-id` is the numeric process eid.  Returns `{:process-id :history [<transition-record>...]}`.\n\nORDER: leaf-call.\n\nCOMBINATION: pairs with `sandbar.workflow.process-state` (current snapshot)."
+    :inputSchema (one-required {:process-id {:type "integer" :description "Process eid"}} [:process-id])
     :handler workflow-process-history-handler}
    {:name "sandbar.workflow.active-processes"
-    :title "Active processes"
-    :description "Return all active (non-terminal) workflow processes; optionally filtered by workflow."
+    :title "All active (non-terminal) workflow processes; optionally filtered by workflow"
+    :description "WHICH: returns the list of currently-active (non-terminal-state) workflow processes — every process that's currently running.  Optional `:workflow` filter restricts to processes against a specific workflow definition.\n\nWHEN: use to enumerate live state-machine flows — dashboards, oncall views, 'what's currently in flight'.  When NOT to use: (a) one specific process — `sandbar.workflow.process-state`; (b) finished processes — query via `sandbar.class.instances :class :workflow/Process` + filter terminal states.\n\nHOW: `:workflow` (optional) restricts to one workflow definition's processes.  Without it, returns active processes across ALL workflows.  Returns `{:workflow <ident-or-nil> :processes [<process-entity-map>...]}`.\n\nORDER: leaf-call.\n\nCOMBINATION: pairs with `sandbar.workflow.process-state` (drill into one) + `sandbar.workflow.transition` (advance one)."
     :inputSchema {:type "object"
-                  :properties {:workflow {:type "string" :description "Optional workflow ident"}}
+                  :properties {:workflow {:type "string" :description "Optional workflow ident to filter by"}}
                   :required []}
     :handler workflow-active-processes-handler}
 
-   ;; Validation service
+   ;; Validation service — workflow-backed long-running validation
    {:name "sandbar.validation.start"
-    :title "Start a validation run"
-    :description "Begin validating all instances of a class as a tracked workflow."
+    :title "Start a workflow-backed validation run against all instances of a class"
+    :description "WHICH: begins a validation workflow — a tracked, cancellable, long-running process that validates every instance of `:class` against its declared constraints.  Returns a validation-id (workflow process eid) used to manage the run.\n\nWHEN: use for LARGE class populations where synchronous validation (`sandbar.class.validate-all-instances`) would block too long or where cancellation / history is needed.  Workflow-backed: cancellable mid-run, retriable on failure, history preserved.  When NOT to use: (a) small class population — `sandbar.class.validate-all-instances` is synchronous and simpler; (b) single-entity proposed-slot-map check — `sandbar.entity.validate`.\n\nHOW: `:class` is the target class ident.  Returns `{:validation <process-entity>}` with the eid in `:db/id`.\n\nORDER: typical sequence — `sandbar.validation.start` (this verb; create + queue) → `sandbar.validation.run :validation-id <eid>` (execute) → `sandbar.validation.results :validation-id <eid>` (read result).  Mid-flight: `sandbar.validation.cancel` to abort.\n\nCOMBINATION: pairs with `sandbar.validation.run` (execute), `.cancel` (abort), `.retry` (re-run on failure), `.results` (read), `.history` (recent runs)."
     :inputSchema (one-required class-arg-schema [:class])
     :handler validation-start-handler}
    {:name "sandbar.validation.run"
-    :title "Run a queued validation"
-    :description "Execute a previously-started validation."
-    :inputSchema (one-required {:validation-id {:type "integer"}} [:validation-id])
+    :title "Execute a previously-started (queued) validation run"
+    :description "WHICH: executes a validation workflow process that was previously queued via `sandbar.validation.start`.  Advances the process through its state machine (queued → running → terminal).\n\nWHEN: use after `sandbar.validation.start` to actually run the queued validation.  The start-then-run two-step lets consumers create-and-queue many validations and execute them later (rate-limiting, scheduling, batch sequencing).  When NOT to use: (a) you haven't created the validation yet — `sandbar.validation.start` first.\n\nHOW: `:validation-id` is the numeric process eid returned by `start`.  Returns `{:result <validation-report>}`.\n\nORDER: PREREQUISITE — `sandbar.validation.start` to obtain the validation-id.\n\nCOMBINATION: pairs with `.cancel` (abort mid-run) + `.results` (post-run report read)."
+    :inputSchema (one-required {:validation-id {:type "integer" :description "Validation process eid (from .start return)"}} [:validation-id])
     :handler validation-run-handler}
    {:name "sandbar.validation.cancel"
-    :title "Cancel a validation"
-    :description "Cancel an in-flight validation run."
-    :inputSchema (one-required {:validation-id {:type "integer"}} [:validation-id])
+    :title "Cancel an in-flight validation run"
+    :description "WHICH: cancels a running validation workflow — transitions the process to a `:workflow/terminal-kind :cancel` terminal state.\n\nWHEN: use to abort a long-running validation that's no longer needed or that's running against stale data.  When NOT to use: (a) the validation already finished — no-op (or rejected); (b) you want to RETRY after failure — `sandbar.validation.retry`.\n\nHOW: `:validation-id` is the numeric process eid.  Returns `{:cancelled <result>}`.\n\nORDER: only meaningful for running processes (use `sandbar.workflow.process-state` to confirm state before cancelling).\n\nCOMBINATION: pairs with `sandbar.workflow.process-state` (confirm in-flight) and `sandbar.validation.history` (audit cancelled runs).  Cancellation is workflow-substrate-defined per `decisions/sandbar_workflow_cancellation_modeled_as_terminal_kind_on_states_2026_05_12.md`."
+    :inputSchema (one-required {:validation-id {:type "integer" :description "Validation process eid"}} [:validation-id])
     :handler validation-cancel-handler}
    {:name "sandbar.validation.retry"
-    :title "Retry a validation"
-    :description "Re-run a failed validation."
-    :inputSchema (one-required {:validation-id {:type "integer"}} [:validation-id])
+    :title "Re-run a previously-failed validation"
+    :description "WHICH: re-executes a validation workflow that previously reached a `:failure` terminal state.  Useful when the failure was due to transient causes (e.g., stale instances now corrected).\n\nWHEN: use after a validation failed and you want to re-run against the (presumably now-valid) instance set.  When NOT to use: (a) the original run succeeded — no-op; (b) you want a FRESH validation — `sandbar.validation.start` (creates a new run).\n\nHOW: `:validation-id` is the numeric process eid of the failed run.  Returns `{:retried <result>}`.\n\nORDER: prerequisite — the validation must be in a failed terminal state.\n\nCOMBINATION: pairs with `.results` (compare retry results to original failure) and `.history` (audit retry chains)."
+    :inputSchema (one-required {:validation-id {:type "integer" :description "Validation process eid (must be in failed terminal state)"}} [:validation-id])
     :handler validation-retry-handler}
    {:name "sandbar.validation.results"
-    :title "Get validation results"
-    :description "Fetch the results of a completed validation run."
-    :inputSchema (one-required {:validation-id {:type "integer"}} [:validation-id])
+    :title "Fetch the report from a completed validation run"
+    :description "WHICH: returns the validation report for a completed run — per-entity validation outcomes (valid / errors).\n\nWHEN: use to read the result of a `sandbar.validation.run` after it completes (or to check on a still-running process — partial results may be available).  When NOT to use: (a) you want the high-level state only — `sandbar.workflow.process-state`; (b) you want history of MULTIPLE runs — `sandbar.validation.history`.\n\nHOW: `:validation-id` is the numeric process eid.  Returns `{:results <report>}`.\n\nORDER: post-`sandbar.validation.run`.  Calling on an unfinished process returns partial results.\n\nCOMBINATION: pairs with `sandbar.entity.update` (after reading errors, fix and update affected entities)."
+    :inputSchema (one-required {:validation-id {:type "integer" :description "Validation process eid"}} [:validation-id])
     :handler validation-results-handler}
    {:name "sandbar.validation.history"
-    :title "Validation history"
-    :description "Recent validation runs (all classes or filtered by `:class`)."
+    :title "Recent validation runs (all classes or filtered)"
+    :description "WHICH: returns recent validation workflow runs — class, start time, status, terminal-kind.  Optional `:class` filter restricts to one class's history.\n\nWHEN: use for substrate-health audits — has class X been validated recently?  Were there failures?  When NOT to use: (a) you want one specific run's results — `sandbar.validation.results`; (b) you want all active runs across the substrate — `sandbar.workflow.active-processes :workflow :validation/Workflow` (workflow-substrate query).\n\nHOW: `:class` (optional) is the class-ident filter.  Returns `{:class <ident-or-nil> :history [<run-record>...]}`.\n\nORDER: leaf-call.\n\nCOMBINATION: pairs with `sandbar.validation.results` (drill into one) and `sandbar.workflow.process-history` (full transition log for one run)."
     :inputSchema {:type "object"
                   :properties (merge class-arg-schema {})
                   :required []}
     :handler validation-history-handler}
 
-   ;; Codec + project-graph operations (Stage F.3b)
+   ;; Codec + projection operations (Stage F.3b)
    {:name "sandbar.codec.list"
-    :title "List registered codecs"
-    :description "Return the set of codecs registered with the Sandbar codec mediator (format keyword + supported MIME types).  Per codec arc Stage F.3b."
+    :title "List registered codecs (wire-format mediator inventory)"
+    :description "WHICH: returns the set of codecs currently registered with the Sandbar codec mediator — each codec entry has a format keyword (e.g. `:codec/markdown`), supported MIME types, and (optionally) the classes it supports.\n\nWHEN: use to discover what wire formats Sandbar can parse / emit.  Foundational for codec-driven entity construction (`sandbar.entity.create` with `:format` + `:source`) and for projection/ingestion (`sandbar.project.export` / `.import` choose codecs per class's `:dt/native-codec`).  When NOT to use: (a) you want a specific class's declared native codec — `sandbar.class.describe` and read `:dt/native-codec`; (b) you want to register a NEW codec — not exposed via MCP; programmatic Clojure call against `sandbar.codec`.\n\nHOW: no arguments.  Returns `{:codecs [<codec-info>...]}`.\n\nORDER: foundational discovery.\n\nCOMBINATION: pairs with `sandbar.entity.create` (use `:format` + `:source` opts with one of the listed codec keywords) and `sandbar.project.export` / `.import` (codecs underpin the bidirectional projection).  Per codec arc Stage F.3b."
     :inputSchema {:type "object" :properties {} :required []}
     :handler codec-list-handler}
    {:name "sandbar.project.export"
-    :title "Project entities to filesystem hierarchy"
-    :description "Project mm/Memory instances to a filesystem hierarchy at `:to` via sandbar.projection.  Each entity emits as native representation per its class's `:dt/native-codec`.  Anderson de.setf.rdf:project-graph lineage per the codec ADR §1.1.  Optional `:filter` spec enables partition flexibility for hybrid FS/DB experimentation (per ideas/sandbar_project_export_filtering_for_hybrid_backend_experimentation_2026_05_13.md) — keys: `:class` (single ident), `:classes` (array), `:tree-filter` (rel-path prefix)."
+    :title "Project entities from DB to a filesystem hierarchy via native-format codecs"
+    :description "WHICH: projects entities from the Datomic substrate to a filesystem hierarchy under `:to` — each entity emits as a file in its class's `:dt/native-codec` format.  The bidirectional half of the Anderson `de.setf.rdf:project-graph` boundary-layer primitive (see `doc/concepts/projection.md`).  Bidirectionally inverse of `sandbar.project.import`.\n\nWHEN: use to materialize the current substrate state as a filesystem hierarchy — for backup, git versioning, manual editing, or hybrid FS/DB experimentation.  The filesystem format is the CANONICAL ground-truth; any backend must comply with it.  When NOT to use: (a) you want a single entity's representation — `sandbar.entity.find` returns the entity-map directly; (b) you want a subset — use `:filter` opt; (c) you want to read FROM filesystem — `sandbar.project.import`.\n\nHOW: `:to` is the output directory path (REQUIRED).  `:filter` (optional) restricts which entities project; keys: `:class` (single class-ident — only that class's instances), `:classes` (array — multiple classes), `:tree-filter` (string — rel-path prefix restriction).  Returns `{:to :filter :exported <count> :files [<rel-path>...]}`.\n\nORDER: idempotent; safe to run repeatedly (overwrites).  For round-trip verification, follow with `sandbar.project.import` against the output directory and compare results.\n\nCOMBINATION: inverse of `sandbar.project.import`.  For hybrid-backend experimentation, use `:filter` to project subsets selectively (per `ideas/sandbar_project_export_filtering_for_hybrid_backend_experimentation_2026_05_13.md`).  Codec selection driven by `sandbar.class.describe` `:dt/native-codec` per class."
     :inputSchema (one-required
                    {:to     {:type "string" :description "Output directory path"}
                     :filter {:type "object"
@@ -1013,8 +1014,8 @@
                    [:to])
     :handler project-export-handler}
    {:name "sandbar.project.import"
-    :title "Ingest entities from filesystem hierarchy"
-    :description "Walk `:from` directory; parse each .md file via sandbar.codec.markdown; return the entity-spec maps.  Inverse of project.export.  Optional `:filter` spec same shape as project.export."
+    :title "Ingest entities from a filesystem hierarchy (inverse of project.export)"
+    :description "WHICH: walks the `:from` directory, parses each file via the appropriate codec (per file extension / declared format), and returns the parsed entity-spec maps.  The ingestion half of the Anderson `de.setf.rdf:project-graph` boundary-layer primitive — inverse of `sandbar.project.export`.\n\nWHEN: use to load filesystem-canonical entity state into the substrate — restore from a project-export, ingest external content, or round-trip-validate after editing files manually.  When NOT to use: (a) you want to create entities programmatically — `sandbar.entity.create`; (b) you want to write TO filesystem — `sandbar.project.export`.\n\nHOW: `:from` is the input directory path (REQUIRED).  `:filter` (optional) restricts which entities ingest; same shape as `sandbar.project.export`'s filter — `:class`, `:classes`, `:tree-filter`.  Returns `{:from :filter :imported <count> :entities [<entity-summary>...]}`.\n\nORDER: idempotent on the same filesystem state.  Note: ingestion validates against schema; failures raise.  Pre-check schema compatibility via `sandbar.entity.validate` for sample inputs if uncertain.\n\nCOMBINATION: inverse of `sandbar.project.export`.  Round-trip property: `ingest-graph(project-graph(entities)) = entities` — verify via dual export + import + comparison.  Codec selection by file extension; registered codecs visible via `sandbar.codec.list`."
     :inputSchema (one-required
                    {:from   {:type "string" :description "Input directory path"}
                     :filter {:type "object"
