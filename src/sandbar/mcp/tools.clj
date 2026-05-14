@@ -1173,6 +1173,20 @@
                                       :isError true})
             (envelope/jsonrpc-result id
                                      {:content (result->content result)})))
+        ;; Catch :pre / assertion-error failures separately from Exception.
+        ;; AssertionError extends java.lang.Error (NOT Exception), so without
+        ;; this explicit catch, assertion failures escape the MCP envelope
+        ;; entirely — the codex F-MF-3 release-blocker.  Sibling catch
+        ;; (rather than (catch Throwable ...)) preserves JVM-error
+        ;; propagation discipline: OutOfMemoryError / StackOverflowError /
+        ;; etc. should not be masked as MCP -32603.
+        ;; See decisions/sandbar_entity_ref_abstraction_2026_05_14.md §D-3.3.
+        (catch AssertionError e
+          (log/error e :MCP/precondition-failed {:tool tool-name})
+          (envelope/jsonrpc-error id -32603
+                                  "Internal-invariant precondition failed at MCP boundary"
+                                  {:tool tool-name
+                                   :assertion (.getMessage e)}))
         (catch Exception e
           (log/error e :MCP/tools-call-error {:tool tool-name})
           (envelope/jsonrpc-error id -32603
