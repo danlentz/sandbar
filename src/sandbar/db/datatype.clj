@@ -776,6 +776,56 @@
 ;; control the traversal step.
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
+(defn library-card-of
+  "Multi-axis typed-edge neighborhood view of an entity.
+
+  `axis-specs` is a vec of axis declarations.  Each axis:
+
+    {:name       <string-or-keyword>     ; label for this axis in result
+     :direction  :forward | :inverse     ; outbound from entity / inbound to entity
+     :predicates [<pred-ident>...]       ; restrict to these typed-edge predicates
+                                          ; (or omit for no restriction)
+     :target-type <class-ident>           ; restrict :forward axes by target's class
+     :source-type <class-ident>           ; restrict :inverse axes by source's class
+     :limit      <int>                    ; cap per-axis result count (default 0 = no cap)}
+
+  Returns:
+
+    {:entity <entity-map>
+     :axes   {<axis-name> [<edge-record>...]  ...}}
+
+  Each edge-record is the same shape as `inbound-edges-of` / `outbound-edges-of`
+  returns: `{:predicate <pred-ident> :target/source <entity-map>}` (target for
+  :forward axes; source for :inverse axes).
+
+  Substrate-quality: class-agnostic; axis-specs are caller-supplied.  No
+  hardcoded knowledge of any domain class's predicate vocabulary.  Per
+  fulltext arc Phase O scope-narrowed to library-card-only per
+  `decisions/sandbar_phase_o_substrate_quality_scope_library_card_only_2026_05_14.md`."
+  [entity-ident axis-specs]
+  (let [entity (db/entity entity-ident)]
+    {:entity entity
+     :axes (reduce (fn [acc {:keys [name direction predicates target-type source-type limit]
+                             :or   {limit 0}}]
+                     (let [opts (cond-> {}
+                                  predicates (assoc :predicate predicates)
+                                  target-type (assoc :target-type target-type)
+                                  source-type (assoc :source-type source-type))
+                           edges (case direction
+                                   :forward
+                                   (outbound-edges-of entity-ident
+                                                       (dissoc opts :source-type))
+                                   :inverse
+                                   (inbound-edges-of entity-ident
+                                                      (dissoc opts :target-type))
+                                   ;; Default to :forward if unspecified
+                                   (outbound-edges-of entity-ident
+                                                       (dissoc opts :source-type)))
+                           limited (if (zero? limit) edges (take limit edges))]
+                       (assoc acc name (vec limited))))
+                   {}
+                   axis-specs)}))
+
 (defn siblings-of
   "Same-directory peers of `entity-ident` via `path-slot` — entities
   whose `path-slot` value shares the same directory prefix as the

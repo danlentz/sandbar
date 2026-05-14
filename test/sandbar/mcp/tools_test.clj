@@ -107,7 +107,15 @@
 
   (testing "navigation path-via verb (Stage P-6 — fulltext arc Stage P)"
     (let [names (set (map :name tools/verb-catalog))]
-      (is (contains? names "sandbar.navigate.path-via")))))
+      (is (contains? names "sandbar.navigate.path-via"))))
+
+  (testing "navigation siblings-of verb (Stage 22 — fulltext arc Phase N)"
+    (let [names (set (map :name tools/verb-catalog))]
+      (is (contains? names "sandbar.navigate.siblings-of"))))
+
+  (testing "orientation library-card verb (Phase O — fulltext arc)"
+    (let [names (set (map :name tools/verb-catalog))]
+      (is (contains? names "sandbar.orient.library-card")))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Aggregation verb input-schema + handler-error tests (Stage 14)

@@ -1,0 +1,81 @@
+(ns sandbar.orient
+  "Sandbar Orientation — entity-neighborhood + session-state views.
+
+  Phase O of the comprehensive memory-model MCP arc per
+  plans/sandbar_fulltext_search_substrate_arc_2026_05_13.md.
+
+  Per scope-narrowing ADR
+  decisions/sandbar_phase_o_substrate_quality_scope_library_card_only_2026_05_14.md,
+  Sandbar substrate ships `library-card` as the single substrate-correct
+  orientation verb.  The corpus-specific orientation surfaces (arc-forest /
+  ready-queue / session-state / index-snapshot) live at the corpus
+  orchestration layer where corpus-domain knowledge (`:mm.memory/memory-type
+  :plan`, blocker conventions, MEMORY.md format, git inspection) belongs.
+
+  This namespace consumes `sandbar.db.datatype/library-card-of` and projects
+  the result to a JSON / EDN-friendly shape across protocol boundaries.
+
+  Substrate-quality discipline preserved: class-agnostic; axis-specs are
+  caller-supplied."
+  (:require [sandbar.db.datatype :as dt]))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Entity projection helper (mirror navigate.path / navigate.siblings)
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defn- entity-projection
+  "Project a Datomic entity-map to a plain map for serialization.
+   Note: Datomic entity-iteration does NOT include `:db/id` in the
+   key-seq; we explicitly add it."
+  [entity]
+  (when entity
+    (let [base (into {}
+                     (filter (fn [[k _v]]
+                               (or (= :db/ident k)
+                                   (and (keyword? k) (some? (namespace k))))))
+                     entity)]
+      (cond-> base
+        (:db/id entity) (assoc :db/id (:db/id entity))))))
+
+(defn- project-edge
+  "Project an edge-record's `:target` or `:source` to a plain entity-map.
+   Preserves the `:predicate` keyword as-is."
+  [edge]
+  (cond-> edge
+    (:target edge) (update :target entity-projection)
+    (:source edge) (update :source entity-projection)))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; library-card — multi-axis typed-edge neighborhood view
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defn library-card
+  "Return a multi-axis typed-edge neighborhood view of `:entity`.
+
+  Required opts:
+    :entity     — entity ident (keyword) or eid (long)
+    :axes       — vec of axis-spec maps; each:
+                    {:name       <string-or-keyword>     ; label for the axis
+                     :direction  :forward | :inverse     ; outbound / inbound
+                     :predicates [<pred-ident>...]       ; optional predicate restriction
+                     :target-type <class-ident>           ; optional for :forward axes
+                     :source-type <class-ident>           ; optional for :inverse axes
+                     :limit      <int>}                   ; optional per-axis cap
+
+  Returns:
+    {:entity <entity-map>
+     :axes   {<axis-name> [{:predicate ... :target/source <entity-map>} ...] ...}}
+
+  Substrate-quality: class-agnostic; axis-specs are caller-supplied.  No
+  hardcoded knowledge of any domain class's predicate vocabulary.  Per
+  fulltext arc Phase O of plans/sandbar_fulltext_search_substrate_arc_2026_05_13.md."
+  [{:keys [entity axes]}]
+  {:pre [(some? entity)
+         (sequential? axes)]}
+  (let [{raw-entity :entity raw-axes :axes}
+        (dt/library-card-of entity axes)]
+    {:entity (entity-projection raw-entity)
+     :axes   (reduce-kv (fn [acc axis-name edges]
+                          (assoc acc axis-name (mapv project-edge edges)))
+                        {}
+                        raw-axes)}))

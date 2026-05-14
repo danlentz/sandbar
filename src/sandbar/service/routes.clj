@@ -8,6 +8,7 @@
             [sandbar.api.event            :as event]
             [sandbar.api.job              :as job-api]
             [sandbar.api.navigate         :as navigate-api]
+            [sandbar.api.orient           :as orient-api]
             [sandbar.api.status           :as status]
             [sandbar.api.store            :as store]
             [sandbar.api.workflow         :as workflow-api]
@@ -145,6 +146,11 @@
        ["/navigate"
         ["/path"     {:get navigate-api/path-via}]
         ["/siblings" {:get navigate-api/siblings-of}]]
+
+       ;; Orientation API (Phase O — fulltext arc; library-card only)
+       ;; Per decisions/sandbar_phase_o_substrate_quality_scope_library_card_only_2026_05_14.md.
+       ["/orient"
+        ["/library-card" {:get orient-api/library-card}]]
        ]
 
       ;; MCP (Model Context Protocol) endpoint — per

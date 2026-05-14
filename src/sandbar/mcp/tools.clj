@@ -41,6 +41,7 @@
             [sandbar.codec              :as codec]
             [sandbar.navigate.path      :as nav-path]
             [sandbar.navigate.siblings  :as nav-siblings]
+            [sandbar.orient             :as orient]
             [sandbar.projection      :as pg]
             [sandbar.db.datatype        :as dt]
             [sandbar.db.datomic         :as db]
@@ -515,6 +516,50 @@
 ;; plans/sandbar_fulltext_search_substrate_arc_2026_05_13.md.
 ;; MCP boundary wrapper around sandbar.navigate.path/path-via — the
 ;; path-grammar walker primitive.
+
+(defn- ->axis-spec
+  "Coerce a JSON-shaped axis-spec to the Clojure-shape expected by
+   sandbar.orient/library-card.  Each axis arrives with string keys
+   from JSON; predicate idents arrive as strings (':cites' or 'cites')."
+  [m]
+  (when (map? m)
+    (let [g (fn [k] (or (get m (name k)) (get m k)))
+          preds (g :predicates)
+          target-type (g :target-type)
+          source-type (g :source-type)]
+      (cond-> {}
+        (g :name)
+        (assoc :name (g :name))
+
+        (g :direction)
+        (assoc :direction (keyword (g :direction)))
+
+        preds
+        (assoc :predicates
+               (if (sequential? preds)
+                 (mapv ->ident preds)
+                 [(->ident preds)]))
+
+        target-type
+        (assoc :target-type (->ident target-type))
+
+        source-type
+        (assoc :source-type (->ident source-type))
+
+        (g :limit)
+        (assoc :limit (g :limit))))))
+
+(defn- orient-library-card-handler [args]
+  (let [entity-arg (or (get args "entity") (get args :entity))
+        axes-arg   (or (get args "axes") (get args :axes))]
+    (when (nil? entity-arg)
+      (throw (ex-info "Missing required argument: entity" {:args args})))
+    (when-not (sequential? axes-arg)
+      (throw (ex-info "Missing or non-sequential argument: axes (must be array of axis-spec objects)"
+                      {:args args})))
+    (let [entity-ident (->ident entity-arg)
+          axes (mapv ->axis-spec axes-arg)]
+      (orient/library-card {:entity entity-ident :axes axes}))))
 
 (defn- navigate-siblings-of-handler [args]
   (let [entity-arg    (or (get args "entity") (get args :entity))
@@ -1016,6 +1061,21 @@
                                     :description "REQUIRED for :recency / :freshness — temporal-axis slot ident (e.g. ':mm.memory/last-touched')"}}
                    [:class :rank-by])
     :handler aggregate-rank-by-handler}
+
+   ;; Orientation — library-card (Phase O — fulltext arc; substrate-quality scope per
+   ;; corpus decisions/sandbar_phase_o_substrate_quality_scope_library_card_only_2026_05_14.md)
+   {:name "sandbar.orient.library-card"
+    :title "Multi-axis typed-edge neighborhood view of an entity"
+    :description "WHICH: returns a labeled, multi-axis view of an entity's typed-edge neighborhood.  Each `:axis` is a labeled subset of inbound or outbound edges optionally filtered by predicate-set and target/source-type.  Substrate-correct shape of the corpus's 'library-card' pattern — Sandbar ships the composition primitive; the consumer supplies the semantics (which axes mean what).\n\nWHEN: use when an AI client / consumer needs a structured overview of an entity — 'show me everything connected to this seed, broken down by relationship type'.  Especially useful for AI-orientation flows (load an unfamiliar entity; see its typed-edge surface across 10 axes at once).  When NOT to use: (a) single-predicate edge enumeration — use `sandbar.navigate.outbound` or `.inbound` directly (one call, simpler); (b) reachability across multiple hops — use `sandbar.navigate.walk` or `.path-via` instead; (c) fulltext-relevance ranking of the neighborhood — combine search with this verb's output downstream.\n\nHOW: `:entity` is the anchor entity (ident or eid).  `:axes` is a JSON array of axis-spec objects; each:\n  - `name` (REQUIRED) — string or keyword label for the axis in the result (e.g. \"cited-by-decisions\")\n  - `direction` (REQUIRED) — \"forward\" (outbound from entity) or \"inverse\" (inbound to entity)\n  - `predicates` (optional) — array of predicate-ident strings to restrict to (e.g. [\":cites\", \":evidences\"]); omit for no restriction\n  - `target-type` (optional, for :forward axes) — class-ident string restricting target-instance-of\n  - `source-type` (optional, for :inverse axes) — class-ident string restricting source-instance-of\n  - `limit` (optional) — per-axis edge cap; default 0 = no cap\nThe substrate is CLASS-AGNOSTIC; predicate-vocabulary + axis-labels are caller-supplied.  No hardcoded knowledge of any domain class's predicate vocabulary.\n\nORDER: prerequisite — the caller must know the predicate vocabulary applicable to the entity's class.  Discover via `sandbar.navigate.outbound` (one-shot peek at outbound edges) or `sandbar.class.slots` (declared slots on the entity's class) FIRST.  No other ordering dependencies.\n\nCOMBINATION: composes with `sandbar.navigate.inbound` / `.outbound` (use them to DISCOVER predicate vocab first, then author library-card axis-specs covering them).  For ranked subsets within an axis, post-rank the results via `sandbar.aggregate.rank-by` (using the axis-result eids as the candidate set).  For path-shaped neighborhoods (recursive / Kleene), use `sandbar.navigate.path-via` instead — library-card is one-hop-per-axis by design.\n\nResult: `{:entity <entity-map> :axes {<axis-name> [{:predicate ... :target/source <entity-map>}...] ...}}`.  Per Phase O of plans/sandbar_fulltext_search_substrate_arc_2026_05_13.md."
+    :inputSchema (one-required
+                   {:entity {:type "string"
+                             :description "Anchor entity ident (e.g. ':decisions/foo') or eid"}
+                    :axes   {:type "array"
+                             :items {:type "object"
+                                     :description "Axis-spec: {name, direction:'forward'|'inverse', predicates?, target-type?, source-type?, limit?}"}
+                             :description "Vec of axis-spec objects; one labeled subset per axis"}}
+                   [:entity :axes])
+    :handler orient-library-card-handler}
 
    ;; Navigation — siblings-of (Stage 22 — fulltext arc Phase N)
    {:name "sandbar.navigate.siblings-of"
