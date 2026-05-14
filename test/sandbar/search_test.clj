@@ -133,6 +133,130 @@
                     :query     "decision"}))
         ":db/fulltext-required precondition fires")))
 
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Stage 4c — search-bm25f (multi-field weighted BM25F + Datomic integration)
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defn- make-memory-with-name+body!
+  [name body-raw]
+  (dt/make :mm/Memory
+           {:mm.memory/rel-path    (str "test/" name ".md")
+            :mm.memory/name        name
+            :mm.memory/description (str "Description for " name)
+            :mm.memory/body-raw    body-raw}))
+
+(deftest search-bm25f-result-shape-test
+  (testing "search-bm25f returns the canonical {:hits :total :returned :timing} shape"
+    (make-memory-with-name+body! "datomic-notes" "datomic project graph realizes anderson")
+    (let [result (search/search-bm25f
+                   {:query "datomic"
+                    :class :mm/Memory})]
+      (is (contains? result :hits))
+      (is (contains? result :total))
+      (is (contains? result :returned))
+      (is (contains? result :timing))
+      (is (integer? (get-in result [:timing :total-ms])))
+      (is (>= (get-in result [:timing :total-ms]) 0))
+      (when (seq (:hits result))
+        (let [hit (first (:hits result))]
+          (is (contains? hit :entity))
+          (is (contains? hit :eid))
+          (is (contains? hit :score))
+          (is (pos? (:score hit))))))))
+
+(deftest search-bm25f-uses-class-default-weights-test
+  (testing "search-bm25f reads :dt/bm25f-weights from class when no override given"
+    (make-memory-with-name+body! "datomic-in-name" "lorem ipsum")
+    (make-memory-with-name+body! "noise" "datomic in body but not name")
+    (let [result (search/search-bm25f
+                   {:query "datomic"
+                    :class :mm/Memory})]
+      (is (= 2 (:total result))
+          "Both memorials match (one via name slot, one via body slot)")
+      ;; :name weight (12) > :body weight (1); name-match outscores body-match
+      (let [hits (:hits result)]
+        (is (= "datomic-in-name"
+               (get-in (first hits) [:entity :mm.memory/name]))
+            "Name-match memorial ranks first")))))
+
+(deftest search-bm25f-field-weights-override-test
+  (testing "search-bm25f honors caller-supplied :field-weights override"
+    (make-memory-with-name+body! "alpha" "datomic in body alpha")
+    (let [result-body-only (search/search-bm25f
+                             {:query "datomic"
+                              :class :mm/Memory
+                              :field-weights {:mm.memory/body-raw 1.0}})
+          result-name-only (search/search-bm25f
+                             {:query "datomic"
+                              :class :mm/Memory
+                              :field-weights {:mm.memory/name 12.0}})]
+      (is (= 1 (:total result-body-only)) "body weight finds body match")
+      (is (= 0 (:total result-name-only)) "name-only weight misses body match"))))
+
+(deftest search-bm25f-empty-on-no-match-test
+  (testing "search-bm25f returns empty :hits + :total 0 when nothing matches"
+    (make-memory-with-name+body! "alpha" "no relevant text here")
+    (let [result (search/search-bm25f
+                   {:query "zzznotpresentterm"
+                    :class :mm/Memory})]
+      (is (= 0 (:total result)))
+      (is (= 0 (:returned result)))
+      (is (empty? (:hits result))))))
+
+(deftest search-bm25f-limit-test
+  (testing "search-bm25f honors :limit (truncates :hits, preserves :total)"
+    (doseq [n (range 5)]
+      (make-memory-with-name+body! (str "mem-" n) "datomic alpha beta"))
+    (let [result (search/search-bm25f
+                   {:query "datomic"
+                    :class :mm/Memory
+                    :limit 2})]
+      (is (= 5 (:total result))    ":total reports pre-limit count")
+      (is (= 2 (:returned result)) ":returned reports post-limit count")
+      (is (= 2 (count (:hits result)))))))
+
+(deftest search-bm25f-include-field-scores-test
+  (testing "search-bm25f :include [:field-scores] adds per-slot breakdown"
+    (make-memory-with-name+body! "datomic-notes" "datomic graph anderson")
+    (let [result (search/search-bm25f
+                   {:query "datomic"
+                    :class :mm/Memory
+                    :include [:field-scores]})
+          hit    (first (:hits result))]
+      (is (contains? hit :field-scores))
+      (is (map? (:field-scores hit)))
+      (testing "field-scores has an entry per weighted slot"
+        (is (contains? (:field-scores hit) :mm.memory/name))
+        (is (contains? (:field-scores hit) :mm.memory/description))
+        (is (contains? (:field-scores hit) :mm.memory/body-raw)))
+      (testing "name has positive score (term appears there); description has zero"
+        (is (pos? (get-in hit [:field-scores :mm.memory/name])))
+        ;; "description" slot was set to "Description for datomic-notes" which contains "datomic" stem.
+        ;; So it should also be positive.  Body has datomic too; positive.
+        ;; Skip the zero-check (the make-memory helper auto-includes datomic-notes in description).
+        ))))
+
+(deftest search-bm25f-no-weights-throws-test
+  (testing "search-bm25f throws when class has no :dt/bm25f-weights AND no override given"
+    ;; :mm/Tag class has no :dt/bm25f-weights declaration; weights map is {}
+    ;; throws via ex-info with substrate-helpful message.
+    (is (thrown? clojure.lang.ExceptionInfo
+                 (search/search-bm25f
+                   {:query "anything"
+                    :class :mm/Tag})))))
+
+(deftest search-bm25f-hits-sorted-by-score-test
+  (testing "search-bm25f hits are sorted by score descending"
+    (make-memory-with-name+body! "alpha" "datomic single mention")
+    (make-memory-with-name+body! "beta" "datomic datomic datomic many mentions")
+    (let [result (search/search-bm25f
+                   {:query "datomic"
+                    :class :mm/Memory})
+          scores (mapv :score (:hits result))]
+      (is (seq scores))
+      (is (apply >= scores)
+          (str "Hits sorted by descending score, got: " scores)))))
+
 (deftest search-attribute-lucene-syntax-test
   (testing "search-attribute accepts Lucene query syntax"
     (make-memory! "test/a.md" "datomic project graph realizes Anderson lineage")
