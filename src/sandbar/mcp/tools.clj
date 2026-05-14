@@ -581,7 +581,7 @@
     (when-not (sequential? axes-arg)
       (throw (ex-info "Missing or non-sequential argument: axes (must be array of axis-spec objects)"
                       {:args args})))
-    (let [entity-ident (->ident entity-arg)
+    (let [entity-ident (eref/resolve-ident entity-arg)
           axes (mapv ->axis-spec axes-arg)]
       (orient/library-card {:entity entity-ident :axes axes}))))
 
@@ -593,8 +593,8 @@
       (throw (ex-info "Missing required argument: entity" {:args args})))
     (when (nil? path-slot-arg)
       (throw (ex-info "Missing required argument: path-slot" {:args args})))
-    (let [entity-ident (->ident entity-arg)
-          path-slot    (->ident path-slot-arg)
+    (let [entity-ident (eref/resolve-ident entity-arg)
+          path-slot    (eref/resolve-ident path-slot-arg)
           opts (cond-> {:entity entity-ident :path-slot path-slot}
                  (some? limit) (assoc :limit limit))]
       (nav-siblings/siblings-of opts))))
@@ -608,7 +608,7 @@
       (throw (ex-info "Missing required argument: from" {:args args})))
     (when (nil? via-arg)
       (throw (ex-info "Missing required argument: via" {:args args})))
-    (let [from-ident (->ident from-arg)
+    (let [from-ident (eref/resolve-ident from-arg)
           include-set (when (sequential? include)
                         (set (map keyword include)))
           opts (cond-> {:from from-ident :via via-arg}
