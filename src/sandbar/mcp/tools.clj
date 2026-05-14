@@ -455,7 +455,12 @@
   (let [w       (workflow-arg args)
         subject (or (get args "subject") (get args :subject))
         data    (or (get args "data") (get args :data) {})]
-    (let [process (workflow/start-process! w subject data)]
+    ;; workflow/start-process! signature: [workflow subject & {:keys [data]}]
+    ;; — :data is a KWARG, not positional.  Prior call `(start-process! w
+    ;; subject data)` placed data in the rest-seq which never matched the
+    ;; :data destructure, so user-supplied data was silently dropped
+    ;; (ultrareview #5 at tools.clj:454).
+    (let [process (workflow/start-process! w subject :data data)]
       {:process-id (str (:db/id process))
        :workflow   (str w)
        :state      (->ident-str (workflow/get-current-state process))})))
@@ -509,25 +514,44 @@
       (throw (ex-info "Missing required argument: class" {:args args})))
     {:validation (validation/start-validation! class-ident)}))
 
-(defn- validation-run-handler [args]
+;; validation/{run,cancel,retry,get-validation-results}! all expect a
+;; PROCESS ENTITY (a `:workflow/Process` map), not a raw eid.  Prior
+;; handlers passed `validation-id` (eid as string or number) directly,
+;; which produced silent failures or wrong-shape errors deep in the
+;; validation service.  Per ultrareview #9 at tools.clj:512 — resolve
+;; eid → entity at the MCP boundary using `workflow/find-process`.
+;;
+;; The eid coercion pattern matches workflow-transition-handler above.
+
+(defn- resolve-validation-process
+  "Coerce the MCP-supplied validation-id (string or number) to a workflow
+   process entity.  Throws when the id is missing or doesn't resolve."
+  [args]
   (let [validation-id (or (get args "validation-id") (get args :validation-id))]
-    (when (nil? validation-id) (throw (ex-info "Missing required argument: validation-id" {:args args})))
-    {:result (validation/run-validation! validation-id)}))
+    (when (nil? validation-id)
+      (throw (ex-info "Missing required argument: validation-id" {:args args})))
+    (let [eid     (if (number? validation-id) validation-id (Long/parseLong (str validation-id)))
+          process (workflow/find-process eid)]
+      (when (nil? process)
+        (throw (ex-info (str "Validation process not found: " validation-id)
+                        {:validation-id validation-id :eid eid})))
+      process)))
+
+(defn- validation-run-handler [args]
+  (let [process (resolve-validation-process args)]
+    {:result (validation/run-validation! process)}))
 
 (defn- validation-cancel-handler [args]
-  (let [validation-id (or (get args "validation-id") (get args :validation-id))]
-    (when (nil? validation-id) (throw (ex-info "Missing required argument: validation-id" {:args args})))
-    {:cancelled (validation/cancel-validation! validation-id)}))
+  (let [process (resolve-validation-process args)]
+    {:cancelled (validation/cancel-validation! process)}))
 
 (defn- validation-retry-handler [args]
-  (let [validation-id (or (get args "validation-id") (get args :validation-id))]
-    (when (nil? validation-id) (throw (ex-info "Missing required argument: validation-id" {:args args})))
-    {:retried (validation/retry-validation! validation-id)}))
+  (let [process (resolve-validation-process args)]
+    {:retried (validation/retry-validation! process)}))
 
 (defn- validation-results-handler [args]
-  (let [validation-id (or (get args "validation-id") (get args :validation-id))]
-    (when (nil? validation-id) (throw (ex-info "Missing required argument: validation-id" {:args args})))
-    {:results (validation/get-validation-results validation-id)}))
+  (let [process (resolve-validation-process args)]
+    {:results (validation/get-validation-results process)}))
 
 (defn- validation-history-handler [args]
   (let [class-ident (->ident (or (get args "class") (get args :class)))]
@@ -557,7 +581,7 @@
   {:type "object" :properties props :required (mapv name required-keys)})
 
 (def verb-catalog
-  "The stable ~33-verb operational catalog.  Adding a verb is one entry
+  "The stable operational verb catalog.  Adding a verb is one entry
    here + one handler function above + (optionally) a test in
    `test/sandbar/mcp/tools_test.clj`."
   [;; Schema introspection

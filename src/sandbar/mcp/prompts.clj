@@ -80,10 +80,17 @@
      :arguments   []})) ;; Stage C.6.1 derives from workflow input slots
 
 (defn all-workflow-prompts
-  "Walk `dt/all-named-instances-of :workflow/Definition` + emit MCP
-   prompt descriptions for every defined workflow."
+  "Walk every named `:workflow/Definition` entity + emit MCP prompt
+   descriptions.
+
+   Uses `dt/named-entities-of` (returns entity maps, per Q1=B Stage A
+   helpers) — `workflow->prompt-description` reads `:db/ident`,
+   `:dt/name`, `:dt/description`, etc. off each entity.  The prior
+   `dt/all-named-instances-of` returned idents, so the description
+   helper silently produced nil-everywhere descriptions (codex
+   MUST-FIX #2 at prompts.clj:86)."
   []
-  (->> (dt/all-named-instances-of :workflow/Definition)
+  (->> (dt/named-entities-of :workflow/Definition)
        (map workflow->prompt-description)
        (sort-by :name)
        vec))

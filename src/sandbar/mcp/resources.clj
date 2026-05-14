@@ -44,25 +44,32 @@
      :mm/Memory   → mcp://sandbar/dt/Class/mm/Memory
      :user/alice  → mcp://sandbar/dt/User/user/alice
 
-   Wait — the URI shape is <class-ns>/<class-name>/<ident-or-eid>, so
-   for the entity ITSELF the class path comes from dt/class-of.
+   URI shape: <class-ns>/<class-name>/<ident-or-eid>.  The class path
+   comes from `dt/class-ident-of` (explicit return-shape: keyword ident).
 
    Per the metacircular property — :dt/Class is an instance of :dt/Class —
-   for a class entity X, class-of(X) = :dt/Class; for an instance Y of
-   class X, class-of(Y) = X."
+   for a class entity X, class-ident-of(X) = :dt/Class; for an instance Y
+   of class X, class-ident-of(Y) = X.
+
+   Prior bug (codex MUST-FIX #2 + ultrareview #6 at resources.clj:53):
+   used `(or (:db/ident (dt/class-of entity)) :unknown)`.  But
+   `dt/class-of` already returns a keyword ident, and
+   `(:db/ident keyword)` is keyword-as-fn lookup that returns nil →
+   `cls-ident` was always `:unknown`.  Migration to
+   `dt/class-ident-of` makes the return-shape explicit at the call
+   site."
   [entity]
-  (let [cls       (dt/class-of entity)
-        cls-ident (or (:db/ident cls) :unknown)
+  (let [cls-ident    (or (dt/class-ident-of entity) :unknown)
         entity-ident (:db/ident entity)
-        identifier (cond
-                     (and entity-ident (namespace entity-ident))
-                     (str (namespace entity-ident) "/" (name entity-ident))
+        identifier   (cond
+                       (and entity-ident (namespace entity-ident))
+                       (str (namespace entity-ident) "/" (name entity-ident))
 
-                     entity-ident
-                     (name entity-ident)
+                       entity-ident
+                       (name entity-ident)
 
-                     :else
-                     (str (:db/id entity)))]
+                       :else
+                       (str (:db/id entity)))]
     (str uri-scheme "/"
          (namespace cls-ident) "/" (name cls-ident)
          "/" identifier)))
@@ -121,10 +128,14 @@
 
 (defn entity->resource-description
   "Build the MCP resource description map for one entity, used in
-   resources/list responses."
+   resources/list responses.
+
+   Uses `dt/class-ident-of` (returns keyword ident) directly — the
+   prior `(:db/ident (dt/class-of entity))` pattern returned nil
+   because `dt/class-of` already returns an ident, and keyword-as-fn
+   lookup on a keyword for `:db/ident` is a no-op (codex MUST-FIX #2)."
   [entity]
-  (let [cls       (dt/class-of entity)
-        cls-ident (:db/ident cls)
+  (let [cls-ident (dt/class-ident-of entity)
         uri       (entity->uri entity)]
     {:uri         uri
      :name        (entity->resource-name entity)
@@ -141,11 +152,17 @@
 
 (defn handle-list
   "MCP `resources/list` — returns the catalog of named entities as
-   resource descriptions. Stage C.5 returns ALL named instances of
-   :dt/Resource (the metamodel root); subsequent stages add pagination."
+   resource descriptions. Returns ALL named instances of :dt/Resource
+   (the metamodel root); subsequent stages add pagination.
+
+   Uses `dt/named-entities-of` (returns entity maps; explicit return
+   shape per the Q1=B dt/* split) rather than the prior
+   `dt/all-named-instances-of` (returns idents — which then fed into
+   `entity->resource-description` expecting entity maps, producing
+   nil URIs and broken descriptions; codex MUST-FIX #2)."
   [id _params]
   (try
-    (let [resources (->> (dt/all-named-instances-of :dt/Resource)
+    (let [resources (->> (dt/named-entities-of :dt/Resource)
                          (map entity->resource-description)
                          (sort-by :uri)
                          vec)]
@@ -168,19 +185,19 @@
 ;; entities return EDN projection.
 
 (defn- resolve-entity
-  "Look up an entity by parsed URI. Uses dt/* introspection.
+  "Look up an entity by parsed URI.  Uses `dt/find-by-ident` (the
+   Stage-A Q1=B primitive that replaces the prior
+   `dt/all-named-instances-of` + filter-by-ident pattern — the prior
+   shape silently collapsed to nil because the filter tried to read
+   `:db/ident` off idents that ARE the idents already).
 
-   Stage C.5: assumes named entities (entity-ident set). dt/class-of
-   on a keyword ident — Sandbar resolves :db/ident keywords to entities
-   transparently when used as values; but for explicit lookup we need
-   to find the entity by ident. Stage C.5 uses dt/all-named-instances-of
-   then filters; Stage C.5.x can add dt/find-by-ident if it doesn't yet
-   exist (improve-abstraction-not-bypass per discipline)."
-  [{:keys [entity-ident class-ident]}]
+   The `:class-ident` is currently unused — `dt/find-by-ident`
+   resolves the entity directly without needing the class.  Kept in
+   the destructure for future use (e.g., asserting the resolved
+   entity's class matches the URI's class component)."
+  [{:keys [entity-ident _class-ident]}]
   (when entity-ident
-    (->> (dt/all-named-instances-of class-ident)
-         (filter #(= entity-ident (:db/ident %)))
-         first)))
+    (dt/find-by-ident entity-ident)))
 
 (defn- mm-walker
   "Walker for `dt/realize-with` over mm/Memory + mm/Section trees.

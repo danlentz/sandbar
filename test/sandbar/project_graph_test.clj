@@ -1,12 +1,24 @@
 (ns sandbar.project-graph-test
-  "Tests for sandbar.project-graph — Stage D project-graph +
-   ingest-graph primitives.  Uses temp directories for the round-trip
-   write/read cycle."
+  "Tests for sandbar.project-graph — project-graph + ingest-graph
+   primitives.  Uses temp directories for the round-trip write/read
+   cycle.
+
+   Stage C refactor (plans/sandbar_codex_review_remediation_arc_2026_05_13.md):
+   codec.markdown now introspects keyword-typed slots via dt/range-of
+   at runtime (no hardcoded known-class-keyword-slots map), so these
+   tests require a real metamodel — uses tu/make-test-db-fixture to
+   load schema/*.edn including schema/mm.edn."
   (:require [clojure.test          :refer :all]
             [clojure.java.io       :as io]
             [clojure.string        :as str]
             [sandbar.project-graph :as pg]
-            [sandbar.codec.markdown :as md]))
+            [sandbar.codec.markdown :as md]
+            [sandbar.test-util     :as tu]))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Fixture — DB with full schema (codec.markdown introspects ranges)
+
+(use-fixtures :each (tu/make-test-db-fixture {:test-name "project-graph-test"}))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Temp-dir fixture helpers
