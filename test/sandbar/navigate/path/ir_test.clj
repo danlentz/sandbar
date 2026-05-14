@@ -73,6 +73,13 @@
   (testing "single-arg :OR collapses to its child"
     (is (= :cites (canon [:OR :cites])))))
 
+(deftest not-single-arg-preserved
+  (testing "single-arg :NOT is NOT collapsed (would invert semantics)"
+    ;; :NOT p means complement of relation p, not p itself.
+    ;; (:NOT :cites) MUST NOT canonicalize to :cites.
+    (is (= [:NOT :cites]
+           (canon [:NOT :cites])))))
+
 (deftest dedupe-or
   (testing "(:OR p p) → p (via dedupe + degenerate)"
     (is (= :cites (canon [:OR :cites :cites])))))

@@ -68,10 +68,17 @@
     node))
 
 (defn- simplify-degenerate
-  "Degenerate single-arg n-ary ops collapse to their single child."
+  "Degenerate single-arg n-ary ops collapse to their single child.
+
+  Applies to `:SEQ` and `:OR` (which are commutative-monoid identities
+  with single args).  NOT applied to `:NOT` — single-arg `:NOT` is
+  the canonical form for negated property set with one predicate; its
+  semantics is the complement relation (target is set difference of
+  reachable via :ANY minus via the predicate), NOT the predicate
+  itself.  Collapsing `(:NOT p)` to `p` would invert semantics."
   [node]
   (cond
-    (and (#{:SEQ :OR :NOT} (:op node))
+    (and (#{:SEQ :OR} (:op node))
          (= 1 (count (:args node))))
     (first (:args node))
 
