@@ -8,6 +8,50 @@ The value: a substrate where "find by content," "walk the typed-edge graph from 
 
 This README is a 5-minute elevator.  For depth, follow the pointers into `doc/concepts/` (theoretical reference, citation-rich) and `doc/guides/` (hands-on how-to).
 
+## Documentation map
+
+Documentation is layered.  Every entry below is a link; pick the layer that matches your goal.
+
+- **`doc/concepts/`** — Layer 2: theoretical reference (citation-rich)
+  - [`metamodel.md`](doc/concepts/metamodel.md) — The dt/* primitives; RDFS / KL-ONE / CLOS-MOP lineage
+  - [`codec-layer.md`](doc/concepts/codec-layer.md) — Boundary-layer abstraction; per-class `:dt/native-codec`
+  - [`projection.md`](doc/concepts/projection.md) — Bidirectional FS↔DB projection (Anderson lineage)
+  - [`fulltext-search.md`](doc/concepts/fulltext-search.md) — BM25F multi-field weighted scoring; analyzer
+  - [`aggregation.md`](doc/concepts/aggregation.md) — count / group-by / structural-rank; 4 ranking axes
+  - [`navigation.md`](doc/concepts/navigation.md) — Edges / walk / path-grammar overview
+  - [`path-grammar.md`](doc/concepts/path-grammar.md) — Wilbur algebra; 21-operator vocabulary
+  - [`workflow-substrate.md`](doc/concepts/workflow-substrate.md) — First-class workflows; terminal-kind classification
+  - [`mcp-protocol.md`](doc/concepts/mcp-protocol.md) — MCP; bootstrap-by-discovery; operational verb catalog
+  - [`multi-store-architecture.md`](doc/concepts/multi-store-architecture.md) — Multi-store topology; hybrid FS/DB experimentation
+  - [`markdown-as-canonical.md`](doc/concepts/markdown-as-canonical.md) — Markdown as canonical Layer-1 corpus format
+
+- **`doc/guides/`** — Layer 3: hands-on how-to
+  - [`quickstart.md`](doc/guides/quickstart.md) — Get Sandbar running in 5 minutes
+  - [`zorp-tutorial.md`](doc/guides/zorp-tutorial.md) — Worked example — classes + validation + queries
+  - [`writing-a-clojure-client.md`](doc/guides/writing-a-clojure-client.md) — Embed Sandbar in your Clojure code
+  - [`writing-an-mcp-client.md`](doc/guides/writing-an-mcp-client.md) — Connect Claude or other AI client via MCP
+  - [`writing-a-rest-client.md`](doc/guides/writing-a-rest-client.md) — Consume Sandbar over HTTP REST
+  - [`searching-the-corpus.md`](doc/guides/searching-the-corpus.md) — BM25F fulltext patterns; `:where` + `:facet-by` composition
+  - [`navigating-with-paths.md`](doc/guides/navigating-with-paths.md) — Path-grammar worked examples; Canonical-8 + Tier-2
+  - [`implementing-a-codec.md`](doc/guides/implementing-a-codec.md) — Author a codec for a new wire format
+  - [`defining-new-classes.md`](doc/guides/defining-new-classes.md) — Extend the schema with new mm/* or domain classes
+  - [`designing-workflows.md`](doc/guides/designing-workflows.md) — Author state machines with terminal-kind
+  - [`sandbar-as-substrate.md`](doc/guides/sandbar-as-substrate.md) — Embed Sandbar in your own application
+
+- **`doc/api/`** — Layer 4: mechanical reference
+  - [`dt-star.md`](doc/api/dt-star.md) — Every dt/* function signature
+  - [`http-rest.md`](doc/api/http-rest.md) — Every REST endpoint
+  - [`mcp-verbs.md`](doc/api/mcp-verbs.md) — Every MCP verb in the catalog
+  - [`codec-protocol.md`](doc/api/codec-protocol.md) — The Codec defprotocol
+
+**Reading order suggestions:**
+
+- **New here, evaluating Sandbar:** [`doc/concepts/metamodel.md`](doc/concepts/metamodel.md) → ["What makes Sandbar interesting"](#what-makes-sandbar-interesting) below → [`doc/guides/quickstart.md`](doc/guides/quickstart.md)
+- **AI / MCP client author:** [`doc/concepts/mcp-protocol.md`](doc/concepts/mcp-protocol.md) → [`doc/guides/writing-an-mcp-client.md`](doc/guides/writing-an-mcp-client.md) → [`doc/api/mcp-verbs.md`](doc/api/mcp-verbs.md)
+- **Building a retrieval-heavy consumer:** [`doc/concepts/fulltext-search.md`](doc/concepts/fulltext-search.md) + [`doc/concepts/navigation.md`](doc/concepts/navigation.md) + [`doc/concepts/aggregation.md`](doc/concepts/aggregation.md) → guides in `doc/guides/searching-the-corpus.md` + `navigating-with-paths.md`
+- **Embedding in a Clojure application:** [`doc/guides/sandbar-as-substrate.md`](doc/guides/sandbar-as-substrate.md) → [`doc/api/dt-star.md`](doc/api/dt-star.md)
+- **Adding a new wire format:** [`doc/concepts/codec-layer.md`](doc/concepts/codec-layer.md) → [`doc/guides/implementing-a-codec.md`](doc/guides/implementing-a-codec.md) → [`doc/api/codec-protocol.md`](doc/api/codec-protocol.md)
+
 ## What makes Sandbar interesting
 
 Sandbar's individual ingredients exist elsewhere. The unique value is in the *synthesis* — how these ingredients combine into one substrate with a consistent discipline.
