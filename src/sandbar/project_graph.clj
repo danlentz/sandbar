@@ -62,7 +62,98 @@
             [clojure.string         :as str]
             [clojure.tools.logging  :as log]
             [sandbar.codec          :as codec]
-            [sandbar.codec.markdown :as md]))
+            [sandbar.codec.markdown :as md]
+            [sandbar.db.datatype    :as dt]))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Realize-and-emit primitive — shared between resources/read and
+;; project.export per codex MUST-FIX #4 + Q2=A Dan-decision
+;;
+;; The shape: realize the entity's related-entity bundle (via a
+;; class-specific walker) + emit the bundle as a single
+;; native-representation document via the class's codec.  The same
+;; shape was previously duplicated in `sandbar.mcp.resources/render-entity-content`
+;; (which inlined the realize + emit), and in `sandbar.project-graph/project-graph`
+;; (which inlined the group-by-memory + emit-document call).  Lifting
+;; here makes both callers share the substrate primitive.
+;;
+;; α-scope per Q2=A: walker is class-keyed (mm/Memory + mm/Section
+;; handled).  Per-class walker declaration via a `:dt/walker` schema
+;; attribute is β-scope (post-0.1.0).
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defn mm-walker
+  "Walker for `dt/realize-with` over mm/Memory + mm/Section trees.
+
+   From mm/Memory: walks to :mm.memory/first-section (top-of-chain).
+   From mm/Section: walks to (1) :mm.section/next-sibling (chain) and
+   (2) the first child via :_mm.section/parent reverse-index filtered
+   by 'no :previous-sibling' (first-child anchor of the children's
+   chain head).  Returns ALREADY-DEDUPLICATED related entities.
+
+   Lifted from sandbar.mcp.resources/mm-walker so both project.export
+   and resources/read share the same walk."
+  [entity]
+  (case (:dt/type entity)
+    :mm/Memory
+    (when-let [first-sec (:mm.memory/first-section entity)]
+      [first-sec])
+
+    :mm/Section
+    (concat (when-let [next-sib (:mm.section/next-sibling entity)]
+              [next-sib])
+            (->> (:_mm.section/parent entity)
+                 (filter #(nil? (:mm.section/previous-sibling %)))
+                 (take 1)))
+
+    nil))
+
+(defn walker-for-class
+  "Return the realize-with walker fn for the given class-ident.
+   α-scope: hardcoded dispatch for mm/Memory + mm/Section.  Other
+   classes return nil (no bundle realization needed; emit the entity
+   alone)."
+  [class-ident]
+  (case class-ident
+    :mm/Memory  mm-walker
+    :mm/Section mm-walker
+    nil))
+
+(defn realize-and-emit-entity
+  "Realize the bundle of related entities for `entity` (via the
+   class's walker) and emit the bundle as a single
+   native-representation document via the class's codec.
+
+   For mm/Memory: walks the section tree via `mm-walker`; calls
+   `sandbar.codec.markdown/emit-document` on the realized vector.
+
+   For classes with a `:dt/native-codec` but no walker: emits the
+   entity alone via the codec mediator.
+
+   For classes without `:dt/native-codec`: returns nil — caller
+   decides the fallback (e.g., EDN pr-str).
+
+   Codex MUST-FIX #4 — lift the realize-tree-then-emit shape into
+   a substrate primitive so resources/read and project.export share
+   one implementation."
+  ([entity] (realize-and-emit-entity entity {}))
+  ([entity opts]
+   (let [class-ident   (:dt/type entity)
+         native-codec  (dt/native-codec-of-class class-ident)
+         walker        (walker-for-class class-ident)]
+     (cond
+       (nil? native-codec)
+       nil
+
+       walker
+       (let [entity-vec        (dt/realize-with entity walker)
+             sections-present? (some #(not= class-ident (:dt/type %)) (rest entity-vec))]
+         (if sections-present?
+           (md/emit-document entity-vec)
+           (codec/emit (first entity-vec) (assoc opts :format native-codec))))
+
+       :else
+       (codec/emit entity (assoc opts :format native-codec))))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Hierarchy-fn — entity → rel-path

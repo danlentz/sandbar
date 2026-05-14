@@ -387,9 +387,27 @@
     ;; Stage G Signal 2 — filter opt enables hybrid-backend
     ;; experimentation per
     ;; ideas/sandbar_project_export_filtering_for_hybrid_backend_experimentation_2026_05_13.md
-    (let [memories    (dt/all-instances-of :mm/Memory)
-          entity-maps (mapv #(into {:dt/type :mm/Memory} %) memories)
-          result      (pg/project-graph entity-maps
+    ;;
+    ;; Codex MUST-FIX #4 resolution — realize the section tree from DB
+    ;; for each mm/Memory before passing to project-graph.  The prior
+    ;; shape fetched only mm/Memory entities (no sections), so
+    ;; project-graph's emit-document path silently dropped sections from
+    ;; persisted memory state.  `pg/mm-walker` (lifted to project-graph
+    ;; in Stage E) walks :mm.memory/first-section + sibling/parent
+    ;; chains.
+    (let [memories     (dt/all-instances-of :mm/Memory)
+          entity-maps  (vec
+                         (mapcat (fn [memory]
+                                   (let [realized (dt/realize-with memory pg/mm-walker)]
+                                     ;; realize-with returns entity-spec maps with
+                                     ;; :dt/type populated; ensure mm/Memory entries
+                                     ;; carry it explicitly for downstream filter logic
+                                     (map #(if (= :mm/Memory (:dt/type %))
+                                             (into {:dt/type :mm/Memory} %)
+                                             %)
+                                          realized)))
+                                 memories))
+          result       (pg/project-graph entity-maps
                                          (cond-> {:to to}
                                            filter-spec (assoc :filter filter-spec)))]
       {:to       to
