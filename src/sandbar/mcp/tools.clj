@@ -39,6 +39,7 @@
             [clojure.tools.logging      :as log]
             [sandbar.aggregate          :as aggregate]
             [sandbar.codec              :as codec]
+            [sandbar.entity-ref         :as eref]
             [sandbar.navigate.path      :as nav-path]
             [sandbar.navigate.siblings  :as nav-siblings]
             [sandbar.orient             :as orient]
@@ -222,7 +223,22 @@
 
 ;; ---------- Class introspection ----------
 
-(defn- class-arg [args]
+(defn- class-arg
+  "Shape-coerce the `class` arg from MCP args to an ident keyword.
+
+   Accepts the arg under either `\"class\"` (JSON-keyword) or `:class`
+   (EDN-keyword) key.  Uses `->ident` shape-coercion (NOT `eref/resolve`)
+   intentionally — this helper is DB-independent per the
+   `sandbar.mcp.tools-test` (non-DB) test contract.
+
+   Handlers that NEED runtime existence validation should call
+   `eref/resolve-ident` (or `eref/resolve` for entity map) on
+   `(class-arg args)` explicitly — boundary validation lives in the
+   HANDLER, not in this shape-coercion helper.
+
+   Returns: class's ident keyword (shape-coerced; not validated)
+   Throws: ex-info on missing arg (no `\"class\"` / `:class` key)"
+  [args]
   (or (->ident (get args "class"))
       (->ident (get args :class))
       (throw (ex-info "Missing required argument: class" {:args args}))))
@@ -299,23 +315,30 @@
 ;; ---------- Type predicates ----------
 
 (defn- types-instance-of-handler [args]
-  (let [c (->ident (or (get args "class") (get args :class)))
-        e (or (get args "entity") (get args :entity))]
-    (when (nil? c) (throw (ex-info "Missing required argument: class" {:args args})))
-    (when (nil? e) (throw (ex-info "Missing required argument: entity" {:args args})))
-    {:class (str c) :entity (str e) :instance-of? (boolean (dt/instance-of? c (->ident e)))}))
+  (let [c-raw (or (get args "class") (get args :class))
+        e-raw (or (get args "entity") (get args :entity))]
+    (when (nil? c-raw) (throw (ex-info "Missing required argument: class" {:args args})))
+    (when (nil? e-raw) (throw (ex-info "Missing required argument: entity" {:args args})))
+    (let [c (eref/resolve-ident c-raw)
+          e (eref/resolve-ident e-raw)]
+      {:class (str c) :entity (str e) :instance-of? (boolean (dt/instance-of? c e))})))
 
 (defn- types-subclass-of-handler [args]
-  (let [parent (->ident (or (get args "parent") (get args :parent)))
-        child  (->ident (or (get args "child") (get args :child)))]
-    (when (nil? parent) (throw (ex-info "Missing required argument: parent" {:args args})))
-    (when (nil? child) (throw (ex-info "Missing required argument: child" {:args args})))
-    {:parent (str parent) :child (str child)
-     :subclass-of? (boolean (dt/subclass-of? parent child))}))
+  (let [parent-raw (or (get args "parent") (get args :parent))
+        child-raw  (or (get args "child") (get args :child))]
+    (when (nil? parent-raw) (throw (ex-info "Missing required argument: parent" {:args args})))
+    (when (nil? child-raw) (throw (ex-info "Missing required argument: child" {:args args})))
+    (let [parent (eref/resolve-ident parent-raw)
+          child  (eref/resolve-ident child-raw)]
+      {:parent (str parent) :child (str child)
+       :subclass-of? (boolean (dt/subclass-of? parent child))})))
 
 ;; ---------- Property introspection ----------
 
-(defn- property-arg [args]
+(defn- property-arg
+  "Shape-coerce the `property` arg from MCP args to an ident keyword.
+   DB-independent per `class-arg` doctrine — see `class-arg` docstring."
+  [args]
   (or (->ident (get args "property"))
       (->ident (get args :property))
       (throw (ex-info "Missing required argument: property" {:args args}))))
