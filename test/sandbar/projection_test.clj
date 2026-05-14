@@ -1,5 +1,5 @@
-(ns sandbar.project-graph-test
-  "Tests for sandbar.project-graph — project-graph + ingest-graph
+(ns sandbar.projection-test
+  "Tests for sandbar.projection — project-graph + ingest-graph
    primitives.  Uses temp directories for the round-trip write/read
    cycle.
 
@@ -11,7 +11,7 @@
   (:require [clojure.test          :refer :all]
             [clojure.java.io       :as io]
             [clojure.string        :as str]
-            [sandbar.project-graph :as pg]
+            [sandbar.projection :as pg]
             [sandbar.codec.markdown :as md]
             [sandbar.test-util     :as tu]))
 

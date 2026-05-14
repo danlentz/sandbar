@@ -103,7 +103,11 @@
     (let [names (set (map :name tools/verb-catalog))]
       (is (contains? names "sandbar.aggregate.count"))
       (is (contains? names "sandbar.aggregate.group-by"))
-      (is (contains? names "sandbar.aggregate.rank-by")))))
+      (is (contains? names "sandbar.aggregate.rank-by"))))
+
+  (testing "navigation path-via verb (Stage P-6 — fulltext arc Stage P)"
+    (let [names (set (map :name tools/verb-catalog))]
+      (is (contains? names "sandbar.navigate.path-via")))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Aggregation verb input-schema + handler-error tests (Stage 14)
@@ -165,6 +169,34 @@
       (is (true? (-> response :result :isError)))
       (is (re-find #"(?i):where|EDN"
                    (-> response :result :content first :text))))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Navigation path-via verb shape (Stage P-6)
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defn- nav-verb [verb-name]
+  (->> tools/verb-catalog
+       (some (fn [v] (when (= verb-name (:name v)) v)))))
+
+(deftest navigate-path-via-input-schema-shape
+  (let [schema (:inputSchema (nav-verb "sandbar.navigate.path-via"))]
+    (is (= #{"from" "via"} (set (:required schema))))
+    (is (contains? (:properties schema) :from))
+    (is (contains? (:properties schema) :via))
+    (is (contains? (:properties schema) :limit))
+    (is (contains? (:properties schema) :include))))
+
+(deftest navigate-path-via-rejects-missing-from
+  (let [response (tools/handle-call 1 {:name "sandbar.navigate.path-via"
+                                       :arguments {"via" ":cites"}})]
+    (is (true? (-> response :result :isError)))
+    (is (re-find #"(?i)from" (-> response :result :content first :text)))))
+
+(deftest navigate-path-via-rejects-missing-via
+  (let [response (tools/handle-call 1 {:name "sandbar.navigate.path-via"
+                                       :arguments {"from" ":dt/Property"}})]
+    (is (true? (-> response :result :isError)))
+    (is (re-find #"(?i)via" (-> response :result :content first :text)))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; tools/list response shape

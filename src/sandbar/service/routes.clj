@@ -7,6 +7,7 @@
             [sandbar.api.auth             :as auth-api]
             [sandbar.api.event            :as event]
             [sandbar.api.job              :as job-api]
+            [sandbar.api.navigate         :as navigate-api]
             [sandbar.api.status           :as status]
             [sandbar.api.store            :as store]
             [sandbar.api.workflow         :as workflow-api]
@@ -138,6 +139,11 @@
         ["/count"    {:get aggregate-api/count}]
         ["/group-by" {:get aggregate-api/group-by}]
         ["/rank-by"  {:get aggregate-api/rank-by}]]
+
+       ;; Navigation API (Stage P-6 — fulltext arc Phase N / Stage P)
+       ;; Path-grammar walker; consumes sandbar.navigate.path/path-via.
+       ["/navigate"
+        ["/path" {:get navigate-api/path-via}]]
        ]
 
       ;; MCP (Model Context Protocol) endpoint — per

@@ -28,7 +28,7 @@
   (:require [clojure.string            :as str]
             [clojure.tools.logging     :as log]
             [sandbar.db.datatype       :as dt]
-            [sandbar.project-graph     :as project-graph]
+            [sandbar.projection     :as project-graph]
             [sandbar.mcp.notifications :as notifications]))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -203,7 +203,7 @@
 (defn- render-entity-content
   "Render an entity's content for resources/read.
 
-   Delegates to `sandbar.project-graph/realize-and-emit-entity` — the
+   Delegates to `sandbar.projection/realize-and-emit-entity` — the
    lifted substrate primitive that handles realize-tree-then-emit for
    any class with `:dt/native-codec` declared (and a registered
    walker for tree-shaped classes; mm/Memory + mm/Section today).
@@ -211,7 +211,7 @@
 
    Codex MUST-FIX #4 lift target — the prior implementation inlined
    realize + dispatch + emit here, duplicating logic with
-   `sandbar.project-graph/project-graph`.  The shared substrate
+   `sandbar.projection/project-graph`.  The shared substrate
    primitive eliminates the duplication."
   [entity _cls-ident]
   (try

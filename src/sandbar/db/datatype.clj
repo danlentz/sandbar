@@ -230,7 +230,7 @@
    plans/sandbar_codec_layer_arc_2026-05-12.md — addresses the friction
    that `emit-entity`'s shallow `(into {} entity)` misses lazy-loaded
    refs.  Composable with `sandbar.codec/emit` on collections + with
-   `sandbar.project-graph` entity-collection paths."
+   `sandbar.projection` entity-collection paths."
   [entity walk-fn]
   (let [seed (cond
                (keyword? entity) (db/entity entity)

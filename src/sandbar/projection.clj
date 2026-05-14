@@ -1,4 +1,4 @@
-(ns sandbar.project-graph
+(ns sandbar.projection
   "Bidirectional projection between Sandbar's in-Datomic entity state
    and a filesystem-organized native-representation hierarchy per
    decisions/sandbar_project_graph_boundary_layer_primitive_per_anderson_de_setf_resource_2026_05_12.md.
@@ -73,7 +73,7 @@
 ;; class-specific walker) + emit the bundle as a single
 ;; native-representation document via the class's codec.  The same
 ;; shape was previously duplicated in `sandbar.mcp.resources/render-entity-content`
-;; (which inlined the realize + emit), and in `sandbar.project-graph/project-graph`
+;; (which inlined the realize + emit), and in `sandbar.projection/project-graph`
 ;; (which inlined the group-by-memory + emit-document call).  Lifting
 ;; here makes both callers share the substrate primitive.
 ;;

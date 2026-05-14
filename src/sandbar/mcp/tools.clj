@@ -39,7 +39,8 @@
             [clojure.tools.logging      :as log]
             [sandbar.aggregate          :as aggregate]
             [sandbar.codec              :as codec]
-            [sandbar.project-graph      :as pg]
+            [sandbar.navigate.path      :as nav-path]
+            [sandbar.projection      :as pg]
             [sandbar.db.datatype        :as dt]
             [sandbar.db.datomic         :as db]
             [sandbar.mcp.envelope       :as envelope]
@@ -393,7 +394,7 @@
 
 (defn- ->filter-spec
   "Coerce JSON-shaped filter arg to a Clojure filter spec for
-   sandbar.project-graph/entity-passes-filter?.  Accepts string keys
+   sandbar.projection/entity-passes-filter?.  Accepts string keys
    (from JSON) or keyword keys.  String class-idents are coerced to
    keywords via ->ident; `:classes` value may be array or single ident."
   [filter-arg]
@@ -500,6 +501,30 @@
                  (some? limit-arg)     (assoc :limit limit-arg)
                  (some? temporal-slot) (assoc :temporal-slot temporal-slot))]
       (aggregate/rank-by opts))))
+
+;; ---------- Navigation operations (Stage P-6 — fulltext arc Phase N) ----------
+;;
+;; Per fulltext arc Stage P-6 of
+;; plans/sandbar_fulltext_search_substrate_arc_2026_05_13.md.
+;; MCP boundary wrapper around sandbar.navigate.path/path-via — the
+;; path-grammar walker primitive.
+
+(defn- navigate-path-via-handler [args]
+  (let [from-arg (or (get args "from") (get args :from))
+        via-arg  (or (get args "via")  (get args :via))
+        limit    (or (get args "limit") (get args :limit))
+        include  (or (get args "include") (get args :include))]
+    (when (nil? from-arg)
+      (throw (ex-info "Missing required argument: from" {:args args})))
+    (when (nil? via-arg)
+      (throw (ex-info "Missing required argument: via" {:args args})))
+    (let [from-ident (->ident from-arg)
+          include-set (when (sequential? include)
+                        (set (map keyword include)))
+          opts (cond-> {:from from-ident :via via-arg}
+                 (some? limit)   (assoc :limit limit)
+                 include-set     (assoc :include include-set))]
+      (nav-path/path-via opts))))
 
 (defn- entity-update-handler [args]
   ;; Stage I of plans/sandbar_codex_review_remediation_arc_2026_05_13.md
@@ -914,7 +939,7 @@
     :handler codec-list-handler}
    {:name "sandbar.project.export"
     :title "Project entities to filesystem hierarchy"
-    :description "Project mm/Memory instances to a filesystem hierarchy at `:to` via sandbar.project-graph.  Each entity emits as native representation per its class's `:dt/native-codec`.  Anderson de.setf.rdf:project-graph lineage per the codec ADR §1.1.  Optional `:filter` spec enables partition flexibility for hybrid FS/DB experimentation (per ideas/sandbar_project_export_filtering_for_hybrid_backend_experimentation_2026_05_13.md) — keys: `:class` (single ident), `:classes` (array), `:tree-filter` (rel-path prefix)."
+    :description "Project mm/Memory instances to a filesystem hierarchy at `:to` via sandbar.projection.  Each entity emits as native representation per its class's `:dt/native-codec`.  Anderson de.setf.rdf:project-graph lineage per the codec ADR §1.1.  Optional `:filter` spec enables partition flexibility for hybrid FS/DB experimentation (per ideas/sandbar_project_export_filtering_for_hybrid_backend_experimentation_2026_05_13.md) — keys: `:class` (single ident), `:classes` (array), `:tree-filter` (rel-path prefix)."
     :inputSchema (one-required
                    {:to     {:type "string" :description "Output directory path"}
                     :filter {:type "object"
@@ -967,7 +992,24 @@
                     :temporal-slot {:type "string"
                                     :description "Required for :recency / :freshness — temporal-axis slot ident"}}
                    [:class :rank-by])
-    :handler aggregate-rank-by-handler}])
+    :handler aggregate-rank-by-handler}
+
+   ;; Navigation — path-grammar walker (Stage P-6 — fulltext arc Phase N / Stage P)
+   {:name "sandbar.navigate.path-via"
+    :title "Walk a path-grammar expression from a seed entity"
+    :description "Walk a Wilbur-lineage path-grammar expression `:via` starting from `:from`; return reachable entities.  `:via` is an EDN-string of a path expression with 13 currently-supported operators (Canonical-8 + Tier-2): `:SEQ` `:OR` `:REP+` `:REP*` `:INV` `:SELF` `:RESTRICT` `:ANY` (Tier-1) + `:NOT` `:OPT` `:REP` (bounded) `:FILTER` `:TEST` (Tier-2).  Tier-3 operators are vocabulary-registered but compilation deferred.  `:include [:paths]` is accepted but path-data is not yet populated (recursive-path reconstruction lands at a follow-on stage); result carries `:path-data-deferred true` flag when requested.  Per fulltext arc Stage P-6 of plans/sandbar_fulltext_search_substrate_arc_2026_05_13.md."
+    :inputSchema (one-required
+                   {:from    {:type "string"
+                              :description "Seed entity ident (e.g. ':dt/Property') or eid"}
+                    :via     {:type "string"
+                              :description "EDN-string path expression (e.g. \"[:REP* [:OR :cites :evidences]]\")"}
+                    :limit   {:type "integer"
+                              :description "Max returned entities (default 0 = no cap)"}
+                    :include {:type "array"
+                              :items {:type "string"}
+                              :description "Projection options; supports 'paths' (deferred surfacing)"}}
+                   [:from :via])
+    :handler navigate-path-via-handler}])
 
 (def ^:private verb-by-name
   (into {} (map (juxt :name identity)) verb-catalog))
