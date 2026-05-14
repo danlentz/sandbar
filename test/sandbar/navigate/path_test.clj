@@ -16,10 +16,18 @@
 ;; path-via — opts validation
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-(deftest path-via-requires-from
-  (is (thrown? AssertionError (nav-path/path-via {:via :cites}))))
+;; `path-via-requires-from` removed 2026-05-14: per
+;; decisions/sandbar_entity_ref_abstraction_2026_05_14.md §D-3.2
+;; (Option B), the `:pre` guard on `from` (a ref-arg) is dropped —
+;; boundary owns boundary validation.  The nil-from path now flows
+;; through the inline `(when (nil? (:db/id seed-ent)) ...)` check and
+;; produces the same `:Seed entity not found:` ExceptionInfo as
+;; `path-via-rejects-missing-seed` below.  Test removed as redundant
+;; with that one + obsolete in its AssertionError assertion.
 
 (deftest path-via-requires-via
+  ;; `via` is a path-grammar expression, not a ref-arg — `(some? via)`
+  ;; :pre invariant retained per ADR §D-3.2 (internal invariants stay).
   (is (thrown? AssertionError (nav-path/path-via {:from :dt/Property}))))
 
 (deftest path-via-rejects-malformed-via-string

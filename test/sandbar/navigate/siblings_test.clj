@@ -90,9 +90,13 @@
       (is (= 3 (:total capped)))
       (is (= 2 (:returned capped))))))
 
-(deftest wrapper-requires-entity
-  (is (thrown? AssertionError
-               (siblings/siblings-of {:path-slot :mm.memory/rel-path}))))
+;; `wrapper-requires-entity` removed 2026-05-14: per
+;; decisions/sandbar_entity_ref_abstraction_2026_05_14.md §D-3.2
+;; (Option B), the `:pre` guard on `entity` (a ref-arg) is dropped —
+;; boundary owns boundary validation.  The wrapper now trusts that
+;; callers (MCP / REST / in-process) have resolved `entity` via
+;; `eref/resolve` / `eref/resolve-ident` before reaching this layer.
+;; AssertionError-on-nil-entity is no longer the contract.
 
 (deftest wrapper-requires-path-slot
   (testing ":path-slot is required and must be a keyword"

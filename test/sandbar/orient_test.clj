@@ -83,9 +83,12 @@
           (is (contains? first-edge :source))
           (is (map? (:source first-edge))))))))
 
-(deftest library-card-wrapper-requires-entity
-  (is (thrown? AssertionError
-               (orient/library-card {:axes []}))))
+;; `library-card-wrapper-requires-entity` removed 2026-05-14: per
+;; decisions/sandbar_entity_ref_abstraction_2026_05_14.md §D-3.2
+;; (Option B), the `:pre` guard on `entity` (a ref-arg) is dropped —
+;; boundary owns boundary validation.  The wrapper now trusts that
+;; callers (MCP / REST / in-process) have resolved `entity` via
+;; `eref/resolve` / `eref/resolve-ident` before reaching this layer.
 
 (deftest library-card-wrapper-requires-axes
   (is (thrown? AssertionError

@@ -108,8 +108,14 @@
   (cross-axis composition)."
   [{:keys [from via limit include]
     :or   {limit 0}}]
-  {:pre [(some? from)
-         (some? via)
+  ;; Per ADR §D-3.2 (Option B), the `:pre` guard on `from` (a ref-arg)
+  ;; is dropped — boundary layer (sandbar.entity-ref) owns boundary
+  ;; validation for ref shape + existence.  Callers (MCP / REST / in-
+  ;; process) call `eref/resolve-ident` on `from` before reaching this
+  ;; function.  The `(when (nil? (:db/id seed-ent)) ...)` check below
+  ;; remains as defense for the in-process caller that bypasses the
+  ;; boundary.  Non-ref `:pre` invariants on `via` + `limit` stay.
+  {:pre [(some? via)
          (or (nil? limit) (and (integer? limit) (>= limit 0)))]}
   (let [parsed-via (parse-via via)
         ast-tree   (ast/parse parsed-via)

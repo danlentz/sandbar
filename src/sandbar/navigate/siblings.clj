@@ -63,8 +63,11 @@
   Per fulltext arc Stage 22."
   [{:keys [entity path-slot limit]
     :or   {limit 0}}]
-  {:pre [(some? entity)
-         (keyword? path-slot)
+  ;; Per ADR §D-3.2 (Option B), the `:pre` guard on `entity` (a ref-arg)
+  ;; is dropped — boundary layer (sandbar.entity-ref) owns boundary
+  ;; validation for ref shape + existence.  Non-ref `:pre` invariants
+  ;; on `path-slot` (keyword? shape) + `limit` stay.
+  {:pre [(keyword? path-slot)
          (or (nil? limit) (and (integer? limit) (>= limit 0)))]}
   (let [raw      (dt/siblings-of entity path-slot)
         total    (count raw)

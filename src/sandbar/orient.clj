@@ -70,8 +70,11 @@
   hardcoded knowledge of any domain class's predicate vocabulary.  Per
   fulltext arc Phase O of plans/sandbar_fulltext_search_substrate_arc_2026_05_13.md."
   [{:keys [entity axes]}]
-  {:pre [(some? entity)
-         (sequential? axes)]}
+  ;; Per ADR §D-3.2 (Option B), the `:pre` guard on `entity` (a ref-arg)
+  ;; is dropped — boundary layer (sandbar.entity-ref) owns boundary
+  ;; validation for ref shape + existence.  Non-ref `:pre` invariant on
+  ;; `axes` (sequential? shape) stays.
+  {:pre [(sequential? axes)]}
   (let [{raw-entity :entity raw-axes :axes}
         (dt/library-card-of entity axes)]
     {:entity (entity-projection raw-entity)
