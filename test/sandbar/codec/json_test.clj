@@ -2,14 +2,24 @@
   "Tests for sandbar.codec.json — Stage C JSON codec.
 
    Single-entity + entity-array round-trip; class-aware keyword
-   coercion; mediator dispatch via :format / mime."
+   coercion; mediator dispatch via :format / mime.
+
+   Phase U Stage U-1 refactor (per UR-2 substrate-discipline fix):
+   the codec now reads `:dt/codec-aliases` from class entities at
+   runtime via `dt/codec-aliases-of` + detects keyword-typed slots
+   via `dt/range-of` (no hardcoded substrate-side maps), so these
+   tests require a real metamodel — uses `tu/make-test-db-fixture`
+   to load `schema/*.edn` including `schema/mm.edn`.  Mirrors the
+   `sandbar.codec.markdown-test` fixture contract."
   (:require [clojure.test           :refer :all]
             [cheshire.core          :as ch]
             [sandbar.codec          :as codec]
             [sandbar.codec.json     :as cjson]
-            [sandbar.codec.protocol :as proto]))
+            [sandbar.codec.protocol :as proto]
+            [sandbar.test-util      :as tu]))
 
 (use-fixtures :each
+  (tu/make-test-db-fixture {:test-name "codec-json-test"})
   (fn [t]
     (codec/clear-all!)
     (try (t) (finally (codec/clear-all!)))))

@@ -17,9 +17,17 @@
    `:` stripped per JSON conventions); remaining keys are
    frontmatter-style shortnames mapped to namespaced slot idents via
    the same per-class alias + namespace-prefixing convention used by
-   sandbar.codec.markdown.  Keyword-typed slots (per
-   `known-class-keyword-slots`) are coerced string ↔ keyword
-   bidirectionally.
+   sandbar.codec.markdown.
+
+   Class-specific knowledge is read from the metamodel at runtime:
+   - Per-class aliases via `dt/codec-aliases-of` (the `:dt/codec-aliases`
+     schema attribute on the class)
+   - Keyword-typed slot detection via `dt/range-of` on the slot ident
+
+   No hardcoded consumer-class knowledge in this namespace.  The codec
+   is wire-format-agnostic at the per-class level — adding a new
+   consumer class requires no edits to this file; the class's
+   `:dt/codec-aliases` schema declaration is read at parse / emit time.
 
    ## Stage C scope
 
@@ -35,36 +43,14 @@
    (`:db.*`)."
   (:require [cheshire.core          :as json]
             [clojure.string         :as str]
-            [sandbar.codec.protocol :as proto]))
+            [sandbar.codec.protocol :as proto]
+            [sandbar.db.datatype    :as dt]))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; Class-aware slot mapping (mirrors sandbar.codec.markdown conventions)
+;; Class-aware slot mapping (substrate-discipline: read from the
+;; metamodel at runtime via `dt/codec-aliases-of` + `dt/range-of`;
+;; no hardcoded per-class knowledge.  Mirrors sandbar.codec.markdown).
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-
-(def known-class-slot-aliases
-  "Per-class wire-key → slot-ident alias map.  Mirrors
-   sandbar.codec.markdown/known-class-slot-aliases — the slot-mapping
-   convention is wire-format-agnostic; aliases describe the CLASS not
-   the format.  Future refactor (when a 3rd codec lands): extract to a
-   shared sandbar.codec.slot-mapping namespace."
-  {:mm/Memory  {"type" :mm.memory/memory-type}})
-
-(def known-class-keyword-slots
-  "Per-class set of slot idents whose values must be coerced string ↔
-   keyword across the JSON wire format (same rationale as markdown
-   codec).
-
-   For mm/Section, ref-typed slots (parent / next-sibling /
-   previous-sibling) carry KEYWORD :db/ident values at the wire layer
-   — entity references are projected as their idents.  Stage F (dt/* +
-   MCP integration) may evolve this to also accept :db/id integers
-   for ident-less entities."
-  {:mm/Memory  #{:mm.memory/memory-type
-                 :mm.memory/scope
-                 :mm.memory/status}
-   :mm/Section #{:mm.section/parent
-                 :mm.section/next-sibling
-                 :mm.section/previous-sibling}})
 
 (defn- class-slot-namespace
   "<class-namespace>.<lowercase-class-local> — see codec.markdown for
@@ -81,21 +67,54 @@
     :mm/Section :mm.section/body
     (keyword (class-slot-namespace class-ident) "body")))
 
+(defn- wire-coerced-as-keyword?
+  "Returns true if the slot's value should round-trip through the wire
+   as a keyword-string (`:foo/bar` → `\"foo/bar\"` → `:foo/bar`).
+
+   True for two range shapes:
+   - `:db.type/keyword` — declared keyword slots (memory-type, scope,
+     status, ...) — values are bare keywords
+   - A metamodel class-ident range (e.g., `:dt/Resource`, `:mm/Section`)
+     — slot is a ref; at-wire value is the target's `:db/ident`.
+     Distinguished from `:db.type/*` literals by namespace: ranges
+     whose `(namespace ...)` is `\"db.type\"` are Datomic value-types
+     (not class idents); anything else with a namespace is a class
+     ident.
+
+   If the runtime value of a ref slot is an entity map instead of an
+   ident keyword, the coerce fns pass through via `:else v` so this
+   classification doesn't break entity-map-valued refs.
+
+   Replaces the prior hardcoded `known-class-keyword-slots` map.  Reads
+   the slot's range via `dt/range-of` — the metamodel introspection
+   path (no hardcoded per-class wire-coercion table)."
+  [slot-ident]
+  (let [range (dt/range-of slot-ident)]
+    (or (= :db.type/keyword range)
+        (and (keyword? range)
+             (not= "db.type" (namespace range))))))
+
 (defn- wire-key->slot
   "Map a JSON wire key (string) to the slot ident for `class-ident`.
-   Aliases checked first; falls back to namespace-prefixing."
+   Reads class-declared aliases via `dt/codec-aliases-of` (keyword
+   short-keys); falls back to namespace-prefixing."
   [class-ident wire-key]
-  (or (get-in known-class-slot-aliases [class-ident wire-key])
-      (keyword (class-slot-namespace class-ident) wire-key)))
+  (let [aliases (dt/codec-aliases-of class-ident)]
+    (or (get aliases (keyword wire-key))
+        (keyword (class-slot-namespace class-ident) wire-key))))
 
 (defn- invert-aliases
+  "Invert the class's codec-aliases map for emission — slot-ident →
+   wire-key (string).  Reads aliases via `dt/codec-aliases-of`."
   [class-ident]
   (into {}
-        (for [[k v] (get known-class-slot-aliases class-ident {})]
-          [v k])))
+        (for [[k v] (dt/codec-aliases-of class-ident)]
+          [v (name k)])))
 
 (defn- slot->wire-key
-  "Inverse of wire-key->slot.  Returns a string (JSON keys are strings)."
+  "Inverse of wire-key->slot.  Returns a string (JSON keys are strings).
+   Resolution: class-declared alias (via `dt/codec-aliases-of`) first;
+   fall back to `(name slot-ident)`."
   [class-ident slot-ident]
   (or (get (invert-aliases class-ident) slot-ident)
       (name slot-ident)))
@@ -123,7 +142,10 @@
 
 (defn- json-obj->entity
   "Build an entity-spec map from a parsed JSON object.  Reads `_class`
-   (or `:dt/type`); maps remaining keys to slot idents."
+   (or `:dt/type`); maps remaining keys to slot idents via
+   class-declared `:dt/codec-aliases` (runtime metamodel lookup).
+   Keyword-typed slot values (detected via `dt/range-of`) are coerced
+   string → keyword."
   [json-obj]
   (let [class-name (or (get json-obj "_class")
                        (get json-obj "_dt/type")
@@ -131,14 +153,13 @@
                                        {:json-obj json-obj})))
         class-ident (if (str/starts-with? class-name ":")
                       (keyword (subs class-name 1))
-                      (keyword class-name))
-        kw-slots   (get known-class-keyword-slots class-ident #{})]
+                      (keyword class-name))]
     (reduce-kv
       (fn [acc k v]
         (if (or (= k "_class") (= k "_dt/type"))
           acc
           (let [slot (wire-key->slot class-ident k)
-                v'   (if (contains? kw-slots slot)
+                v'   (if (wire-coerced-as-keyword? slot)
                        (coerce-string->keyword v)
                        v)]
             (assoc acc slot v'))))
@@ -147,18 +168,19 @@
 
 (defn- entity->json-obj
   "Build a JSON object map from an entity-spec.  Uses `_class` to carry
-   the type ident."
+   the type ident.  Slot keys are projected via
+   `dt/codec-aliases-of` (runtime metamodel lookup); keyword-typed
+   values (detected via `dt/range-of`) are coerced keyword → string."
   [entity]
   (let [class-ident (or (:dt/type entity)
-                        (throw (ex-info "Entity missing :dt/type" {:entity entity})))
-        kw-slots    (get known-class-keyword-slots class-ident #{})]
+                        (throw (ex-info "Entity missing :dt/type" {:entity entity})))]
     (reduce-kv
       (fn [acc k v]
         (cond
           (= :dt/type k) acc
           :else
           (let [wire-key (slot->wire-key class-ident k)
-                v'       (if (contains? kw-slots k)
+                v'       (if (wire-coerced-as-keyword? k)
                            (coerce-keyword->string v)
                            v)]
             (assoc acc wire-key v'))))
