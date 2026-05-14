@@ -418,6 +418,71 @@
       (is (not (contains? hit :snippets))
           "No :snippets key on hits when :include opt is missing or doesn't request it"))))
 
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Stage 7 — facets (:facet-by produces {value count} maps)
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(deftest search-bm25f-facet-by-counts-test
+  (testing ":facet-by produces {slot {value count}} map over the full match-set"
+    (make-typed-memory! "alpha"   :decision    "datomic alpha")
+    (make-typed-memory! "beta"    :decision    "datomic beta")
+    (make-typed-memory! "gamma"   :plan        "datomic gamma")
+    (make-typed-memory! "delta"   :observation "datomic delta")
+    (let [result (search/search-bm25f
+                   {:query    "datomic"
+                    :class    :mm/Memory
+                    :facet-by [:mm.memory/memory-type]})]
+      (is (= 4 (:total result)))
+      (is (contains? result :facets))
+      (let [facets (:facets result)]
+        (is (contains? facets :mm.memory/memory-type))
+        (let [type-counts (get facets :mm.memory/memory-type)]
+          (is (= 2 (get type-counts :decision)))
+          (is (= 1 (get type-counts :plan)))
+          (is (= 1 (get type-counts :observation))))))))
+
+(deftest search-bm25f-facets-over-full-match-set-not-limited-test
+  (testing "facets count the FULL match-set, not just the limited hits"
+    (doseq [n (range 5)] (make-typed-memory! (str "d-" n) :decision "datomic alpha"))
+    (doseq [n (range 3)] (make-typed-memory! (str "p-" n) :plan "datomic beta"))
+    (let [result (search/search-bm25f
+                   {:query    "datomic"
+                    :class    :mm/Memory
+                    :limit    2                       ; limit truncates hits
+                    :facet-by [:mm.memory/memory-type]})
+          type-counts (get-in result [:facets :mm.memory/memory-type])]
+      (is (= 8 (:total result))     ":total reports full match count")
+      (is (= 2 (:returned result))  ":returned reflects post-limit count")
+      (is (= 5 (get type-counts :decision))
+          "facet count covers all 5 decisions (not just the 2 limited hits)")
+      (is (= 3 (get type-counts :plan))
+          "facet count covers all 3 plans"))))
+
+(deftest search-bm25f-facets-multiple-slots-test
+  (testing "multiple slots in :facet-by produce separate count maps"
+    (make-typed-memory! "alpha" :decision    "datomic project")
+    (make-typed-memory! "beta"  :plan        "datomic plan")
+    (make-typed-memory! "gamma" :observation "datomic obs")
+    (let [result (search/search-bm25f
+                   {:query    "datomic"
+                    :class    :mm/Memory
+                    :facet-by [:mm.memory/memory-type :mm.memory/name]})
+          facets (:facets result)]
+      (is (contains? facets :mm.memory/memory-type))
+      (is (contains? facets :mm.memory/name))
+      (is (= 3 (count (get facets :mm.memory/memory-type))))
+      (is (= 3 (count (get facets :mm.memory/name)))))))
+
+(deftest search-bm25f-no-facets-key-when-not-requested-test
+  (testing "search-bm25f does NOT include :facets when :facet-by is missing/empty"
+    (make-typed-memory! "alpha" :decision "datomic")
+    (let [no-facet-by (search/search-bm25f
+                        {:query "datomic" :class :mm/Memory})
+          empty-facet-by (search/search-bm25f
+                           {:query "datomic" :class :mm/Memory :facet-by []})]
+      (is (not (contains? no-facet-by :facets)))
+      (is (not (contains? empty-facet-by :facets))))))
+
 (deftest search-attribute-lucene-syntax-test
   (testing "search-attribute accepts Lucene query syntax"
     (make-memory! "test/a.md" "datomic project graph realizes Anderson lineage")

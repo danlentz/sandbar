@@ -153,6 +153,25 @@
                 class)))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Stage 7 — facets (count-by-slot-value over fulltext hit-set)
+;;
+;; Per fulltext arc plan §13 Stage 7.  Facet counts produced over the
+;; FULL match-set (before limit) so consumers see corpus-wide
+;; distribution across facet axes, not just the top-N truncated view.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defn- facet-counts
+  "For each slot in `facet-by`, group hits by the slot value and count.
+  Returns `{facet-slot {value count}}` map.  Hits with nil/missing slot
+  values are skipped (do not appear in any facet bucket)."
+  [scored facet-by]
+  (into {}
+        (for [slot facet-by]
+          [slot (->> scored
+                     (keep #(get-in % [:entity slot]))
+                     frequencies)])))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Stage 6 — snippets + highlights (regex-based; approximate)
 ;;
 ;; Per fulltext arc plan §8.1 + §13 Stage 6.  Approximate snippet
@@ -272,6 +291,11 @@
                      reference `?e` as the entity variable.  Composes
                      fulltext relevance with structural filtering.
                      Example: `[[?e :mm.memory/memory-type :decision]]`
+    :facet-by      — vec of slot-idents (Stage 7) to facet over.  Adds
+                     `:facets {slot-ident {value count}}` to result.
+                     Counts computed over the FULL match-set (before
+                     limit), so consumers see corpus-wide distribution.
+                     Example: `[:mm.memory/memory-type :mm.memory/scope]`
     :include       — vec of result-projection options:
                        :field-scores  per-slot single-slot-equivalent scores
                        :snippets      per-slot ~240-char window around the
@@ -292,13 +316,14 @@
 
   Per fulltext arc Stage 4c of
   plans/sandbar_fulltext_search_substrate_arc_2026_05_13.md."
-  [{:keys [query class field-weights limit where include]
+  [{:keys [query class field-weights limit where facet-by include]
     :or   {limit 20 include []}}]
   {:pre [(string? query)
          (keyword? class)
          (integer? limit)
          (>= limit 0)
-         (or (nil? where) (sequential? where))]}
+         (or (nil? where) (sequential? where))
+         (or (nil? facet-by) (sequential? facet-by))]}
   (let [t-start         (System/currentTimeMillis)
         weights         (or field-weights (dt/bm25f-weights-of class))
         _               (when (empty? weights)
@@ -344,8 +369,10 @@
                                          (per-slot-snippets
                                           entity q-raw-words weights))))
                               limited)
-        t-end           (System/currentTimeMillis)]
-    {:hits     hits
-     :total    total
-     :returned (count hits)
-     :timing   {:total-ms (- t-end t-start)}}))
+        t-end           (System/currentTimeMillis)
+        result          {:hits     hits
+                         :total    total
+                         :returned (count hits)
+                         :timing   {:total-ms (- t-end t-start)}}]
+    (cond-> result
+      (seq facet-by) (assoc :facets (facet-counts sorted facet-by)))))
