@@ -29,10 +29,44 @@
            (mcp-auth/extract-bearer-token
             {:headers {"authorization" "  Bearer   tok  "}})))))
 
+(deftest extract-bearer-token-rfc-case-insensitive
+  ;; Per RFC 6750 §2.1 + RFC 7235 §2.1: auth-scheme matching is
+  ;; case-insensitive.  UR-8 (Phase U Stage U-5):
+  ;; observations/sandbar_bearer_scheme_rfc_case_insensitivity_2026_05_14.md
+  (testing "ALL-UPPERCASE BEARER prefix is accepted (RFC 7235 §2.1)"
+    (is (= "tok"
+           (mcp-auth/extract-bearer-token
+            {:headers {"authorization" "BEARER tok"}}))))
+  (testing "Random mixed-case BeArEr prefix is accepted"
+    (is (= "tok"
+           (mcp-auth/extract-bearer-token
+            {:headers {"authorization" "BeArEr tok"}}))))
+  (testing "Mixed-case bEaReR prefix is accepted"
+    (is (= "tok"
+           (mcp-auth/extract-bearer-token
+            {:headers {"authorization" "bEaReR tok"}}))))
+  (testing "Uppercase BEARER on TitleCase Authorization header"
+    (is (= "service:key"
+           (mcp-auth/extract-bearer-token
+            {:headers {"Authorization" "BEARER service:key"}}))))
+  (testing "Whitespace trimming still applies with mixed-case scheme"
+    (is (= "tok"
+           (mcp-auth/extract-bearer-token
+            {:headers {"authorization" "  BEARER   tok  "}})))))
+
 (deftest extract-bearer-token-rejects-non-bearer
   (testing "Basic auth header returns nil"
     (is (nil? (mcp-auth/extract-bearer-token
                {:headers {"authorization" "Basic abc:def"}}))))
+  (testing "Digest auth header returns nil"
+    (is (nil? (mcp-auth/extract-bearer-token
+               {:headers {"authorization" "Digest username=\"foo\""}}))))
+  (testing "uppercase BASIC auth header still returns nil (not a bearer scheme)"
+    (is (nil? (mcp-auth/extract-bearer-token
+               {:headers {"authorization" "BASIC abc:def"}}))))
+  (testing "scheme name that is a prefix-subset of 'Bearer' (e.g. 'Bear ') returns nil"
+    (is (nil? (mcp-auth/extract-bearer-token
+               {:headers {"authorization" "Bear tok"}}))))
   (testing "missing header returns nil"
     (is (nil? (mcp-auth/extract-bearer-token {:headers {}}))))
   (testing "nil request returns nil"

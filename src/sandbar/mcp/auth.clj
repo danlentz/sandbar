@@ -34,25 +34,32 @@
 ;; Sandbar API-key format: <service-name>:<api-key>
 ;; Combined: Authorization: Bearer <service-name>:<api-key>
 
+(defn- bearer-scheme?
+  "True iff `s` begins with the seven-character Bearer scheme prefix
+   under RFC-compliant case-insensitive comparison (RFC 6750 §2.1 +
+   RFC 7235 §2.1 mandate case-insensitive auth-scheme matching)."
+  [s]
+  (and (string? s)
+       (>= (count s) 7)
+       (= "BEARER " (-> s (subs 0 7) str/upper-case))))
+
 (defn extract-bearer-token
   "Extract the bearer token string from an HTTP request's Authorization
    header. Returns the token (without the 'Bearer ' prefix) or nil if
    the header is missing or malformed.
 
    Header keys are case-insensitive per the HTTP spec; this checks the
-   lowercase form Pedestal normalizes to."
+   lowercase form Pedestal normalizes to.
+
+   Per RFC 6750 §2.1 + RFC 7235 §2.1 the Bearer scheme name is matched
+   case-insensitively: \"Bearer\", \"bearer\", \"BEARER\", \"BeArEr\",
+   etc. all accepted."
   [request]
   (when-let [hdr (or (get-in request [:headers "authorization"])
                      (get-in request [:headers "Authorization"]))]
     (let [trimmed (str/trim hdr)]
-      (cond
-        (str/starts-with? trimmed "Bearer ")
-        (str/trim (subs trimmed 7))
-
-        (str/starts-with? trimmed "bearer ")
-        (str/trim (subs trimmed 7))
-
-        :else nil))))
+      (when (bearer-scheme? trimmed)
+        (str/trim (subs trimmed 7))))))
 
 (defn parse-token
   "Parse a Bearer token into [service-name api-key]. Returns nil if the
