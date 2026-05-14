@@ -510,6 +510,163 @@
   [attribute]
   (boolean (:db/fulltext (db/entity attribute))))
 
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Aggregation primitives — Stage 13 of fulltext arc
+;; (plans/sandbar_fulltext_search_substrate_arc_2026_05_13.md)
+;;
+;; Six substrate primitives at the dt/* layer:
+;;   count-of            — entity count for class (optional where-clauses)
+;;   group-by-of         — group-by-count {value count} map
+;;   degree-of           — outbound + inbound ref-attribute count
+;;   backlink-density-of — inbound-only ref-attribute count
+;;   recency-rank-of     — entities ordered by temporal slot descending
+;;   freshness-rank-of   — entities ordered by temporal slot ascending
+;;
+;; Higher-level composition lives at sandbar.aggregate namespace.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defn count-of
+  "Count instances of `class-ident` (including subclasses) matching the
+  optional `where-clauses`.  Returns a non-negative integer.
+
+  The 1-arity counts all instances; the 2-arity adds Datalog clauses
+  (which must reference `?e` as the entity variable) for further
+  restriction.  Substrate-quality: class-agnostic; the class binding
+  drives the query.
+
+  Per fulltext arc Stage 13 of
+  plans/sandbar_fulltext_search_substrate_arc_2026_05_13.md."
+  ([class-ident]
+   (count-of class-ident nil))
+  ([class-ident where-clauses]
+   (let [base    '[:find (count ?e) .
+                   :in $ % ?class
+                   :where (instance-of ?class ?e)]
+         merged  (if (seq where-clauses)
+                   (apply conj base where-clauses)
+                   base)
+         result  (d/q merged (db/db) (all-rules) class-ident)]
+     (or result 0))))
+
+(defn group-by-of
+  "Group instances of `class-ident` by `group-slot` value; return
+  `{slot-value count}` map.  Optional `where-clauses` restrict the
+  candidate set before grouping.
+
+  Skips entities where the slot is unset (does not appear in any group).
+
+  Per fulltext arc Stage 13 of
+  plans/sandbar_fulltext_search_substrate_arc_2026_05_13.md."
+  ([class-ident group-slot]
+   (group-by-of class-ident group-slot nil))
+  ([class-ident group-slot where-clauses]
+   (let [base    '[:find ?v (count ?e)
+                   :in $ % ?class ?slot
+                   :where
+                   (instance-of ?class ?e)
+                   [?e ?slot ?v]]
+         merged  (if (seq where-clauses)
+                   (apply conj base where-clauses)
+                   base)
+         rows    (d/q merged (db/db) (all-rules) class-ident group-slot)]
+     (into {} rows))))
+
+(defn degree-of
+  "Total ref-attribute count for `entity-ident` — number of (attribute,
+  ref-target) outbound pairs plus inbound pairs.  Counts ALL ref-typed
+  attributes by default; pass `:predicates` opt to restrict to a
+  predicate set.
+
+  Direction options:
+    :forward       — outbound only
+    :inverse       — inbound only
+    :bidirectional — sum of both (default)
+
+  Per fulltext arc Stage 13."
+  ([entity-ident]
+   (degree-of entity-ident {:direction :bidirectional}))
+  ([entity-ident {:keys [direction predicates]
+                  :or   {direction :bidirectional}}]
+   (let [eid       (:db/id (db/entity entity-ident))
+         out-rows  (when (#{:forward :bidirectional} direction)
+                     (d/q '[:find ?a ?v
+                            :in $ ?e
+                            :where
+                            [?e ?a ?v]
+                            [?a :db/valueType :db.type/ref]]
+                          (db/db) eid))
+         in-rows   (when (#{:inverse :bidirectional} direction)
+                     (d/q '[:find ?s ?a
+                            :in $ ?e
+                            :where
+                            [?s ?a ?e]
+                            [?a :db/valueType :db.type/ref]]
+                          (db/db) eid))
+         match?    (if (seq predicates)
+                     (let [predicate-set (set predicates)]
+                       (fn [[a _]]
+                         (predicate-set
+                           (or (:db/ident (db/entity a)) a))))
+                     (constantly true))]
+     (+ (count (filter match? out-rows))
+        (count (filter match? in-rows))))))
+
+(defn backlink-density-of
+  "Inbound ref-attribute count for `entity-ident`.  Counts entities
+  that have any ref-typed attribute pointing at this entity.
+
+  Equivalent to `(degree-of entity-ident {:direction :inverse})`;
+  named separately because backlink-density is a distinct retrieval
+  axis from edge-degree per
+  `decisions/multi_axis_search_catalog_2026_05_08.md` axes 6 vs 7.
+
+  Per fulltext arc Stage 13."
+  ([entity-ident]
+   (backlink-density-of entity-ident nil))
+  ([entity-ident predicates]
+   (degree-of entity-ident {:direction :inverse :predicates predicates})))
+
+(defn recency-rank-of
+  "Return instances of `class-ident` ordered by `temporal-slot` value
+  DESCENDING (most-recent first).  Returns a vec of `[entity-map
+  temporal-value]` pairs; consumers may project to entities-only via
+  `(map first ...)`.
+
+  Caller supplies `temporal-slot` (e.g., `:mm.memory/last-touched`) —
+  substrate does not hardcode class-specific temporal axes.
+
+  Per fulltext arc Stage 13."
+  [class-ident temporal-slot]
+  (->> (d/q '[:find ?e ?t
+              :in $ % ?class ?slot
+              :where
+              (instance-of ?class ?e)
+              [?e ?slot ?t]]
+            (db/db) (all-rules) class-ident temporal-slot)
+       (sort-by second #(compare %2 %1))
+       (mapv (fn [[eid t]] [(db/entity eid) t]))))
+
+(defn freshness-rank-of
+  "Return instances of `class-ident` ordered by `temporal-slot` value
+  ASCENDING (oldest / stalest first — the freshness axis surfaces
+  candidates whose temporal marker is most-in-the-past, meriting
+  attention or review).  Returns a vec of `[entity-map temporal-value]`
+  pairs.
+
+  Caller supplies `temporal-slot` (typically a `:last-reviewed`-style
+  attribute) — substrate does not hardcode class-specific axes.
+
+  Per fulltext arc Stage 13."
+  [class-ident temporal-slot]
+  (->> (d/q '[:find ?e ?t
+              :in $ % ?class ?slot
+              :where
+              (instance-of ?class ?e)
+              [?e ?slot ?t]]
+            (db/db) (all-rules) class-ident temporal-slot)
+       (sort-by second)
+       (mapv (fn [[eid t]] [(db/entity eid) t]))))
+
 (defn search-fulltext
   "Single-attribute fulltext search via Datomic + Lucene.
 
