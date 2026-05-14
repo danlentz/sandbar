@@ -501,7 +501,16 @@
         (let [duration (:event/duration event)]
           (is (number? duration))
           (is (>= duration 0) "Duration should be non-negative")
-          (is (<= duration (- after before 50)) "Duration should be less than total test time"))))))
+          ;; Switched 2026-05-13 from absolute-margin form to the structurally
+          ;; sound invariant: recorded duration cannot exceed wall-clock span.
+          ;; The original 50ms margin (and 250ms first-pass remediation) both
+          ;; fail when the test's total wall span is itself small — when the
+          ;; API call IS the test, there's no "extra overhead" to subtract a
+          ;; margin against.  Captured as test-quality bug
+          ;; (memory/bugs/api_event_test_absolute_timing_margin_brittle_2026_05_13.md);
+          ;; Dan-principle 2026-05-13 — absolute timing tests are frequently
+          ;; problematic; prefer relative/structural assertions.
+          (is (<= duration (- after before)) "Event duration must not exceed wall-clock span"))))))
 
 (deftest verify-multiple-requests-separate-events-test
   (testing "Multiple requests create separate events"

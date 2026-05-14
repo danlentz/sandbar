@@ -39,17 +39,32 @@
 
 (defn workflow-ident->prompt-name
   "Convert a workflow's :db/ident to a prompt name.
-   `:validation/resource` → `\"sandbar.workflow.validation.resource\"`."
+   `:validation/resource` → `\"sandbar.workflow.validation.resource\"`.
+   `:mm/Memory.export`    → `\"sandbar.workflow.mm.Memory.export\"`.
+
+   Sandbar workflow idents follow a single-segment-namespace convention:
+   the namespace part contains no dots.  The name part MAY contain
+   dots, supporting class-namespaced workflows like :mm/Memory.export
+   where the name encodes a Class.Verb pair.  The encoding pairs with
+   first-dot decoding in `prompt-name->workflow-ident`."
   [ident]
+  {:pre [(some? (namespace ident))
+         (not (str/includes? (namespace ident) "."))]}
   (str "sandbar.workflow." (namespace ident) "." (name ident)))
 
 (defn prompt-name->workflow-ident
   "Inverse of workflow-ident->prompt-name. Returns nil if name doesn't
-   match the convention."
+   match the convention.
+
+   Splits on the FIRST dot after the `sandbar.workflow.` prefix —
+   matches the encoder's single-segment-namespace invariant.  Any
+   trailing dots are preserved in the name part (so :mm/Memory.export
+   round-trips losslessly, unlike a last-dot split which would
+   misparse it as :mm.Memory/export)."
   [prompt-name]
   (when (str/starts-with? prompt-name "sandbar.workflow.")
     (let [suffix (subs prompt-name (count "sandbar.workflow."))
-          dot    (str/last-index-of suffix ".")]
+          dot    (str/index-of suffix ".")]
       (when (and dot (pos? dot))
         (keyword (subs suffix 0 dot) (subs suffix (inc dot)))))))
 
