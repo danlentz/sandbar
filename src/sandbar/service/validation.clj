@@ -114,11 +114,10 @@
                                  :errors (:errors results)
                                  :started-at started-at
                                  :completed-at completed-at})
-                ;; Update process data
-                _ @(datomic.api/transact (db/conn)
-                    [[:db/add (:db/id process) :workflow/process-data (pr-str new-data)]])
-                ;; Refresh process
-                updated-process (db/entity (:db/id process))
+                ;; Update process data via the workflow primitive
+                ;; (no more raw datomic.api/transact at the service
+                ;; layer; codex SHOULD-FIX #1).
+                updated-process (wf/update-process-data! process new-data)
                 ;; Determine outcome
                 transition-name (if (zero? (:invalid results)) :pass :fail)]
             (log/info :VALIDATION/COMPLETE {:class class-kw
@@ -128,12 +127,11 @@
             (wf/transition! updated-process transition-name :actor actor))
           (catch Exception e
             (log/error e :VALIDATION/ERROR {:class class-kw :process-id (:db/id process)})
-            (let [error-data (merge process-data
-                                    {:error (.getMessage e)
-                                     :error-at (Date.)})
-                  _ @(datomic.api/transact (db/conn)
-                      [[:db/add (:db/id process) :workflow/process-data (pr-str error-data)]])]
-              (wf/transition! (db/entity (:db/id process)) :error
+            (let [error-data     (merge process-data
+                                        {:error (.getMessage e)
+                                         :error-at (Date.)})
+                  updated-process (wf/update-process-data! process error-data)]
+              (wf/transition! updated-process :error
                               :actor actor
                               :reason (.getMessage e))))))
 

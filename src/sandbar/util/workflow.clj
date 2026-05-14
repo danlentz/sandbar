@@ -348,6 +348,29 @@
       (when (:workflow/started-at entity)
         entity))))
 
+(defn update-process-data!
+  "Replace a workflow process's `:workflow/process-data` payload.
+
+   Encapsulates the raw Datomic transact for process-data updates,
+   so service-layer code can stay at the workflow boundary instead of
+   reaching into Datomic directly.  Per
+   interaction/target_sandbar_introspection_api_layer_not_raw_datomic_2026_05_12.md
+   + codex SHOULD-FIX #1 (validation-as-workflow leaks raw transact).
+
+   The value is `pr-str`'d on write (Sandbar's current process-data
+   shape; per codex DEFER #1 this is the EDN-string substrate that
+   may evolve post-0.1.0 into typed slot decomposition).
+
+   Returns the refreshed process entity after the transact completes."
+  [process data]
+  (let [process-id (or (:db/id process) process)]
+    (when-not (number? process-id)
+      (throw (ex-info "update-process-data! requires a process entity or :db/id"
+                      {:process process})))
+    @(d/transact (db/conn)
+                 [[:db/add process-id :workflow/process-data (pr-str data)]])
+    (db/entity process-id)))
+
 (defn find-process-by-subject
   "Find all processes for a subject entity."
   [subject]
