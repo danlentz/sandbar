@@ -53,12 +53,15 @@
    Guard functions receive (process context) and return boolean."
   (:require [clojure.edn :as edn]
             [clojure.java.io :as io]
+            [clojure.string :as str]
             [clojure.tools.logging :as log]
             [datomic.api :as d]
             [sandbar.db.datatype :as dt]
             [sandbar.db.datomic :as db]
             [sandbar.util.event :as event])
-  (:import [java.util Date]))
+  (:import [java.net JarURLConnection]
+           [java.util Date]
+           [java.util.jar JarFile]))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; State Management
@@ -773,19 +776,64 @@
           (define-workflow! workflow-name spec))))
     (throw (ex-info "Workflow resource not found" {:path resource-path}))))
 
+(defn- list-classpath-resources
+  "List filenames of resources inside a classpath directory.  Works
+   uniformly for both filesystem-backed (lein dev) and JAR-backed
+   (uberjar / Clojars-consumed dependency) classloader URLs.
+
+   The legacy `(file-seq (io/file (io/resource dir)))` idiom fails on
+   JAR URLs (`jar:file:.../X.jar!/dir`) because `java.io.File` cannot
+   traverse JAR internals.  This helper dispatches on the URL protocol:
+
+   - `file:` (development) — use `file-seq` over the directory
+   - `jar:` (production / Clojars consumer) — walk JarFile entries via
+     `JarURLConnection`
+
+   Per Phase U Stage U-2 fix for ultrareview UR-1
+   (`observations/sandbar_workflow_resource_load_jar_uberjar_break_2026_05_14.md`).
+
+   Returns: vector of filename strings (basename only, no directory
+   prefix).  Empty vector when the resource directory is absent."
+  [dir]
+  (let [url (io/resource dir)]
+    (cond
+      (nil? url) []
+
+      (= "file" (.getProtocol url))
+      (->> (io/file url)
+           file-seq
+           (filter #(.isFile ^java.io.File %))
+           (mapv #(.getName ^java.io.File %)))
+
+      (= "jar" (.getProtocol url))
+      (let [^JarURLConnection conn (.openConnection url)
+            ^JarFile jar (.getJarFile conn)
+            prefix (str dir "/")]
+        (with-open [_ jar]
+          (->> (enumeration-seq (.entries jar))
+               (map #(.getName %))
+               (filter #(str/starts-with? % prefix))
+               (remove #(str/ends-with? % "/"))
+               (map #(subs % (count prefix)))
+               (remove str/blank?)
+               (remove #(str/includes? % "/")) ; flat directory only — no nested
+               vec)))
+
+      :else [])))
+
 (defn load-all-workflows-from-resources!
   "Load all workflow definitions from resources/workflows/ directory.
+
+   Works uniformly across development (filesystem-backed classpath)
+   and production (JAR-backed classpath; e.g., consumer pulling
+   sandbar as a Clojars dependency).  Per Phase U Stage U-2 fix for
+   ultrareview UR-1.
 
    Returns a map of workflow names to workflow definition entities."
   []
   (let [workflows-dir "workflows"
-        ;; List .edn files in the workflows directory
-        edn-files (->> (io/resource workflows-dir)
-                       io/file
-                       file-seq
-                       (filter #(and (.isFile %)
-                                    (.endsWith (.getName %) ".edn")))
-                       (map #(.getName %)))]
+        filenames (list-classpath-resources workflows-dir)
+        edn-files (filter #(str/ends-with? % ".edn") filenames)]
     (into {}
           (for [filename edn-files]
             (let [path (str workflows-dir "/" filename)
