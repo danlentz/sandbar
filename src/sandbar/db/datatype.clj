@@ -453,6 +453,90 @@
   [class-ident]
   (into {} (or (:dt/codec-aliases (db/entity class-ident)) [])))
 
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Fulltext primitives — Stage 2 of fulltext arc
+;; (plans/sandbar_fulltext_search_substrate_arc_2026_05_13.md)
+;;
+;; Three primitives at the dt/* substrate layer:
+;;   bm25f-weights-of  — class-attribute getter for :dt/bm25f-weights
+;;                       (sibling of codec-aliases-of)
+;;   fulltext-indexed? — predicate over a slot's :db/fulltext flag
+;;   search-fulltext   — single-attribute Datomic+Lucene query wrapper
+;;
+;; Higher-level multi-field BM25F composition lives at sandbar.search/*
+;; (Stage 4); the dt/* layer exposes per-field primitives only.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defn bm25f-weights-of
+  "Returns the per-class BM25F field-weight map declared on the class via
+  the `:dt/bm25f-weights` schema attribute, or `{}` if none.
+
+  Schema shape: `:dt/bm25f-weights` is cardinality-many; each entry is a
+  `[slot-ident weight-double]` heterogeneous tuple (declared via
+  `:db/tupleTypes [:db.type/keyword :db.type/double]`).  This function
+  reconstructs the map for fulltext consumers.
+
+  Used by `sandbar.search/search-bm25f` (Stage 4) as the default
+  field-weights when no `:field-weights` opt is supplied at query
+  time.  A per-query `:field-weights` opt overrides; this getter
+  surfaces the class-declared baseline.
+
+  Sister to `codec-aliases-of` — same shape pattern, different attribute.
+  The naming follows the algorithm-specific convention (`bm25f-weights`
+  not `weights`) per
+  interaction/check_substrate_schema_attribute_names_against_rdf_owl_semantics_2026_05_13.md
+  to disambiguate from any RDF/OWL weighted-axiom semantics.
+
+  Per fulltext arc Stage 2 of
+  plans/sandbar_fulltext_search_substrate_arc_2026_05_13.md."
+  [class-ident]
+  (into {} (or (:dt/bm25f-weights (db/entity class-ident)) [])))
+
+(defn fulltext-indexed?
+  "Returns true if `attribute` (a slot/property ident) is declared with
+  `:db/fulltext true`, false otherwise.
+
+  Substrate-level predicate; consumers use this to validate that an
+  attribute is fulltext-searchable before invoking `search-fulltext`,
+  or to enumerate the fulltext-indexed slots of a class via
+  `(filter fulltext-indexed? (slots-of class))`.
+
+  Reads directly off the property entity — no traversal of `:dt/type`
+  or domain/range; the `:db/fulltext` Datomic-native flag is the
+  source of truth.
+
+  Per fulltext arc Stage 2 of
+  plans/sandbar_fulltext_search_substrate_arc_2026_05_13.md."
+  [attribute]
+  (boolean (:db/fulltext (db/entity attribute))))
+
+(defn search-fulltext
+  "Single-attribute fulltext search via Datomic + Lucene.
+
+  Returns a seq of `[eid score]` tuples for entities whose `attribute`
+  value matches `query` per Lucene's tokenization + BM25 single-field
+  scoring (Lucene's default Similarity since v6).
+
+  `attribute` must be declared with `:db/fulltext true` in the schema
+  for the query to return hits; absent that, Datomic returns an empty
+  result.  Use `fulltext-indexed?` to validate before calling.
+
+  Query syntax supports Lucene's query-parser shapes: phrase
+  (`\"exact phrase\"`), boolean (`AND` / `OR` / `NOT`), wildcard
+  (`term*`), fuzzy (`term~`), etc.
+
+  Returns raw `[eid score]` tuples; higher-level concerns (limit,
+  result-shape projection, snippet generation, multi-field
+  weighting) live at the `sandbar.search/*` layer (Stage 3+).
+
+  Per fulltext arc Stage 2 of
+  plans/sandbar_fulltext_search_substrate_arc_2026_05_13.md."
+  [attribute query]
+  (d/q '[:find ?e ?score
+         :in $ ?attr ?q
+         :where [(fulltext $ ?attr ?q) [[?e ?value ?tx ?score]]]]
+       (db/db) attribute query))
+
 (defn parents-of
   "Returns the direct parent classes of class dt.
   These are the immediate values of :dt/subclass-of."

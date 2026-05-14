@@ -220,6 +220,105 @@
   ;; interaction/check_substrate_schema_attribute_names_against_rdf_owl_semantics_2026_05_13.md.
   )
 
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Fulltext primitives (Stage 2 of fulltext arc)
+;; plans/sandbar_fulltext_search_substrate_arc_2026_05_13.md
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(deftest bm25f-weights-of-test
+  (testing "bm25f-weights-of returns {} for classes with no :dt/bm25f-weights declared"
+    (is (= {} (dt/bm25f-weights-of :dt/Property)))
+    (is (= {} (dt/bm25f-weights-of :model/User)))
+    (is (= {} (dt/bm25f-weights-of :mm/Tag))
+        ":mm/Tag has no per-class :dt/bm25f-weights declaration"))
+  (testing "bm25f-weights-of returns the declared weight map for :mm/Memory"
+    ;; Positive-path: :mm/Memory declares
+    ;;   [[:mm.memory/name 12.0] [:mm.memory/description 8.0] [:mm.memory/body-raw 1.0]]
+    ;; in schema/mm.edn per fulltext arc Stage 1.
+    (let [weights (dt/bm25f-weights-of :mm/Memory)]
+      (is (= {:mm.memory/name        12.0
+              :mm.memory/description  8.0
+              :mm.memory/body-raw     1.0}
+             weights)
+          ":mm/Memory's :dt/bm25f-weights tuples reconstruct as {slot weight} map")))
+  (testing "bm25f-weights-of returns the declared weight map for :mm/Section"
+    (let [weights (dt/bm25f-weights-of :mm/Section)]
+      (is (= {:mm.section/heading 6.0
+              :mm.section/body    1.0}
+             weights)
+          ":mm/Section's :dt/bm25f-weights tuples reconstruct as {slot weight} map")))
+  (testing "bm25f-weights-of return shape is always a map (never nil, never seq)"
+    (is (map? (dt/bm25f-weights-of :dt/Property)) "Empty case is {}")
+    (is (map? (dt/bm25f-weights-of :mm/Memory)) "Non-empty case is a map")
+    (is (map? (dt/bm25f-weights-of :nonexistent/Class))
+        "Nil-equivalent input still returns {}"))
+  ;; Heterogeneous tuple shape [keyword double] declared via :db/tupleTypes
+  ;; (plural form) per schema/meta.edn — distinct from :dt/codec-aliases's
+  ;; homogeneous :db/tupleType (singular) two-keyword shape.
+  )
+
+(deftest fulltext-indexed?-test
+  (testing "fulltext-indexed? returns true for slots declared :db/fulltext true"
+    ;; Stage 1 added :db/fulltext to six mm/* body-shaped string slots.
+    (is (true? (dt/fulltext-indexed? :mm.memory/name)))
+    (is (true? (dt/fulltext-indexed? :mm.memory/description)))
+    (is (true? (dt/fulltext-indexed? :mm.memory/body-raw)))
+    (is (true? (dt/fulltext-indexed? :mm.section/heading)))
+    (is (true? (dt/fulltext-indexed? :mm.section/body)))
+    (is (true? (dt/fulltext-indexed? :mm.tag/value))))
+  (testing "fulltext-indexed? returns false for slots NOT declared :db/fulltext"
+    ;; Non-text slots — exact-match enums, identifiers, refs, timestamps.
+    (is (false? (dt/fulltext-indexed? :mm.memory/identity))
+        "UUID-identity slot is not fulltext-indexed")
+    (is (false? (dt/fulltext-indexed? :mm.memory/rel-path))
+        "rel-path is exact-match for retrieval, not fulltext")
+    (is (false? (dt/fulltext-indexed? :mm.memory/memory-type))
+        "Memory-type is a keyword enum, faceted not fulltext")
+    (is (false? (dt/fulltext-indexed? :mm.memory/created))
+        "Timestamp instants are not fulltext-indexed")
+    (is (false? (dt/fulltext-indexed? :mm.section/heading-level))
+        "Long-valued slots are not fulltext-indexed")
+    (is (false? (dt/fulltext-indexed? :dt/type))
+        "Ref slots are not fulltext-indexed"))
+  (testing "fulltext-indexed? returns false for nonexistent attribute (no error)"
+    (is (false? (dt/fulltext-indexed? :nonexistent/attribute))
+        "Nonexistent attribute returns false, not nil or throw"))
+  (testing "fulltext-indexed? composes with slots-of for class-level enumeration"
+    (let [memory-fulltext-slots (->> (dt/slots-of :mm/Memory)
+                                     (filter dt/fulltext-indexed?)
+                                     set)]
+      (is (contains? memory-fulltext-slots :mm.memory/name))
+      (is (contains? memory-fulltext-slots :mm.memory/description))
+      (is (contains? memory-fulltext-slots :mm.memory/body-raw))
+      (is (not (contains? memory-fulltext-slots :mm.memory/identity)))
+      (is (not (contains? memory-fulltext-slots :mm.memory/memory-type))))))
+
+(deftest search-fulltext-test
+  (testing "search-fulltext returns hits on a fulltext-indexed attribute"
+    ;; Stage 1 added :db/fulltext true to :mm.memory/body-raw.  Insert
+    ;; two memorials with distinct body text; query for a term in one.
+    (dt/make :mm/Memory {:mm.memory/rel-path "test/datomic.md"
+                         :mm.memory/body-raw "datomic project graph realizes Anderson lineage"})
+    (dt/make :mm/Memory {:mm.memory/rel-path "test/lucene.md"
+                         :mm.memory/body-raw "lucene scoring example for BM25F"})
+    (let [results (dt/search-fulltext :mm.memory/body-raw "datomic")]
+      (is (seq results) "At least one hit for 'datomic'")
+      (is (= 1 (count results)) "Exactly one memorial mentions 'datomic'")
+      (is (every? (fn [[eid score]]
+                    (and (integer? eid) (number? score)))
+                  results)
+          "Each hit is an [eid score] tuple with integer eid + numeric score")))
+  (testing "search-fulltext returns empty for unmatched terms"
+    (let [results (dt/search-fulltext :mm.memory/body-raw "zzzzznomatchterm")]
+      (is (empty? results)
+          "Unmatched term returns empty seq, not nil and not error")))
+  (testing "search-fulltext on a non-fulltext attribute returns empty"
+    ;; :mm.memory/memory-type is not :db/fulltext — Datomic returns no
+    ;; hits without erroring.
+    (let [results (dt/search-fulltext :mm.memory/memory-type "decision")]
+      (is (empty? results)
+          "Query against non-fulltext attribute returns empty, not error"))))
+
 (deftest mm-schema-loaded-test
   (testing "mm/* classes are registered in the metamodel"
     (let [classes (set (dt/all-classes))]
