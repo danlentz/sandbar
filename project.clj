@@ -1,8 +1,10 @@
-(defproject sandbar "0.0.1-SNAPSHOT"
-  :description "RDFS-inspired metamodel platform on Datomic — runtime-evolvable classes with inheritance, validation, REST API, and Model Context Protocol (MCP) server for AI clients"
+(defproject sandbar "0.1.0"
+  :description "Metacircular metamodel platform on Datomic — RDFS-style classes + properties + inheritance, equipped with a four-axis retrieval surface (BM25F fulltext search, structural + temporal aggregation, Wilbur-lineage path-grammar navigation, library-card orientation), exposed simultaneously through HTTP REST and Model Context Protocol (MCP) for AI clients"
+  :author "Dan Lentz"
   :url "https://github.com/danlentz/sandbar"
-  :license {:name "Eclipse Public License"
-            :url "http://www.eclipse.org/legal/epl-v10.html"}
+  :license {:name "EPL-2.0 OR GPL-2.0-or-later WITH Classpath-exception-2.0"
+            :url "https://www.eclipse.org/legal/epl-2.0/"}
+  :signing {:gpg-key "0CA466A1AB48F0C0264AF55307BAD70176C4B179"}
   :dependencies [[org.clojure/clojure "1.12.4"]
                  [org.clojure/core.async "1.8.741"]
                  [org.clojure/core.logic "1.1.1"]
