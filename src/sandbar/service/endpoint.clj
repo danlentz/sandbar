@@ -72,6 +72,62 @@
                 (pr-str (ex-data info)))
     (throw info)))
 
+(defn- entity-ref-reasons
+  "Extract the :reasons set from an ex-info, walking the (:exception ...)
+   chain Pedestal wraps caught throwables in."
+  [info]
+  (or (:reasons (ex-data info))
+      (some-> info ex-cause ex-data :reasons)
+      #{}))
+
+(defn entity-ref-error-handler
+  "Pedestal :error phase projecting `sandbar.entity-ref/*` ex-info reasons
+   to structured HTTP responses:
+     - `:entity-ref/not-found` → HTTP 404
+     - `:entity-ref/malformed-input` /
+       `:entity-ref/lookup-vector-unsupported` /
+       `:entity-ref/no-ident` → HTTP 400
+
+   Non-entity-ref ex-info is re-thrown for upstream handling.
+   Per `decisions/sandbar_entity_ref_abstraction_2026_05_14.md` §D-3.4."
+  [context info]
+  (let [reasons (entity-ref-reasons info)
+        message (some-> info .getMessage)
+        details (ex-data info)]
+    (cond
+      (contains? reasons :entity-ref/not-found)
+      (assoc context :response
+             (return http-status/not-found
+                     {:error    "Entity not found"
+                      :reasons  reasons
+                      :message  message
+                      :details  details}))
+
+      (some #{:entity-ref/malformed-input
+              :entity-ref/lookup-vector-unsupported
+              :entity-ref/no-ident} reasons)
+      (assoc context :response
+             (return http-status/bad-request
+                     {:error    "Invalid entity reference"
+                      :reasons  reasons
+                      :message  message
+                      :details  details}))
+
+      :else
+      (throw info))))
+
+(def entity-ref-error-interceptor
+  "Pedestal interceptor projecting `sandbar.entity-ref/*` ex-info reasons
+   to structured HTTP 400 / 404 responses.  Hooked into the `/api`
+   interceptor stack so REST handlers calling `eref/resolve` /
+   `eref/resolve-ident` (throw-on-error) get clean HTTP-error projection
+   without per-handler try/catch boilerplate.
+
+   Per `decisions/sandbar_entity_ref_abstraction_2026_05_14.md` §D-3.4."
+  (interceptor/interceptor
+    {:name  ::entity-ref-error-interceptor
+     :error entity-ref-error-handler}))
+
 (defn standard-endpoint [{:keys [route request] :as context}
                          {:keys [handler] :as opts}]
   (let [{:keys [route-name]} route

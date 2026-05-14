@@ -66,7 +66,8 @@
                               params/validated-params
                               params/log-params
                               auth/authentication-interceptor
-                              auth/require-authentication]
+                              auth/require-authentication
+                              endpoint/entity-ref-error-interceptor]
        ["/status" {:get status/status-handler}]
        ["/auth"
         ["/logout" {:post auth-api/logout}]
