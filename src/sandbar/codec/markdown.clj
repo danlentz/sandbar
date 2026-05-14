@@ -31,8 +31,10 @@
    Slot mapping rules:
      - Frontmatter keys are mapped to slot idents using the class's
        property-namespace convention (`<class-ns>.<lowercase-class-local>/<key>`)
-     - Per-class aliases (see `known-class-slot-aliases`) handle
-       reserved-word collisions (e.g., `type` → `:mm.memory/memory-type`)
+     - Per-class aliases (read at runtime via `dt/codec-aliases-of`
+       from the `:dt/codec-aliases` schema attribute on the class)
+       handle reserved-word collisions (e.g., `type` →
+       `:mm.memory/memory-type`)
      - Unknown frontmatter keys for which the class has no matching slot
        are passed through under `:frontmatter-extra` (the consumer can
        choose to store them via `mm/Frontmatter`)
@@ -69,7 +71,8 @@
   (:require [clj-yaml.core          :as yaml]
             [clojure.string         :as str]
             [clojure.tools.logging  :as log]
-            [sandbar.codec.protocol :as proto]))
+            [sandbar.codec.protocol :as proto]
+            [sandbar.db.datatype    :as dt]))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Frontmatter / body split + whitespace normalization
@@ -158,33 +161,20 @@
 ;; Class-aware frontmatter ↔ slot mapping
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-(def known-class-slot-aliases
-  "Per-class frontmatter-key → slot-ident alias map.  Handles
-   collisions between YAML's natural key names and Clojure / dt/*
-   reserved-word constraints.  Default rule (when no alias exists):
-   `:<class-namespace>.<lowercase-class-local>/<frontmatter-key>`.
-
-   Example: mm/Memory's frontmatter `type:` maps to slot
-   `:mm.memory/memory-type` because `type` is a reserved word in
-   Clojure / would shadow the `:dt/type` system attribute."
-  {:mm/Memory  {:type :mm.memory/memory-type}})
-
-(def known-class-keyword-slots
-  "Per-class set of slot idents whose values must be coerced
-   string ↔ keyword across the YAML wire format.
-
-   YAML has no native keyword type — bare names parse as strings.
-   For keyword-typed slots (e.g., :mm.memory/memory-type :decision),
-   the codec coerces on parse + emit so the entity-spec map round-trips
-   correctly through `dt/make` (which requires properly-typed values).
-
-   Stage B.2 minimum-viable hardcoding — the corpus's mm/Memory has a
-   small fixed set of keyword-scalar slots.  Stage B.3+ generalizes via
-   `dt/range-of` introspection (which requires a live DB; deferred until
-   the codec runs in a DB-backed context)."
-  {:mm/Memory #{:mm.memory/memory-type
-                :mm.memory/scope
-                :mm.memory/status}})
+;; Per-class frontmatter-key→slot aliases live on the class entity itself
+;; via the `:dt/codec-aliases` schema attribute, read at runtime via
+;; `dt/codec-aliases-of`.  Keyword-typed slot detection comes from the
+;; metamodel via `(= :db.type/keyword (dt/range-of slot))`.
+;;
+;; The prior shape (hardcoded `known-class-slot-aliases` +
+;; `known-class-keyword-slots` maps keyed on :mm/Memory) was a substrate-
+;; layering violation — substrate code carrying consumer-class-specific
+;; knowledge — per
+;; interaction/no_hardcoded_consumer_class_knowledge_in_substrate_2026_05_13.md
+;; + interaction/never_minimum_viable_in_substrate_without_explicit_authorization_2026_05_13.md.
+;; Stage C of plans/sandbar_codex_review_remediation_arc_2026_05_13.md
+;; replaced those hardcoded maps with the introspection-driven shape
+;; below, using the new `dt/codec-aliases-of` primitive from Stage A.
 
 (defn- class-slot-namespace
   "Derive the property-namespace for a class.  Convention is
@@ -210,10 +200,21 @@
 
 (defn frontmatter-key->slot
   "Map a YAML frontmatter key (keyword) to the slot ident for the given
-   class.  Looks up class-specific aliases first; falls back to the
-   namespace-prefixing convention."
+   class.  Resolution:
+
+     1. Look up class-declared alias via `dt/codec-aliases-of`
+        (reads the `:dt/codec-aliases` schema attribute on the class).
+     2. Fall back to the namespace-prefixing convention:
+        `:<class-namespace>.<lowercase-class-local>/<frontmatter-key>`.
+
+   Example — `:mm/Memory` declares
+   `:dt/codec-aliases [[:type :mm.memory/memory-type]]` in
+   `schema/mm.edn`; this function reads that declaration via
+   `dt/codec-aliases-of :mm/Memory` and resolves `:type` →
+   `:mm.memory/memory-type` (avoiding the :dt/type system-attribute
+   collision)."
   [class-ident yaml-key]
-  (or (get-in known-class-slot-aliases [class-ident yaml-key])
+  (or (get (dt/codec-aliases-of class-ident) yaml-key)
       (keyword (class-slot-namespace class-ident) (name yaml-key))))
 
 (defn- coerce-string->keyword
@@ -226,20 +227,31 @@
     (sequential? v) (mapv coerce-string->keyword v)
     :else v))
 
+(defn- keyword-typed-slot?
+  "Returns true if `slot-ident`'s declared `:dt/range` is `:db.type/keyword`.
+
+   Replaces the prior hardcoded `known-class-keyword-slots` map.  Reads
+   the slot's range via `dt/range-of` — the metamodel introspection
+   path."
+  [slot-ident]
+  (= :db.type/keyword (dt/range-of slot-ident)))
+
 (defn frontmatter->slots
   "Transform a YAML-parsed frontmatter map into a slot map for the given
    class.  Each key is run through `frontmatter-key->slot`; values of
-   keyword-typed slots (per `known-class-keyword-slots`) are coerced
-   string → keyword."
+   keyword-typed slots (detected via `dt/range-of`) are coerced
+   string → keyword.
+
+   No per-class hardcoding — the codec reads the keyword-typed property
+   set from the metamodel at runtime."
   [class-ident frontmatter-map]
-  (let [kw-slots (get known-class-keyword-slots class-ident #{})]
-    (into {}
-          (for [[k v] frontmatter-map
-                :let [slot (frontmatter-key->slot class-ident k)
-                      v'   (if (contains? kw-slots slot)
-                             (coerce-string->keyword v)
-                             v)]]
-            [slot v']))))
+  (into {}
+        (for [[k v] frontmatter-map
+              :let [slot (frontmatter-key->slot class-ident k)
+                    v'   (if (keyword-typed-slot? slot)
+                           (coerce-string->keyword v)
+                           v)]]
+          [slot v'])))
 
 (defn- coerce-keyword->string
   "Coerce a keyword value to its full-form string for YAML emission
@@ -254,15 +266,18 @@
     :else v))
 
 (defn- invert-aliases
-  "Invert the class-aliases map for emission — slot-ident → yaml-key."
+  "Invert the class's codec-aliases map for emission — slot-ident → yaml-key.
+   Reads aliases via `dt/codec-aliases-of` (the runtime metamodel
+   introspection path; no hardcoded substrate-side map)."
   [class-ident]
   (into {}
-        (for [[k v] (get known-class-slot-aliases class-ident {})]
+        (for [[k v] (dt/codec-aliases-of class-ident)]
           [v k])))
 
 (defn slot->frontmatter-key
   "Map a slot ident back to a YAML frontmatter key.  Inverse of
-   `frontmatter-key->slot`."
+   `frontmatter-key->slot`.  Resolution: class-declared alias (via
+   `dt/codec-aliases-of`) first; fall back to `(keyword (name slot-ident))`."
   [class-ident slot-ident]
   (or (get (invert-aliases class-ident) slot-ident)
       (keyword (name slot-ident))))
@@ -274,17 +289,17 @@
 (defn- emit-frontmatter
   "Emit a slot map as YAML frontmatter text (without the `---` fences).
    Uses block-style YAML for readability.  Empty map → empty string.
-   Keyword-typed slot values (per `known-class-keyword-slots`) are
-   coerced keyword → bare-name string so YAML emits idiomatic bare names
-   (e.g., `type: decision` instead of `type: :decision`)."
+   Keyword-typed slot values (detected via `dt/range-of` →
+   `:db.type/keyword`) are coerced keyword → bare-name string so YAML
+   emits idiomatic bare names (e.g., `type: decision` instead of
+   `type: :decision`)."
   [slot-map class-ident]
   (if (empty? slot-map)
     ""
-    (let [kw-slots (get known-class-keyword-slots class-ident #{})
-          yaml-map (into {}
+    (let [yaml-map (into {}
                          (for [[slot v] slot-map
                                :let [yaml-key (slot->frontmatter-key class-ident slot)
-                                     yaml-val (if (contains? kw-slots slot)
+                                     yaml-val (if (keyword-typed-slot? slot)
                                                 (coerce-keyword->string v)
                                                 v)]]
                            [yaml-key yaml-val]))]
@@ -337,7 +352,8 @@
 
   (supports? [_ _class-ident]
     ;; Generic codec — works with any class.  Class-aware slot mapping
-    ;; handled via known-class-slot-aliases + the convention rule.
+    ;; handled via runtime `dt/codec-aliases-of` introspection + the
+    ;; namespace-prefix convention rule.
     true)
 
   (round-trip-test [self entity]
@@ -425,6 +441,41 @@
       (when (and (<= level max-heading-level)
                  (seq title))
         {:level level :title title}))))
+
+(defn- extract-prologue
+  "Return the prologue content from a markdown body — everything before
+   the first heading line, including any trailing newline that connects
+   the prologue to the first heading.
+
+   Returns the prologue string (possibly empty) — never nil.
+
+   `parse-sections` discards prologue content because there is no
+   section to attach it to (the body buffer flush is a no-op until
+   the first section opens).  `body-raw` on the memory entity retains
+   the original full body, so `emit-document` extracts the prologue
+   here and prepends it to the section-reconstructed body — preserving
+   round-trip fidelity for documents that have content before the
+   first heading.
+
+   Per ultrareview finding #7 (codec/markdown.clj:614) — `emit-document
+   drops prologue content (body before first heading)`."
+  [body-raw]
+  (if (str/blank? body-raw)
+    ""
+    (let [lines        (str/split body-raw #"\n" -1)
+          prologue-lns (take-while (complement parse-heading-line) lines)]
+      (cond
+        ;; No heading found — whole body is prologue.  Emit as-is.
+        (= (count prologue-lns) (count lines))
+        body-raw
+
+        ;; No prologue (first line is a heading)
+        (empty? prologue-lns)
+        ""
+
+        ;; Prologue followed by heading — emit prologue lines + trailing \n
+        :else
+        (str (str/join "\n" prologue-lns) "\n")))))
 
 (defn parse-sections
   "Walk a markdown body + produce a vector of mm/Section entity-specs in
@@ -619,8 +670,13 @@
    Derived attributes (`:db/ident`, `:mm.memory/rel-path`,
    `:mm.memory/first-section`) are stripped before serialization — they
    re-derive from the file's filesystem path + the heading walk on
-   ingest, so emitting them into frontmatter would create a redundant
-   surface that parse interprets as a regular slot.
+   ingest.
+
+   Prologue preservation: any content in the memory's `:mm.memory/body-raw`
+   that appears BEFORE the first heading line (which `parse-sections`
+   intentionally discards because there is no section to attach it to)
+   is extracted and prepended to the section-reconstructed body.  Per
+   ultrareview finding #7.
 
    When the input is a single-entity vector (mm/Memory only, no sections),
    delegates to MarkdownCodec/emit (frontmatter + body-raw)."
@@ -632,9 +688,11 @@
     (if (empty? sections)
       (proto/emit c memory-stripped {})
       (let [first-sec-ident (:mm.memory/first-section memory)
-            body-text       (emit-sections-body sections (:db/ident memory) first-sec-ident)
-            ;; Build a memory-with-body-from-sections for the codec's emit
-            memory-for-emit (assoc memory-stripped :mm.memory/body-raw body-text)]
+            section-body    (emit-sections-body sections (:db/ident memory) first-sec-ident)
+            prologue        (extract-prologue (:mm.memory/body-raw memory))
+            full-body       (if (str/blank? prologue) section-body (str prologue section-body))
+            ;; Build a memory-with-body-from-sections+prologue for the codec's emit
+            memory-for-emit (assoc memory-stripped :mm.memory/body-raw full-body)]
         (proto/emit c memory-for-emit {})))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;

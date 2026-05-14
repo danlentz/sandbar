@@ -185,8 +185,13 @@
         (throw (ex-info "JSON codec: input is neither object nor array"
                         {:type (type parsed)})))))
 
-  (emit [_ entity-or-coll _opts]
-    (let [pretty? (boolean (some-> entity-or-coll :_pretty?))
+  (emit [_ entity-or-coll opts]
+    ;; Pretty-printing is controlled via `(:pretty? opts)` per the Codec
+    ;; protocol contract.  The prior implementation read `:_pretty?` off
+    ;; the ENTITY itself (and ignored opts entirely) — ultrareview #3 at
+    ;; codec/json.clj:165.  That conflated opts-shape with entity-shape;
+    ;; opts is the correct channel for codec-behavior hints.
+    (let [pretty? (boolean (:pretty? opts))
           payload (cond
                     (sequential? entity-or-coll)
                     (mapv entity->json-obj entity-or-coll)

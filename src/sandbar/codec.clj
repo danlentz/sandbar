@@ -117,20 +117,21 @@
   "Return the `:dt/native-codec` format keyword declared on `class-ident`
    (a :dt/Class entity's ident), or nil if no default is declared.
 
-   Reads the model-layer attribute via `dt/*`; never queries Datomic
-   directly.  Returns nil if the class is not found or has no native
-   codec declared."
+   Delegates to `sandbar.db.datatype/native-codec-of-class` — the
+   purpose-built helper that reads the codec directly off the class
+   entity (NOT via `:dt/type` traversal).  Resolves codex MUST-FIX #1
+   per
+   decisions/sandbar_dt_star_explicit_ident_entity_helper_split_2026_05_13.md.
+
+   The prior implementation called `(dt/class-of class-ident)` which
+   resolved to `:dt/Class` (the meta-class), then read `:dt/native-codec`
+   off it — invariably nil since the meta-class has no native codec.
+   Stage A added the new `dt/native-codec-of-class` primitive precisely
+   to express this lookup correctly."
   [class-ident]
   (when class-ident
     (try
-      (let [cls (dt/class-of class-ident)]
-        ;; class-of can return either the class entity or, when given a
-        ;; class-ident keyword, the class itself; some Sandbar shapes
-        ;; return a map with :dt/native-codec, others wrap.  Pick the
-        ;; native-codec slot if present.
-        (or (:dt/native-codec cls)
-            (when (instance? clojure.lang.IPersistentMap class-ident)
-              (:dt/native-codec class-ident))))
+      (dt/native-codec-of-class class-ident)
       (catch Exception _ nil))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -143,12 +144,26 @@
 
 (defn- resolve-format
   "Pick the codec format for an entity given opts.  Returns the format
-   keyword.  Throws when no format can be resolved."
-  [{:keys [format class] :as opts} entity]
+   keyword.  Throws when no format can be resolved.
+
+   Resolution order:
+     1. Explicit `:format` in opts
+     2. `:mime-type` in opts → look up via codec-for-mime registry
+     3. `:class` in opts → read class's `:dt/native-codec`
+     4. Entity's `:dt/type` → read class's `:dt/native-codec`
+     5. Throw
+
+   `:mime-type` resolution per codex SHOULD-FIX #3 — the Layer-4
+   `doc/api/codec-protocol.md` documented this path; this implementation
+   now matches the docs."
+  [{:keys [format mime-type class] :as opts} entity]
   (or format
+      (when mime-type
+        (when-let [[fmt _codec] (codec-for-mime mime-type)]
+          fmt))
       (and class       (native-codec-for-class class))
       (and entity      (native-codec-for-class (:dt/type entity)))
-      (throw (ex-info "No codec format can be resolved.  Pass {:format ...} or set :dt/native-codec on the class."
+      (throw (ex-info "No codec format can be resolved.  Pass {:format ...}, {:mime-type ...}, or set :dt/native-codec on the class."
                       {:opts opts :entity-class (:dt/type entity)}))))
 
 (defn- resolve-codec
@@ -192,14 +207,40 @@
                      {:mime-type mime-type
                       :known     (mapcat #(proto/mime-types %) (vals @+codecs+))})))))
 
+(defn parse-for-class
+  "Parse input using the codec resolved from the class's `:dt/native-codec`
+   declaration.  Convenience for the class-default routing path:
+   equivalent to `(parse input (assoc opts :class class-ident))`.
+
+   Per codex SHOULD-FIX #3 — Layer-4 `doc/api/codec-protocol.md` documents
+   this convenience; the implementation now matches the docs."
+  ([class-ident input] (parse-for-class class-ident input {}))
+  ([class-ident input opts]
+   (parse input (assoc opts :class class-ident))))
+
 (defn emit
   "Emit entity as a native-representation string.  Format resolution:
-   explicit :format in opts > entity's class's :dt/native-codec > error."
+   explicit :format in opts > :mime-type in opts > entity's class's
+   :dt/native-codec > error."
   ([entity] (emit entity {}))
   ([entity opts]
    (let [fmt   (resolve-format opts entity)
          codec (resolve-codec fmt)]
      (proto/emit codec entity opts))))
+
+(defn emit-mime
+  "Emit entity using the codec registered for `mime-type`.  Throws if
+   no codec claims that MIME type.
+
+   Per codex SHOULD-FIX #3 — Layer-4 `doc/api/codec-protocol.md` documents
+   this convenience; the implementation now matches the docs."
+  ([mime-type entity] (emit-mime mime-type entity {}))
+  ([mime-type entity opts]
+   (if-let [[fmt codec] (codec-for-mime mime-type)]
+     (proto/emit codec entity (assoc opts :format fmt))
+     (throw (ex-info (str "No codec registered for MIME type " mime-type)
+                     {:mime-type mime-type
+                      :known     (mapcat #(proto/mime-types %) (vals @+codecs+))})))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Round-trip-test convenience

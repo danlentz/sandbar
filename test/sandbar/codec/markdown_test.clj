@@ -1,17 +1,24 @@
 (ns sandbar.codec.markdown-test
-  "Tests for sandbar.codec.markdown — Stage B.2 minimum-viable scope:
-   frontmatter ↔ slot map + body verbatim round-trip.  No section-tree
-   decomposition tests yet (those land at Stage B.3)."
+  "Tests for sandbar.codec.markdown — frontmatter ↔ slot map + body
+   verbatim round-trip + section tree.
+
+   Stage C refactor (plans/sandbar_codex_review_remediation_arc_2026_05_13.md):
+   the codec now reads :dt/codec-aliases from class entities at runtime
+   via dt/codec-aliases-of (no hardcoded substrate-side maps), so these
+   tests require a real metamodel — uses tu/make-test-db-fixture to
+   load schema/*.edn including schema/mm.edn."
   (:require [clojure.test            :refer :all]
             [clojure.string          :as str]
             [sandbar.codec           :as codec]
             [sandbar.codec.protocol  :as proto]
-            [sandbar.codec.markdown  :as md]))
+            [sandbar.codec.markdown  :as md]
+            [sandbar.test-util       :as tu]))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; Fixture — fresh codec registry per test
+;; Fixtures — DB with full schema + fresh codec registry per test
 
 (use-fixtures :each
+  (tu/make-test-db-fixture {:test-name "codec-markdown-test"})
   (fn [t]
     (codec/clear-all!)
     (try (t) (finally (codec/clear-all!)))))
