@@ -140,10 +140,11 @@
         ["/group-by" {:get aggregate-api/group-by}]
         ["/rank-by"  {:get aggregate-api/rank-by}]]
 
-       ;; Navigation API (Stage P-6 — fulltext arc Phase N / Stage P)
-       ;; Path-grammar walker; consumes sandbar.navigate.path/path-via.
+       ;; Navigation API (Stage P-6 + Stage 22 — fulltext arc Phase N / Stage P)
+       ;; Path-grammar walker + same-directory peers.
        ["/navigate"
-        ["/path" {:get navigate-api/path-via}]]
+        ["/path"     {:get navigate-api/path-via}]
+        ["/siblings" {:get navigate-api/siblings-of}]]
        ]
 
       ;; MCP (Model Context Protocol) endpoint — per

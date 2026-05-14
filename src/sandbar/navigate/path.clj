@@ -43,15 +43,19 @@
 
 (defn- entity-projection
   "Project a Datomic entity-map to a plain map keyed by :db/id +
-   :db/ident + namespaced-keyword slots."
+   :db/ident + namespaced-keyword slots.
+
+   Note: Datomic entity-iteration does NOT include `:db/id` in the
+   key-seq (special method).  We explicitly add it."
   [entity]
   (when entity
-    (into {}
-          (filter (fn [[k _v]]
-                    (or (= :db/id k)
-                        (= :db/ident k)
-                        (and (keyword? k) (some? (namespace k)))))
-                  entity))))
+    (let [base (into {}
+                     (filter (fn [[k _v]]
+                               (or (= :db/ident k)
+                                   (and (keyword? k) (some? (namespace k))))))
+                     entity)]
+      (cond-> base
+        (:db/id entity) (assoc :db/id (:db/id entity))))))
 
 (defn- parse-via
   "Accept :via as EDN-string OR pre-parsed Clojure data (vector /

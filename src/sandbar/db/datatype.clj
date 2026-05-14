@@ -776,6 +776,51 @@
 ;; control the traversal step.
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
+(defn siblings-of
+  "Same-directory peers of `entity-ident` via `path-slot` — entities
+  whose `path-slot` value shares the same directory prefix as the
+  given entity's, excluding the entity itself.
+
+  Filesystem-style semantics: 'decisions/foo.md' is a sibling of
+  'decisions/bar.md' (same dir prefix 'decisions/'); not a sibling of
+  'decisions/sub/baz.md' (one level deeper) or of 'patterns/foo.md'
+  (different dir).
+
+  Required:
+    entity-ident — keyword ident or eid; must have `path-slot` populated
+    path-slot    — slot ident (e.g., `:mm.memory/rel-path`) carrying
+                   the filesystem-style path string
+
+  Returns a vec of entity-maps; empty if the entity is at the root (no
+  parent directory) or has no peers.
+
+  Substrate-quality: class-agnostic; `path-slot` is caller-supplied.
+  Per fulltext arc Stage 22."
+  [entity-ident path-slot]
+  (let [entity     (db/entity entity-ident)
+        rel-path   (get entity path-slot)]
+    (if (or (nil? rel-path) (not (string? rel-path)))
+      []
+      (let [self-eid   (:db/id entity)
+            sep-idx    (clojure.string/last-index-of rel-path "/")
+            dir-prefix (if sep-idx
+                         (subs rel-path 0 (inc sep-idx))
+                         "")
+            candidates (d/q '[:find ?e ?p
+                              :in $ ?slot
+                              :where
+                              [?e ?slot ?p]]
+                            (db/db) path-slot)
+            same-dir?  (fn [path]
+                         (and (clojure.string/starts-with? path dir-prefix)
+                              (let [tail (subs path (count dir-prefix))]
+                                (not (clojure.string/includes? tail "/")))))]
+        (->> candidates
+             (filter (fn [[eid path]]
+                       (and (not= eid self-eid)
+                            (same-dir? path))))
+             (mapv (fn [[eid _]] (db/entity eid))))))))
+
 (defn graph-walk-from
   "Walk the typed-edge graph outward from `seed-ident` up to `hops`
   levels of distance.  Returns a vec of result maps for every entity

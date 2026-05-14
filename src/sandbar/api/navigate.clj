@@ -18,10 +18,11 @@
   keyword; `:via` is parsed as EDN at the consumer layer; `:include`
   is split on commas."
   (:require [clojure.string :as str]
-            [sandbar.navigate.path :as nav-path]
-            [sandbar.service.endpoint :as endpoint :refer [defhandler return]]
-            [sandbar.service.params :as params :refer [defvalidator]]
-            [sandbar.util.http-status :as http-status]))
+            [sandbar.navigate.path     :as nav-path]
+            [sandbar.navigate.siblings :as nav-siblings]
+            [sandbar.service.endpoint  :as endpoint :refer [defhandler return]]
+            [sandbar.service.params    :as params :refer [defvalidator]]
+            [sandbar.util.http-status  :as http-status]))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Coercion helpers (mirror sandbar.api.aggregate pattern)
@@ -60,7 +61,8 @@
 ;; Validators (pass-through; coercion in handler)
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-(defvalidator ::path-via [_] identity)
+(defvalidator ::path-via    [_] identity)
+(defvalidator ::siblings-of [_] identity)
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Handler
@@ -101,6 +103,41 @@
                      (some? limit)        (assoc :limit limit)
                      (some? include)      (assoc :include include))]
           (nav-path/path-via opts))
+        (catch clojure.lang.ExceptionInfo e
+          (return http-status/bad-request
+                  {:error (.getMessage e) :details (ex-data e)}))))))
+
+(defhandler siblings-of
+  "GET /api/navigate/siblings - Same-directory peers of an entity.
+
+   Query params:
+     ?entity=:mm.memory/decisions-foo    - Anchor entity ident (REQUIRED)
+     ?path-slot=:mm.memory/rel-path      - Slot ident carrying the
+                                            filesystem-style path (REQUIRED)
+     ?limit=20                            - Max returned siblings (default 0 = no cap)
+
+   Response:
+     {:siblings [...] :total <int> :returned <int>}
+
+   Per fulltext arc Stage 22."
+  [_ _ params]
+  (let [entity-ident (str->keyword (:entity params))
+        path-slot    (str->keyword (:path-slot params))
+        limit        (str->long (:limit params))]
+    (cond
+      (nil? entity-ident)
+      (return http-status/bad-request
+              {:error "Missing required query param: entity"})
+
+      (nil? path-slot)
+      (return http-status/bad-request
+              {:error "Missing required query param: path-slot"})
+
+      :else
+      (try
+        (let [opts (cond-> {:entity entity-ident :path-slot path-slot}
+                     (some? limit) (assoc :limit limit))]
+          (nav-siblings/siblings-of opts))
         (catch clojure.lang.ExceptionInfo e
           (return http-status/bad-request
                   {:error (.getMessage e) :details (ex-data e)}))))))

@@ -40,6 +40,7 @@
             [sandbar.aggregate          :as aggregate]
             [sandbar.codec              :as codec]
             [sandbar.navigate.path      :as nav-path]
+            [sandbar.navigate.siblings  :as nav-siblings]
             [sandbar.projection      :as pg]
             [sandbar.db.datatype        :as dt]
             [sandbar.db.datomic         :as db]
@@ -75,15 +76,21 @@
 
 (defn- entity-projection
   "Project an entity-map to a JSON-friendly map.
-   Keeps `:db/id`, `:db/ident`, and namespaced-keyword slots."
+   Keeps `:db/id`, `:db/ident`, and namespaced-keyword slots.
+
+   Note: Datomic entity-iteration does NOT include `:db/id` in the
+   key-seq (it's accessed via a special method).  We explicitly add
+   `:db/id` to the projection so callers can rely on it being present
+   in serialized JSON / EDN output."
   [entity]
   (when entity
-    (into {}
-          (filter (fn [[k _v]]
-                    (or (= :db/id k)
-                        (= :db/ident k)
-                        (and (keyword? k) (some? (namespace k)))))
-                  entity))))
+    (let [base (into {}
+                     (filter (fn [[k _v]]
+                               (or (= :db/ident k)
+                                   (and (keyword? k) (some? (namespace k))))))
+                     entity)]
+      (cond-> base
+        (:db/id entity) (assoc :db/id (:db/id entity))))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; JSON Schema type mapping (carried over from per-class implementation
@@ -508,6 +515,20 @@
 ;; plans/sandbar_fulltext_search_substrate_arc_2026_05_13.md.
 ;; MCP boundary wrapper around sandbar.navigate.path/path-via — the
 ;; path-grammar walker primitive.
+
+(defn- navigate-siblings-of-handler [args]
+  (let [entity-arg    (or (get args "entity") (get args :entity))
+        path-slot-arg (or (get args "path-slot") (get args :path-slot))
+        limit         (or (get args "limit") (get args :limit))]
+    (when (nil? entity-arg)
+      (throw (ex-info "Missing required argument: entity" {:args args})))
+    (when (nil? path-slot-arg)
+      (throw (ex-info "Missing required argument: path-slot" {:args args})))
+    (let [entity-ident (->ident entity-arg)
+          path-slot    (->ident path-slot-arg)
+          opts (cond-> {:entity entity-ident :path-slot path-slot}
+                 (some? limit) (assoc :limit limit))]
+      (nav-siblings/siblings-of opts))))
 
 (defn- navigate-path-via-handler [args]
   (let [from-arg (or (get args "from") (get args :from))
@@ -956,20 +977,22 @@
                    [:from])
     :handler project-import-handler}
 
-   ;; Aggregation operations (Stage 14 — fulltext arc Phase G)
+   ;; Aggregation operations (Stage 14 — fulltext arc Phase G).
+   ;; Descriptions follow the WHICH/WHEN/HOW/ORDER/COMBINATION discipline
+   ;; per authorizations/sandbar_focus_for_0_1_0_release_plus_mcp_llm_consumability_discipline_2026_05_14.md.
    {:name "sandbar.aggregate.count"
-    :title "Count instances of a class"
-    :description "Count entities matching `:class` with optional `:where` Datalog filter.  `:where` is an EDN string of Datalog clauses (e.g. \"[[?e :mm.memory/memory-type :decision]]\") because JSON has no native representation for Datalog symbols; in-process callers may pass an already-parsed vector.  Result: `{:count <int>}`.  Per fulltext arc Stage 14 of plans/sandbar_fulltext_search_substrate_arc_2026_05_13.md."
+    :title "Count entities of a class (with optional Datalog filter)"
+    :description "WHICH: returns a single integer count of entities that are instances of `:class` (including subclass instances) matching an optional `:where` Datalog filter.\n\nWHEN: use when you need the SIZE of a class's instance set — total count or a filtered subset.  When NOT to use: (a) you also need the entities themselves — use `sandbar.class.instances` (full set) or `sandbar.aggregate.rank-by` (top-K); (b) you need counts BROKEN DOWN BY a slot value — use `sandbar.aggregate.group-by` instead.\n\nHOW: `:class` is the class ident (e.g. `:mm/Memory`).  `:where` is an EDN-STRING of Datalog clauses (JSON has no native representation for Datalog symbols `?e`, `?v`); the convention is `?e` for the entity at the head of the count walk.  Example: `\"[[?e :mm.memory/memory-type :decision]]\"`.\n\nORDER: no prerequisites; leaf-call.  To discover available classes first, use `sandbar.schema.classes`; to discover slot idents on a class, use `sandbar.class.slots`.\n\nCOMBINATION: composes with `sandbar.aggregate.group-by` (`count` for the cardinality, `group-by` for the breakdown) and with `sandbar.aggregate.rank-by` (use `count` to size the candidate population first).\n\nResult: `{:count <int>}`.  Per fulltext arc Stage 14 of plans/sandbar_fulltext_search_substrate_arc_2026_05_13.md."
     :inputSchema (one-required
                    {:class {:type "string"
                             :description "Class ident (e.g. ':mm/Memory')"}
                     :where {:type "string"
-                            :description "Optional EDN-string of Datalog clauses (e.g. \"[[?e :mm.memory/memory-type :decision]]\")"}}
+                            :description "Optional EDN-string of Datalog clauses; ?e is the entity at the head of the count walk"}}
                    [:class])
     :handler aggregate-count-handler}
    {:name "sandbar.aggregate.group-by"
-    :title "Group-by-count facet aggregation"
-    :description "Group instances of `:class` by `:group-by` slot value; count per group.  Optional `:where` Datalog filter (EDN-string).  Result: `{:groups {value count} :total <int>}`.  Per fulltext arc Stage 14."
+    :title "Group-by-count facet aggregation over a class's instances"
+    :description "WHICH: groups instances of `:class` by `:group-by` slot value, returns `{value: count}` map + total.\n\nWHEN: use for facet-style breakdowns — 'how many memories of each memory-type?', 'how many properties in each domain?'.  When NOT to use: (a) only the total count is needed — use `sandbar.aggregate.count`; (b) you need ranked instances rather than counts — use `sandbar.aggregate.rank-by`; (c) you need group-counts over a FULLTEXT match-set — use `sandbar.search.bm25f` with `:include [:facets]` opt instead (search → facet in one call).\n\nHOW: `:class` is the class ident.  `:group-by` is the slot ident to group by (must be a single-valued slot — multi-cardinality slots will count each value separately).  Optional `:where` (EDN-string Datalog) constrains the candidate set BEFORE grouping.  Entities where `:group-by` is unset are skipped (not counted in any group).\n\nORDER: no prerequisites.  Discover slot idents first via `sandbar.class.slots` if uncertain.\n\nCOMBINATION: pairs with `sandbar.aggregate.count` (total) and `sandbar.aggregate.rank-by` (top-K within a group, via a follow-up call per group).  Use `sandbar.search.bm25f` `:facet-by` opt for the same shape over a search match-set.\n\nResult: `{:groups {value count} :total <int>}`.  Per fulltext arc Stage 14."
     :inputSchema (one-required
                    {:class    {:type "string"
                                :description "Class ident"}
@@ -980,8 +1003,8 @@
                    [:class :group-by])
     :handler aggregate-group-by-handler}
    {:name "sandbar.aggregate.rank-by"
-    :title "Structural-rank re-ordering"
-    :description "Re-order instances of `:class` by structural-rank axis: `:degree` / `:backlink-density` / `:recency` / `:freshness`.  Required `:temporal-slot` for `:recency` and `:freshness` axes (the slot ident carrying the temporal value, e.g. ':mm.memory/last-touched'); substrate does not hardcode class-specific temporal axes per substrate-quality discipline.  Result: `{:hits [{:entity ... :rank-score ...}] :total <int> :returned <int>}`.  Per fulltext arc Stage 14."
+    :title "Structural-rank re-ordering by edge degree / backlink-density / recency / freshness"
+    :description "WHICH: re-orders instances of `:class` by one of four structural-rank axes:\n  * `:degree` — total ref-attribute count (outbound + inbound by default; substrate's most-connected entities)\n  * `:backlink-density` — inbound ref-attribute count (who CITES this entity?  prominence-by-citation)\n  * `:recency` — descending order by `:temporal-slot` value (most-recently-touched first)\n  * `:freshness` — ASCENDING order by `:temporal-slot` value (stalest first; candidates meriting attention/review)\n\nWHEN: use for 'top-K' retrieval where ranking is structural, not content-based.  Compose with content-based ranking via `sandbar.search.bm25f` (bm25f scores content; rank-by re-orders structural axes).  When NOT to use: (a) content-relevance ranking — use `sandbar.search.bm25f`; (b) you only need counts — use `sandbar.aggregate.count` / `.group-by`.\n\nHOW: `:class` + `:rank-by` are required.  `:rank-by` is the axis keyword.  `:limit` defaults to 20 (0 = no cap).  CRITICAL: `:temporal-slot` is REQUIRED for `:rank-by :recency` and `:freshness` — substrate is class-agnostic; you must supply the temporal-axis slot (e.g. `:mm.memory/last-touched` for memory recency, `:mm.memory/last-reviewed` for freshness).  Calling `:recency` without `:temporal-slot` raises 400.  For `:degree` / `:backlink-density`, no `:temporal-slot` needed.\n\nORDER: no prerequisites.  To discover temporal-axis slot candidates on a class, use `sandbar.class.slots`.\n\nCOMBINATION: ranked instances become a candidate set for downstream filtering or projection.  Combine with `sandbar.aggregate.group-by` for stratified ranking (rank-then-group; though only the top-K within the global rank is preserved).  For ranking over a fulltext match-set, the cross-axis composition lands at Stage 29 (`:where` opt on rank-by today provides Datalog-filter composition; full structural-rank-over-bm25f-match-set is Stage 29).\n\nResult: `{:hits [{:entity <entity-map> :rank-score <num>} ...] :total <int> :returned <int>}`.  Per fulltext arc Stage 14."
     :inputSchema (one-required
                    {:class         {:type "string"
                                     :description "Class ident"}
@@ -990,14 +1013,28 @@
                     :limit         {:type "integer"
                                     :description "Max hits to return (default 20; 0 = no cap)"}
                     :temporal-slot {:type "string"
-                                    :description "Required for :recency / :freshness — temporal-axis slot ident"}}
+                                    :description "REQUIRED for :recency / :freshness — temporal-axis slot ident (e.g. ':mm.memory/last-touched')"}}
                    [:class :rank-by])
     :handler aggregate-rank-by-handler}
 
+   ;; Navigation — siblings-of (Stage 22 — fulltext arc Phase N)
+   {:name "sandbar.navigate.siblings-of"
+    :title "Same-directory peers of an entity via a filesystem-style path slot"
+    :description "WHICH: returns entities whose `:path-slot` value shares the same directory prefix as `:entity`'s `:path-slot` value (filesystem-style — 'decisions/foo.md' is a sibling of 'decisions/bar.md' but NOT of 'decisions/sub/baz.md' or 'patterns/foo.md').\n\nWHEN: use to enumerate documents stored under the same logical 'directory' as a given anchor — e.g., listing all decision memorials in `decisions/`, all guides in `doc/guides/`.  When NOT to use: (a) entities lacking a filesystem-style path slot — reach for `sandbar.navigate.inbound` with `:next-sibling` / `:previous-sibling` predicate filter for typed-edge SIOC-pairwise sibling chains (mm/Section pattern); (b) recursive descent through sub-directories — reach for `sandbar.navigate.path-via` with `:FILTER` over a directory prefix.\n\nHOW: `:entity` is the anchor entity (ident or eid); `:path-slot` is the attribute ident carrying the filesystem-style path (e.g., `:mm.memory/rel-path`).  The substrate is CLASS-AGNOSTIC — the slot is caller-supplied; no hardcoded knowledge of memory-model vs other domain classes.  Optional `:limit` caps returned siblings (default 0 = no cap; cap is applied after substrate lookup so `:total` reflects the full set).\n\nORDER: prerequisite — `:entity` must have `:path-slot` populated.  If uncertain, verify first via `sandbar.entity.find` (reads the entity by ident).  No other ordering dependencies; this verb is leaf-call shape.\n\nCOMBINATION: pairs naturally with `sandbar.navigate.inbound` / `.outbound` (typed-edge neighbors) for complete sibling-discovery (filesystem-style + typed-edge).  For ranked sibling subsets, compose downstream with `sandbar.aggregate.rank-by` using the sibling-eid set as the candidate population.  For fulltext search restricted to siblings, the cross-axis `:from` + `:via` composition lands at Stage 29.\n\nResult: `{:siblings [<entity-map>...] :total <int> :returned <int>}`.  Each entity-map carries `:db/id`, `:db/ident` (if interned), and namespaced-keyword slots.  Per fulltext arc Stage 22 of plans/sandbar_fulltext_search_substrate_arc_2026_05_13.md."
+    :inputSchema (one-required
+                   {:entity    {:type "string"
+                                :description "Anchor entity ident (e.g. ':mm.memory/decisions-foo') or eid"}
+                    :path-slot {:type "string"
+                                :description "Slot ident carrying the filesystem-style path (e.g. ':mm.memory/rel-path')"}
+                    :limit     {:type "integer"
+                                :description "Max returned siblings (default 0 = no cap)"}}
+                   [:entity :path-slot])
+    :handler navigate-siblings-of-handler}
+
    ;; Navigation — path-grammar walker (Stage P-6 — fulltext arc Phase N / Stage P)
    {:name "sandbar.navigate.path-via"
-    :title "Walk a path-grammar expression from a seed entity"
-    :description "Walk a Wilbur-lineage path-grammar expression `:via` starting from `:from`; return reachable entities.  `:via` is an EDN-string of a path expression with 13 currently-supported operators (Canonical-8 + Tier-2): `:SEQ` `:OR` `:REP+` `:REP*` `:INV` `:SELF` `:RESTRICT` `:ANY` (Tier-1) + `:NOT` `:OPT` `:REP` (bounded) `:FILTER` `:TEST` (Tier-2).  Tier-3 operators are vocabulary-registered but compilation deferred.  `:include [:paths]` is accepted but path-data is not yet populated (recursive-path reconstruction lands at a follow-on stage); result carries `:path-data-deferred true` flag when requested.  Per fulltext arc Stage P-6 of plans/sandbar_fulltext_search_substrate_arc_2026_05_13.md."
+    :title "Walk a Wilbur-lineage path-grammar expression from a seed entity"
+    :description "WHICH: walks a path-grammar expression (`:via`) starting from a seed entity (`:from`); returns the set of entities reachable under the binary-relation algebra denoted by the expression.  Path-grammar is Kleene-algebra-over-binary-relations — same lineage as SPARQL 1.1 property paths and ISO GQL 39075:2024.\n\nWHEN: use when navigation needs more expressiveness than direct edges (`sandbar.navigate.inbound` / `.outbound`) or bounded BFS — specifically when you need Kleene closure (`:REP*` / `:REP+`), alternation (`:OR`), inverse traversal at depth, or shape-specific restrictions.  Real-world property-path queries are <0.1% of total per Bonifati 2017 — but when you need them, only path-grammar fits.  When NOT to use: (a) single hop — use `sandbar.navigate.outbound` / `.inbound` (simpler + faster); (b) bounded N-hop reachability — use `sandbar.navigate.walk` (BFS with hop-cap is more efficient than `:REP*` for known-depth walks); (c) you need the seed itself in results — `:REP*` (or `:OPT`) includes the seed via the zero-application branch.\n\nHOW: `:from` is the seed entity ident or eid.  `:via` is an EDN-STRING path expression using one of 13 currently-executable operators:\n  * Canonical-8 (Tier-1): `:SEQ` (n-ary sequence) / `:OR` (n-ary union) / `:REP+` (transitive closure 1+) / `:REP*` (reflexive-transitive 0+) / `:INV` (inverse — swap subject/object roles) / `:SELF` (identity) / `:RESTRICT [pred value]` (specific-node filter) / `:ANY` (wildcard predicate)\n  * Tier-2: `:NOT` (atomic-predicate property-set negation) / `:OPT` (zero-or-one; desugars to `(:OR p :SELF)`) / `:REP p min max` (bounded repetition) / `:FILTER p substring` (URI-substring filter on `:db/ident`) / `:TEST p fn-name` (functional predicate via registered fn)\nCasing: UPPERCASE combinators / lowercase predicates.  Examples:\n  * `\"[:REP+ :dt/subclass-of]\"` — transitive ancestor walk\n  * `\"[:SEQ [:REP* [:OR :cites :evidences]] [:RESTRICT [:dt/type :mm.memory/decision]]]\"` — closure-then-filter\n  * `\"[:INV [:REP+ :cites]]\"` — entities that transitively cite this seed\nTier-3 operators (`:LANG`, `:VALUE`, `:DAEMON`, `:NOREWRITE`, `:MEMBERS`, `:PREDICATE-OF-*`) are vocabulary-registered but compilation deferred; passing them raises descriptive ex-info.  `:include [\"paths\"]` is accepted but path-data is not yet populated (recursive-path reconstruction lands at follow-on); result carries `:path-data-deferred true` flag when requested.\n\nORDER: no strict prerequisites.  To explore the typed-edge vocabulary available at the seed first, call `sandbar.navigate.outbound` to see what predicates emerge from the entity; to discover class-hierarchy predicates, use `sandbar.class.slots` on a class.\n\nCOMBINATION: composes with `sandbar.navigate.inbound`/`.outbound` (use them to discover predicate vocab before authoring path expressions) and `sandbar.navigate.walk` (use walk first if depth-bounded reachability is enough; reach for path-via only when Kleene closure adds value).  Cross-axis composition with `sandbar.search.bm25f` (`:from` + `:via` opts to restrict candidate set) and `sandbar.aggregate.rank-by` (rank within a graph-walk neighborhood) lands at Stage 29.\n\nResult: `{:reachable [<entity-map>...] :total <int> :returned <int>}`.  Per fulltext arc Stage P-6 of plans/sandbar_fulltext_search_substrate_arc_2026_05_13.md."
     :inputSchema (one-required
                    {:from    {:type "string"
                               :description "Seed entity ident (e.g. ':dt/Property') or eid"}
