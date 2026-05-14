@@ -1,6 +1,6 @@
-# Project-Graph
+# Projection
 
-> Sandbar's bidirectional projection primitive between database state and a filesystem hierarchy of native-format files.  Borrows the shape (and the name) from James Anderson's `de.setf.rdf:project-graph` — the boundary-layer primitive lives between the high-level generic consumer (filesystem tools; humans editing in their preferred text editor) and the low-level database concern (Datomic transactions and queries).  The filesystem format is **canonical ground-truth**; the database is one of multiple stores that comply with it.
+> Sandbar's bidirectional projection primitive between database state and a filesystem hierarchy of native-format files.  The `project-graph` + `ingest-graph` operations are the verb-form pair; this `sandbar.projection` namespace is their home.  Borrows the shape (and the function names) from James Anderson's `de.setf.rdf:project-graph` — the boundary-layer primitive lives between the high-level generic consumer (filesystem tools; humans editing in their preferred text editor) and the low-level database concern (Datomic transactions and queries).  The filesystem format is **canonical ground-truth**; the database is one of multiple stores that comply with it.
 
 ## Thesis
 
@@ -32,7 +32,7 @@ This commitment is captured in [`interaction/filesystem_native_format_is_canonic
 
 ## Operations
 
-Two primitives in `sandbar.project-graph`:
+Two primitives in `sandbar.projection`:
 
 ```clojure
 (project-graph db path opts)   ; DB state → filesystem hierarchy at `path`
@@ -71,7 +71,7 @@ See [`decisions/mm_section_schema_path_derived_idents_sibling_chain_navigation_2
 
 ## Filtering primitives
 
-`project-graph` accepts a `:filter` option — a predicate-shaped map that constrains which entities project.  Today's filter forms (see `sandbar.project-graph/project-graph` docstring for the canonical list):
+`project-graph` accepts a `:filter` option — a predicate-shaped map that constrains which entities project.  Today's filter forms (see `sandbar.projection/project-graph` docstring for the canonical list):
 
 ```clojure
 {:classes #{:mm/Memory :decisions/Decision}}     ; only these classes

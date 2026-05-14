@@ -277,6 +277,60 @@ Tests whether `:child-ns/:child-name` is a subclass of `:parent-ns/:parent-name`
  :subclass-of? true}
 ```
 
+## Aggregation endpoints
+
+The four-axis retrieval surface's aggregation axis.  See [`aggregation.md`](../concepts/aggregation.md) for theory.
+
+### `GET /api/aggregate/count`
+Query params:
+- `class` (required) — class ident (e.g., `:mm/Memory`)
+- `where` (optional) — EDN-string Datalog clauses
+
+Returns `{:count <int>}`.
+
+```http
+GET /api/aggregate/count?class=:mm/Memory&where=%5B%5B%3Fe%20%3Amm.memory%2Fmemory-type%20%3Adecision%5D%5D
+```
+
+### `GET /api/aggregate/group-by`
+Query params:
+- `class` (required) — class ident
+- `group-by` (required) — slot ident to group by
+- `where` (optional) — EDN-string Datalog clauses
+
+Returns `{:groups {value count} :total <int>}`.
+
+### `GET /api/aggregate/rank-by`
+Query params:
+- `class` (required) — class ident
+- `rank-by` (required) — `:degree` / `:backlink-density` / `:recency` / `:freshness`
+- `limit` (optional, default 20) — max returned hits
+- `temporal-slot` (required for `:recency` / `:freshness`) — slot ident carrying the temporal value
+
+Returns `{:hits [{:entity ... :rank-score ...}] :total <int> :returned <int>}`.
+
+## Navigation endpoints
+
+The four-axis retrieval surface's navigation axis — path-grammar walker.  See [`navigation.md`](../concepts/navigation.md) for the surface and [`path-grammar.md`](../concepts/path-grammar.md) for the algebra.
+
+### `GET /api/navigate/path`
+Query params:
+- `from` (required) — seed entity ident
+- `via` (required) — EDN-string path expression
+- `limit` (optional, default 0 = no cap) — max returned entities
+- `include` (optional) — comma-separated projection opts; supports `paths` (deferred surfacing)
+
+Returns `{:reachable [<entity-map>...] :total <int> :returned <int>}`.
+
+**Important — URL-encoding `+` in path expressions:** `+` in a query string decodes as space (per `application/x-www-form-urlencoded`).  Use `%2B` for the literal `+` in `:REP+`.
+
+Example:
+```http
+GET /api/navigate/path?from=:dt/Property&via=%5B:REP%2B%20:dt/subclass-of%5D&limit=50
+```
+
+decodes to `via=[:REP+ :dt/subclass-of]`.
+
 ## MCP endpoints
 
 The MCP transport is served at `/mcp` (not under `/api/store/*`).  See [`doc/api/mcp-verbs.md`](mcp-verbs.md) for the full MCP verb catalog.

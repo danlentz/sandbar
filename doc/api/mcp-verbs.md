@@ -232,7 +232,7 @@ Returns the set of registered codecs:
 }
 ```
 
-Projects entities to a filesystem hierarchy at `to`.  Each entity emits via its class's `:dt/native-codec`.  Per Anderson `de.setf.rdf:project-graph` lineage — see [`project-graph.md`](../concepts/project-graph.md).
+Projects entities to a filesystem hierarchy at `to`.  Each entity emits via its class's `:dt/native-codec`.  Per Anderson `de.setf.rdf:project-graph` lineage — see [`projection.md`](../concepts/projection.md).
 
 The `filter` is optional; when present, narrows which entities project.
 
@@ -246,6 +246,74 @@ The `filter` is optional; when present, narrows which entities project.
 ```
 
 Walks the directory, parses each file via the appropriate codec, returns the entity-spec maps.  Inverse of `project.export`.
+
+## Aggregation verbs
+
+The four-axis retrieval surface's aggregation axis.  See [`aggregation.md`](../concepts/aggregation.md) for theory.
+
+### `sandbar.aggregate.count`
+**Arguments:**
+```json
+{
+  "class": "<ident>",
+  "where": "<EDN-string Datalog clauses>"
+}
+```
+Count entities of `class` matching optional `:where` filter.  Returns `{:count <int>}`.  `:where` arrives as EDN string because JSON has no native representation for Datalog symbols.
+
+### `sandbar.aggregate.group-by`
+**Arguments:**
+```json
+{
+  "class": "<ident>",
+  "group-by": "<slot-ident>",
+  "where": "<EDN-string Datalog clauses>"
+}
+```
+Group instances by slot value; count per group.  Returns `{:groups {value count} :total <int>}`.
+
+### `sandbar.aggregate.rank-by`
+**Arguments:**
+```json
+{
+  "class": "<ident>",
+  "rank-by": ":degree | :backlink-density | :recency | :freshness",
+  "limit": 20,
+  "temporal-slot": "<slot-ident>"
+}
+```
+Re-order instances by structural-rank axis.  `:temporal-slot` REQUIRED for `:recency` / `:freshness` (substrate does not hardcode class-specific temporal axes).  Returns `{:hits [{:entity ... :rank-score ...}] :total <int> :returned <int>}`.
+
+## Navigation verbs
+
+The four-axis retrieval surface's navigation axis.  See [`navigation.md`](../concepts/navigation.md) for the surface overview and [`path-grammar.md`](../concepts/path-grammar.md) for the algebra.
+
+### `sandbar.navigate.path-via`
+**Arguments:**
+```json
+{
+  "from":    "<seed-ident>",
+  "via":     "<EDN-string path expression>",
+  "limit":   0,
+  "include": ["paths"]
+}
+```
+Walk a Wilbur-lineage path-grammar expression starting from `from`.  Returns `{:reachable [<entity-map>...] :total <int> :returned <int>}`.
+
+`via` is an EDN-string path expression using Canonical-8 + Tier-2 operators (13 executable; Tier-3 vocabulary-registered, compilation deferred):
+- Canonical-8: `:SEQ` `:OR` `:REP+` `:REP*` `:INV` `:SELF` `:RESTRICT` `:ANY`
+- Tier-2: `:NOT` `:OPT` `:REP` (bounded) `:FILTER` `:TEST`
+
+`:include ["paths"]` is accepted but path-data is NOT YET POPULATED — result carries `:path-data-deferred true` flag when requested.  Full path-data surfacing lands at a follow-on stage.
+
+Example:
+```json
+{
+  "from": ":decisions/foundation",
+  "via":  "[:SEQ [:REP* [:OR :cites :evidences]] [:RESTRICT [:dt/type :mm.memory/decision]]]",
+  "limit": 50
+}
+```
 
 ## Discovery and protocol verbs
 

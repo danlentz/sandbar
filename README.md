@@ -1,10 +1,12 @@
 # Sandbar
 
-> A metacircular metamodel platform — RDFS-style classes + properties + inheritance on Datomic, exposed simultaneously through HTTP, MCP, and (incrementally) other protocols. The type system is data, queryable + evolvable at runtime through the same API you use to query your application's entities. The wire-format layer is substrate, not application concern. Long-running operations have history, cancellation, and outcome classification baked in.
+> A metacircular metamodel platform — RDFS-style classes + properties + inheritance on Datomic, exposed simultaneously through HTTP, MCP, and (incrementally) other protocols.  Equipped with a four-axis retrieval surface (fulltext search with BM25F, structural + temporal aggregation, typed-edge navigation with Wilbur-lineage path-grammar, and orientation) built on the same metamodel primitives.  The type system is data, queryable + evolvable at runtime through the same API you use to query your application's entities.  The wire-format layer is substrate, not application concern.  Long-running operations have history, cancellation, and outcome classification baked in.
 
-Sandbar exists because the things that make a *database* powerful (transactions, time, expressive query) and the things that make a *type system* powerful (classes, inheritance, validation) and the things that make a *protocol surface* powerful (reflection, content negotiation, push notifications) keep wanting to be the same things. Each layer in Sandbar is the previous layer talking to itself.
+Sandbar exists because the things that make a *database* powerful (transactions, time, expressive query) and the things that make a *type system* powerful (classes, inheritance, validation) and the things that make a *retrieval engine* powerful (relevance ranking, graph traversal, aggregation) and the things that make a *protocol surface* powerful (reflection, content negotiation, push notifications) keep wanting to be the same things.  Each layer in Sandbar is the previous layer talking to itself.
 
-This README is a 5-minute elevator. For depth, follow the pointers into `doc/concepts/` (theoretical reference, citation-rich) and `doc/guides/` (hands-on how-to).
+The value: a substrate where "find by content," "walk the typed-edge graph from this seed," "rank by structural prominence," and "describe yourself" are all one-line queries against a single coherent model — not four separate libraries glued together.
+
+This README is a 5-minute elevator.  For depth, follow the pointers into `doc/concepts/` (theoretical reference, citation-rich) and `doc/guides/` (hands-on how-to).
 
 ## What makes Sandbar interesting
 
@@ -28,6 +30,24 @@ Consumers talk in their native representation. The memory-corpus consumer passes
 
 → `doc/concepts/codec-layer.md` · `doc/guides/implementing-a-codec.md`
 
+### Fulltext search via Datomic + Lucene + BM25F
+
+`:db/fulltext` slots are queryable through Datomic's native Lucene integration; Sandbar layers BM25F multi-field weighted scoring on top — same canonical Robertson-Zaragoza form as the corpus's reference implementation, with per-class `:dt/bm25f-weights` declared at the schema layer.  The analyzer (Unicode-aware tokenizer + Porter stemmer) is metamodel-driven; no consumer hardcoding.  Result projection composes with the rest of the retrieval surface — `:where` Datalog clauses, snippets, facets, structural composition — all opts on one verb.
+
+→ `doc/concepts/fulltext-search.md` · `doc/guides/searching-the-corpus.md`
+
+### Aggregation primitives as first-class retrieval
+
+`count` / `group-by` / structural-rank are substrate, not application-layer.  `degree`, `backlink-density`, `recency`, and `freshness` are the four ranking axes — the substrate is class-agnostic (temporal slots are caller-supplied; no hardcoded knowledge of `:mm.memory/last-touched` etc.).  `sandbar.aggregate/{count-by,group-by,rank-by}` opts-shaped API + MCP verbs + REST endpoints.
+
+→ `doc/concepts/aggregation.md`
+
+### Path-grammar navigation (Wilbur lineage)
+
+Sandbar speaks Kleene-algebra-over-binary-relations as a first-class navigation surface.  EDN path expressions like `[:SEQ [:REP* [:OR :cites :evidences]] [:RESTRICT [:type :decision]]]` parse → canonicalize → compile to Datomic recursive rules.  Twenty-one operators committed (eighteen Wilbur-derived from Nokia's 1989-2009 lineage + three SPARQL 1.1 parity additions); the executable Canonical-8 + Tier-2 = thirteen operators today.  Paths are first-class values: `length`, `prefix`, `subpath` compose.  Three-layer DSL/IR/Backend architecture means a future Asami or NFA backend is a translator, not a rewrite.
+
+→ `doc/concepts/path-grammar.md` · `doc/concepts/navigation.md` · `doc/guides/navigating-with-paths.md`
+
 ### Bootstrap-by-discovery
 
 Every non-abstract class is automatically discoverable through every protocol. MCP `tools/list` walks `dt/all-classes`; JSON Schema is reflected from `dt/range-of`. Add a class to the schema and it auto-surfaces as a tool, a resource, a REST endpoint — no hand-curated registries, no mapping tables, no server restart.
@@ -42,9 +62,9 @@ State machines are entities. Processes are running instances. MCP Tasks are work
 
 ### Filesystem-canonical projection (Anderson lineage)
 
-The filesystem format is the canonical ground-truth. Sandbar's `project-graph` / `ingest-graph` primitives are bidirectional — DB state ↔ filesystem hierarchy of native-format files. Any backend complies with the filesystem format. Document chunks are addressable entities with their own URIs and sibling-chain navigation (`:next-sibling` / `:previous-sibling`, RDFS-inspired). The pattern borrows from James Anderson's `de.setf.rdf:project-graph` (Datagraph/Dydra-era CL CLOS-metaclass framework) and applies it to filesystem hierarchies as the native projection target.
+The filesystem format is the canonical ground-truth.  Sandbar's `sandbar.projection/project-graph` + `ingest-graph` primitives are bidirectional — DB state ↔ filesystem hierarchy of native-format files.  Any backend complies with the filesystem format.  Document chunks are addressable entities with their own URIs and sibling-chain navigation (`:next-sibling` / `:previous-sibling`, RDFS-inspired).  The pattern borrows from James Anderson's `de.setf.rdf:project-graph` (Datagraph/Dydra-era CL CLOS-metaclass framework) and applies it to filesystem hierarchies as the native projection target.
 
-→ `doc/concepts/project-graph.md`
+→ `doc/concepts/projection.md`
 
 ### Hybrid filesystem/database topology (experimental)
 
@@ -52,7 +72,7 @@ The partition between what lives on disk and what lives in the runtime DB is an 
 
 → `doc/concepts/multi-store-architecture.md`
 
-## Two concrete examples
+## Three concrete examples
 
 ### Example 1 — Clojure, in-process
 
@@ -114,6 +134,37 @@ curl -X POST http://localhost:8080/mcp \
 → `doc/guides/writing-an-mcp-client.md` for full client patterns
 → `doc/guides/zorp-tutorial.md` for a complete worked example
 
+### Example 3 — The four-axis retrieval surface
+
+Walk a typed-edge graph; rank the result; project paths.  Three composable axes in one short example:
+
+```clojure
+(require '[sandbar.search    :as search]
+         '[sandbar.aggregate :as agg]
+         '[sandbar.navigate.path :as path])
+
+;; Fulltext — BM25F across :mm/Memory's weighted slots
+(search/search-bm25f
+  {:class :mm/Memory
+   :query "datomic recursive rules"
+   :limit 10
+   :include [:snippets :scores]})
+
+;; Aggregation — group memories by type, rank-by backlink-density
+(agg/group-by {:class :mm/Memory :group-by :mm.memory/memory-type})
+(agg/rank-by  {:class :mm/Memory :rank-by :backlink-density :limit 10})
+
+;; Path-grammar — walk the typed-edge graph with Kleene closure
+(path/path-via
+  {:from :decisions/some-anchor
+   :via  [:SEQ [:REP* [:OR :cites :evidences]]
+              [:RESTRICT [:dt/type :mm.memory/decision]]]})
+```
+
+Each axis is also a stable MCP verb (`sandbar.search.bm25f`, `sandbar.aggregate.rank-by`, `sandbar.navigate.path-via`) and a REST endpoint (`GET /api/aggregate/rank-by`, `GET /api/navigate/path`).  Same model, three projections.
+
+→ `doc/concepts/path-grammar.md` for the algebra · `doc/guides/navigating-with-paths.md` for worked patterns
+
 ## Quick start
 
 ```bash
@@ -143,7 +194,11 @@ Citation-rich documents explaining how Sandbar works, with references to the sou
 |----------|-------------------|
 | `doc/concepts/metamodel.md` | The dt/* primitives; RDFS lineage; metacircularity |
 | `doc/concepts/codec-layer.md` | Boundary-layer abstraction; consumer-native representation; per-class `:dt/native-codec` |
-| `doc/concepts/project-graph.md` | Bidirectional FS↔DB projection; Anderson lineage; chunk addressability |
+| `doc/concepts/projection.md` | Bidirectional FS↔DB projection; Anderson lineage; chunk addressability |
+| `doc/concepts/fulltext-search.md` | BM25F multi-field weighted scoring; Unicode tokenizer + Porter stemmer; metamodel-driven analyzer |
+| `doc/concepts/aggregation.md` | `count` / `group-by` / structural-rank; the four ranking axes (degree / backlink-density / recency / freshness) |
+| `doc/concepts/navigation.md` | Inbound / outbound edges; BFS graph-walk with hop-cap + path projection; path-grammar pointer |
+| `doc/concepts/path-grammar.md` | Wilbur algebra; Kleene-over-relations; 21-operator vocabulary; three-layer DSL/IR/Backend |
 | `doc/concepts/workflow-substrate.md` | First-class workflows; terminal-kind classification; MCP Tasks composition |
 | `doc/concepts/mcp-protocol.md` | Model Context Protocol; bootstrap-by-discovery; operational verb catalog |
 | `doc/concepts/multi-store-architecture.md` | Multi-store topology; federated query; hybrid FS/DB experimentation |
@@ -160,6 +215,8 @@ Hands-on documents with runnable examples.
 | `doc/guides/writing-a-clojure-client.md` | Embed Sandbar in your Clojure code; dt/* idioms |
 | `doc/guides/writing-an-mcp-client.md` | Connect Claude or other AI client via MCP |
 | `doc/guides/writing-a-rest-client.md` | Consume Sandbar over HTTP REST |
+| `doc/guides/searching-the-corpus.md` | BM25F fulltext queries; per-class weights; snippets + facets |
+| `doc/guides/navigating-with-paths.md` | Author path-grammar expressions; Canonical-8 + Tier-2 worked examples |
 | `doc/guides/implementing-a-codec.md` | Author a codec for a new wire format |
 | `doc/guides/defining-new-classes.md` | Extend the schema with new mm/* or domain classes |
 | `doc/guides/designing-workflows.md` | Author state machines with terminal-kind |
@@ -182,10 +239,15 @@ sandbar/
 ├── src/sandbar/
 │   ├── codec.clj       Mediator + per-class :dt/native-codec resolution
 │   ├── codec/          Codec protocol + markdown + JSON
-│   ├── project_graph.clj  Anderson-style FS↔DB projection
+│   ├── projection.clj  Anderson-style FS↔DB projection
+│   ├── search.clj      BM25F + multi-field weighted scoring
+│   ├── search/         search.analysis (Porter + Unicode) + search.bm25f
+│   ├── aggregate.clj   count-by / group-by / rank-by (4 structural axes)
+│   ├── navigate/       edges / walk / path (Wilbur path-grammar)
+│   │   └── path/       ast / ir / datomic / value
 │   ├── db/             dt/* model API + Datomic peer connection
 │   ├── mcp/            MCP server (transport / protocol / tools / resources / prompts / tasks)
-│   ├── api/            REST handlers
+│   ├── api/            REST handlers (store / aggregate / navigate / workflow / event / job / auth)
 │   ├── service/        Routing + validation-as-workflow
 │   └── util/           Auth (Buddy-hashers) / events / workflow lifecycle
 └── doc/                Layered documentation (Layer 2 + 3 + 4)
@@ -211,10 +273,16 @@ A: Different consumers; same metamodel. Traditional HTTP clients want REST. AI c
 A: It doesn't. Datomic handles in-store representation; codecs handle wire format at the protocol boundary. The codec layer absorbs format complexity from consumers, the same way `dt/*` absorbs Datomic query complexity.
 
 **Q: What's the relationship between Sandbar and the memory-model corpus?**
-A: The corpus (this codebase's `memory/` tree, mirroring its own development history) is the first consumer. The corpus's markdown shape informs Sandbar's `codec.markdown` + `mm/*` classes. Per the filesystem-canonical directive, the FS shape is ground-truth — Sandbar serves it.
+A: The corpus (this codebase's `memory/` tree, mirroring its own development history) is the first consumer.  The corpus's markdown shape informs Sandbar's `codec.markdown` + `mm/*` classes.  Per the filesystem-canonical directive, the FS shape is ground-truth — Sandbar serves it.  Sandbar's four-axis retrieval surface (search / aggregate / navigate / orient) is built to absorb the corpus's `/memory-*` tooling concerns into the substrate.
+
+**Q: How does path-grammar compare to SPARQL property paths or Cypher relationship patterns?**
+A: Sandbar's path-grammar shares the same Kleene-algebra-over-binary-relations spine.  Wilbur (Lassila 1989, Nokia 2001-2009) is the source-of-truth lineage; SPARQL 1.1 (2013) formalized the same algebra independently; Cypher's variable-length paths converge on the same surface.  Sandbar inherits the algebra, ships subset-first (Canonical-8 + Tier-2 = 13 operators executable today; Tier-3 vocabulary-registered but compilation deferred), and exposes paths as EDN-native first-class values (`length`, `prefix`, `subpath`).  The three-layer DSL/IR/Backend architecture means a future Asami or NFA × graph-product backend is a translator, not a rewrite.
+
+**Q: Why BM25F instead of plain BM25 or Lucene's default Similarity?**
+A: BM25F is the multi-field weighted form that Lucene's single-field BM25 doesn't natively express.  Per-class `:dt/bm25f-weights` declare slot weights at the metamodel layer (e.g., `:mm.memory/name` 12.0 vs `:mm.memory/body-raw` 1.0); the analyzer (Unicode tokenizer + Porter stemmer) is metamodel-driven and matches the corpus's reference implementation byte-for-byte.
 
 **Q: Can I use this in production today?**
-A: 0.1.0 is the first published release. It's an early library; expect ergonomic churn. The substrate design is stabilizing through the codec arc + Phase 3 MCP work; production-readiness is the focus of 0.x → 0.y iteration.
+A: 0.1.0 is the first published release.  It's an early library; expect ergonomic churn.  The substrate design is stabilizing through the codec arc + comprehensive memory-model surface work; production-readiness is the focus of 0.x → 0.y iteration.
 
 ## License
 

@@ -253,6 +253,60 @@ Returns:
 
 For large classes, prefer the workflow-backed `sandbar.validation.start` MCP verb — it's cancellable and produces a queryable history.
 
+## Fulltext search primitives
+
+The substrate-level fulltext search surface.  See [`fulltext-search.md`](../concepts/fulltext-search.md) for the BM25F formulation + analyzer lineage.
+
+### `(dt/search-fulltext attribute query)`
+Single-attribute Lucene fulltext search.  Returns `[[eid score] ...]` tuples for entities whose `attribute` value matches `query` per Lucene's tokenization + single-field BM25.  `attribute` must be declared `:db/fulltext true` in the schema.
+
+### `(dt/bm25f-weights-of class-ident)`
+Read declared BM25F per-slot weights for a class.  Returns `{slot weight}` map.  Empty map if no `:dt/bm25f-weights` declared.
+
+### `(dt/fulltext-indexed? attribute)`
+Predicate: does this attribute have `:db/fulltext true`?  Use to assert before calling `dt/search-fulltext`.
+
+## Aggregation primitives
+
+See [`aggregation.md`](../concepts/aggregation.md) for the substrate-quality discipline + axis semantics.
+
+### `(dt/count-of class-ident)` / `(dt/count-of class-ident where-clauses)`
+Count instances of class (including subclass instances) matching optional Datalog where-clauses.  Returns integer.
+
+### `(dt/group-by-of class-ident group-slot)` / `(dt/group-by-of class-ident group-slot where-clauses)`
+Group instances by slot value; returns `{value count}` map.  Skips entities where the slot is unset.
+
+### `(dt/degree-of entity-ident)` / `(dt/degree-of entity-ident opts)`
+Total ref-attribute count for an entity.  Opts: `:direction :forward|:inverse|:bidirectional` (default `:bidirectional`); `:predicates [...]` for predicate-set restriction.
+
+### `(dt/backlink-density-of entity-ident)` / `(dt/backlink-density-of entity-ident predicates)`
+Inbound ref-attribute count.  Equivalent to `(degree-of entity {:direction :inverse :predicates predicates})`; named separately because backlink-density is a distinct retrieval axis per `decisions/multi_axis_search_catalog_2026_05_08.md` axes 6 vs 7.
+
+### `(dt/recency-rank-of class-ident temporal-slot)`
+Return instances of class ordered by `temporal-slot` value DESCENDING (most-recent first).  Caller supplies the temporal slot — substrate is class-agnostic.
+
+### `(dt/freshness-rank-of class-ident temporal-slot)`
+Return instances of class ordered by `temporal-slot` value ASCENDING (stalest first).
+
+## Navigation primitives
+
+See [`navigation.md`](../concepts/navigation.md) for the surface overview.
+
+### `(dt/outbound-edges-of entity-ident)` / `(dt/outbound-edges-of entity-ident opts)`
+`:db.type/ref` attribute pairs originating FROM the entity.  Returns vec of `{:predicate <pred-ident> :target <entity-map>}`.  Opts: `:predicate <kw-or-coll>` (predicate-set filter); `:target-type <class-ident>` (target instance-of filter via the `instance-of` rule).
+
+### `(dt/inbound-edges-of entity-ident)` / `(dt/inbound-edges-of entity-ident opts)`
+`:db.type/ref` attribute pairs pointing AT the entity.  Returns vec of `{:predicate <pred-ident> :source <entity-map>}`.  Opts: `:predicate`, `:source-type` (analogous).
+
+### `(dt/graph-walk-from seed-ident)` / `(dt/graph-walk-from seed-ident opts)`
+BFS reachable-neighborhood walk from `seed-ident` up to `:hops` levels.  Returns vec of `{:entity <entity-map> :hop <int> [:path [...]]}`.  Opts:
+- `:hops` (default 4) — max distance
+- `:predicates` — keyword or coll; restricts to predicate set
+- `:direction` — `:forward` (default) / `:inverse` / `:bidirectional`
+- `:include` — coll; `:paths` attaches shortest-path step sequence
+
+Implemented as Clojure-side iterative BFS (one Datalog query per hop) per `decisions/sandbar_graph_walk_clojure_bfs_over_datomic_recursive_rules_2026_05_14.md`.
+
 ## Error and exception conventions
 
 `dt/make` throws `ex-info` with `:validation/errors` on validation failure.  The exception's `ex-data` contains the same shape `dt/validate` returns.
