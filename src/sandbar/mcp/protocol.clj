@@ -25,7 +25,8 @@
             [sandbar.mcp.prompts   :as prompts]
             [sandbar.mcp.resources :as resources]
             [sandbar.mcp.tasks     :as tasks]
-            [sandbar.mcp.tools     :as tools]))
+            [sandbar.mcp.tools     :as tools]
+            [sandbar.util.jsonrpc-status :as jsonrpc-status]))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Server identity + protocol version
@@ -120,18 +121,18 @@
   "Dispatch a single JSON-RPC message. Returns a response map (or nil for
    pure-notification messages with no response expected).
 
-   Error handling per JSON-RPC spec:
-   - Unknown method → -32601 Method not found
-   - Invalid params → -32602 Invalid params (handler may raise; we catch + map)
-   - Handler exception → -32603 Internal error"
+   Error handling per JSON-RPC spec (codes via `sandbar.util.jsonrpc-status`):
+   - Unknown method → `method-not-found`
+   - Invalid params → `invalid-params` (handler may raise; we catch + map)
+   - Handler exception → `internal-error`"
   [msg]
   (let [{:keys [id method params]} msg]
     (cond
       (not (envelope/valid-envelope? msg))
-      (envelope/jsonrpc-error nil -32600 "Invalid Request" {:received msg})
+      (envelope/jsonrpc-error nil jsonrpc-status/invalid-request "Invalid Request" {:received msg})
 
       (nil? method)
-      (envelope/jsonrpc-error id -32600 "Invalid Request — method missing")
+      (envelope/jsonrpc-error id jsonrpc-status/invalid-request "Invalid Request — method missing")
 
       :else
       (if-let [handler (get method-handlers method)]
@@ -140,6 +141,7 @@
           (catch Exception e
             (log/error e :MCP/dispatch-error
                        {:method method :id id})
-            (envelope/jsonrpc-error id -32603 "Internal error"
+            (envelope/jsonrpc-error id jsonrpc-status/internal-error "Internal error"
                                     {:exception-message (.getMessage e)})))
-        (envelope/jsonrpc-error id -32601 (str "Method not found: " method))))))
+        (envelope/jsonrpc-error id jsonrpc-status/method-not-found
+                                (str "Method not found: " method))))))

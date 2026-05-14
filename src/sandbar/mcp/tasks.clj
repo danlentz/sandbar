@@ -28,6 +28,7 @@
      exceeds threshold"
   (:require [clojure.tools.logging  :as log]
             [sandbar.mcp.notifications :as notifications]
+            [sandbar.util.jsonrpc-status :as jsonrpc-status]
             [sandbar.util.workflow  :as workflow]))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -142,13 +143,13 @@
         (nil? task-id)
         {:jsonrpc "2.0"
          :id      id
-         :error   {:code -32602
+         :error   {:code jsonrpc-status/invalid-params
                    :message "tasks/get requires :taskId parameter"}}
 
         (nil? process)
         {:jsonrpc "2.0"
          :id      id
-         :error   {:code    -32602
+         :error   {:code    jsonrpc-status/invalid-params
                    :message (str "Task not found: " task-id)
                    :data    {:received-task-id task-id}}}
 
@@ -176,7 +177,7 @@
       (log/error e :MCP/tasks-get-error)
       {:jsonrpc "2.0"
        :id      id
-       :error   {:code    -32603
+       :error   {:code    jsonrpc-status/internal-error
                  :message "Tasks/get failed"
                  :data    {:exception-message (.getMessage e)}}})))
 
@@ -202,13 +203,13 @@
       (nil? task-id)
       {:jsonrpc "2.0"
        :id      id
-       :error   {:code -32602
+       :error   {:code jsonrpc-status/invalid-params
                  :message "tasks/cancel requires :taskId parameter"}}
 
       (nil? process)
       {:jsonrpc "2.0"
        :id      id
-       :error   {:code    -32602
+       :error   {:code    jsonrpc-status/invalid-params
                  :message (str "Task not found: " task-id)}}
 
       :else
@@ -236,7 +237,7 @@
           (log/error e :MCP/tasks-cancel-error)
           {:jsonrpc "2.0"
            :id      id
-           :error   {:code    -32603
+           :error   {:code    jsonrpc-status/internal-error
                      :message "Tasks/cancel failed"
                      :data    {:exception-message (.getMessage e)}}})))))
 

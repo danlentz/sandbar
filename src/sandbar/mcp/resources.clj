@@ -29,7 +29,8 @@
             [clojure.tools.logging     :as log]
             [sandbar.db.datatype       :as dt]
             [sandbar.projection     :as project-graph]
-            [sandbar.mcp.notifications :as notifications]))
+            [sandbar.mcp.notifications :as notifications]
+            [sandbar.util.jsonrpc-status :as jsonrpc-status]))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; URI scheme — mcp://sandbar/<class-ns>/<class-name>/<ident-or-eid>
@@ -174,7 +175,7 @@
       (log/error e :MCP/resources-list-error)
       {:jsonrpc "2.0"
        :id      id
-       :error   {:code    -32603
+       :error   {:code    jsonrpc-status/internal-error
                  :message "Resource list failed"
                  :data    {:exception-message (.getMessage e)}}})))
 
@@ -234,7 +235,7 @@
         (nil? parsed)
         {:jsonrpc "2.0"
          :id      id
-         :error   {:code    -32602
+         :error   {:code    jsonrpc-status/invalid-params
                    :message (str "Invalid resource URI: " uri)}}
 
         :else
@@ -243,7 +244,7 @@
             (nil? entity)
             {:jsonrpc "2.0"
              :id      id
-             :error   {:code    -32602
+             :error   {:code    jsonrpc-status/invalid-params
                        :message (str "Resource not found: " uri)
                        :data    {:parsed parsed}}}
 
@@ -260,7 +261,7 @@
       (log/error e :MCP/resources-read-error)
       {:jsonrpc "2.0"
        :id      id
-       :error   {:code    -32603
+       :error   {:code    jsonrpc-status/internal-error
                  :message "Resource read failed"
                  :data    {:exception-message (.getMessage e)}}})))
 
@@ -350,7 +351,7 @@
       (nil? uri)
       {:jsonrpc "2.0"
        :id      id
-       :error   {:code -32602 :message "resources/subscribe requires :uri parameter"}}
+       :error   {:code jsonrpc-status/invalid-params :message "resources/subscribe requires :uri parameter"}}
 
       :else
       (do
@@ -369,7 +370,7 @@
       (nil? uri)
       {:jsonrpc "2.0"
        :id      id
-       :error   {:code -32602 :message "resources/unsubscribe requires :uri parameter"}}
+       :error   {:code jsonrpc-status/invalid-params :message "resources/unsubscribe requires :uri parameter"}}
 
       :else
       (do

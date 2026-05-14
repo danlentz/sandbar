@@ -49,6 +49,7 @@
             [sandbar.mcp.envelope       :as envelope]
             [sandbar.mcp.notifications  :as notifications]
             [sandbar.mcp.resources      :as resources]
+            [sandbar.util.jsonrpc-status :as jsonrpc-status]
             [sandbar.service.validation :as validation]
             [sandbar.util.workflow      :as workflow]))
 
@@ -1168,15 +1169,18 @@
    Response shapes:
    - Success: `{:content [{:type \"text\" :text <json>}]}`
    - User error (ex-info from handler): `{:content [...] :isError true}`
-   - Unknown verb: JSON-RPC `-32602` invalid params
-   - Internal error: JSON-RPC `-32603`"
+   - Unknown verb: JSON-RPC `invalid-params`
+   - Precondition failure: JSON-RPC `internal-error`
+   - Internal error: JSON-RPC `internal-error`
+
+   Error codes via `sandbar.util.jsonrpc-status` (semantic constants)."
   [id params]
   (let [tool-name (:name params)
         arguments (:arguments params {})
         verb      (get verb-by-name tool-name)]
     (cond
       (nil? verb)
-      (envelope/jsonrpc-error id -32602
+      (envelope/jsonrpc-error id jsonrpc-status/invalid-params
                               (str "Unknown tool: " tool-name)
                               {:received-name tool-name
                                :available-tools (mapv :name verb-catalog)})
@@ -1206,13 +1210,13 @@
         ;; See decisions/sandbar_entity_ref_abstraction_2026_05_14.md §D-3.3.
         (catch AssertionError e
           (log/error e :MCP/precondition-failed {:tool tool-name})
-          (envelope/jsonrpc-error id -32603
+          (envelope/jsonrpc-error id jsonrpc-status/internal-error
                                   "Internal-invariant precondition failed at MCP boundary"
                                   {:tool tool-name
                                    :assertion (.getMessage e)}))
         (catch Exception e
           (log/error e :MCP/tools-call-error {:tool tool-name})
-          (envelope/jsonrpc-error id -32603
+          (envelope/jsonrpc-error id jsonrpc-status/internal-error
                                   "Tool execution failed"
                                   {:tool tool-name
                                    :exception-message (.getMessage e)}))))))

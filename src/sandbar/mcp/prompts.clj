@@ -29,6 +29,7 @@
   (:require [clojure.string         :as str]
             [clojure.tools.logging  :as log]
             [sandbar.db.datatype    :as dt]
+            [sandbar.util.jsonrpc-status :as jsonrpc-status]
             [sandbar.util.workflow  :as workflow]))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -127,7 +128,7 @@
       (log/error e :MCP/prompts-list-error)
       {:jsonrpc "2.0"
        :id      id
-       :error   {:code    -32603
+       :error   {:code    jsonrpc-status/internal-error
                  :message "Prompts list failed"
                  :data    {:exception-message (.getMessage e)}}})))
 
@@ -192,7 +193,7 @@
         (nil? workflow-ident)
         {:jsonrpc "2.0"
          :id      id
-         :error   {:code    -32602
+         :error   {:code    jsonrpc-status/invalid-params
                    :message (str "Invalid prompt name: " prompt-name)
                    :data    {:received-name prompt-name}}}
 
@@ -208,12 +209,12 @@
                                                 :text content}}]}})
           {:jsonrpc "2.0"
            :id      id
-           :error   {:code    -32602
+           :error   {:code    jsonrpc-status/invalid-params
                      :message (str "Workflow not found: " workflow-ident)}})))
     (catch Exception e
       (log/error e :MCP/prompts-get-error)
       {:jsonrpc "2.0"
        :id      id
-       :error   {:code    -32603
+       :error   {:code    jsonrpc-status/internal-error
                  :message "Prompt get failed"
                  :data    {:exception-message (.getMessage e)}}})))
