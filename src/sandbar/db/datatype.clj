@@ -766,6 +766,118 @@
           (filter match?)
           vec))))
 
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Graph-walk BFS — Stage 17 (fulltext arc Phase N)
+;;
+;; Implemented as Clojure-side BFS rather than recursive Datomic rule
+;; because (a) hop-cap semantics aren't naturally expressed in Datalog
+;; recursive rules, (b) per-hop projection + path tracking is cleaner
+;; in iteration, (c) :include [:paths] is trivial to attach when we
+;; control the traversal step.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defn graph-walk-from
+  "Walk the typed-edge graph outward from `seed-ident` up to `hops`
+  levels of distance.  Returns a vec of result maps for every entity
+  reachable WITHIN `hops` (excluding the seed itself):
+
+    [{:entity <entity-map> :hop <int>} ...]
+
+  With `:include #{:paths}`, each map also carries `:path` — a vec of
+  `{:predicate <pred-ident> :direction :forward|:inverse}` steps from
+  seed to the result entity (shortest-path; BFS guarantees the first
+  arrival is via a shortest path).
+
+  Opts:
+    :hops       — max distance to walk (default 4)
+    :predicates — keyword OR coll restricting edges to a predicate set
+    :direction  — :forward (outbound edges only) / :inverse (inbound only)
+                  / :bidirectional (union).  Default :forward.
+    :include    — coll-of opts; `:paths` attaches step sequence.
+
+  Substrate-quality: class-agnostic.  Per fulltext arc Stage 17."
+  ([seed-ident]
+   (graph-walk-from seed-ident nil))
+  ([seed-ident {:keys [hops predicates direction include]
+                :or   {hops 4 direction :forward}}]
+   (let [seed-eid       (:db/id (db/entity seed-ident))
+         pred-set       (when predicates
+                          (set (if (sequential? predicates)
+                                 predicates
+                                 [predicates])))
+         include-paths? (contains? (set include) :paths)
+         forward?       (#{:forward :bidirectional} direction)
+         inverse?       (#{:inverse :bidirectional} direction)
+
+         pred-match?
+         (fn [a]
+           (or (nil? pred-set)
+               (pred-set (or (:db/ident (db/entity a)) a))))
+
+         step-edges
+         (fn [frontier-eids]
+           (let [forward-rows (when forward?
+                                (d/q '[:find ?f ?a ?n
+                                       :in $ [?f ...]
+                                       :where
+                                       [?f ?a ?n]
+                                       [?a :db/valueType :db.type/ref]]
+                                     (db/db) frontier-eids))
+                 inverse-rows (when inverse?
+                                (d/q '[:find ?f ?a ?n
+                                       :in $ [?f ...]
+                                       :where
+                                       [?n ?a ?f]
+                                       [?a :db/valueType :db.type/ref]]
+                                     (db/db) frontier-eids))]
+             (concat
+               (keep (fn [[f a n]]
+                       (when (pred-match? a)
+                         {:from-frontier f :to-new n
+                          :attr a :direction :forward}))
+                     forward-rows)
+               (keep (fn [[f a n]]
+                       (when (pred-match? a)
+                         {:from-frontier f :to-new n
+                          :attr a :direction :inverse}))
+                     inverse-rows))))]
+
+     (loop [hop      0
+            visited  #{seed-eid}
+            frontier {seed-eid (when include-paths? [])}
+            results  (transient [])]
+       (cond
+         (zero? (count frontier)) (persistent! results)
+         (>= hop hops)            (persistent! results)
+         :else
+         (let [discovered
+               (reduce
+                 (fn [acc edge]
+                   (let [{:keys [from-frontier to-new attr direction]} edge]
+                     (cond
+                       (contains? visited to-new) acc
+                       (contains? acc to-new)     acc  ; first match wins
+                       :else
+                       (let [parent-path (get frontier from-frontier [])
+                             step        {:predicate (or (:db/ident (db/entity attr))
+                                                          attr)
+                                          :direction direction}]
+                         (assoc acc to-new
+                                {:entity (db/entity to-new)
+                                 :hop    (inc hop)
+                                 :path   (when include-paths?
+                                           (conj parent-path step))})))))
+                 {}
+                 (step-edges (keys frontier)))]
+           (recur (inc hop)
+                  (into visited (keys discovered))
+                  (into {} (map (fn [[eid r]] [eid (:path r)])) discovered)
+                  (reduce
+                    (fn [acc [_ r]]
+                      (conj! acc (if include-paths? r (dissoc r :path))))
+                    results
+                    discovered))))))))
+
 (defn search-fulltext
   "Single-attribute fulltext search via Datomic + Lucene.
 
