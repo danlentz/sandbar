@@ -250,25 +250,253 @@
   (compile-node (first (:args ast)) to-var from-var ctr))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Tier-2 operators (Stage P-4)
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defn- atomic-or-inv-atomic?
+  "True if `node` is an atomic predicate AST or :INV-wrapping one.
+  :NOT can only operate over atomic property sets (SPARQL parity:
+  !p / !(p1|p2) / !^p)."
+  [node]
+  (or (= :PREDICATE (:op node))
+      (and (= :INV (:op node))
+           (= :PREDICATE (:op (first (:args node)))))))
+
+(defn- compile-not
+  "(:NOT p1 p2 ... pN) from ?x to ?y where each pᵢ is an atomic
+  predicate (or :INV of an atomic predicate) → variable in predicate
+  position + not= constraints:
+
+    [?x ?p ?y]
+    [(not= ?p :p1)]
+    [(not= ?p :p2)]
+    ...
+
+  Performance: variable in predicate position (same as :ANY) requires
+  EAVT scan; bound by ?x cardinality.  Document the cost.
+
+  Compilation refuses non-atomic children — SPARQL/Wilbur semantics
+  define :NOT only over property sets."
+  [ast from-var to-var ctr]
+  (doseq [arg (:args ast)]
+    (when-not (atomic-or-inv-atomic? arg)
+      (throw (ex-info
+               (str ":NOT children must be atomic predicates "
+                    "(or :INV of an atomic predicate); got " (:op arg))
+               {:received-arg arg}))))
+  (let [pred-var (fresh-var ctr)
+        ;; Inverse atomic predicates need swapped from/to in the base clause
+        ;; — but :NOT is a property-set negation, so we treat all args
+        ;; uniformly as predicate-name exclusions.  Inverse-atomic semantics
+        ;; (forbidden inbound edges via specific predicates) requires a
+        ;; separate compilation; we restrict to forward (non-:INV) for now.
+        all-forward? (every? #(= :PREDICATE (:op %)) (:args ast))]
+    (when-not all-forward?
+      (throw (ex-info
+               ":NOT with :INV-wrapped predicate not yet supported in compiler — flag for P-4 follow-on"
+               {:received-args (:args ast)})))
+    ;; Restrict to ref-typed attributes — otherwise ?to may be a
+    ;; non-entity value (string / long / etc.) and the navigation
+    ;; semantics break.  Path-grammar is about entity-to-entity
+    ;; traversal; literal-valued attributes are a separate concern
+    ;; handled by :TEST or :FILTER.
+    (let [base-clause   [from-var pred-var to-var]
+          ref-clause    [pred-var :db/valueType :db.type/ref]
+          excl-clauses  (mapv (fn [arg]
+                                [(list 'not= pred-var (:predicate arg))])
+                              (:args ast))]
+      {:where (into [base-clause ref-clause] excl-clauses)
+       :rules []})))
+
+(declare compile-or)
+
+(defn- compile-opt
+  "(:OPT p) ≡ (:OR p :SELF) — zero-or-one application.
+   Desugars at compile time via existing :OR compiler."
+  [ast from-var to-var ctr]
+  (compile-or {:op :OR
+               :args [(first (:args ast)) {:op :SELF}]}
+              from-var to-var ctr))
+
+(defn- compile-rep-bounded
+  "(:REP p min max) — bounded repetition.
+
+  Strategy A (unfolding): emit an :OR over n-length :SEQ chains for
+  n ∈ [min, max].  Works well for small max (≤5 typical); combinatorial
+  growth above.
+
+  Strategy B (recursive rule with hop-counter) is more general but
+  requires arithmetic + recursion together — deferred for later
+  optimization.  Switch threshold not yet wired (always Strategy A);
+  add hop-counter compilation when corpus-realistic queries hit the
+  growth ceiling.
+
+  Special cases:
+    min = max = 0  →  :SELF (identity)
+    min = 0, max ≥ 1  →  alternatives include :SELF (zero applications)
+    min = max = 1  →  identical to the child"
+  [ast from-var to-var ctr]
+  (let [child (:child ast)
+        min-n (:min ast)
+        max-n (:max ast)
+        ;; Build alternatives: for each n in [min..max], either :SELF
+        ;; (n=0) or n-length :SEQ of child.
+        alternatives
+        (for [n (range min-n (inc max-n))]
+          (cond
+            (zero? n) {:op :SELF}
+            (= n 1)   child
+            :else     {:op :SEQ :args (vec (repeat n child))}))
+        alts-vec (vec alternatives)]
+    (cond
+      ;; Degenerate: no alternatives (shouldn't happen with valid bounds)
+      (empty? alts-vec)
+      (throw (ex-info "(:REP p min max) requires valid bounds"
+                      {:min min-n :max max-n}))
+
+      ;; Single alternative: compile it directly (no :OR wrapping)
+      (= 1 (count alts-vec))
+      (compile-node (first alts-vec) from-var to-var ctr)
+
+      :else
+      (compile-or {:op :OR :args alts-vec} from-var to-var ctr))))
+
+(defn- compile-filter
+  "(:FILTER child substring) — URI-substring filter.
+
+  Walks child from ?from to ?to, then asserts that ?to has :db/ident
+  and that the stringified ident contains the substring.  Splits the
+  string-coercion into its own function-bind clause (Datomic's
+  internal compiler dislikes deeply-nested call forms inside predicate
+  clauses; binding intermediate values is the conventional shape).
+
+    <child clauses ?from → ?to>
+    [?to :db/ident ?filter-ident]
+    [(str ?filter-ident) ?filter-str]
+    [(clojure.string/includes? ?filter-str substring)]
+
+  Only matches entities with :db/ident.  For broader filtering (e.g.,
+  on memory bodies), use :TEST with a custom predicate."
+  [ast from-var to-var ctr]
+  (let [child       (:child ast)
+        substring   (:substring ast)
+        child-comp  (compile-node child from-var to-var ctr)
+        ident-var   (fresh-var ctr)
+        str-var     (fresh-var ctr)
+        filter-clauses
+        [[to-var :db/ident ident-var]
+         [(list 'str ident-var) str-var]
+         [(list 'clojure.string/includes? str-var substring)]]]
+    {:where (into (:where child-comp) filter-clauses)
+     :rules (:rules child-comp)}))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; :TEST functional-predicate registry.
+;;
+;; Security: consumers cannot supply arbitrary closures (synthesis §3.2
+;; "registry-mediated for security + serialization").  The registry
+;; maps fn-name keywords to fully-qualified symbols resolvable at
+;; query-execution time.  Default set seeds common safe predicates;
+;; consumers may extend via register-test-fn!.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(def test-fn-registry
+  "Registry of fn-name → fully-qualified symbol for use in :TEST path
+  expressions.  Atom so consumers can register additional fns."
+  (atom
+    {:pos?              'clojure.core/pos?
+     :neg?              'clojure.core/neg?
+     :zero?             'clojure.core/zero?
+     :nil?              'clojure.core/nil?
+     :some?             'clojure.core/some?
+     :true?             'clojure.core/true?
+     :false?            'clojure.core/false?
+     :string?           'clojure.core/string?
+     :keyword?          'clojure.core/keyword?
+     :integer?          'clojure.core/integer?
+     :number?           'clojure.core/number?
+     :coll?             'clojure.core/coll?
+     :map?              'clojure.core/map?
+     :empty?            'clojure.core/empty?
+     :not-empty         'clojure.core/not-empty}))
+
+(defn register-test-fn!
+  "Register a Clojure fn for use in `:TEST` path expressions.
+
+  Args:
+    `fn-name`   — keyword identifier used in `:TEST` AST nodes
+    `fn-symbol` — fully-qualified symbol (must be resolvable via
+                  requiring-resolve at query-execution time)
+
+  Returns the updated registry map.
+
+  Security note: Sandbar substrate ships a default registry of safe
+  predicates; consumers register additional ones explicitly rather
+  than supplying arbitrary closures."
+  [fn-name fn-symbol]
+  (when-not (keyword? fn-name)
+    (throw (ex-info "register-test-fn! fn-name must be a keyword"
+                    {:received fn-name})))
+  (when-not (and (symbol? fn-symbol) (namespace fn-symbol))
+    (throw (ex-info "register-test-fn! fn-symbol must be a fully-qualified symbol"
+                    {:received fn-symbol})))
+  (swap! test-fn-registry assoc fn-name fn-symbol))
+
+(defn- compile-test
+  "(:TEST child fn-name) — functional predicate.
+
+  Walks child from ?from to ?to, then asserts (fn-symbol ?to) is
+  truthy via Datalog predicate clause.
+
+    <child clauses ?from → ?to>
+    [(fn-symbol ?to)]
+
+  `fn-name` (keyword in AST) must be in the test-fn-registry.  Unknown
+  fn-names raise ex-info at compile time."
+  [ast from-var to-var ctr]
+  (let [child   (:child ast)
+        fn-kw   (:fn-name ast)
+        fn-sym  (get @test-fn-registry fn-kw)]
+    (when (nil? fn-sym)
+      (throw (ex-info
+               (str ":TEST fn-name " fn-kw " is not registered. "
+                    "Use sandbar.navigate.path.datomic/register-test-fn! "
+                    "or pick from the default registry.")
+               {:fn-name fn-kw
+                :registered (keys @test-fn-registry)})))
+    (let [child-comp (compile-node child from-var to-var ctr)
+          test-clause [(list fn-sym to-var)]]
+      {:where (conj (:where child-comp) test-clause)
+       :rules (:rules child-comp)})))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Dispatch — compile-node walks the AST.
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (defn- compile-node
   [ast from-var to-var ctr]
   (case (:op ast)
-    :PREDICATE (compile-predicate ast from-var to-var ctr)
-    :SELF      (compile-self      ast from-var to-var ctr)
-    :ANY       (compile-any       ast from-var to-var ctr)
-    :RESTRICT  (compile-restrict  ast from-var to-var ctr)
-    :SEQ       (compile-seq       ast from-var to-var ctr)
-    :OR        (compile-or        ast from-var to-var ctr)
-    :REP+      (compile-rep+      ast from-var to-var ctr)
-    :REP*      (compile-rep*      ast from-var to-var ctr)
-    :INV       (compile-inv       ast from-var to-var ctr)
-    ;; Unsupported operators (Tier-2 / Tier-3 — added at P-4 / later)
+    ;; Canonical-8 (Tier-1)
+    :PREDICATE (compile-predicate    ast from-var to-var ctr)
+    :SELF      (compile-self         ast from-var to-var ctr)
+    :ANY       (compile-any          ast from-var to-var ctr)
+    :RESTRICT  (compile-restrict     ast from-var to-var ctr)
+    :SEQ       (compile-seq          ast from-var to-var ctr)
+    :OR        (compile-or           ast from-var to-var ctr)
+    :REP+      (compile-rep+         ast from-var to-var ctr)
+    :REP*      (compile-rep*         ast from-var to-var ctr)
+    :INV       (compile-inv          ast from-var to-var ctr)
+    ;; Tier-2 (Stage P-4)
+    :NOT       (compile-not          ast from-var to-var ctr)
+    :OPT       (compile-opt          ast from-var to-var ctr)
+    :REP       (compile-rep-bounded  ast from-var to-var ctr)
+    :FILTER    (compile-filter       ast from-var to-var ctr)
+    :TEST      (compile-test         ast from-var to-var ctr)
+    ;; Tier-3 deferred — vocabulary registered in P-1; compilation
+    ;; lands when consumer demand emerges per synthesis §3.3
     (throw (ex-info (str "Path operator not yet supported by Datomic compiler: "
                          (:op ast)
-                         " — see Stage P-3 § Canonical-8; Tier-2 in P-4 / Tier-3 deferred.")
+                         " — Tier-3 deferred per synthesis §3.3.")
                     {:op (:op ast) :ast ast}))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;

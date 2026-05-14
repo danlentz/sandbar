@@ -212,23 +212,142 @@
       (is (contains? reachable :dt/Resource)))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; Tier-2 / Tier-3 operators reject with descriptive error
+;; Tier-2 operators (Stage P-4)
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-(deftest tier-2-not-supported
-  (testing ":NOT (Tier-2) raises descriptive error (P-4 lands it)"
-    (is (thrown-with-msg?
-          clojure.lang.ExceptionInfo #"(?i)not yet supported"
-          (compile-expr [:NOT :cites])))))
+;; ---------- :NOT (negated property set) ----------
 
-(deftest tier-2-opt-not-supported
-  (testing ":OPT raises (after canonicalize)"
+(deftest compile-not-structural
+  (testing ":NOT emits predicate-var clause + ref-type restriction + not= constraints"
+    (let [{:keys [where rules]} (compile-expr [:NOT :cites :evidences])]
+      (is (= [] rules))
+      ;; Base clause: [?start ?pred-var ?end]
+      (is (= '?start (first (first where))))
+      (is (= '?end (last (first where))))
+      ;; Ref-type restriction at the predicate var
+      (is (= :db/valueType (second (second where))))
+      (is (= :db.type/ref  (last (second where))))
+      ;; Two not= constraints
+      (is (= 4 (count where)))
+      (is (re-find #"not=" (str (nth where 2))))
+      (is (re-find #"not=" (str (nth where 3)))))))
+
+(deftest compile-not-rejects-compound-child
+  (testing ":NOT requires atomic-predicate children (Wilbur/SPARQL semantics)"
     (is (thrown-with-msg?
-          clojure.lang.ExceptionInfo #"(?i)not yet supported"
-          (compile-expr [:OPT :cites])))))
+          clojure.lang.ExceptionInfo #"(?i)atomic predicates"
+          (compile-expr [:NOT [:SEQ :a :b]])))))
+
+(deftest e2e-not
+  (testing "(:NOT :dt/subclass-of) from :dt/Property finds edges via OTHER predicates"
+    (let [reachable (run-path [:NOT :dt/subclass-of] :dt/Property)]
+      ;; :dt/Property has :dt/slots edges to its property entities;
+      ;; those should be reachable via :NOT :dt/subclass-of (any
+      ;; non-:dt/subclass-of edge).  Result is non-empty.
+      (is (pos? (count reachable))))))
+
+;; ---------- :OPT (zero-or-one) ----------
+
+(deftest compile-opt-structural
+  (testing ":OPT desugars to (:OR p :SELF) — compiles as or-join with SELF branch"
+    (let [{:keys [where]} (compile-expr [:OPT :cites])]
+      (is (= 1 (count where)))
+      (is (= 'or-join (first (first where)))))))
+
+(deftest e2e-opt
+  (testing "(:OPT :dt/subclass-of) from :dt/Property includes :dt/Property itself + its parent"
+    (let [reachable (run-path [:OPT :dt/subclass-of] :dt/Property)]
+      (is (contains? reachable :dt/Property)
+          ":OPT includes the seed (zero applications)")
+      (is (contains? reachable :dt/Resource)
+          ":OPT also includes one-application target"))))
+
+;; ---------- (:REP p min max) bounded repetition ----------
+
+(deftest compile-rep-bounded-structural
+  (testing "(:REP p 1 3) unfolds to (:OR p (:SEQ p p) (:SEQ p p p)) — 3-branch or-join"
+    (let [{:keys [where]} (compile-expr [:REP :cites 1 3])]
+      (is (= 1 (count where)))
+      (is (= 'or-join (first (first where)))))))
+
+(deftest compile-rep-bounded-degenerate-min-eq-max-1
+  (testing "(:REP p 1 1) — single alternative = just the child"
+    (let [{:keys [where]} (compile-expr [:REP :cites 1 1])]
+      (is (= [['?start :cites '?end]] where)))))
+
+(deftest compile-rep-bounded-includes-zero-app
+  (testing "(:REP p 0 2) includes :SELF as the zero-application alternative"
+    (let [{:keys [where]} (compile-expr [:REP :cites 0 2])]
+      (is (= 1 (count where)))
+      ;; Or-join clause; SELF appears as identity-bind in one branch
+      (is (re-find #"identity" (str (first where)))))))
+
+(deftest e2e-rep-bounded
+  (testing "(:REP :dt/subclass-of 1 2) finds entities 1-or-2 hops via :dt/subclass-of"
+    (let [reachable (run-path [:REP :dt/subclass-of 1 2] :dt/Property)]
+      (is (contains? reachable :dt/Resource)
+          ":dt/Resource reachable in 1 hop"))))
+
+;; ---------- :FILTER (URI-substring on :db/ident) ----------
+
+(deftest compile-filter-structural
+  (testing ":FILTER emits child clauses + :db/ident lookup + str bind + includes? predicate"
+    (let [{:keys [where]} (compile-expr [:FILTER :dt/subclass-of "dt"])]
+      ;; 1 child + ident lookup + str-bind + includes? predicate = 4 clauses
+      (is (= 4 (count where)))
+      (is (re-find #"clojure.string/includes\?"
+                   (str (nth where 3)))))))
+
+(deftest e2e-filter
+  (testing "(:FILTER (:INV :dt/subclass-of) \"dt\") finds subclasses-of :dt/Resource
+            whose idents contain 'dt'"
+    (let [all-subs       (run-path [:INV :dt/subclass-of] :dt/Resource)
+          dt-prefixed    (run-path [:FILTER [:INV :dt/subclass-of] "dt"]
+                                   :dt/Resource)]
+      (is (every? (fn [k] (re-find #"^:dt" (str k))) dt-prefixed)
+          "all results have idents starting with :dt")
+      (is (<= (count dt-prefixed) (count all-subs))
+          "filter reduces or preserves result count"))))
+
+;; ---------- :TEST (functional predicate via registry) ----------
+
+(deftest test-fn-registry-has-defaults
+  (testing "default registry includes common predicates"
+    (is (contains? @compiler/test-fn-registry :pos?))
+    (is (contains? @compiler/test-fn-registry :keyword?))))
+
+(deftest compile-test-rejects-unregistered-fn-name
+  (testing "unknown fn-name in :TEST raises descriptive error"
+    (is (thrown-with-msg?
+          clojure.lang.ExceptionInfo #"(?i)not registered"
+          (compile-expr [:TEST :cites :no-such-fn])))))
+
+(deftest compile-test-structural
+  (testing ":TEST emits child clauses + (registered-fn ?to) predicate"
+    (let [{:keys [where]} (compile-expr [:TEST :dt/subclass-of :keyword?])]
+      ;; 1 child clause + 1 predicate clause
+      (is (= 2 (count where)))
+      (is (re-find #"keyword\?" (str (second where)))))))
+
+(deftest register-test-fn-rejects-bad-args
+  (testing "register-test-fn! validates fn-name keyword + fully-qualified symbol"
+    (is (thrown? clojure.lang.ExceptionInfo
+                 (compiler/register-test-fn! "not-a-keyword" 'foo/bar)))
+    (is (thrown? clojure.lang.ExceptionInfo
+                 (compiler/register-test-fn! :ok-keyword 'bare-symbol)))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Tier-3 operators still reject (vocabulary registered; compilation deferred)
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (deftest tier-3-value-not-supported
-  (testing ":VALUE (Tier-3) raises"
+  (testing ":VALUE (Tier-3) raises descriptive ex-info"
     (is (thrown-with-msg?
           clojure.lang.ExceptionInfo #"(?i)not yet supported"
           (compile-expr [:VALUE "constant"])))))
+
+(deftest tier-3-lang-not-supported
+  (testing ":LANG (Tier-3) raises"
+    (is (thrown-with-msg?
+          clojure.lang.ExceptionInfo #"(?i)not yet supported"
+          (compile-expr [:LANG :dt/subclass-of "en"])))))
