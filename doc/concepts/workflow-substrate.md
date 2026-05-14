@@ -1,6 +1,6 @@
 # Workflows as Substrate
 
-> Sandbar treats workflows — state machines, running processes, terminal outcomes, cancellation — as **first-class entities in the metamodel**, not as ad-hoc plumbing per long-running operation.  State machines are `:workflow/Workflow` instances; running processes are `:workflow/Process` instances; cancellation is encoded as a terminal-kind on the workflow's state nodes.  MCP Tasks (long-running operations in the Model Context Protocol) are workflow processes — `task-id` IS `:db/id`, no parallel registry.
+> Sandbar treats workflows — state machines, running processes, terminal outcomes, cancellation — as **first-class entities in the metamodel**, not as ad-hoc plumbing per long-running operation.  State machines are `:workflow/Definition` instances; running processes are `:workflow/Process` instances; cancellation is encoded as a terminal-kind on the workflow's state nodes.  MCP Tasks (long-running operations in the Model Context Protocol) are workflow processes — `task-id` IS `:db/id`, no parallel registry.
 
 ## Thesis
 
@@ -42,7 +42,7 @@ Business Process Model and Notation (OMG 2011) standardizes process modeling for
 
 Three classes anchor the workflow substrate.
 
-### `:workflow/Workflow`
+### `:workflow/Definition`
 
 A workflow definition — a named state machine.  Its slots:
 
@@ -68,7 +68,7 @@ A running (or terminated) instance of a workflow.  Its slots:
 
 | Slot                       | Meaning                                                                                        |
 |----------------------------|------------------------------------------------------------------------------------------------|
-| `:workflow/process-of`     | Reference to the `:workflow/Workflow` this process instantiates.                              |
+| `:workflow/definition`     | Reference to the `:workflow/Definition` this process instantiates.                              |
 | `:workflow/current-state`  | Reference to the `:workflow/State` the process currently occupies.                            |
 | `:workflow/history`        | Ordered sequence of state-transition records — what happened, in what order, when.            |
 

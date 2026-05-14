@@ -41,7 +41,7 @@ dt/Resource
 │   ├── db/doc           : string     "Documentation"
 │   ├── db/ident         : keyword    "Unique identifier"
 │   ├── dt/label         : string     "Display label"
-│   ├── dt/namespace     : string     "Namespace"
+│   ├── dt/context     : string     "Namespace"
 │   └── dt/type          : ref->Class "Type reference"
 │
 └── dt/Ref
@@ -95,11 +95,11 @@ Here's what each concrete class actually has available (inherited + direct):
 
 | Class | Effective Slots |
 |-------|-----------------|
-| `zorp/HighTop` | *From Resource:* db/doc, db/ident, dt/label, dt/namespace, dt/type<br>*From Footwear:* footwear/name, footwear/size, footwear/color, footwear/tentacle-count, footwear/gravity-rating, footwear/price, footwear/sentient?<br>*From Sneaker:* sneaker/bounce-factor, sneaker/glow-in-dark?, sneaker/squeak-volume, sneaker/lace-type, sneaker/air-pump?<br>**Total: 17 slots** |
+| `zorp/HighTop` | *From Resource:* db/doc, db/ident, dt/label, dt/context, dt/type<br>*From Footwear:* footwear/name, footwear/size, footwear/color, footwear/tentacle-count, footwear/gravity-rating, footwear/price, footwear/sentient?<br>*From Sneaker:* sneaker/bounce-factor, sneaker/glow-in-dark?, sneaker/squeak-volume, sneaker/lace-type, sneaker/air-pump?<br>**Total: 17 slots** |
 | `zorp/LowTop` | *(Same as HighTop)*<br>**Total: 17 slots** |
-| `zorp/SpaceBoot` | *From Resource:* db/doc, db/ident, dt/label, dt/namespace, dt/type<br>*From Footwear:* footwear/name, footwear/size, footwear/color, footwear/tentacle-count, footwear/gravity-rating, footwear/price, footwear/sentient?<br>*From Boot:* boot/vacuum-rated?, boot/temperature-range<br>**Total: 14 slots** |
+| `zorp/SpaceBoot` | *From Resource:* db/doc, db/ident, dt/label, dt/context, dt/type<br>*From Footwear:* footwear/name, footwear/size, footwear/color, footwear/tentacle-count, footwear/gravity-rating, footwear/price, footwear/sentient?<br>*From Boot:* boot/vacuum-rated?, boot/temperature-range<br>**Total: 14 slots** |
 | `zorp/MoonBoot` | *(Same as SpaceBoot)*<br>**Total: 14 slots** |
-| `zorp/FlipFlop` | *From Resource:* db/doc, db/ident, dt/label, dt/namespace, dt/type<br>*From Footwear:* footwear/name, footwear/size, footwear/color, footwear/tentacle-count, footwear/gravity-rating, footwear/price, footwear/sentient?<br>*From FlipFlop:* flipflop/flop-frequency, flipflop/toe-separator-count, flipflop/escape-velocity, flipflop/mood<br>**Total: 16 slots** |
+| `zorp/FlipFlop` | *From Resource:* db/doc, db/ident, dt/label, dt/context, dt/type<br>*From Footwear:* footwear/name, footwear/size, footwear/color, footwear/tentacle-count, footwear/gravity-rating, footwear/price, footwear/sentient?<br>*From FlipFlop:* flipflop/flop-frequency, flipflop/toe-separator-count, flipflop/escape-velocity, flipflop/mood<br>**Total: 16 slots** |
 
 ### Schema Definition
 

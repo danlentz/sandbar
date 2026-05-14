@@ -54,13 +54,13 @@ A Markdown document's structural shape — H1/H2/H3 headers nesting into section
 
 | Slot                              | Meaning                                                                          |
 |-----------------------------------|----------------------------------------------------------------------------------|
-| `:mm.section/title`               | The header's text content                                                        |
-| `:mm.section/level`               | The header level (1 / 2 / 3)                                                     |
+| `:mm.section/heading`               | The header's text content                                                        |
+| `:mm.section/heading-level`               | The header level (1 / 2 / 3)                                                     |
 | `:mm.section/body`                | The Markdown body between this header and the next                              |
 | `:mm.section/parent`              | Reference to the enclosing parent section (or `:dt/Resource` for top-level)      |
 | `:mm.section/previous-sibling`    | Reference to the previous section at this level under the same parent           |
 | `:mm.section/next-sibling`        | Reference to the next section at this level under the same parent               |
-| `:mm.section/parent-document`     | Reference to the `:mm/Memory` containing this section                           |
+| `:mm.section/parent` (host `mm/Memory` for top-level sections; nested `mm/Section` for sub-sections)     | Reference to the `:mm/Memory` containing this section                           |
 
 ### Path-derived idents
 
