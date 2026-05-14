@@ -19,6 +19,8 @@
   plans/sandbar_fulltext_search_substrate_arc_2026_05_13.md."
   (:require [sandbar.db.datatype     :as dt]
             [sandbar.db.datomic      :as db]
+            [sandbar.db.rules        :refer [all-rules]]
+            [datomic.api             :as d]
             [sandbar.search.analysis :as analysis]
             [sandbar.search.bm25f    :as bm25f]))
 
@@ -119,6 +121,37 @@
 ;; index-side analysis under a dedicated Sandbar attribute.
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Stage 5 — structured composition via :where Datalog clauses
+;;
+;; The :where opt accepts a vector of Datalog clauses that must
+;; reference ?e as the entity variable.  Search results are filtered
+;; to entities whose eid is in the Datalog result set.  Composes
+;; fulltext relevance with structural predicates at substrate level.
+;;
+;; Per fulltext arc plan §9.2 + §13 Stage 5.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defn- where-matching-eids
+  "Run a Datalog query restricting to instances of `class` AND the
+  user-supplied `:where` clauses (which must reference `?e` as the
+  entity variable).  Returns a set of matching eids.
+
+  The query splices user clauses onto a base query that constrains
+  `?e` to be a direct instance of `class`.  Uses `instance-of`
+  recursive rule for subclass coverage."
+  [class where-clauses]
+  (let [base-query   '[:find ?e
+                       :in $ % ?class
+                       :where (instance-of ?class ?e)]
+        merged-query (apply conj base-query where-clauses)]
+    (set
+      (map first
+           (d/q merged-query
+                (db/db)
+                (all-rules)
+                class)))))
+
 (defn- per-slot-field-scores
   "Compute per-slot single-slot-equivalent score for one analyzed entity.
   For each slot in `field-weights`, re-score with only that slot's weight
@@ -151,6 +184,11 @@
     :field-weights — `{slot-ident weight-double}` map overriding the
                      class's declared `:dt/bm25f-weights`
     :limit         — max hits to return (default 20; 0 = no cap)
+    :where         — vec of Datalog clauses (Stage 5) restricting hits to
+                     entities matching the predicate.  Clauses must
+                     reference `?e` as the entity variable.  Composes
+                     fulltext relevance with structural filtering.
+                     Example: `[[?e :mm.memory/memory-type :decision]]`
     :include       — vec of result-projection options:
                        :field-scores  per-slot single-slot-equivalent scores
 
@@ -167,12 +205,13 @@
 
   Per fulltext arc Stage 4c of
   plans/sandbar_fulltext_search_substrate_arc_2026_05_13.md."
-  [{:keys [query class field-weights limit include]
+  [{:keys [query class field-weights limit where include]
     :or   {limit 20 include []}}]
   {:pre [(string? query)
          (keyword? class)
          (integer? limit)
-         (>= limit 0)]}
+         (>= limit 0)
+         (or (nil? where) (sequential? where))]}
   (let [t-start         (System/currentTimeMillis)
         weights         (or field-weights (dt/bm25f-weights-of class))
         _               (when (empty? weights)
@@ -183,7 +222,17 @@
         all-entities    (dt/all-instances-of class)
         analyzed-corpus (mapv #(bm25f/analyze-entity class %) all-entities)
         stats           (bm25f/corpus-stats analyzed-corpus)
-        scored          (for [ae    analyzed-corpus
+        ;; Stage 5: structured composition via :where Datalog clauses.
+        ;; Filter scoring-set to entities matching the predicate before
+        ;; the scoring pass.  Stats are still computed over the FULL
+        ;; class corpus (correct IDF + avgdl); the :where filter only
+        ;; restricts which entities are scored + returned.
+        where-eids      (when (seq where)
+                          (where-matching-eids class where))
+        scoring-corpus  (if where-eids
+                          (filter #(contains? where-eids (:eid %)) analyzed-corpus)
+                          analyzed-corpus)
+        scored          (for [ae    scoring-corpus
                               :let  [s (bm25f/score q-tokens ae stats weights)]
                               :when (pos? s)]
                           {:entity (:entity ae)

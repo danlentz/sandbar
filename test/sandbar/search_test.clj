@@ -257,6 +257,81 @@
       (is (apply >= scores)
           (str "Hits sorted by descending score, got: " scores)))))
 
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Stage 5 — structured composition (:where Datalog clauses)
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defn- make-typed-memory!
+  [name memory-type body-raw]
+  (dt/make :mm/Memory
+           {:mm.memory/rel-path    (str "test/" name ".md")
+            :mm.memory/name        name
+            :mm.memory/memory-type memory-type
+            :mm.memory/body-raw    body-raw}))
+
+(deftest search-bm25f-where-restricts-by-type-test
+  (testing ":where filters hits to entities matching the Datalog predicate"
+    (make-typed-memory! "decision-1" :decision "datomic project graph")
+    (make-typed-memory! "plan-1"     :plan     "datomic plan body")
+    (make-typed-memory! "observation-1" :observation "datomic observation")
+    (let [decisions-only (search/search-bm25f
+                           {:query "datomic"
+                            :class :mm/Memory
+                            :where '[[?e :mm.memory/memory-type :decision]]})
+          plans-only     (search/search-bm25f
+                           {:query "datomic"
+                            :class :mm/Memory
+                            :where '[[?e :mm.memory/memory-type :plan]]})
+          all-types      (search/search-bm25f
+                           {:query "datomic"
+                            :class :mm/Memory})]
+      (is (= 1 (:total decisions-only)) "Only one :decision matches")
+      (is (= :decision (-> decisions-only :hits first :entity :mm.memory/memory-type)))
+      (is (= 1 (:total plans-only)) "Only one :plan matches")
+      (is (= :plan (-> plans-only :hits first :entity :mm.memory/memory-type)))
+      (is (= 3 (:total all-types))   "No :where opt returns all matching entities"))))
+
+(deftest search-bm25f-where-empty-when-no-match-test
+  (testing ":where returns empty :hits when predicate matches no entity"
+    (make-typed-memory! "decision-1" :decision "datomic body")
+    (let [result (search/search-bm25f
+                   {:query "datomic"
+                    :class :mm/Memory
+                    :where '[[?e :mm.memory/memory-type :nonexistent-type]]})]
+      (is (= 0 (:total result)))
+      (is (= 0 (:returned result)))
+      (is (empty? (:hits result))))))
+
+(deftest search-bm25f-where-and-query-compose-test
+  (testing ":where + :query compose — intersection of fulltext AND predicate matches"
+    ;; Names deliberately do NOT contain the query term — only body does;
+    ;; otherwise name-slot tokenization would create false positive matches.
+    (make-typed-memory! "alpha" :decision    "datomic project graph")
+    (make-typed-memory! "beta"  :decision    "lorem ipsum dolor")
+    (make-typed-memory! "gamma" :plan        "datomic plan structure")
+    (let [decisions-matching (search/search-bm25f
+                                {:query "datomic"
+                                 :class :mm/Memory
+                                 :where '[[?e :mm.memory/memory-type :decision]]})]
+      (is (= 1 (:total decisions-matching))
+          "Only alpha (decision with 'datomic' in body) matches the intersection")
+      (is (= "alpha"
+             (-> decisions-matching :hits first :entity :mm.memory/name))))))
+
+(deftest search-bm25f-where-no-clauses-equals-no-where-test
+  (testing "Empty :where vec behaves like no :where opt (no filtering)"
+    (make-typed-memory! "alpha" :decision "datomic alpha")
+    (make-typed-memory! "beta"  :plan     "datomic beta")
+    (let [no-where   (search/search-bm25f
+                       {:query "datomic"
+                        :class :mm/Memory})
+          empty-where (search/search-bm25f
+                        {:query "datomic"
+                         :class :mm/Memory
+                         :where []})]
+      (is (= (:total no-where) (:total empty-where)))
+      (is (= (:returned no-where) (:returned empty-where))))))
+
 (deftest search-attribute-lucene-syntax-test
   (testing "search-attribute accepts Lucene query syntax"
     (make-memory! "test/a.md" "datomic project graph realizes Anderson lineage")
