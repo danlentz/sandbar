@@ -151,6 +151,56 @@
             ":ANY endpoints projected through MCP must be entity-maps")))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; F-DB-1 — :include #{:paths} populates real path data (Phase R
+;; Stage R-7 — Option D + Policy A).
+;;
+;; Pre-R-7: the surface accepted :include #{:paths} but the result
+;; carried :path-data-deferred true (a documented placeholder).
+;; Post-R-7: the Clojure-side IR evaluator
+;; (sandbar.navigate.path.evaluate) populates real path data; no
+;; deferred flag; each :reachable entry is {:entity ... :path ...}.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(deftest f-db-1-path-via-include-paths-populates-real-path-data
+  (testing "Phase R Stage R-7: handle-call with :include [\"paths\"] now
+            populates real path data through the MCP boundary; no
+            :path-data-deferred placeholder"
+    (let [response (call "sandbar.navigate.path-via"
+                         {"from" ":dt/Property"
+                          "via"  ":dt/subclass-of"
+                          "include" ["paths"]})]
+      (is (success? response)
+          (str "path-via with :include [\"paths\"] must produce success "
+               "envelope; got " (pr-str response)))
+      (let [body (json/parse-string (error-text response) true)]
+        (is (not (contains? body :path-data-deferred))
+            "post-R-7: no :path-data-deferred placeholder")
+        (is (pos? (:total body))
+            ":dt/Property →:dt/subclass-of→ should reach :dt/Resource")
+        (doseq [entry (:reachable body)]
+          (is (contains? entry :entity))
+          (is (contains? entry :path))
+          (let [{:keys [nodes edges]} (:path entry)]
+            (is (vector? nodes))
+            (is (vector? edges))
+            (is (= (count nodes) (inc (count edges)))
+                "path.value invariant: nodes count = edges count + 1")))))))
+
+(deftest f-db-1-path-via-rep-plus-with-paths-mcp
+  (testing "Phase R Stage R-7: :REP+ with :include [\"paths\"] through
+            MCP returns multi-hop paths"
+    (let [response (call "sandbar.navigate.path-via"
+                         {"from" ":dt/Property"
+                          "via"  "[:REP+ :dt/subclass-of]"
+                          "include" ["paths"]})]
+      (is (success? response))
+      (let [body (json/parse-string (error-text response) true)]
+        (is (pos? (:total body)))
+        (doseq [entry (:reachable body)]
+          (let [edges (-> entry :path :edges)]
+            (is (pos? (count edges)) ":REP+ must produce ≥1-edge paths")))))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Five input-form roundtrip (ADR §Acceptance — Runtime)
 ;;
 ;; \"Integer eid + keyword ident + prefixed-string ident + unprefixed-string

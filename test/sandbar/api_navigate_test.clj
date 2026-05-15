@@ -74,15 +74,38 @@
                             "&limit=2"))]
       (is (<= (:returned body) 2)))))
 
-(deftest path-via-endpoint-include-paths-deferred-flag
-  (testing ":include=paths surfaces :path-data-deferred flag"
+(deftest path-via-endpoint-include-paths-populates-real-path-data
+  (testing "Phase R Stage R-7: GET /api/navigate/path?include=paths
+            now returns real path data through the REST layer — no
+            more :path-data-deferred flag.  Each :reachable entry
+            carries {:entity ... :path {:nodes [...] :edges [...]}}.
+
+            (Replaces the prior
+            path-via-endpoint-include-paths-deferred-flag test which
+            asserted the pre-R-7 placeholder flag.)"
     (let [{:keys [status body]}
           (api-get-edn (str "/api/navigate/path"
                             "?from=:dt/Property"
                             "&via=:dt/subclass-of"
                             "&include=paths"))]
       (is (= http-status/success status))
-      (is (true? (:path-data-deferred body))))))
+      ;; Post-R-7: no deferred flag.
+      (is (not (contains? body :path-data-deferred))
+          ":path-data-deferred must NOT appear in R-7 REST response")
+      (is (pos? (:total body)))
+      ;; Each entry has :entity + :path; path has :nodes + :edges.
+      (doseq [entry (:reachable body)]
+        (is (contains? entry :entity)
+            "each REST :reachable entry must carry :entity")
+        (is (contains? entry :path)
+            "each REST :reachable entry must carry :path")
+        (is (vector? (:nodes (:path entry)))
+            ":path :nodes is a vec (JSON-friendly through pedestal)")
+        (is (vector? (:edges (:path entry)))
+            ":path :edges is a vec (JSON-friendly through pedestal)")
+        ;; Invariant: (count :nodes) = (count :edges) + 1
+        (is (= (count (:nodes (:path entry)))
+               (inc (count (:edges (:path entry))))))))))
 
 (deftest path-via-endpoint-any-returns-structured-response
   (testing "F-MF-1 anti-regression: GET /api/navigate/path?via=%3AANY
@@ -101,3 +124,29 @@
       (is (contains? body :returned))
       (is (every? map? (:reachable body))
           ":ANY endpoints projected through REST must be entity-maps"))))
+
+(deftest path-via-endpoint-rep-plus-with-paths-multi-hop
+  (testing "Phase R Stage R-7: GET /api/navigate/path with :REP+ +
+            include=paths returns multi-hop path data via REST"
+    (let [{:keys [status body]}
+          (api-get-edn (str "/api/navigate/path"
+                            "?from=:dt/Property"
+                            "&via=" "[:REP%2B%20:dt/subclass-of]"
+                            "&include=paths"))]
+      (is (= http-status/success status))
+      (is (not (contains? body :path-data-deferred)))
+      (is (pos? (:total body)))
+      (doseq [entry (:reachable body)]
+        (is (contains? entry :entity))
+        (is (contains? entry :path))
+        ;; REST returns EDN here (per api-get-edn helper); :path's
+        ;; :nodes + :edges must be vectors with the correct invariant.
+        (let [{:keys [nodes edges]} (:path entry)]
+          (is (vector? nodes))
+          (is (vector? edges))
+          (is (= (count nodes) (inc (count edges))))
+          (is (pos? (count edges)) ":REP+ paths must have ≥1 edge")
+          ;; Every edge must have :predicate + :direction
+          (doseq [edge edges]
+            (is (contains? edge :predicate))
+            (is (contains? edge :direction))))))))

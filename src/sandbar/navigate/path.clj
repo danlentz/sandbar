@@ -18,22 +18,33 @@
     - MCP verb:            sandbar.navigate.path-via              (sandbar.mcp.tools)
     - REST endpoint:       GET /api/navigate/path                 (sandbar.api.navigate)
 
-  ## Path-data surfacing — current scope
+  ## Path-data surfacing
 
-  `:include #{:paths}` is ACCEPTED but not yet POPULATED — recursive
-  paths (`:REP+` / `:REP*`) require post-hoc Clojure-side
-  reconstruction; the substrate ships entity-reachability today.
-  When `:paths` is requested, the result carries `:path-data-deferred
-  true` to flag the gap honestly.  Full path-data surfacing lands at
-  a follow-on stage (likely after Clojure-side iterative path-tracker
-  ships, analogous to the dt/graph-walk-from BFS pattern from Stage
-  17 per
-  decisions/sandbar_graph_walk_clojure_bfs_over_datomic_recursive_rules_2026_05_14.md)."
+  `:include #{:paths}` is POPULATED (Phase R Stage R-7 / 2026-05-15
+  per decisions/sandbar_path_data_reconstruction_option_d_policy_a_2026_05_14.md).
+  When `:paths` is requested, the result's `:reachable` carries
+  `{:entity ... :path <path-value>}` maps with actual path data —
+  routed through `sandbar.navigate.path.evaluate`'s Clojure-side BFS
+  evaluator (analogous to the `dt/graph-walk-from` precedent per
+  decisions/sandbar_graph_walk_clojure_bfs_over_datomic_recursive_rules_2026_05_14.md).
+  No `:path-data-deferred` flag — Option D commitment closes the
+  documented-contract-vs-runtime gap permanently.
+
+  Path-explosion policy A (one-representative-path-per-endpoint,
+  Cypher shortestPath-style BFS first-arrival).  When omitting
+  `:include #{:paths}`, the endpoint-only fast-path stays — Datalog
+  query unchanged; no perf regression for the common case.
+
+  Tier-2 `:NOT` / `:FILTER` / `:TEST` with `:include #{:paths}` throw
+  descriptive ex-info — path-data evaluation for these lands in
+  0.1.x; endpoint-only still works.  See
+  `sandbar.navigate.path.evaluate` for full operator coverage."
   (:require [clojure.edn         :as edn]
             [datomic.api         :as d]
             [sandbar.db.datomic  :as db]
             [sandbar.navigate.path.ast      :as ast]
             [sandbar.navigate.path.datomic  :as compiler]
+            [sandbar.navigate.path.evaluate :as evalpath]
             [sandbar.navigate.path.ir       :as ir]))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -92,20 +103,28 @@
     :limit   — cap on returned results (default 0 = no cap; the cap
                is applied AFTER query execution; `:total` reflects
                full result set)
-    :include — collection of projection options.  `:paths` is accepted
-               but not yet populated; result carries
-               `:path-data-deferred true` flag in that case.
+    :include — collection of projection options.  `:paths` populates
+               each `:reachable` entry with the path-value from seed
+               to endpoint (per path.value contract — `:nodes` +
+               `:edges`).  Tier-2 :NOT / :FILTER / :TEST with :paths
+               throw ex-info (path-data evaluation for those lands in
+               0.1.x; omit :paths to get endpoint-only reachability).
 
   Returns:
+    ;; Without :include #{:paths} — endpoint-only fast-path
     {:reachable [<entity-map> ...]
      :total     <int>
-     :returned  <int>
-     [:path-data-deferred true]}   ; when :include #{:paths} requested
+     :returned  <int>}
 
-  Per fulltext arc Stage P-6.  Composes with cross-axis layers via
-  the four-axis decomposition (search ∩ aggregate ∩ navigate ∩
-  orient); other axes wire `:from`/`:via` as opts at Stage 29
-  (cross-axis composition)."
+    ;; With :include #{:paths} — Clojure-side evaluator route
+    {:reachable [{:entity <entity-map> :path <path-value>} ...]
+     :total     <int>
+     :returned  <int>}
+
+  Per fulltext arc Stage P-6 + Phase R Stage R-7.  Composes with
+  cross-axis layers via the four-axis decomposition (search ∩
+  aggregate ∩ navigate ∩ orient); other axes wire `:from`/`:via` as
+  opts at Stage 29 (cross-axis composition)."
   [{:keys [from via limit include]
     :or   {limit 0}}]
   ;; Per ADR §D-3.2 (Option B), the `:pre` guard on `from` (a ref-arg)
@@ -117,26 +136,41 @@
   ;; boundary.  Non-ref `:pre` invariants on `via` + `limit` stay.
   {:pre [(some? via)
          (or (nil? limit) (and (integer? limit) (>= limit 0)))]}
-  (let [parsed-via (parse-via via)
-        ast-tree   (ast/parse parsed-via)
-        canon-tree (ir/canonicalize ast-tree)
-        seed-ent   (db/entity from)
-        _          (when (nil? (:db/id seed-ent))
-                     (throw (ex-info (str "Seed entity not found: " from)
-                                     {:from from})))
-        seed-eid   (:db/id seed-ent)
-        {:keys [where rules]} (compiler/compile canon-tree '?start '?end)
-        q          (vec (concat '[:find [?end ...]
-                                   :in $ % ?start
-                                   :where] where))
-        eids       (d/q q (db/db) rules seed-eid)
-        entities   (mapv (comp entity-projection db/entity) eids)
-        total      (count entities)
-        limited    (if (zero? limit) entities (take limit entities))
-        returned   (vec limited)
-        result     {:reachable returned
-                    :total     total
-                    :returned  (count returned)}]
-    (cond-> result
-      (contains? (set include) :paths)
-      (assoc :path-data-deferred true))))
+  (let [parsed-via    (parse-via via)
+        ast-tree      (ast/parse parsed-via)
+        canon-tree    (ir/canonicalize ast-tree)
+        seed-ent      (db/entity from)
+        _             (when (nil? (:db/id seed-ent))
+                        (throw (ex-info (str "Seed entity not found: " from)
+                                        {:from from})))
+        seed-eid      (:db/id seed-ent)
+        include-paths? (contains? (set include) :paths)]
+    (if include-paths?
+      ;; Path-data branch — Clojure-side BFS evaluator (Phase R Stage
+      ;; R-7; Option D + Policy A).  Returns {:eid :path} maps; we
+      ;; project entity-maps + apply :limit for the result shape.
+      (let [eval-results (evalpath/evaluate-from (db/db) canon-tree seed-eid)
+            enriched     (mapv (fn [{:keys [eid path]}]
+                                 {:entity (entity-projection (db/entity eid))
+                                  :path   path})
+                               eval-results)
+            total        (count enriched)
+            limited      (if (zero? limit) enriched (take limit enriched))
+            returned     (vec limited)]
+        {:reachable returned
+         :total     total
+         :returned  (count returned)})
+      ;; Endpoint-only fast-path — Datalog compiler unchanged (no
+      ;; perf regression for the common case).
+      (let [{:keys [where rules]} (compiler/compile canon-tree '?start '?end)
+            q          (vec (concat '[:find [?end ...]
+                                       :in $ % ?start
+                                       :where] where))
+            eids       (d/q q (db/db) rules seed-eid)
+            entities   (mapv (comp entity-projection db/entity) eids)
+            total      (count entities)
+            limited    (if (zero? limit) entities (take limit entities))
+            returned   (vec limited)]
+        {:reachable returned
+         :total     total
+         :returned  (count returned)}))))
