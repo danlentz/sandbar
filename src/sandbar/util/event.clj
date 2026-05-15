@@ -114,8 +114,32 @@
                       :event/namespace "sandbar.server.pedestal"}
                      data)))
 
+(defn- capture-stacktrace
+  "F-SF-2 fix (Phase R Stage R-4): capture an exception's stacktrace
+   into a String WITHOUT leaking to stderr.
+
+   `(.printStackTrace ex)` with no args writes to System.err — wrapping
+   it in `with-out-str` does NOT capture that output because
+   `with-out-str` rebinds `*out*` only.  The fix passes an explicit
+   PrintWriter backed by a StringWriter; the stacktrace lands in the
+   StringWriter and stderr stays clean.
+
+   This is the conventional Java idiom for stacktrace capture without
+   I/O side-effects."
+  ^String [^Throwable ex]
+  (let [sw (java.io.StringWriter.)
+        pw (java.io.PrintWriter. sw)]
+    (.printStackTrace ex pw)
+    (.flush pw)
+    (.toString sw)))
+
 (defn log-error!
   "Log an error event with exception details.
+
+   The stacktrace is captured via a PrintWriter/StringWriter pair —
+   NOT `.printStackTrace` to System.err — so log-error! produces no
+   stderr output and the full stacktrace lands in the
+   `:event/stacktrace` field.
 
    Usage:
      (log-error! \"Operation failed\")
@@ -129,7 +153,7 @@
                 :event/status :failure
                 :event/namespace (str *ns*)
                 :event/exception (str (type ex) ": " (.getMessage ex))
-                :event/stacktrace (with-out-str (.printStackTrace ex))})))
+                :event/stacktrace (capture-stacktrace ex)})))
 
 (defn log-api!
   "Log an API call event.

@@ -1,0 +1,392 @@
+[
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; mm/* — Memory-Model Substrate Classes
+;;
+;; Models corpus markdown memorials at multiple granularities.  Per Dan's
+;; 2026-05-12 directive (decisions/mm_memory_schema_models_markdown_at_multiple_granularities_2026_05_12.md)
+;; + codec arc Stage B.0 ADR
+;; (decisions/mm_section_schema_path_derived_idents_sibling_chain_navigation_2026_05_13.md)
+;; for the pairwise sibling-chain shape.
+;;
+;; Class hierarchy:
+;;
+;;   :mm/Memory          — corpus memorial; one per markdown document
+;;     ├── frontmatter (:mm.memory/frontmatter ref :mm/Frontmatter)
+;;     ├── tags        (:mm.memory/tags many-ref :mm/Tag)
+;;     ├── first-section (:mm.memory/first-section ref :mm/Section)
+;;     ├── links       (:mm.memory/links many-ref :mm/Link)
+;;     └── well-known frontmatter scalars as direct properties
+;;
+;;   :mm/Section         — addressable markdown section within a memorial
+;;     ├── heading + heading-level
+;;     ├── body (verbatim; child sections excluded)
+;;     ├── parent (mm/Memory for top-level; mm/Section for nested)
+;;     ├── next-sibling + previous-sibling (SIOC-pairwise chain)
+;;     └── children walkable via :_mm.section/parent reverse-index
+;;
+;;   :mm/Frontmatter     — long-tail / per-type frontmatter keys
+;;   :mm/Tag             — canonical tag entity; unique by :mm.tag/value
+;;   :mm/Link            — markdown link extracted from body content
+;;
+;; Substrate landing per Stage B of
+;; plans/sandbar_codex_review_remediation_arc_2026_05_13.md +
+;; codex MUST-FIX #3 resolution (mm/* documented but not loaded → load it).
+;;
+;; Previously declared corpus-side at etc/lib/sandbar_mm_schema.clj;
+;; that file becomes legacy once Sandbar 0.1.0 ships with this schema.
+;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Forward Declarations
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident :mm/Tag         :db/doc "A canonical tag entity"}
+  {:db/ident :mm/Link        :db/doc "A markdown link extracted from memorial body"}
+  {:db/ident :mm/Section     :db/doc "An addressable markdown section within a memorial"}
+  {:db/ident :mm/Frontmatter :db/doc "Long-tail / per-type frontmatter keys"}
+  {:db/ident :mm/Memory      :db/doc "A corpus memorial markdown document"}]
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; mm.tag/* Properties
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident       :mm.tag/value
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Tag
+   :dt/range       :db.type/string
+   :db/valueType   :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/unique      :db.unique/identity
+   :db/fulltext    true
+   :db/doc "The tag string itself (e.g. 'audit', 'datomic-multi-store').  Unique identity so multiple memorials with the same tag value reference one mm/Tag entity.  Fulltext-indexed for tag-keyword search via sandbar.search/search-bm25f."}]
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; mm.link/* Properties
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident       :mm.link/href
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Link
+   :dt/range       :db.type/string
+   :db/valueType   :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/doc "The href target of the markdown link; rel-path for internal links; full URL for external."}
+
+  {:db/ident       :mm.link/text
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Link
+   :dt/range       :db.type/string
+   :db/valueType   :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/doc "The display text of the markdown link."}
+
+  {:db/ident       :mm.link/in-section
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Link
+   :dt/range       :mm/Section
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/one
+   :db/doc "The mm/Section containing this link in its body."}
+
+  {:db/ident       :mm.link/external?
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Link
+   :dt/range       :db.type/boolean
+   :db/valueType   :db.type/boolean
+   :db/cardinality :db.cardinality/one
+   :db/doc "True if the link points outside the corpus; false if internal rel-path link."}
+
+  {:db/ident       :mm.link/target-memory
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Link
+   :dt/range       :mm/Memory
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/one
+   :db/doc "The mm/Memory this link points at (internal links only; nil for external)."}]
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; mm.section/* Properties — pairwise sibling-chain shape per B.0 ADR
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident       :mm.section/heading
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Section
+   :dt/range       :db.type/string
+   :db/valueType   :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/fulltext    true
+   :db/doc "The markdown heading text of the section (e.g. 'Context'); no leading hash marks.  Fulltext-indexed for section-heading-targeted BM25F search."}
+
+  {:db/ident       :mm.section/heading-level
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Section
+   :dt/range       :db.type/long
+   :db/valueType   :db.type/long
+   :db/cardinality :db.cardinality/one
+   :db/doc "The heading level (1 for #, 2 for ##, ...)."}
+
+  {:db/ident       :mm.section/body
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Section
+   :dt/range       :db.type/string
+   :db/valueType   :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/fulltext    true
+   :db/doc "The markdown body of the section EXCLUDING any child sections (which are separate mm/Section entities reachable via :_mm.section/parent reverse-walk).  Whitespace-normalized per B.0 ADR §4.  Fulltext-indexed for section-body-targeted BM25F search; child-section text is indexed on its own mm/Section entity, so query relevance attributes correctly to the section that owns the matching text."}
+
+  {:db/ident       :mm.section/parent
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Section
+   :dt/range       :dt/Resource
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/one
+   :db/doc "Parent container.  For nested sections: an mm/Section.  For top-level sections: the host mm/Memory.  Required — top-level sections point at the memory entity, not nil.  Range is polymorphic-supertype :dt/Resource per the mm/Section schema validator (test asserts ranges are declared mm/* classes OR :dt/Resource polymorphic supertype)."}
+
+  {:db/ident       :mm.section/next-sibling
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Section
+   :dt/range       :mm/Section
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/one
+   :db/doc "Forward sibling navigation — the next sibling at the same level under the same parent.  Absent on the LAST sibling.  SIOC pairwise pattern per B.0 ADR §3; point-local O(1) neighbor lookup; bidirectional with :previous-sibling."}
+
+  {:db/ident       :mm.section/previous-sibling
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Section
+   :dt/range       :mm/Section
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/one
+   :db/doc "Backward sibling navigation — the previous sibling at the same level under the same parent.  Absent on the FIRST sibling.  Maintained bidirectionally with :next-sibling on every parse; the chain is authoritative for ordering (no separate sequence-index attribute)."}]
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; mm.frontmatter/* Properties
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident       :mm.frontmatter/extra
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Frontmatter
+   :dt/range       :db.type/string
+   :db/valueType   :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/doc "Long-tail frontmatter keys serialized as canonical EDN.  Well-known keys are direct mm/Memory properties; novel keys land here as a structured map."}]
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; mm.memory/* Properties
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident       :mm.memory/identity
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Memory
+   :dt/range       :db.type/uuid
+   :db/valueType   :db.type/uuid
+   :db/unique      :db.unique/identity
+   :db/cardinality :db.cardinality/one
+   :db/doc "UUIDv5 derived deterministically from rel-path per decisions/persistent_meta_type_substrate_design_2026_05_09.md D.10."}
+
+  {:db/ident       :mm.memory/rel-path
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Memory
+   :dt/range       :db.type/string
+   :db/valueType   :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/doc "Corpus rel-path under memory/ — e.g. 'decisions/foo_2026_05_12.md'."}
+
+  {:db/ident       :mm.memory/name
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Memory
+   :dt/range       :db.type/string
+   :db/valueType   :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/fulltext    true
+   :db/doc "Human-readable name (frontmatter `name:`).  Fulltext-indexed for high-weight name-targeted BM25F search."}
+
+  {:db/ident       :mm.memory/description
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Memory
+   :dt/range       :db.type/string
+   :db/valueType   :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/fulltext    true
+   :db/doc "One-line description (frontmatter `description:`).  Fulltext-indexed for description-targeted BM25F search."}
+
+  {:db/ident       :mm.memory/memory-type
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Memory
+   :dt/range       :db.type/keyword
+   :db/valueType   :db.type/keyword
+   :db/cardinality :db.cardinality/one
+   :db/doc "Memorial type (frontmatter `type:`) — e.g. :decision, :plan, :observation.  Wire-form key is `type` per :mm/Memory's :dt/codec-aliases declaration (avoids :dt/type collision)."}
+
+  {:db/ident       :mm.memory/scope
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Memory
+   :dt/range       :db.type/keyword
+   :db/valueType   :db.type/keyword
+   :db/cardinality :db.cardinality/one
+   :db/doc "Memorial scope (frontmatter `scope:`) — typically :global or a project keyword."}
+
+  {:db/ident       :mm.memory/status
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Memory
+   :dt/range       :db.type/keyword
+   :db/valueType   :db.type/keyword
+   :db/cardinality :db.cardinality/one
+   :db/doc "Memorial status (frontmatter `status:`) — typically :active for arc plans."}
+
+  {:db/ident       :mm.memory/created
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Memory
+   :dt/range       :db.type/instant
+   :db/valueType   :db.type/instant
+   :db/cardinality :db.cardinality/one
+   :db/doc "Creation timestamp (frontmatter `created:` parsed as ISO-8601)."}
+
+  {:db/ident       :mm.memory/last-touched
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Memory
+   :dt/range       :db.type/instant
+   :db/valueType   :db.type/instant
+   :db/cardinality :db.cardinality/one
+   :db/doc "Last-touched timestamp (frontmatter `last-touched:`)."}
+
+  {:db/ident       :mm.memory/last-reviewed
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Memory
+   :dt/range       :db.type/instant
+   :db/valueType   :db.type/instant
+   :db/cardinality :db.cardinality/one
+   :db/doc "Last-reviewed timestamp (frontmatter `last-reviewed:`)."}
+
+  {:db/ident       :mm.memory/created-by
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Memory
+   :dt/range       :db.type/string
+   :db/valueType   :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/doc "Actor rel-path or sentinel (frontmatter `created-by:`)."}
+
+  {:db/ident       :mm.memory/importance
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Memory
+   :dt/range       :db.type/keyword
+   :db/valueType   :db.type/keyword
+   :db/cardinality :db.cardinality/one
+   :db/doc "Importance marker (frontmatter `importance:`) — typically :high for keystones."}
+
+  {:db/ident       :mm.memory/tags
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Memory
+   :dt/range       :mm/Tag
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/many
+   :db/doc "Set of mm/Tag references — orientation/search axis."}
+
+  {:db/ident       :mm.memory/frontmatter
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Memory
+   :dt/range       :mm/Frontmatter
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/one
+   :db/doc "Container for long-tail / per-type frontmatter keys."}
+
+  {:db/ident       :mm.memory/first-section
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Memory
+   :dt/range       :mm/Section
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/one
+   :db/doc "Head of the top-level section chain — the first top-level section in document order.  Walk forward via :mm.section/next-sibling to traverse all top-level sections.  Per codec arc B.0 ADR §1.3 — O(1) chain-head access vs O(N) scan for 'find section with no :previous-sibling'."}
+
+  {:db/ident       :mm.memory/links
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Memory
+   :dt/range       :mm/Link
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/many
+   :db/doc "Set of mm/Link references — all markdown links extracted from body content."}
+
+  {:db/ident       :mm.memory/body-raw
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Memory
+   :dt/range       :db.type/string
+   :db/valueType   :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/fulltext    true
+   :db/doc "The raw markdown body (everything after the frontmatter ---).  Preserved for byte-stability round-trip + cases where structural decomposition loses information.  Fulltext-indexed as a fallback search axis for content that doesn't decompose cleanly into sections; per-section indexing on mm.section/body is preferred for relevance attribution."}]
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Class Definitions
+;;
+;; Each class is :dt/type :dt/Class + :dt/subclass-of :dt/Resource.  Memory
+;; classes carrying markdown content declare :dt/native-codec :markdown
+;; so the codec mediator's class-default resolution finds a codec without
+;; explicit format hint.  :mm/Memory declares :dt/codec-aliases for
+;; the :type frontmatter key (which would otherwise collide with the
+;; :dt/type system attribute).
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident         :mm/Tag
+   :dt/type          :dt/Class
+   :dt/subclass-of   :dt/Resource
+   :dt/context       "mm"
+   :dt/label         "Tag"
+   :dt/slots         [:mm.tag/value]
+   :dt/abstract?     false
+   :db/doc "A canonical tag entity.  Multiple memorials sharing a tag string reference one mm/Tag entity.  Enables tag-as-first-class navigation + future tag metadata."}
+
+  {:db/ident         :mm/Link
+   :dt/type          :dt/Class
+   :dt/subclass-of   :dt/Resource
+   :dt/context       "mm"
+   :dt/label         "Link"
+   :dt/slots         [:mm.link/href :mm.link/text :mm.link/in-section
+                      :mm.link/external? :mm.link/target-memory]
+   :dt/abstract?     false
+   :db/doc "A markdown link extracted from memorial body content.  href + text preserved; in-section refers back to the containing mm/Section; external? distinguishes corpus-internal vs external URLs; target-memory references the linked mm/Memory if internal."}
+
+  {:db/ident         :mm/Section
+   :dt/type          :dt/Class
+   :dt/subclass-of   :dt/Resource
+   :dt/context       "mm"
+   :dt/label         "Section"
+   :dt/native-codec  :markdown
+   :dt/bm25f-weights [[:mm.section/heading 6.0]
+                      [:mm.section/body    1.0]]
+   :dt/slots         [:mm.section/heading :mm.section/heading-level
+                      :mm.section/body :mm.section/parent
+                      :mm.section/next-sibling :mm.section/previous-sibling]
+   :dt/abstract?     false
+   :db/doc "One markdown section within a memorial's body.  Each section is an addressable entity carrying :mm.section/parent for nesting + :mm.section/next-sibling / :mm.section/previous-sibling for ordered traversal (SIOC pairwise pattern; bidirectional symmetry; point-local O(1) neighbor lookup).  Children reachable via :_mm.section/parent reverse-walk.  :mm.section/body holds the markdown content BETWEEN this heading and the FIRST sub-section's heading."}
+
+  {:db/ident         :mm/Frontmatter
+   :dt/type          :dt/Class
+   :dt/subclass-of   :dt/Resource
+   :dt/context       "mm"
+   :dt/label         "Frontmatter"
+   :dt/slots         [:mm.frontmatter/extra]
+   :dt/abstract?     false
+   :db/doc "Container for unknown / per-type frontmatter keys.  Well-known frontmatter keys (name, description, type, etc.) live directly on mm/Memory; the long tail goes here as a structured EDN map."}
+
+  {:db/ident         :mm/Memory
+   :dt/type          :dt/Class
+   :dt/subclass-of   :dt/Resource
+   :dt/context       "mm"
+   :dt/label         "Memory"
+   :dt/native-codec  :markdown
+   :dt/codec-aliases [[:type :mm.memory/memory-type]]
+   :dt/bm25f-weights [[:mm.memory/name        12.0]
+                      [:mm.memory/description  8.0]
+                      [:mm.memory/body-raw     1.0]]
+   :dt/slots         [:mm.memory/identity :mm.memory/rel-path :mm.memory/name
+                      :mm.memory/description :mm.memory/memory-type
+                      :mm.memory/scope :mm.memory/status
+                      :mm.memory/created :mm.memory/last-touched
+                      :mm.memory/last-reviewed :mm.memory/created-by
+                      :mm.memory/importance :mm.memory/tags
+                      :mm.memory/frontmatter :mm.memory/first-section
+                      :mm.memory/links :mm.memory/body-raw]
+   :dt/abstract?     false
+   :db/doc "A corpus memorial — a markdown document under memory/ with YAML frontmatter and a markdown body.  Decomposed at multiple granularities: well-known frontmatter as direct properties; long-tail frontmatter via mm/Frontmatter; tags via mm/Tag refs; body as a sibling chain of mm/Section entities reachable via :mm.memory/first-section + :mm.section/next-sibling walk; markdown links via mm/Link refs."}]
+
+]

@@ -305,7 +305,7 @@
  [{:db/ident :auth/Principal
    :dt/type :dt/Class
    :dt/subclass-of :dt/Ref
-   :dt/namespace "auth"
+   :dt/context "auth"
    :dt/label "Principal"
    :dt/abstract? true
    :db/doc "Abstract base class for security principals. A principal is an entity that can be authenticated and authorized."
@@ -318,7 +318,7 @@
  [{:db/ident :auth/User
    :dt/type :dt/Class
    :dt/subclass-of :auth/Principal
-   :dt/namespace "auth"
+   :dt/context "auth"
    :dt/label "User"
    :db/doc "A human user with login credentials."
    :dt/slots [:auth/username
@@ -332,7 +332,7 @@
   {:db/ident :auth/Group
    :dt/type :dt/Class
    :dt/subclass-of :auth/Principal
-   :dt/namespace "auth"
+   :dt/context "auth"
    :dt/label "Group"
    :db/doc "A collection of principals. Groups can contain users, service accounts, and other groups."
    :dt/slots [:auth/group-name
@@ -342,7 +342,7 @@
   {:db/ident :auth/ServiceAccount
    :dt/type :dt/Class
    :dt/subclass-of :auth/Principal
-   :dt/namespace "auth"
+   :dt/context "auth"
    :dt/label "Service Account"
    :db/doc "A non-human identity for services and automated processes."
    :dt/slots [:auth/service-name
@@ -353,7 +353,7 @@
  [{:db/ident :auth/Role
    :dt/type :dt/Class
    :dt/subclass-of :dt/Ref
-   :dt/namespace "auth"
+   :dt/context "auth"
    :dt/label "Role"
    :db/doc "A named collection of permissions that can be assigned to principals."
    :dt/slots [:auth/role-name
@@ -364,7 +364,7 @@
   {:db/ident :auth/Permission
    :dt/type :dt/Class
    :dt/subclass-of :dt/Ref
-   :dt/namespace "auth"
+   :dt/context "auth"
    :dt/label "Permission"
    :db/doc "An atomic authorization unit representing a specific action on a resource type."
    :dt/slots [:auth/permission-name
@@ -447,7 +447,7 @@
  [{:db/ident :auth/Session
    :dt/type :dt/Class
    :dt/subclass-of :dt/Ref
-   :dt/namespace "auth"
+   :dt/context "auth"
    :dt/label "Session"
    :db/doc "An active authentication session linking a principal to a browser/client."
    :dt/slots [:auth/session-id

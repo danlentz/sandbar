@@ -1,270 +1,295 @@
 # Sandbar
 
-**Classes for your Clojure data.** Sandbar adds RDFS-style typing, inheritance, and validation to Datomic — because sometimes "it's just a map" isn't enough.
+> A metamodel and platform for LLM memory systems.
 
-## Meet Zorp
+Sandbar is a graph data store built on RDFS-style types, classes,
+properties, and inheritance exposed simultaneously through MCP (Model
+Control Protocol), and HTTP REST API.
 
-Zorp is a third-generation footwear merchant. His grandfather sold ice cleats to early Plutonian settlers; his mother expanded into vacuum-rated boots when the tourist trade took off. Now Zorp runs the Galactic Footwear Emporium from a crater on the dark side of Pluto — prime real estate if you cater to clientele who prefer their transactions unobserved.
+The graph store is Equipped with a four-axis retrieval surface (fulltext
+search with BM25F, structural + temporal aggregation, typed-edge
+navigation with path-grammar, and orientation).
 
-Business is booming. Beings from across the galaxy need footwear rated for vacuum, variable gravity, and tentacles. But Zorp has a problem: his inventory system is a mess of untyped maps.
+The type system is data, queryable + evolvable at runtime through the
+same API you use to query your application's entities.  The wire-format
+layer is substrate, not application concern.  Long-running operations
+have history, cancellation, and outcome classification baked in.
 
-```clojure
-;; Zorp's old code (bad)
-{:name "Moon Boot Pro"
- :price 299.99
- :tentacles 4}  ; Wait, is this required? What type is price? Can boots have tentacles?
-```
+The value: a substrate where "find by content," "walk the typed-edge
+graph from this seed," "rank by structural prominence," and "describe
+yourself" are all one-line queries against a single coherent model — not
+four separate libraries glued together.  And this forms the basis of our
+LLM memory store design.
 
-With Sandbar, Zorp defines a proper type hierarchy:
+This README is a 5-minute elevator.  For depth, follow the pointers into
+`doc/concepts/` (theoretical reference, citation-rich) and `doc/guides/`
+(hands-on how-to).
 
-```
-                  zorp/Footwear [abstract]
-          ________________|________________
-         |                |                |
-    zorp/Sneaker     zorp/Boot       zorp/Sandal
-    _____|_____       ____|____          |
-   |           |     |         |    zorp/FlipFlop
-zorp/HighTop  zorp/LowTop     |
-                    zorp/SpaceBoot
-```
+## Documentation map
 
-Now Zorp's code is type-safe:
+Documentation is layered.  Every entry below is a link; pick the layer that matches your goal.
 
-```clojure
-;; Define the Boot class (inherits from Footwear)
-{:db/ident :zorp/Boot
- :dt/type :dt/Class
- :dt/subclass-of :zorp/Footwear
- :dt/slots [:boot/vacuum-rated? :boot/temperature-range]}
+- **`doc/concepts/`** — Layer 2: theoretical reference (citation-rich)
+  - [`metamodel.md`](doc/concepts/metamodel.md) — The dt/* primitives; RDFS / KL-ONE / CLOS-MOP lineage
+  - [`codec-layer.md`](doc/concepts/codec-layer.md) — Boundary-layer abstraction; per-class `:dt/native-codec`
+  - [`projection.md`](doc/concepts/projection.md) — Bidirectional FS↔DB projection (Anderson lineage)
+  - [`fulltext-search.md`](doc/concepts/fulltext-search.md) — BM25F multi-field weighted scoring; analyzer
+  - [`aggregation.md`](doc/concepts/aggregation.md) — count / group-by / structural-rank; 4 ranking axes
+  - [`navigation.md`](doc/concepts/navigation.md) — Edges / walk / path-grammar overview
+  - [`path-grammar.md`](doc/concepts/path-grammar.md) — Wilbur algebra; 21-operator vocabulary
+  - [`workflow-substrate.md`](doc/concepts/workflow-substrate.md) — First-class workflows; terminal-kind classification
+  - [`mcp-protocol.md`](doc/concepts/mcp-protocol.md) — MCP; bootstrap-by-discovery; operational verb catalog
+  - [`multi-store-architecture.md`](doc/concepts/multi-store-architecture.md) — Multi-store topology; hybrid FS/DB experimentation
+  - [`markdown-as-canonical.md`](doc/concepts/markdown-as-canonical.md) — Markdown as canonical Layer-1 corpus format
 
-;; Create a validated instance
-(dt/make :zorp/SpaceBoot
-  {:footwear/name "Moon Boot Pro"
-   :footwear/price 299.99M
-   :footwear/tentacle-count 4
-   :boot/vacuum-rated? true})
-;; => Works! Returns entity with :dt/type :zorp/SpaceBoot
+- **`doc/guides/`** — Layer 3: hands-on how-to
+  - [`quickstart.md`](doc/guides/quickstart.md) — Get Sandbar running in 5 minutes
+  - [`zorp-tutorial.md`](doc/guides/zorp-tutorial.md) — Worked example — classes + validation + queries
+  - [`writing-a-clojure-client.md`](doc/guides/writing-a-clojure-client.md) — Embed Sandbar in your Clojure code
+  - [`writing-an-mcp-client.md`](doc/guides/writing-an-mcp-client.md) — Connect Claude or other AI client via MCP
+  - [`writing-a-rest-client.md`](doc/guides/writing-a-rest-client.md) — Consume Sandbar over HTTP REST
+  - [`searching-the-corpus.md`](doc/guides/searching-the-corpus.md) — BM25F fulltext patterns; `:where` + `:facet-by` composition
+  - [`navigating-with-paths.md`](doc/guides/navigating-with-paths.md) — Path-grammar worked examples; Canonical-8 + Tier-2
+  - [`implementing-a-codec.md`](doc/guides/implementing-a-codec.md) — Author a codec for a new wire format
+  - [`defining-new-classes.md`](doc/guides/defining-new-classes.md) — Extend the schema with new mm/* or domain classes
+  - [`designing-workflows.md`](doc/guides/designing-workflows.md) — Author state machines with terminal-kind
+  - [`sandbar-as-substrate.md`](doc/guides/sandbar-as-substrate.md) — Embed Sandbar in your own application
 
-;; Try to instantiate the abstract class
-(dt/make :zorp/Footwear {:footwear/name "Generic"})
-;; => Throws! "Cannot instantiate abstract class"
+- **`doc/api/`** — Layer 4: mechanical reference
+  - [`dt-star.md`](doc/api/dt-star.md) — Every dt/* function signature
+  - [`http-rest.md`](doc/api/http-rest.md) — Every REST endpoint
+  - [`mcp-verbs.md`](doc/api/mcp-verbs.md) — Every MCP verb in the catalog
+  - [`codec-protocol.md`](doc/api/codec-protocol.md) — The Codec defprotocol
 
-;; Query: "What slots does a SpaceBoot have?"
-(dt/slots-of :zorp/SpaceBoot)
-;; => #{:footwear/name :footwear/price :footwear/tentacle-count
-;;      :boot/vacuum-rated? :boot/temperature-range ...}
-```
+**Reading order suggestions:**
 
-Zorp's inventory is now self-documenting, validated, and queryable. His customers are happy. His accountant is happy. The sentient footwear is... still plotting something, but that's a separate issue.
+- **New here, evaluating Sandbar:** [`doc/concepts/metamodel.md`](doc/concepts/metamodel.md) → ["What makes Sandbar interesting"](#what-makes-sandbar-interesting) below → [`doc/guides/quickstart.md`](doc/guides/quickstart.md)
+- **AI / MCP client author:** [`doc/concepts/mcp-protocol.md`](doc/concepts/mcp-protocol.md) → [`doc/guides/writing-an-mcp-client.md`](doc/guides/writing-an-mcp-client.md) → [`doc/api/mcp-verbs.md`](doc/api/mcp-verbs.md)
+- **Building a retrieval-heavy consumer:** [`doc/concepts/fulltext-search.md`](doc/concepts/fulltext-search.md) + [`doc/concepts/navigation.md`](doc/concepts/navigation.md) + [`doc/concepts/aggregation.md`](doc/concepts/aggregation.md) → guides in `doc/guides/searching-the-corpus.md` + `navigating-with-paths.md`
+- **Embedding in a Clojure application:** [`doc/guides/sandbar-as-substrate.md`](doc/guides/sandbar-as-substrate.md) → [`doc/api/dt-star.md`](doc/api/dt-star.md)
+- **Adding a new wire format:** [`doc/concepts/codec-layer.md`](doc/concepts/codec-layer.md) → [`doc/guides/implementing-a-codec.md`](doc/guides/implementing-a-codec.md) → [`doc/api/codec-protocol.md`](doc/api/codec-protocol.md)
 
-**Learn more:**
-- **[doc/zorp-example.md](doc/zorp-example.md)** — Full tutorial with Zorp
-- **[test/sandbar/zorp_test.clj](test/sandbar/zorp_test.clj)** — Executable examples
-- **[schema/zorp.edn](schema/zorp.edn)** — The complete footwear ontology
+## What makes Sandbar interesting
 
-## Quick Start
+Sandbar's individual ingredients exist elsewhere. The unique value is in the *synthesis* — how these ingredients combine into one substrate with a consistent discipline.
 
-```bash
-# Prerequisites: Java 11+, Leiningen, running Datomic transactor
-git clone <repository-url> && cd sandbar
-lein deps
-lein repl
+### Metacircular RDFS on Datomic
 
-# In the REPL
-(require '[sandbar.core :refer [go stop]])
-(go)  ; HTTP on :8080, nREPL on :28888
-```
+RDFS gave us a clean vocabulary for classes, properties, inheritance, and predicates. Datomic gave us schema-on-read, first-class time, and expressive query. Sandbar stores its own type system inside Datomic using its own type system — `:dt/Class` is itself an instance of `:dt/Class`. Adding a class is a transaction; introspecting the schema is a query. Application data and metadata flow through the same `dt/*` API.
 
-Then visit `http://localhost:8080/api/store/classes` to see your type system.
+→ `doc/concepts/metamodel.md` for theory + citations
 
-## Why Bother?
+### Layer-targeting discipline + multi-protocol surface
 
-Datomic gives you flexible, schema-on-read attributes. Sandbar groups them into *classes* with inheritance, so you get:
+The same metamodel is exposed simultaneously through HTTP REST, the Model Context Protocol (JSON-RPC + SSE for AI clients), and (incrementally) RDF / TTL. Every protocol layer projects from the same `dt/*` API — there are no parallel schemas to keep in sync. Adding a new protocol means adding a translator, not duplicating the model.
 
-| Without Sandbar | With Sandbar |
-|-----------------|--------------|
-| "Does this entity have all the fields it needs?" | `(dt/valid? entity)` |
-| "What properties can a User have?" | `(dt/slots-of :model/User)` |
-| "Is AdminUser a kind of User?" | `(dt/subclass-of? :model/User :model/AdminUser)` |
-| "Find all Users (including subclasses)" | `(dt/all-instances-of :model/User)` |
-| "Create a User with validation" | `(dt/make :model/User {...})` |
+→ `doc/concepts/mcp-protocol.md` · `doc/guides/writing-an-mcp-client.md` · `doc/guides/writing-a-rest-client.md`
 
-The metamodel is itself stored as Datomic entities. It's turtles all the way down.
+### Codec layer absorbs wire-format complexity
 
-## Core API
+Consumers talk in their native representation. The memory-corpus consumer passes markdown; a future RDF consumer will pass Turtle; an MCP client passes JSON. Sandbar's codec layer absorbs the parse/emit and binds the result to the model — same architectural shape as `dt/*` absorbing Datomic. Per-class `:dt/native-codec` declares the default; the mediator resolves at call time.
+
+→ `doc/concepts/codec-layer.md` · `doc/guides/implementing-a-codec.md`
+
+### Fulltext search via Datomic + Lucene + BM25F
+
+`:db/fulltext` slots are queryable through Datomic's native Lucene integration; Sandbar layers BM25F multi-field weighted scoring on top — same canonical Robertson-Zaragoza form as the corpus's reference implementation, with per-class `:dt/bm25f-weights` declared at the schema layer.  The analyzer (Unicode-aware tokenizer + Porter stemmer) is metamodel-driven; no consumer hardcoding.  Result projection composes with the rest of the retrieval surface — `:where` Datalog clauses, snippets, facets, structural composition — all opts on one verb.
+
+→ `doc/concepts/fulltext-search.md` · `doc/guides/searching-the-corpus.md`
+
+### Aggregation primitives as first-class retrieval
+
+`count` / `group-by` / structural-rank are substrate, not application-layer.  `degree`, `backlink-density`, `recency`, and `freshness` are the four ranking axes — the substrate is class-agnostic (temporal slots are caller-supplied; no hardcoded knowledge of `:mm.memory/last-touched` etc.).  `sandbar.aggregate/{count-by,group-by,rank-by}` opts-shaped API + MCP verbs + REST endpoints.
+
+→ `doc/concepts/aggregation.md`
+
+### Path-grammar navigation (Wilbur lineage)
+
+Sandbar speaks Kleene-algebra-over-binary-relations as a first-class navigation surface.  EDN path expressions like `[:SEQ [:REP* [:OR :cites :evidences]] [:RESTRICT [:type :decision]]]` parse → canonicalize → compile to Datomic recursive rules.  Twenty-one operators committed (eighteen Wilbur-derived from Nokia's 1989-2009 lineage + three SPARQL 1.1 parity additions); the executable Canonical-8 + Tier-2 = thirteen operators today.  Paths are first-class values: `length`, `prefix`, `subpath` compose.  Three-layer DSL/IR/Backend architecture means a future Asami or NFA backend is a translator, not a rewrite.
+
+→ `doc/concepts/path-grammar.md` · `doc/concepts/navigation.md` · `doc/guides/navigating-with-paths.md`
+
+### Bootstrap-by-discovery
+
+Every non-abstract class is automatically discoverable through every protocol. MCP `tools/list` walks `dt/all-classes`; JSON Schema is reflected from `dt/range-of`. Add a class to the schema and it auto-surfaces as a tool, a resource, a REST endpoint — no hand-curated registries, no mapping tables, no server restart.
+
+→ `doc/concepts/mcp-protocol.md`
+
+### Workflows as first-class substrate
+
+State machines are entities. Processes are running instances. MCP Tasks are workflow processes — `task-id` IS `:db/id` (no parallel registry). Terminal states carry an outcome classification (`:success` / `:failure` / `:cancel`) so consumers don't reinvent the "what kind of done is this" projection. Cancellation is workflow-substrate, not per-tool plumbing.
+
+→ `doc/concepts/workflow-substrate.md` · `doc/guides/designing-workflows.md`
+
+### Filesystem-canonical projection (Anderson lineage)
+
+The filesystem format is the canonical ground-truth.  Sandbar's `sandbar.projection/project-graph` + `ingest-graph` primitives are bidirectional — DB state ↔ filesystem hierarchy of native-format files.  Any backend complies with the filesystem format.  Document chunks are addressable entities with their own URIs and sibling-chain navigation (`:next-sibling` / `:previous-sibling`, RDFS-inspired).  The pattern borrows from James Anderson's `de.setf.rdf:project-graph` (Datagraph/Dydra-era CL CLOS-metaclass framework) and applies it to filesystem hierarchies as the native projection target.
+
+→ `doc/concepts/projection.md`
+
+### Hybrid filesystem/database topology (experimental)
+
+The partition between what lives on disk and what lives in the runtime DB is an open architectural question we're actively exploring. Filtering primitives on `project.export` / `project.import` exist precisely to enable this experimentation. Today, both sides are first-class. Tomorrow's answer depends on what measurement reveals.
+
+→ `doc/concepts/multi-store-architecture.md`
+
+## Three concrete examples
+
+### Example 1 — Clojure, in-process
+
+Define a class hierarchy, create a validated instance, query the metamodel:
 
 ```clojure
 (require '[sandbar.db.datatype :as dt])
 
-;; Classes
-(dt/all-classes)                         ; List all classes
-(dt/parents-of :model/User)              ; => (:dt/Ref)
-(dt/ancestors-of :model/User)            ; => (:dt/Ref :dt/Resource)
-(dt/subclasses-of :dt/Resource)          ; All descendants
-(dt/subclass-of? :dt/Resource :model/User) ; => true
-(dt/abstract? :zorp/Footwear)            ; => true
+;; Classes describe themselves
+(dt/make :dt/Class
+  {:db/ident :order/Order
+   :dt/subclass-of :dt/Resource
+   :dt/slots [:order/customer :order/total :order/status]})
 
-;; Properties
-(dt/all-properties)                      ; List all properties
-(dt/slots-of :model/User)                ; All slots (inherited + direct)
-(dt/direct-slots-of :model/User)         ; Only declared on this class
-(dt/domain-of :user/login)               ; => :model/User
-(dt/range-of :user/login)                ; => :db.type/string
+;; Create a validated instance
+(dt/make :order/Order
+  {:order/customer customer-entity
+   :order/total    299.99M
+   :order/status   :order/pending})
+;; => entity; validation passed; transacted
 
-;; Instances
-(dt/make :model/User {:user/login "zorp"})  ; Create with validation
-(dt/class-of some-entity)                   ; => :model/User
-(dt/instance-of? :model/User some-entity)   ; => true
-(dt/all-instances-of :model/User)           ; Includes subclass instances
-(dt/valid? some-entity)                     ; Validate against class
+;; Introspect at runtime
+(dt/slots-of      :order/Order)        ; #{:order/customer :order/total ...}
+(dt/instance-of?  :order/Order order)  ; true
+(dt/all-instances-of :dt/Resource)     ; every entity, including order
 ```
 
-## REST API
+### Example 2 — AI client (Claude or other MCP consumer)
 
-The metamodel is fully exposed via HTTP. Default format is EDN; request JSON with `Accept: application/json`.
+Discover the surface; create an entity from markdown source; read it back:
 
 ```bash
-# Schema overview
-curl http://localhost:8080/api/store/schema
+export SANDBAR_TOKEN="<your-service-account-token>"
 
-# Class introspection
-curl http://localhost:8080/api/store/classes
-curl http://localhost:8080/api/store/classes/model/User
-curl http://localhost:8080/api/store/classes/model/User/slots
-curl http://localhost:8080/api/store/classes/model/User/hierarchy
+# 1. Discover available tools (bootstrap-by-discovery)
+curl -X POST http://localhost:8080/mcp \
+  -H "Authorization: Bearer $SANDBAR_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
 
-# Properties
-curl http://localhost:8080/api/store/properties
-curl http://localhost:8080/api/store/properties/user/login
+# 2. Create an mm/Memory entity by passing markdown source —
+#    codec layer absorbs the parse + class-binding
+curl -X POST http://localhost:8080/mcp \
+  -H "Authorization: Bearer $SANDBAR_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":
+        {"name":"sandbar.entity.create",
+         "arguments":{"class":"mm/Memory",
+                       "format":"markdown",
+                       "source":"---\nname: Foo\n---\n# Context\n..."}}}'
 
-# Type checks
-curl http://localhost:8080/api/store/types/instance-of/dt/Class/model/User
-curl http://localhost:8080/api/store/types/subclass-of/dt/Resource/model/User
+# 3. Read it back as markdown (full section tree reconstructed)
+curl -X POST http://localhost:8080/mcp \
+  -H "Authorization: Bearer $SANDBAR_TOKEN" \
+  -d '{"jsonrpc":"2.0","id":3,"method":"resources/read",
+        "params":{"uri":"mcp://sandbar/mm/Memory/decisions/foo"}}'
 ```
 
-<details>
-<summary>Full endpoint reference</summary>
+→ `doc/guides/writing-an-mcp-client.md` for full client patterns
+→ `doc/guides/zorp-tutorial.md` for a complete worked example
 
-| Endpoint | Description |
-|----------|-------------|
-| `GET /api/status` | System status |
-| `GET /api/store/schema` | Schema overview |
-| `GET /api/store/classes` | List classes |
-| `GET /api/store/classes/:ns/:name` | Class details |
-| `GET /api/store/classes/:ns/:name/slots` | All slots |
-| `GET /api/store/classes/:ns/:name/slots/direct` | Direct slots only |
-| `GET /api/store/classes/:ns/:name/slots/required` | Required slots |
-| `GET /api/store/classes/:ns/:name/instances` | All instances |
-| `GET /api/store/classes/:ns/:name/instances/direct` | Direct instances |
-| `GET /api/store/classes/:ns/:name/hierarchy` | Full hierarchy |
-| `GET /api/store/classes/:ns/:name/subclasses` | All subclasses |
-| `GET /api/store/classes/:ns/:name/ancestors` | All ancestors |
-| `GET /api/store/classes/:ns/:name/parents` | Direct parents |
-| `GET /api/store/properties` | List properties |
-| `GET /api/store/properties/:ns/:name` | Property details |
-| `GET /api/store/properties/:ns/:name/domain` | Property domain |
-| `GET /api/store/properties/:ns/:name/range` | Property range |
-| `GET /api/store/entities/:ns/:name` | Entity by ident |
-| `GET /api/store/entities/:ns/:name/class` | Entity's class |
-| `GET /api/store/entities/:ns/:name/validate` | Validate entity |
-| `GET /api/store/types/instance-of/:class/:entity` | Instance check |
-| `GET /api/store/types/subclass-of/:parent/:child` | Subclass check |
+### Example 3 — The four-axis retrieval surface
 
-</details>
-
-### JSON Example
-
-```bash
-curl -H "Accept: application/json" http://localhost:8080/api/store/classes/dt/Resource
-```
-
-```json
-{
-  "class": "dt/Resource",
-  "abstract?": false,
-  "slots": ["db/doc", "db/ident", "dt/label", "dt/namespace", "dt/type"],
-  "parents": [],
-  "subclasses": ["dt/Class", "dt/List", "dt/Literal", "dt/Property", "dt/Ref"],
-  "instance-count": 85
-}
-```
-
-## Event Logging
-
-Sandbar includes a built-in event system that persists to Datomic. HTTP requests are logged automatically; you can also log programmatically.
+Walk a typed-edge graph; rank the result; project paths.  Three composable axes in one short example:
 
 ```clojure
-(require '[sandbar.util.event :as event])
+(require '[sandbar.search    :as search]
+         '[sandbar.aggregate :as agg]
+         '[sandbar.navigate.path :as path])
 
-;; Simple logging
-(event/log! :info "User logged in")
-(event/log! :error "Payment failed" {:event/status :failure})
+;; Fulltext — BM25F across :mm/Memory's weighted slots
+(search/search-bm25f
+  {:class :mm/Memory
+   :query "datomic recursive rules"
+   :limit 10
+   :include [:snippets :scores]})
 
-;; Typed events
-(event/log-http! {:http/method :get :http/path "/api/users" :http/status-code 200})
-(event/log-error! "Oops" ex)  ; Captures exception + stacktrace
+;; Aggregation — group memories by type, rank-by backlink-density
+(agg/group-by {:class :mm/Memory :group-by :mm.memory/memory-type})
+(agg/rank-by  {:class :mm/Memory :rank-by :backlink-density :limit 10})
 
-;; Query via API
-;; GET /api/events?level=error&limit=50
-;; GET /api/events/correlation/550e8400-e29b-41d4-a716-446655440000
+;; Path-grammar — walk the typed-edge graph with Kleene closure
+(path/path-via
+  {:from :decisions/some-anchor
+   :via  [:SEQ [:REP* [:OR :cites :evidences]]
+              [:RESTRICT [:dt/type :mm.memory/decision]]]})
 ```
 
-Events support correlation IDs for distributed tracing. See [doc/event.md](doc/event.md) for details.
+Each axis is also a stable MCP verb (`sandbar.search.bm25f`, `sandbar.aggregate.rank-by`, `sandbar.navigate.path-via`) and a REST endpoint (`GET /api/aggregate/rank-by`, `GET /api/navigate/path`).  Same model, three projections.
 
-## Project Structure
+→ `doc/concepts/path-grammar.md` for the algebra · `doc/guides/navigating-with-paths.md` for worked patterns
+
+## Quick start
+
+```bash
+# Prerequisites: Java 11+, Leiningen, Datomic transactor running
+git clone <repository-url> && cd sandbar
+lein deps && lein repl
+
+# In the REPL
+(require '[sandbar.core :refer [go]])
+(go)  ; HTTP on :8080; nREPL on :28888
+
+# Sanity check (in another shell)
+curl http://localhost:8080/api/status
+```
+
+→ `doc/guides/quickstart.md` for the 5-minute hands-on tour
+
+
+## Project layout
 
 ```
 sandbar/
-├── config/             # EDN configuration
-├── schema/             # Type definitions
-│   ├── meta.edn        # Core metamodel (Class, Property, etc.)
-│   ├── event.edn       # Event types
-│   └── zorp.edn        # Example: Galactic Footwear Emporium
+├── schema/             EDN class + property definitions
 ├── src/sandbar/
-│   ├── api/            # REST handlers
-│   ├── db/
-│   │   ├── datatype.clj   # The good stuff (dt/make, dt/slots-of, etc.)
-│   │   └── datomic.clj    # Database connection
-│   ├── server/         # HTTP + nREPL
-│   ├── service/        # Routing, interceptors
-│   └── util/
-│       └── event.clj   # Event logging
-└── test/               # 200+ tests, because we're not animals
+│   ├── codec.clj       Mediator + per-class :dt/native-codec resolution
+│   ├── codec/          Codec protocol + markdown + JSON
+│   ├── projection.clj  Anderson-style FS↔DB projection
+│   ├── search.clj      BM25F + multi-field weighted scoring
+│   ├── search/         search.analysis (Porter + Unicode) + search.bm25f
+│   ├── aggregate.clj   count-by / group-by / rank-by (4 structural axes)
+│   ├── navigate/       edges / walk / path (Wilbur path-grammar)
+│   │   └── path/       ast / ir / datomic / value
+│   ├── db/             dt/* model API + Datomic peer connection
+│   ├── mcp/            MCP server (transport / protocol / tools / resources / prompts / tasks)
+│   ├── api/            REST handlers (store / aggregate / navigate / workflow / event / job / auth)
+│   ├── service/        Routing + validation-as-workflow
+│   └── util/           Auth (Buddy-hashers) / events / workflow lifecycle
+└── doc/                Layered documentation (Layer 2 + 3 + 4)
 ```
 
-## Documentation
-
-| Document | What You'll Learn |
-|----------|-------------------|
-| [Quick Start](doc/quickstart.md) | Zero to running in 5 minutes |
-| [Architecture](doc/architecture.md) | How the pieces fit together |
-| [Metamodel](doc/meta-model.md) | Classes, properties, inheritance |
-| [Event System](doc/event.md) | Logging, correlation, interceptors |
-| [Zorp Tutorial](doc/zorp-example.md) | Learn by selling alien footwear |
-
-## Running Tests
+## Running tests
 
 ```bash
-lein test                                    # All 200+ tests
-lein test sandbar.zorp-test                  # Just the fun ones
-lein test :only sandbar.datatype-test/make-test  # Specific test
+lein test                                              # full suite
+lein test :only sandbar.codec.markdown-test            # one namespace
+lein test :only sandbar.datatype-test/make-test        # one deftest
 ```
 
 ## FAQ
 
-**Q: Why not just use Datomic's schema?**
-A: Datomic schemas define attributes, not types. You can say "there's an attribute called `:user/login`" but not "a User has login, email, and inherits from Person." Sandbar adds that layer.
+**Q: Is this OWL/RDF?**
+A: Inspired by RDFS, but simpler. Closed-world; no inference engine; no PhD required. The metamodel is closer to KL-ONE-shaped frames-with-inheritance than to OWL DL.
 
-**Q: Is this like OWL/RDF?**
-A: Inspired by RDFS, but simpler. No open-world assumption, no inference engine, no PhD required. Just classes, properties, and inheritance.
+**Q: Why both REST and MCP?**
+A: Different consumers; same metamodel. Traditional HTTP clients want REST. AI clients want JSON-RPC with reflective tool discovery + push notifications. Both projections come from the same `dt/*` introspection — no parallel models to keep in sync.
 
-**Q: What's with the turtle jokes?**
-A: The metamodel describes itself using its own constructs. `dt/Class` is an instance of `dt/Class`. It's self-referential. Turtles. All the way down. We're very sorry.
+**Q: How does the codec layer relate to Datomic's serialization?**
+A: It doesn't. Datomic handles in-store representation; codecs handle wire format at the protocol boundary. The codec layer absorbs format complexity from consumers, the same way `dt/*` absorbs Datomic query complexity.
 
-**Q: Can I use this in production?**
-A: Zorp has been selling moon boots on Pluto for years with zero incidents.*
+**Q: How does path-grammar compare to SPARQL property paths or Cypher relationship patterns?**
+A: Sandbar's path-grammar shares the same Kleene-algebra-over-binary-relations spine.  Wilbur (Lassila 1989, Nokia 2001-2009) is the source-of-truth lineage; SPARQL 1.1 (2013) formalized the same algebra independently; Cypher's variable-length paths converge on the same surface.  Sandbar inherits the algebra, ships subset-first (Canonical-8 + Tier-2 = 13 operators executable today; Tier-3 vocabulary-registered but compilation deferred), and exposes paths as EDN-native first-class values (`length`, `prefix`, `subpath`).  The three-layer DSL/IR/Backend architecture means a future Asami or NFA × graph-product backend is a translator, not a rewrite.
 
-<sub>*Incidents involving sentient footwear are tracked separately.</sub>
+**Q: Why BM25F instead of plain BM25 or Lucene's default Similarity?**
+A: BM25F is the multi-field weighted form that Lucene's single-field BM25 doesn't natively express.  Per-class `:dt/bm25f-weights` declare slot weights at the metamodel layer (e.g., `:mm.memory/name` 12.0 vs `:mm.memory/body-raw` 1.0); the analyzer (Unicode tokenizer + Porter stemmer) is metamodel-driven and matches the corpus's reference implementation byte-for-byte.
 
 ## License
 

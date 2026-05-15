@@ -87,7 +87,20 @@
    :dt/range :db.type/string
    :db/valueType :db.type/string
    :db/cardinality :db.cardinality/one
-   :db/doc "Additional state data (EDN string)"}]
+   :db/doc "Additional state data (EDN string)"}
+
+  {:db/ident :workflow/terminal-kind
+   :dt/type :dt/Property
+   :dt/domain :workflow/State
+   :dt/range :db.type/keyword
+   :db/valueType :db.type/keyword
+   :db/cardinality :db.cardinality/one
+   :db/doc "Classification of terminal state outcome: :success / :failure / :cancel.
+            Only meaningful when :workflow/terminal? is true.  Required for terminal
+            states (enforced at create-state! / define-workflow! call boundaries);
+            absent for non-terminal states.  Consumed by can-cancel? + cancel-process!
+            + sandbar.mcp.tasks/process->task-status per
+            decisions/sandbar_workflow_cancellation_modeled_as_terminal_kind_on_states_2026_05_12.md"}]
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Transition Properties
@@ -297,19 +310,22 @@
  [{:db/ident :workflow/State
    :dt/type :dt/Class
    :dt/subclass-of :dt/Ref
-   :dt/namespace "workflow"
+   :dt/context "workflow"
    :dt/label "State"
-   :db/doc "A named state in a workflow. States can be initial (starting point), terminal (end point), or intermediate."
+   :db/doc "A named state in a workflow. States can be initial (starting point), terminal (end point), or intermediate.
+            Terminal states carry a :workflow/terminal-kind classification (:success / :failure / :cancel)
+            consumed by cancel-process! / can-cancel? / mcp.tasks/process->task-status."
    :dt/slots [:workflow/state-name
               :workflow/state-label
               :workflow/terminal?
               :workflow/initial?
+              :workflow/terminal-kind
               :workflow/state-metadata]}
 
   {:db/ident :workflow/Transition
    :dt/type :dt/Class
    :dt/subclass-of :dt/Ref
-   :dt/namespace "workflow"
+   :dt/context "workflow"
    :dt/label "Transition"
    :db/doc "A valid state change triggered by an action. Can have guard functions and side effects."
    :dt/slots [:workflow/transition-name
@@ -322,7 +338,7 @@
   {:db/ident :workflow/Definition
    :dt/type :dt/Class
    :dt/subclass-of :dt/Ref
-   :dt/namespace "workflow"
+   :dt/context "workflow"
    :dt/label "Definition"
    :db/doc "A complete workflow specification with states and transitions."
    :dt/slots [:workflow/definition-name
@@ -333,7 +349,7 @@
   {:db/ident :workflow/Process
    :dt/type :dt/Class
    :dt/subclass-of :dt/Ref
-   :dt/namespace "workflow"
+   :dt/context "workflow"
    :dt/label "Process"
    :db/doc "A running instance of a workflow attached to a subject entity."
    :dt/slots [:workflow/definition
@@ -347,7 +363,7 @@
   {:db/ident :workflow/History
    :dt/type :dt/Class
    :dt/subclass-of :dt/Ref
-   :dt/namespace "workflow"
+   :dt/context "workflow"
    :dt/label "History"
    :db/doc "A record of a single state transition in a process."
    :dt/slots [:workflow/history-from

@@ -1,8 +1,10 @@
-(defproject sandbar "0.0.1-SNAPSHOT"
-  :description "FIXME: write description"
-  :url "http://example.com/FIXME"
-  :license {:name "Eclipse Public License"
-            :url "http://www.eclipse.org/legal/epl-v10.html"}
+(defproject com.github.danlentz/sandbar "0.1.0"
+  :description "Metacircular metamodel platform on Datomic — RDFS-style classes + properties + inheritance, equipped with a four-axis retrieval surface (BM25F fulltext search, structural + temporal aggregation, Wilbur-lineage path-grammar navigation, library-card orientation), exposed simultaneously through HTTP REST and Model Context Protocol (MCP) for AI clients"
+  :author "Dan Lentz"
+  :url "https://github.com/danlentz/sandbar"
+  :license {:name "EPL-2.0 OR GPL-2.0-or-later WITH Classpath-exception-2.0"
+            :url "https://www.eclipse.org/legal/epl-2.0/"}
+  :signing {:gpg-key "0CA466A1AB48F0C0264AF55307BAD70176C4B179"}
   :dependencies [[org.clojure/clojure "1.12.4"]
                  [org.clojure/core.async "1.8.741"]
                  [org.clojure/core.logic "1.1.1"]
@@ -24,6 +26,7 @@
                  [clj-http "3.13.1"]
 
                  [cheshire "6.1.0"]
+                 [clj-commons/clj-yaml "1.0.29"]
                  [com.cognitect/transit-clj "1.0.333"]
                  [danlentz/clj-uuid "0.2.0"]
                  [rm-hull/table "0.7.1"]
@@ -57,7 +60,16 @@
 
   :profiles {:dev {:aliases {"run-dev" ["trampoline" "run" "-m" "sandbar.core/go"]}
                    :dependencies [[io.pedestal/pedestal.service-tools "0.7.2"]]}
+             ;; F-DF-1 Phase 1+2 (Phase R Stage R-6) — bench scaffolding.
+             ;; `lein bench` runs the structural-rank + path-grammar
+             ;; harnesses at the 10 / 100 / 1k / 10k size ladder and
+             ;; emits bench-results/baseline.edn for regression
+             ;; comparison.  See doc/BENCH.md for the discipline.
+             :bench {:source-paths ["bench"]}
              :uberjar {:aot [sandbar.core] }}
+
+  :aliases {"bench" ["with-profile" "+bench"
+                     "run" "-m" "sandbar.bench.run"]}
 
 
   :asciidoc {:sources ["doc/*.adoc"]

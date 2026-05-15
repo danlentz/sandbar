@@ -40,3 +40,16 @@ out/
 build/
 
 /tmp/
+
+# Local review artifacts (codex / ultrareview prompt files + working pre-pass notes).
+# These are held at branch root during in-flight external-review cycles and folded
+# into final memorial documents post-review.  Not for commit.
+.codex-*
+.pre-codex-*
+
+# Bench-results (F-DF-1 Phase 1+2 / Phase R Stage R-6).  Transient
+# bench runs (timestamped files) are ignored; only the committed
+# baseline.edn is the regression bar.  See doc/BENCH.md.
+/bench-results/*
+!/bench-results/baseline.edn
+!/bench-results/.gitkeep

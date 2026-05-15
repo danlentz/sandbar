@@ -3,12 +3,17 @@
             [clojure.tools.logging        :as log]
             [io.pedestal.http.body-params :as body-params]
             [io.pedestal.http.route       :as route]
+            [sandbar.api.aggregate        :as aggregate-api]
             [sandbar.api.auth             :as auth-api]
             [sandbar.api.event            :as event]
             [sandbar.api.job              :as job-api]
+            [sandbar.api.navigate         :as navigate-api]
+            [sandbar.api.orient           :as orient-api]
             [sandbar.api.status           :as status]
             [sandbar.api.store            :as store]
             [sandbar.api.workflow         :as workflow-api]
+            [sandbar.mcp.auth             :as mcp-auth]
+            [sandbar.mcp.transport        :as mcp-transport]
             [sandbar.service.content      :as content]
             [sandbar.service.endpoint     :as endpoint :refer [defhandler]]
             [sandbar.service.params       :as params]
@@ -61,7 +66,8 @@
                               params/validated-params
                               params/log-params
                               auth/authentication-interceptor
-                              auth/require-authentication]
+                              auth/require-authentication
+                              endpoint/entity-ref-error-interceptor]
        ["/status" {:get status/status-handler}]
        ["/auth"
         ["/logout" {:post auth-api/logout}]
@@ -90,7 +96,8 @@
           ["/subclasses" {:get store/list-subclasses}
            ["/direct" {:get store/list-direct-subclasses}]]
           ["/ancestors" {:get store/list-ancestors}]
-          ["/parents" {:get store/list-parents}]]]
+          ["/parents" {:get store/list-parents}]
+          ["/validate" {:get store/validate-instances}]]]
         ["/properties" {:get store/list-properties}
          ["/:ns/:name" {:get store/get-property}
           ["/domain" {:get store/property-domain}]
@@ -126,6 +133,45 @@
          ["/transitions" {:get workflow-api/get-available-transitions}]
          ["/transition" {:post workflow-api/execute-transition}]
          ["/history" {:get workflow-api/get-process-history}]]]
+
+       ;; Aggregation API (Stage 15 — fulltext arc Phase G)
+       ;; Per plans/sandbar_fulltext_search_substrate_arc_2026_05_13.md.
+       ;; Thin HTTP wrappers around sandbar.aggregate's three public verbs.
+       ["/aggregate"
+        ["/count"    {:get aggregate-api/count}]
+        ["/group-by" {:get aggregate-api/group-by}]
+        ["/rank-by"  {:get aggregate-api/rank-by}]]
+
+       ;; Navigation API (Stage P-6 + Stage 22 — fulltext arc Phase N / Stage P)
+       ;; Path-grammar walker + same-directory peers.
+       ["/navigate"
+        ["/path"     {:get navigate-api/path-via}]
+        ["/siblings" {:get navigate-api/siblings-of}]]
+
+       ;; Orientation API (Phase O — fulltext arc; library-card only)
+       ;; Per decisions/sandbar_phase_o_substrate_quality_scope_library_card_only_2026_05_14.md.
+       ["/orient"
+        ["/library-card" {:get orient-api/library-card}]]
        ]
+
+      ;; MCP (Model Context Protocol) endpoint — per
+      ;; decisions/sandbar_mcp_server_design_2026_05_12.md B.1.1 + B.1.2
+      ;; Streamable HTTP transport at /mcp; JSON-RPC 2.0 envelope.
+      ;; Bearer-token auth (Stage C.2) — mcp-auth/bearer-interceptor extracts
+      ;; Authorization: Bearer <token> + delegates to sandbar.util.auth/authenticate-api-key;
+      ;; mcp-auth/require-bearer terminates with 401 + WWW-Authenticate: Bearer if
+      ;; no :identity attached.
+      ["/mcp" ^:interceptors [event-util/log-request
+                              content/data-body
+                              content/log-response
+                              content/accept-content
+                              params/parsed-params
+                              mcp-auth/bearer-interceptor
+                              mcp-auth/require-bearer]
+       {:post mcp-transport/mcp-handler}
+       ;; SSE channel for server → client notifications (Stage C.3)
+       ;; per ADR B.1.1 + B.1.4 + B.1.5. Subscribers managed by
+       ;; sandbar.mcp.notifications.
+       ["/sse" {:get mcp-transport/sse-handler}]]
 
       ]]])

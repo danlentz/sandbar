@@ -27,6 +27,7 @@
     Use sandbar.util.event for programmatic logging functions (log!, log-event!, etc.)
     and Pedestal interceptors (log-request, log-request-minimal)."
   (:require [clojure.instant          :as instant]
+            [sandbar.entity-ref       :as eref]
             [datomic.api              :as d]
             [sandbar.db.datomic       :as db]
             [sandbar.db.datatype      :as dt]
@@ -317,11 +318,12 @@
   (let [entity-id (str->long id)]
     (if-not entity-id
       (endpoint/bad-request {:error "Invalid event ID" :id id})
-      (if-let [entity (db/entity entity-id)]
-        (if (:event/timestamp entity)  ; Verify it's actually an event
-          {:event (entity->map entity)}
-          (endpoint/not-found {:error "Not an event" :id entity-id}))
-        (endpoint/not-found {:error "Event not found" :id entity-id})))))
+      (let [{:keys [valid? entity]} (eref/validate entity-id)]
+        (if valid?
+          (if (:event/timestamp entity)  ; Verify it's actually an event
+            {:event (entity->map entity)}
+            (endpoint/not-found {:error "Not an event" :id entity-id}))
+          (endpoint/not-found {:error "Event not found" :id entity-id}))))))
 
 (defhandler get-by-correlation
   "GET /api/events/correlation/:uuid - Get all events with given correlation ID"

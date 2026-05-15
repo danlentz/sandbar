@@ -69,10 +69,16 @@
               (instance-of ?dt ?e)]
             (db/db) (all-rules) dt)))
 
-(defn all-named-instances-of
-  "Returns the :db/ident keywords of all named entities that are instances
-  of class dt or any of its subclasses. Useful for finding class and property
-  definitions rather than data instances."
+(defn named-idents-of
+  "Returns the :db/ident KEYWORDS of all named entities that are
+  instances of class dt or any of its subclasses.
+
+  Return shape (idents) is explicit in the name.  When you need
+  entity maps, use `named-entities-of` instead.
+
+  Replaces the older `all-named-instances-of` (kept as deprecated alias
+  for one-release migration window per
+  decisions/sandbar_dt_star_explicit_ident_entity_helper_split_2026_05_13.md)."
   [dt]
   (map first
        (d/q '[:find ?ident :in $ % ?dt :where
@@ -80,17 +86,45 @@
               (instance-of ?dt ?e)]
             (db/db) (all-rules) dt)))
 
+(defn named-entities-of
+  "Returns entity MAPS for all named entities that are instances of
+  class dt or any of its subclasses.
+
+  Return shape (entity maps) is explicit in the name.  Use this when
+  you need to read metadata off the entities (`:db/ident`,
+  `:dt/native-codec`, slot values, etc.).  When you only need idents,
+  use `named-idents-of` instead.
+
+  Per decisions/sandbar_dt_star_explicit_ident_entity_helper_split_2026_05_13.md."
+  [dt]
+  (map (comp db/entity first)
+       (d/q '[:find ?ident :in $ % ?dt :where
+              [?e :db/ident ?ident]
+              (instance-of ?dt ?e)]
+            (db/db) (all-rules) dt)))
+
+(defn ^{:deprecated "0.1.0"} all-named-instances-of
+  "DEPRECATED: name does not disambiguate return shape.  Use:
+    - `named-idents-of`     when you want idents (current behavior)
+    - `named-entities-of`   when you want entity maps
+
+  Kept as an alias for `named-idents-of` for one-release migration window
+  per decisions/sandbar_dt_star_explicit_ident_entity_helper_split_2026_05_13.md.
+  Slated for removal post-0.1.x."
+  [dt]
+  (named-idents-of dt))
+
 (defn all-classes
   "Returns the :db/ident keywords of all classes in the metamodel.
-  Equivalent to (all-named-instances-of :dt/Class)."
+  Equivalent to (named-idents-of :dt/Class)."
   []
-  (all-named-instances-of :dt/Class))
+  (named-idents-of :dt/Class))
 
 (defn all-properties
   "Returns the :db/ident keywords of all properties in the metamodel.
-  Equivalent to (all-named-instances-of :dt/Property)."
+  Equivalent to (named-idents-of :dt/Property)."
   []
-  (all-named-instances-of :dt/Property))
+  (named-idents-of :dt/Property))
 
 (defn make*
   "Creates a typed instance without validation.
@@ -123,6 +157,13 @@
     props - Optional map of property values
     opts  - Optional options map:
             :validate? - if false, skips validation (default true)
+            :format    - codec format keyword (e.g., :markdown / :json)
+                         When provided with :source, parses source via
+                         the codec mediator and uses the resulting
+                         entity-spec as the props base; explicit `props`
+                         keys override parsed slots
+            :source    - raw native-representation string to parse via
+                         :format codec (e.g., markdown text for :markdown)
 
   Returns the newly created entity map.
 
@@ -136,23 +177,839 @@
 
   Example:
     (make :User {:user/login \"dan\"})
-    (make :User {:user/login \"dan\"} {:validate? false})"
+    (make :User {:user/login \"dan\"} {:validate? false})
+
+    ;; Parse markdown via codec.markdown; transact result
+    (make :mm/Memory {} {:format :markdown
+                          :source \"---\\nname: Foo\\n---\\n# Body\\n\"})"
   ([dt] (make dt {} {}))
   ([dt props] (make dt props {}))
-  ([dt props {:keys [validate?] :or {validate? true}}]
-   (if-not validate?
-     (make* dt props)
-     (if-let [errors (validate-data dt props)]
-       (do
-         (log/debug :DT/VALIDATION-FAILED {:class dt :errors errors})
-         (throw (ex-info "Validation failed" errors)))
-       (make* dt props)))))
+  ([dt props {:keys [validate? format source] :or {validate? true}}]
+   ;; F.1 codec arc Stage F per
+   ;; plans/sandbar_codec_layer_arc_2026-05-12.md — when :format +
+   ;; :source supplied, parse via the codec mediator first; explicit
+   ;; props override parsed slots.
+   ;;
+   ;; Signal 3 (Stage G analysis) — when :source is provided WITHOUT
+   ;; explicit :format, fall back to the class's :dt/native-codec
+   ;; attribute (the mediator's class-default resolution semantics).
+   ;; Symmetric with codec/parse's class-aware default.
+   (let [resolved-format (or format
+                             (when source
+                               (:dt/native-codec (entity dt))))
+         props (if (and resolved-format source)
+                 (let [parse-fn (requiring-resolve 'sandbar.codec/parse)
+                       parsed   (parse-fn source {:format resolved-format :class dt})]
+                   (merge (dissoc parsed :dt/type) props))
+                 props)]
+     (if-not validate?
+       (make* dt props)
+       (if-let [errors (validate-data dt props)]
+         (do
+           (log/debug :DT/VALIDATION-FAILED {:class dt :errors errors})
+           (throw (ex-info "Validation failed" errors)))
+         (make* dt props))))))
 
-(defn class-of
-  "Returns the class (:dt/type) of entity e.
-  Works with entity maps, entity IDs, or idents."
+(defn realize-with
+  "General-purpose entity realization helper — given a seed entity + a
+   `walk-fn`, returns a vector of entity-spec maps including the seed
+   plus all transitively-reachable related entities (BFS order).
+
+   Arguments:
+     entity  - the seed entity (Datomic Entity record OR ident OR :db/id)
+     walk-fn - fn entity → coll of related entities; defines the walk shape
+               (e.g., for mm/Memory: (:mm.memory/first-section + walks); for
+               mm/Section: (:mm.section/next-sibling + :_mm.section/parent)).
+               walk-fn should return ALREADY-DEDUPLICATED related entities;
+               realize-with dedupes by :db/id across the BFS visited-set.
+
+   Returns: vector of entity-spec maps; each map is `(into {:dt/type ...}
+   datomic-entity)` for the seed and each walked entity.
+
+   Codec arc Stage F Signal 6 per
+   plans/sandbar_codec_layer_arc_2026-05-12.md — addresses the friction
+   that `emit-entity`'s shallow `(into {} entity)` misses lazy-loaded
+   refs.  Composable with `sandbar.codec/emit` on collections + with
+   `sandbar.projection` entity-collection paths."
+  [entity walk-fn]
+  (let [seed (cond
+               (keyword? entity) (db/entity entity)
+               (number?  entity) (db/entity entity)
+               :else entity)]
+    (loop [acc      []
+           visited  #{}
+           frontier [seed]]
+      (if (empty? frontier)
+        acc
+        (let [next-frontier (atom [])
+              new-acc (reduce
+                        (fn [a e]
+                          (let [eid (:db/id e)]
+                            (if (or (nil? eid) (contains? visited eid))
+                              a
+                              (let [related (or (walk-fn e) [])
+                                    e-map   (into {:dt/type (:dt/type e)} e)]
+                                (doseq [r related
+                                        :let [r-eid (:db/id r)]]
+                                  (when (and r-eid (not (contains? visited r-eid)))
+                                    (swap! next-frontier conj r)))
+                                (conj a e-map)))))
+                        acc
+                        frontier)
+              new-visited (into visited (keep :db/id frontier))]
+          (recur new-acc new-visited @next-frontier))))))
+
+(defn emit-entity
+  "Emit an entity in its native representation via the codec mediator.
+
+  Arguments:
+    entity - the entity (or entity map / entity ID)
+    opts   - optional codec opts:
+             :format — format keyword (default: from the class's
+                       :dt/native-codec attribute)
+             others  — forwarded to the codec's emit method
+                       (e.g., :pretty?, :include-id?)
+
+  Returns the native-representation string (typically markdown / JSON
+  / TTL depending on the resolved codec).
+
+  Per codec arc Stage F (plans/sandbar_codec_layer_arc_2026-05-12.md):
+  the inverse of `dt/make` with `:format` opt — together they form a
+  full codec round-trip surface at the model layer.
+
+  Example:
+    (emit-entity my-memory)               ; uses :dt/native-codec default
+    (emit-entity my-memory {:format :json})"
+  ([entity] (emit-entity entity {}))
+  ([entity opts]
+   (let [emit-fn (requiring-resolve 'sandbar.codec/emit)
+         ;; Realize Datomic entity → plain map (codecs operate on
+         ;; entity-spec maps, not Entity records).
+         entity-map (cond
+                      (map? entity) entity
+                      (number? entity) (into {} (db/entity entity))
+                      :else (into {} entity))]
+     (emit-fn entity-map opts))))
+
+(defn update-entity!
+  "Update slot values on an existing entity.
+
+  Arguments:
+    entity        - the entity (entity-map / :db/id / :db/ident keyword)
+    slot-updates  - map of {:slot-ident new-value ...}
+    opts          - optional:
+                    :validate? - default true; if false, skips validation
+
+  Behavior:
+  - Resolves entity to its current entity-map shape
+  - Merges slot-updates onto the existing slot values
+  - When `:validate? true` (default), runs validate-data against the
+    merged shape using the entity's class; throws ex-info on failure
+  - Transacts {:db/id <eid> slot-updates...} via Datomic
+  - Returns the refreshed entity map
+
+  Cardinality-many slots: the supplied value REPLACES the prior set
+  (Datomic semantics for cardinality-many transactions are additive
+  by default; this function uses a retract+add cycle for replacement
+  semantics when the prior value differs).  TODO: expose `:additive?`
+  opt post-0.1.0 for callers wanting additive semantics.
+
+  Per codex SHOULD-FIX #5 — `sandbar.entity.update` MCP verb advertised
+  in the catalog but threw not-yet-implemented; this primitive closes
+  that gap.  Per the improve-abstraction-not-bypass discipline (the
+  prior gap-throw lampshade pointed exactly here)."
+  ([entity slot-updates] (update-entity! entity slot-updates {}))
+  ([entity slot-updates {:keys [validate?] :or {validate? true}}]
+   (when-not (map? slot-updates)
+     (throw (ex-info "update-entity! requires slot-updates to be a map"
+                     {:received slot-updates})))
+   (let [ent     (cond
+                   (associative? entity) entity
+                   :else (db/entity entity))
+         eid     (or (:db/id ent)
+                     (throw (ex-info "update-entity! could not resolve :db/id"
+                                     {:entity entity})))
+         ;; Inline class-ident lookup (class-ident-of is defined below
+         ;; in this file; avoid forward-reference for compile order)
+         class-ident (:dt/type ent)
+         ;; Merged shape — existing + updates (updates win).
+         merged  (merge (into {} ent) slot-updates)]
+     (when-not class-ident
+       (throw (ex-info "update-entity! requires entity to have :dt/type"
+                       {:entity entity :merged merged})))
+     (when validate?
+       (when-let [errors (validate-data class-ident (dissoc merged :db/id :dt/type))]
+         (log/debug :DT/UPDATE-VALIDATION-FAILED {:class class-ident :errors errors})
+         (throw (ex-info "Validation failed on update" errors))))
+     ;; Transact: assoc all slot-updates onto the existing entity.
+     ;; For cardinality-many slots, this is ADDITIVE under Datomic's
+     ;; default semantics.  Post-0.1.0 work: switch to retract+add for
+     ;; replacement (currently consumer's responsibility if needed).
+     @(d/transact (db/conn)
+                  [(assoc slot-updates :db/id eid)])
+     (db/entity eid))))
+
+(defn class-ident-of
+  "Returns the class IDENT (keyword) for entity e — the `:dt/type`
+  value as an ident.
+
+  Return shape (ident keyword) is explicit in the name.  When you
+  need the class's full entity map (to read class-level metadata
+  like `:dt/native-codec`, `:dt/slots`, `:dt/aliases`), use
+  `class-entity-of` instead.
+
+  For an instance:  returns the class the instance is in.
+  For a class itself: returns the meta-class (`:dt/Class`).
+  For a property: returns `:dt/Property`.
+
+  Per decisions/sandbar_dt_star_explicit_ident_entity_helper_split_2026_05_13.md."
   [e]
   (-> e entity :dt/type))
+
+(defn class-entity-of
+  "Returns the class ENTITY map for class-ident.
+
+  Resolves a class-ident keyword (e.g., `:mm/Memory`) to its entity
+  for reading class-level metadata: `:dt/native-codec`, `:dt/slots`,
+  `:dt/aliases`, `:dt/abstract?`, `:dt/subclass-of`.
+
+  IMPORTANT: this does NOT follow `:dt/type` — it returns the entity
+  for the class itself.  If you have an instance and want its class's
+  metadata, compose: `(-> instance class-ident-of class-entity-of)`.
+
+  This explicit helper exists because the duplicate `(-> x entity
+  :dt/type)`-then-read pattern was the source of the codex MUST-FIX
+  #1 + ultrareview bug class at `codec.clj:116`.
+
+  Per decisions/sandbar_dt_star_explicit_ident_entity_helper_split_2026_05_13.md."
+  [class-ident]
+  (db/entity class-ident))
+
+(defn ^{:deprecated "0.1.0"} class-of
+  "DEPRECATED: name does not disambiguate return shape.  Use:
+    - `class-ident-of`   when you want the class ident (current behavior)
+    - `class-entity-of`  when you want the class entity (for metadata)
+
+  Kept as an alias for `class-ident-of` for one-release migration window
+  per decisions/sandbar_dt_star_explicit_ident_entity_helper_split_2026_05_13.md.
+  Slated for removal post-0.1.x."
+  [e]
+  (class-ident-of e))
+
+(defn find-by-ident
+  "Returns the entity map for the given `:db/ident`, or nil if no
+  entity has that ident.
+
+  Convenience helper used when callsites have an ident in hand and
+  need the entity (most often: realizing idents returned by
+  `named-idents-of` into entities suitable for projection).
+
+  Per decisions/sandbar_dt_star_explicit_ident_entity_helper_split_2026_05_13.md."
+  [ident]
+  (db/entity ident))
+
+(defn native-codec-of-class
+  "Returns the `:dt/native-codec` format keyword declared on the class,
+  or nil if none.
+
+  Resolves the per-class default codec for the codec mediator's
+  class-default routing path (`sandbar.codec/native-codec-for-class`).
+  Purpose-built helper that does NOT traverse `:dt/type` — it reads
+  the codec directly off the class entity.
+
+  Replaces the buggy `(:dt/native-codec (entity (dt/class-of class)))`
+  pattern that triggered codex MUST-FIX #1 (the `class-of` call
+  resolved to `:dt/Class`, and `:dt/Class` has no `:dt/native-codec`).
+
+  Per decisions/sandbar_dt_star_explicit_ident_entity_helper_split_2026_05_13.md."
+  [class-ident]
+  (:dt/native-codec (db/entity class-ident)))
+
+(defn codec-aliases-of
+  "Returns the codec-layer alias map declared on the class via the
+  `:dt/codec-aliases` schema attribute, or `{}` if none.
+
+  Schema shape: `:dt/codec-aliases` is cardinality-many; each entry
+  is a `[short-key slot-ident]` keyword-pair tuple.  This function
+  reconstructs the map for codec consumers.
+
+  IMPORTANT — these are NOT `owl:sameAs`-shaped identity aliases.
+  They are context-specific naming conventions for the codec layer
+  ONLY: when a class is encoded via a codec, the short-key surfaces
+  in the wire form as a stand-in for the canonical namespaced slot
+  ident.  The slot retains its full canonical identity in the model;
+  only the wire-form name is `short-key`.  Per
+  interaction/check_substrate_schema_attribute_names_against_rdf_owl_semantics_2026_05_13.md
+  the attribute is named `:dt/codec-aliases` (not `:dt/aliases`) to
+  disambiguate from OWL identity-relation semantics + to match the
+  `:dt/native-codec` sister-attribute naming pattern.
+
+  Used by codecs (e.g., `sandbar.codec.markdown/frontmatter-key->slot`)
+  for class-declared alias resolution — replaces the prior hardcoded
+  `known-class-slot-aliases` map in the codec implementation, per
+  interaction/no_hardcoded_consumer_class_knowledge_in_substrate_2026_05_13.md.
+
+  Per decisions/sandbar_dt_star_explicit_ident_entity_helper_split_2026_05_13.md."
+  [class-ident]
+  (into {} (or (:dt/codec-aliases (db/entity class-ident)) [])))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Fulltext primitives — Stage 2 of fulltext arc
+;; (plans/sandbar_fulltext_search_substrate_arc_2026_05_13.md)
+;;
+;; Three primitives at the dt/* substrate layer:
+;;   bm25f-weights-of  — class-attribute getter for :dt/bm25f-weights
+;;                       (sibling of codec-aliases-of)
+;;   fulltext-indexed? — predicate over a slot's :db/fulltext flag
+;;   search-fulltext   — single-attribute Datomic+Lucene query wrapper
+;;
+;; Higher-level multi-field BM25F composition lives at sandbar.search/*
+;; (Stage 4); the dt/* layer exposes per-field primitives only.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defn bm25f-weights-of
+  "Returns the per-class BM25F field-weight map declared on the class via
+  the `:dt/bm25f-weights` schema attribute, or `{}` if none.
+
+  Schema shape: `:dt/bm25f-weights` is cardinality-many; each entry is a
+  `[slot-ident weight-double]` heterogeneous tuple (declared via
+  `:db/tupleTypes [:db.type/keyword :db.type/double]`).  This function
+  reconstructs the map for fulltext consumers.
+
+  Used by `sandbar.search/search-bm25f` (Stage 4) as the default
+  field-weights when no `:field-weights` opt is supplied at query
+  time.  A per-query `:field-weights` opt overrides; this getter
+  surfaces the class-declared baseline.
+
+  Sister to `codec-aliases-of` — same shape pattern, different attribute.
+  The naming follows the algorithm-specific convention (`bm25f-weights`
+  not `weights`) per
+  interaction/check_substrate_schema_attribute_names_against_rdf_owl_semantics_2026_05_13.md
+  to disambiguate from any RDF/OWL weighted-axiom semantics.
+
+  Per fulltext arc Stage 2 of
+  plans/sandbar_fulltext_search_substrate_arc_2026_05_13.md."
+  [class-ident]
+  (into {} (or (:dt/bm25f-weights (db/entity class-ident)) [])))
+
+(defn fulltext-indexed?
+  "Returns true if `attribute` (a slot/property ident) is declared with
+  `:db/fulltext true`, false otherwise.
+
+  Substrate-level predicate; consumers use this to validate that an
+  attribute is fulltext-searchable before invoking `search-fulltext`,
+  or to enumerate the fulltext-indexed slots of a class via
+  `(filter fulltext-indexed? (slots-of class))`.
+
+  Reads directly off the property entity — no traversal of `:dt/type`
+  or domain/range; the `:db/fulltext` Datomic-native flag is the
+  source of truth.
+
+  Per fulltext arc Stage 2 of
+  plans/sandbar_fulltext_search_substrate_arc_2026_05_13.md."
+  [attribute]
+  (boolean (:db/fulltext (db/entity attribute))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Aggregation primitives — Stage 13 of fulltext arc
+;; (plans/sandbar_fulltext_search_substrate_arc_2026_05_13.md)
+;;
+;; Six substrate primitives at the dt/* layer:
+;;   count-of            — entity count for class (optional where-clauses)
+;;   group-by-of         — group-by-count {value count} map
+;;   degree-of           — outbound + inbound ref-attribute count
+;;   backlink-density-of — inbound-only ref-attribute count
+;;   recency-rank-of     — entities ordered by temporal slot descending
+;;   freshness-rank-of   — entities ordered by temporal slot ascending
+;;
+;; Higher-level composition lives at sandbar.aggregate namespace.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defn count-of
+  "Count instances of `class-ident` (including subclasses) matching the
+  optional `where-clauses`.  Returns a non-negative integer.
+
+  The 1-arity counts all instances; the 2-arity adds Datalog clauses
+  (which must reference `?e` as the entity variable) for further
+  restriction.  Substrate-quality: class-agnostic; the class binding
+  drives the query.
+
+  Per fulltext arc Stage 13 of
+  plans/sandbar_fulltext_search_substrate_arc_2026_05_13.md."
+  ([class-ident]
+   (count-of class-ident nil))
+  ([class-ident where-clauses]
+   (let [base    '[:find (count ?e) .
+                   :in $ % ?class
+                   :where (instance-of ?class ?e)]
+         merged  (if (seq where-clauses)
+                   (apply conj base where-clauses)
+                   base)
+         result  (d/q merged (db/db) (all-rules) class-ident)]
+     (or result 0))))
+
+(defn group-by-of
+  "Group instances of `class-ident` by `group-slot` value; return
+  `{slot-value count}` map.  Optional `where-clauses` restrict the
+  candidate set before grouping.
+
+  Skips entities where the slot is unset (does not appear in any group).
+
+  Per fulltext arc Stage 13 of
+  plans/sandbar_fulltext_search_substrate_arc_2026_05_13.md."
+  ([class-ident group-slot]
+   (group-by-of class-ident group-slot nil))
+  ([class-ident group-slot where-clauses]
+   (let [base    '[:find ?v (count ?e)
+                   :in $ % ?class ?slot
+                   :where
+                   (instance-of ?class ?e)
+                   [?e ?slot ?v]]
+         merged  (if (seq where-clauses)
+                   (apply conj base where-clauses)
+                   base)
+         rows    (d/q merged (db/db) (all-rules) class-ident group-slot)]
+     (into {} rows))))
+
+(defn degree-of
+  "Total ref-attribute count for `entity-ident` — number of (attribute,
+  ref-target) outbound pairs plus inbound pairs.  Counts ALL ref-typed
+  attributes by default; pass `:predicates` opt to restrict to a
+  predicate set.
+
+  Direction options:
+    :forward       — outbound only
+    :inverse       — inbound only
+    :bidirectional — sum of both (default)
+
+  Per fulltext arc Stage 13."
+  ([entity-ident]
+   (degree-of entity-ident {:direction :bidirectional}))
+  ([entity-ident {:keys [direction predicates]
+                  :or   {direction :bidirectional}}]
+   (let [eid       (:db/id (db/entity entity-ident))
+         out-rows  (when (#{:forward :bidirectional} direction)
+                     (d/q '[:find ?a ?v
+                            :in $ ?e
+                            :where
+                            [?e ?a ?v]
+                            [?a :db/valueType :db.type/ref]]
+                          (db/db) eid))
+         ;; F-MF-2 fix (Phase R Stage R-3): inverse rows project
+         ;; ?a (attribute) in position 0 to match the out-rows shape;
+         ;; the `match?` predicate destructures `[a _]` (attribute
+         ;; first), so both row shapes must align.  Pre-fix:
+         ;; `:find ?s ?a` placed the source in position 0 and the
+         ;; attribute in position 1; `match?` then read the SOURCE
+         ;; as the attribute and the predicate filter silently
+         ;; missed every inverse row (returned 0 for any
+         ;; :predicates-filtered :inverse / :bidirectional call).
+         ;; Aligning to `:find ?a ?s` restores per-direction
+         ;; symmetry without per-direction match functions.
+         in-rows   (when (#{:inverse :bidirectional} direction)
+                     (d/q '[:find ?a ?s
+                            :in $ ?e
+                            :where
+                            [?s ?a ?e]
+                            [?a :db/valueType :db.type/ref]]
+                          (db/db) eid))
+         match?    (if (seq predicates)
+                     (let [predicate-set (set predicates)]
+                       (fn [[a _]]
+                         (predicate-set
+                           (or (:db/ident (db/entity a)) a))))
+                     (constantly true))]
+     (+ (count (filter match? out-rows))
+        (count (filter match? in-rows))))))
+
+(defn backlink-density-of
+  "Inbound ref-attribute count for `entity-ident`.  Counts entities
+  that have any ref-typed attribute pointing at this entity.
+
+  Equivalent to `(degree-of entity-ident {:direction :inverse})`;
+  named separately because backlink-density is a distinct retrieval
+  axis from edge-degree per
+  `decisions/multi_axis_search_catalog_2026_05_08.md` axes 6 vs 7.
+
+  Per fulltext arc Stage 13."
+  ([entity-ident]
+   (backlink-density-of entity-ident nil))
+  ([entity-ident predicates]
+   (degree-of entity-ident {:direction :inverse :predicates predicates})))
+
+(defn recency-rank-of
+  "Return instances of `class-ident` ordered by `temporal-slot` value
+  DESCENDING (most-recent first).  Returns a vec of `[entity-map
+  temporal-value]` pairs; consumers may project to entities-only via
+  `(map first ...)`.
+
+  Caller supplies `temporal-slot` (e.g., `:mm.memory/last-touched`) —
+  substrate does not hardcode class-specific temporal axes.
+
+  Per fulltext arc Stage 13."
+  [class-ident temporal-slot]
+  (->> (d/q '[:find ?e ?t
+              :in $ % ?class ?slot
+              :where
+              (instance-of ?class ?e)
+              [?e ?slot ?t]]
+            (db/db) (all-rules) class-ident temporal-slot)
+       (sort-by second #(compare %2 %1))
+       (mapv (fn [[eid t]] [(db/entity eid) t]))))
+
+(defn freshness-rank-of
+  "Return instances of `class-ident` ordered by `temporal-slot` value
+  ASCENDING (oldest / stalest first — the freshness axis surfaces
+  candidates whose temporal marker is most-in-the-past, meriting
+  attention or review).  Returns a vec of `[entity-map temporal-value]`
+  pairs.
+
+  Caller supplies `temporal-slot` (typically a `:last-reviewed`-style
+  attribute) — substrate does not hardcode class-specific axes.
+
+  Per fulltext arc Stage 13."
+  [class-ident temporal-slot]
+  (->> (d/q '[:find ?e ?t
+              :in $ % ?class ?slot
+              :where
+              (instance-of ?class ?e)
+              [?e ?slot ?t]]
+            (db/db) (all-rules) class-ident temporal-slot)
+       (sort-by second)
+       (mapv (fn [[eid t]] [(db/entity eid) t]))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Navigation primitives — Stage 16 (fulltext arc Phase N)
+;;
+;; Edge = a (predicate-attribute, entity) pair where predicate-attribute is
+;; a `:db.type/ref`-typed attribute.  Outbound = edges originating FROM the
+;; subject; inbound = edges pointing AT the subject.  Substrate-quality
+;; discipline: no hardcoded class/predicate knowledge in primitives.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defn outbound-edges-of
+  "Outbound typed-edges from `entity-ident` — `:db.type/ref` attribute
+  pairs originating FROM the entity.  Returns a vec of maps:
+
+    [{:predicate <pred-ident> :target <entity-map>} ...]
+
+  Optional opts:
+    :predicate   — keyword OR collection of keywords; restricts results
+                   to edges whose attribute-ident is in the set
+    :target-type — class ident; restricts results to edges whose target
+                   is an instance-of the class (via `instance-of` rule)
+
+  Substrate-quality: class-agnostic; predicate-set + target-type are
+  caller-supplied.  Per fulltext arc Stage 16."
+  ([entity-ident]
+   (outbound-edges-of entity-ident nil))
+  ([entity-ident {:keys [predicate target-type]}]
+   (let [eid       (:db/id (db/entity entity-ident))
+         rows      (if target-type
+                     (d/q '[:find ?a ?v
+                            :in $ % ?e ?target-type
+                            :where
+                            [?e ?a ?v]
+                            [?a :db/valueType :db.type/ref]
+                            (instance-of ?target-type ?v)]
+                          (db/db) (all-rules) eid target-type)
+                     (d/q '[:find ?a ?v
+                            :in $ ?e
+                            :where
+                            [?e ?a ?v]
+                            [?a :db/valueType :db.type/ref]]
+                          (db/db) eid))
+         pred-set  (when predicate
+                     (set (if (sequential? predicate) predicate [predicate])))
+         project   (fn [[a v]]
+                     {:predicate (or (:db/ident (db/entity a)) a)
+                      :target    (db/entity v)})
+         match?    (if pred-set
+                     (fn [edge] (pred-set (:predicate edge)))
+                     (constantly true))]
+     (->> rows
+          (map project)
+          (filter match?)
+          vec))))
+
+(defn inbound-edges-of
+  "Inbound typed-edges to `entity-ident` — `:db.type/ref` attribute
+  pairs pointing AT the entity.  Returns a vec of maps:
+
+    [{:predicate <pred-ident> :source <entity-map>} ...]
+
+  Optional opts:
+    :predicate   — keyword OR collection of keywords; restricts results
+                   to edges whose attribute-ident is in the set
+    :source-type — class ident; restricts results to edges whose source
+                   is an instance-of the class (via `instance-of` rule)
+
+  Substrate-quality: class-agnostic; predicate-set + source-type are
+  caller-supplied.  Per fulltext arc Stage 16."
+  ([entity-ident]
+   (inbound-edges-of entity-ident nil))
+  ([entity-ident {:keys [predicate source-type]}]
+   (let [eid       (:db/id (db/entity entity-ident))
+         rows      (if source-type
+                     (d/q '[:find ?s ?a
+                            :in $ % ?e ?source-type
+                            :where
+                            [?s ?a ?e]
+                            [?a :db/valueType :db.type/ref]
+                            (instance-of ?source-type ?s)]
+                          (db/db) (all-rules) eid source-type)
+                     (d/q '[:find ?s ?a
+                            :in $ ?e
+                            :where
+                            [?s ?a ?e]
+                            [?a :db/valueType :db.type/ref]]
+                          (db/db) eid))
+         pred-set  (when predicate
+                     (set (if (sequential? predicate) predicate [predicate])))
+         project   (fn [[s a]]
+                     {:predicate (or (:db/ident (db/entity a)) a)
+                      :source    (db/entity s)})
+         match?    (if pred-set
+                     (fn [edge] (pred-set (:predicate edge)))
+                     (constantly true))]
+     (->> rows
+          (map project)
+          (filter match?)
+          vec))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Graph-walk BFS — Stage 17 (fulltext arc Phase N)
+;;
+;; Implemented as Clojure-side BFS rather than recursive Datomic rule
+;; because (a) hop-cap semantics aren't naturally expressed in Datalog
+;; recursive rules, (b) per-hop projection + path tracking is cleaner
+;; in iteration, (c) :include [:paths] is trivial to attach when we
+;; control the traversal step.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defn library-card-of
+  "Multi-axis typed-edge neighborhood view of an entity.
+
+  `axis-specs` is a vec of axis declarations.  Each axis:
+
+    {:name       <string-or-keyword>     ; label for this axis in result
+     :direction  :forward | :inverse     ; outbound from entity / inbound to entity
+     :predicates [<pred-ident>...]       ; restrict to these typed-edge predicates
+                                          ; (or omit for no restriction)
+     :target-type <class-ident>           ; restrict :forward axes by target's class
+     :source-type <class-ident>           ; restrict :inverse axes by source's class
+     :limit      <int>                    ; cap per-axis result count (default 0 = no cap)}
+
+  Returns:
+
+    {:entity <entity-map>
+     :axes   {<axis-name> [<edge-record>...]  ...}}
+
+  Each edge-record is the same shape as `inbound-edges-of` / `outbound-edges-of`
+  returns: `{:predicate <pred-ident> :target/source <entity-map>}` (target for
+  :forward axes; source for :inverse axes).
+
+  Substrate-quality: class-agnostic; axis-specs are caller-supplied.  No
+  hardcoded knowledge of any domain class's predicate vocabulary.  Per
+  fulltext arc Phase O scope-narrowed to library-card-only per
+  `decisions/sandbar_phase_o_substrate_quality_scope_library_card_only_2026_05_14.md`."
+  [entity-ident axis-specs]
+  (let [entity (db/entity entity-ident)]
+    {:entity entity
+     :axes (reduce (fn [acc {:keys [name direction predicates target-type source-type limit]
+                             :or   {limit 0}}]
+                     (let [opts (cond-> {}
+                                  predicates (assoc :predicate predicates)
+                                  target-type (assoc :target-type target-type)
+                                  source-type (assoc :source-type source-type))
+                           edges (case direction
+                                   :forward
+                                   (outbound-edges-of entity-ident
+                                                       (dissoc opts :source-type))
+                                   :inverse
+                                   (inbound-edges-of entity-ident
+                                                      (dissoc opts :target-type))
+                                   ;; Default to :forward if unspecified
+                                   (outbound-edges-of entity-ident
+                                                       (dissoc opts :source-type)))
+                           limited (if (zero? limit) edges (take limit edges))]
+                       (assoc acc name (vec limited))))
+                   {}
+                   axis-specs)}))
+
+(defn siblings-of
+  "Same-directory peers of `entity-ident` via `path-slot` — entities
+  whose `path-slot` value shares the same directory prefix as the
+  given entity's, excluding the entity itself.
+
+  Filesystem-style semantics: 'decisions/foo.md' is a sibling of
+  'decisions/bar.md' (same dir prefix 'decisions/'); not a sibling of
+  'decisions/sub/baz.md' (one level deeper) or of 'patterns/foo.md'
+  (different dir).
+
+  Required:
+    entity-ident — keyword ident or eid; must have `path-slot` populated
+    path-slot    — slot ident (e.g., `:mm.memory/rel-path`) carrying
+                   the filesystem-style path string
+
+  Returns a vec of entity-maps; empty if the entity is at the root (no
+  parent directory) or has no peers.
+
+  Substrate-quality: class-agnostic; `path-slot` is caller-supplied.
+  Per fulltext arc Stage 22."
+  [entity-ident path-slot]
+  (let [entity     (db/entity entity-ident)
+        rel-path   (get entity path-slot)]
+    (if (or (nil? rel-path) (not (string? rel-path)))
+      []
+      (let [self-eid   (:db/id entity)
+            sep-idx    (clojure.string/last-index-of rel-path "/")
+            dir-prefix (if sep-idx
+                         (subs rel-path 0 (inc sep-idx))
+                         "")
+            candidates (d/q '[:find ?e ?p
+                              :in $ ?slot
+                              :where
+                              [?e ?slot ?p]]
+                            (db/db) path-slot)
+            same-dir?  (fn [path]
+                         (and (clojure.string/starts-with? path dir-prefix)
+                              (let [tail (subs path (count dir-prefix))]
+                                (not (clojure.string/includes? tail "/")))))]
+        (->> candidates
+             (filter (fn [[eid path]]
+                       (and (not= eid self-eid)
+                            (same-dir? path))))
+             (mapv (fn [[eid _]] (db/entity eid))))))))
+
+(defn graph-walk-from
+  "Walk the typed-edge graph outward from `seed-ident` up to `hops`
+  levels of distance.  Returns a vec of result maps for every entity
+  reachable WITHIN `hops` (excluding the seed itself):
+
+    [{:entity <entity-map> :hop <int>} ...]
+
+  With `:include #{:paths}`, each map also carries `:path` — a vec of
+  `{:predicate <pred-ident> :direction :forward|:inverse}` steps from
+  seed to the result entity (shortest-path; BFS guarantees the first
+  arrival is via a shortest path).
+
+  Opts:
+    :hops       — max distance to walk (default 4)
+    :predicates — keyword OR coll restricting edges to a predicate set
+    :direction  — :forward (outbound edges only) / :inverse (inbound only)
+                  / :bidirectional (union).  Default :forward.
+    :include    — coll-of opts; `:paths` attaches step sequence.
+
+  Substrate-quality: class-agnostic.  Per fulltext arc Stage 17."
+  ([seed-ident]
+   (graph-walk-from seed-ident nil))
+  ([seed-ident {:keys [hops predicates direction include]
+                :or   {hops 4 direction :forward}}]
+   (let [seed-eid       (:db/id (db/entity seed-ident))
+         pred-set       (when predicates
+                          (set (if (sequential? predicates)
+                                 predicates
+                                 [predicates])))
+         include-paths? (contains? (set include) :paths)
+         forward?       (#{:forward :bidirectional} direction)
+         inverse?       (#{:inverse :bidirectional} direction)
+
+         pred-match?
+         (fn [a]
+           (or (nil? pred-set)
+               (pred-set (or (:db/ident (db/entity a)) a))))
+
+         step-edges
+         (fn [frontier-eids]
+           (let [forward-rows (when forward?
+                                (d/q '[:find ?f ?a ?n
+                                       :in $ [?f ...]
+                                       :where
+                                       [?f ?a ?n]
+                                       [?a :db/valueType :db.type/ref]]
+                                     (db/db) frontier-eids))
+                 inverse-rows (when inverse?
+                                (d/q '[:find ?f ?a ?n
+                                       :in $ [?f ...]
+                                       :where
+                                       [?n ?a ?f]
+                                       [?a :db/valueType :db.type/ref]]
+                                     (db/db) frontier-eids))]
+             (concat
+               (keep (fn [[f a n]]
+                       (when (pred-match? a)
+                         {:from-frontier f :to-new n
+                          :attr a :direction :forward}))
+                     forward-rows)
+               (keep (fn [[f a n]]
+                       (when (pred-match? a)
+                         {:from-frontier f :to-new n
+                          :attr a :direction :inverse}))
+                     inverse-rows))))]
+
+     (loop [hop      0
+            visited  #{seed-eid}
+            frontier {seed-eid (when include-paths? [])}
+            results  (transient [])]
+       (cond
+         (zero? (count frontier)) (persistent! results)
+         (>= hop hops)            (persistent! results)
+         :else
+         (let [discovered
+               (reduce
+                 (fn [acc edge]
+                   (let [{:keys [from-frontier to-new attr direction]} edge]
+                     (cond
+                       (contains? visited to-new) acc
+                       (contains? acc to-new)     acc  ; first match wins
+                       :else
+                       (let [parent-path (get frontier from-frontier [])
+                             step        {:predicate (or (:db/ident (db/entity attr))
+                                                          attr)
+                                          :direction direction}]
+                         (assoc acc to-new
+                                {:entity (db/entity to-new)
+                                 :hop    (inc hop)
+                                 :path   (when include-paths?
+                                           (conj parent-path step))})))))
+                 {}
+                 (step-edges (keys frontier)))]
+           (recur (inc hop)
+                  (into visited (keys discovered))
+                  (into {} (map (fn [[eid r]] [eid (:path r)])) discovered)
+                  (reduce
+                    (fn [acc [_ r]]
+                      (conj! acc (if include-paths? r (dissoc r :path))))
+                    results
+                    discovered))))))))
+
+(defn search-fulltext
+  "Single-attribute fulltext search via Datomic + Lucene.
+
+  Returns a seq of `[eid score]` tuples for entities whose `attribute`
+  value matches `query` per Lucene's tokenization + BM25 single-field
+  scoring (Lucene's default Similarity since v6).
+
+  `attribute` must be declared with `:db/fulltext true` in the schema
+  for the query to return hits; absent that, Datomic returns an empty
+  result.  Use `fulltext-indexed?` to validate before calling.
+
+  Query syntax supports Lucene's query-parser shapes: phrase
+  (`\"exact phrase\"`), boolean (`AND` / `OR` / `NOT`), wildcard
+  (`term*`), fuzzy (`term~`), etc.
+
+  Returns raw `[eid score]` tuples; higher-level concerns (limit,
+  result-shape projection, snippet generation, multi-field
+  weighting) live at the `sandbar.search/*` layer (Stage 3+).
+
+  Per fulltext arc Stage 2 of
+  plans/sandbar_fulltext_search_substrate_arc_2026_05_13.md."
+  [attribute query]
+  (d/q '[:find ?e ?score
+         :in $ ?attr ?q
+         :where [(fulltext $ ?attr ?q) [[?e ?value ?tx ?score]]]]
+       (db/db) attribute query))
 
 (defn parents-of
   "Returns the direct parent classes of class dt.
@@ -468,6 +1325,33 @@
   [e]
   (nil? (validate e)))
 
+(defn validate-all-instances
+  "Validate all instances of a class (including subclass instances).
+   Returns a map with validation results:
+   {:class dt
+    :total N
+    :valid N
+    :invalid N
+    :errors [{:entity e :errors [...]} ...]}"
+  [dt]
+  (let [instances (all-instances-of dt)
+        results (map (fn [inst]
+                       {:entity (:db/id inst)
+                        :class (class-of inst)
+                        :validation (validate inst)})
+                     instances)
+        invalid (filter #(some? (:validation %)) results)
+        valid-count (- (count results) (count invalid))]
+    {:class dt
+     :total (count results)
+     :valid valid-count
+     :invalid (count invalid)
+     :errors (mapv (fn [{:keys [entity class validation]}]
+                     {:entity entity
+                      :class class
+                      :errors (:errors validation)})
+                   invalid)}))
+
 (defn validate-data
   "Validate data map before transaction (pre-transaction validation).
    Takes a class and a props map, returns nil if valid or error map."
@@ -605,7 +1489,7 @@
   ;; {:db/id 17592186045446, :db/ident :dt/Number,
   ;;  :db/doc "Numeric value type",
   ;;  :dt/type :dt/Class,
-  ;;  :dt/namespace "system",
+  ;;  :dt/context "system",
   ;;  :dt/label "Number",
   ;;  :dt/subclass-of #{:dt/Literal}}
 
@@ -656,16 +1540,16 @@
 
 
   (datatype-slots :dt/Resource)
-  ;; => #{:dt/label :dt/namespace :db/doc :db/ident :dt/type}
+  ;; => #{:dt/label :dt/context :db/doc :db/ident :dt/type}
 
   (datatype-slots :dt/Class)
 
-  ;; => #{:dt/list :dt/label :dt/namespace :dt/abstract? :db/doc :dt/slots :db/ident
+  ;; => #{:dt/list :dt/label :dt/context :dt/abstract? :db/doc :dt/slots :db/ident
   ;;      :dt/subclass-of :dt/type :dt/component}
 
   (datatype-slots :dt/Property)
 
-  ;; => #{:db/unique :dt/label :dt/domain :dt/namespace :dt/range :db/fulltext :db/cardinality
+  ;; => #{:db/unique :dt/label :dt/domain :dt/context :dt/range :db/fulltext :db/cardinality
   ;;       :db/doc :db/ident :dt/subproperty-of :dt/type}
 
 

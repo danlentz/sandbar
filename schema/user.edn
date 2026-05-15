@@ -56,7 +56,7 @@
    :db/ident :model/User
    :dt/type :dt/Class
    :dt/subclass-of  :dt/Ref
-   :dt/namespace "example"
+   :dt/context "example"
    :dt/label "User"
    :db/doc "Superclass of all users."
    :dt/slots [:user/uuid
@@ -73,7 +73,7 @@
  [
   {:db/id #db/id[:db.part/user -1]
    :dt/type :dt/Class
-   :dt/namespace "example"
+   :dt/context "example"
    :dt/label "User[]"
    :db/ident :model/User*
    :dt/subclass-of :dt/Resource*
@@ -84,7 +84,7 @@
 
   {:db/id #db/id[:db.part/user -2]
    :dt/type :dt/Class
-   :dt/namespace "example"
+   :dt/context "example"
    :dt/label "User[][]"
    :db/ident :model/User**
    :dt/subclass-of :dt/Resource**

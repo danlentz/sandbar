@@ -13,7 +13,7 @@
    :db/ident :model/Twit
    :dt/label "Twit"
    :dt/subclass-of :dt/Ref
-   :dt/namespace "model"
+   :dt/context "model"
    :db/doc "Twitter User"
    :dt/type :dt/Class}
 ]
@@ -146,7 +146,7 @@
  [
   {:db/id #db/id[:db.part/user -1]
    :dt/type :dt/Class
-   :dt/namespace "model"
+   :dt/context "model"
    :dt/label "Twit[]"
    :db/ident :model/Twit*
    :dt/subclass-of :dt/Ref*
@@ -157,7 +157,7 @@
 
   {:db/id #db/id[:db.part/user -2]
    :dt/type :dt/Class
-   :dt/namespace "model"
+   :dt/context "model"
    :dt/label "Twit[][]"
    :db/ident :model/Twit**
    :dt/subclass-of :dt/Ref**

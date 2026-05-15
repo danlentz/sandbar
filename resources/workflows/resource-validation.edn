@@ -1,0 +1,97 @@
+{:name :workflow/resource-validation
+ :version 1
+ :description "Workflow for validating all instances of a resource class.
+
+               This workflow tracks the lifecycle of a batch validation run:
+               - Start validation of a class and all its subclass instances
+               - Track progress through validating state
+               - Complete with pass (all valid), fail (some invalid), or error
+
+               Subject: The class being validated (e.g., :dt/Resource for all entities)
+
+               Process Data:
+                 :class         - The class being validated
+                 :total         - Total instance count
+                 :valid         - Valid instance count
+                 :invalid       - Invalid instance count
+                 :errors        - List of validation errors
+                 :started-at    - Validation start time
+                 :completed-at  - Validation end time
+                 :requested-by  - User who initiated validation"
+
+ :states
+ [{:name :validation/pending
+   :label "Pending"
+   :initial? true
+   :description "Validation requested but not yet started"}
+
+  {:name :validation/in-progress
+   :label "In Progress"
+   :description "Validation is currently running"}
+
+  {:name :validation/passed
+   :label "Passed"
+   :terminal? true
+   :terminal-kind :success
+   :description "All instances passed validation"}
+
+  {:name :validation/failed
+   :label "Failed"
+   :terminal? true
+   :terminal-kind :failure
+   :description "One or more instances failed validation"}
+
+  {:name :validation/error
+   :label "Error"
+   :terminal? true
+   :terminal-kind :failure
+   :description "Validation encountered an error and could not complete"}
+
+  {:name :validation/cancelled
+   :label "Cancelled"
+   :terminal? true
+   :terminal-kind :cancel
+   :description "Validation was cancelled before completion"}]
+
+ :transitions
+ [{:name :start
+   :from :validation/pending
+   :to :validation/in-progress
+   :description "Begin the validation process"}
+
+  {:name :pass
+   :from :validation/in-progress
+   :to :validation/passed
+   :description "All instances validated successfully"}
+
+  {:name :fail
+   :from :validation/in-progress
+   :to :validation/failed
+   :description "One or more instances failed validation"}
+
+  {:name :error
+   :from :validation/in-progress
+   :to :validation/error
+   :requires-reason? true
+   :description "Validation encountered an error"}
+
+  {:name :cancel
+   :from :validation/pending
+   :to :validation/cancelled
+   :description "Cancel pending validation"}
+
+  {:name :cancel
+   :from :validation/in-progress
+   :to :validation/cancelled
+   :requires-reason? true
+   :description "Cancel in-progress validation"}
+
+  {:name :retry
+   :from :validation/failed
+   :to :validation/pending
+   :description "Retry validation after fixing issues"}
+
+  {:name :retry
+   :from :validation/error
+   :to :validation/pending
+   :description "Retry validation after resolving error"}]}

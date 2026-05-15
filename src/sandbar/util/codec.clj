@@ -14,6 +14,14 @@
 
 (cheshire/add-encoder clojure.lang.Var encode-str)
 
+;; ;; Custom keyword encoder: converts :ns/name to "ns/name" (without the colon)
+;; (cheshire/add-encoder clojure.lang.Keyword
+;;   (fn [kw jsonGenerator]
+;;     (let [s (if-let [ns (namespace kw)]
+;;               (str ns "/" (name kw))
+;;               (name kw))]
+;;       (.writeString jsonGenerator s))))
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
   ;; Readers and Writers
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -213,4 +221,3 @@
 (defn transit-json->clj [^InputStream input-stream]
   (let [reader (transit/reader input-stream :json)]
     (transit/read reader)))
-

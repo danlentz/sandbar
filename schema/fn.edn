@@ -91,7 +91,7 @@
    :db/ident :dt/Fn
    :dt/type :dt/Class
    :dt/subclass-of :dt/Ref
-   :dt/namespace "system"
+   :dt/context "system"
    :dt/label "Fn"
    :db/doc "A :fn datatype represents a mapping from instances of type referenced by its :fn/domain attribute to instances of type referenced by its :fn/range attribute"
    :dt/slots [:fn/domain :fn/range]}
@@ -104,7 +104,7 @@
  [
   {:db/id #db/id[:db.part/user -1]
    :dt/type :dt/Class
-   :dt/namespace "system"
+   :dt/context "system"
    :dt/label "Fn[]"
    :db/ident :dt/Fn*
    :dt/subclass-of :dt/Resource*
@@ -115,7 +115,7 @@
 
   {:db/id #db/id[:db.part/user -2]
    :dt/type :dt/Class
-   :dt/namespace "system"
+   :dt/context "system"
    :dt/label "Fn[][]"
    :db/ident :dt/Fn**
    :dt/subclass-of :dt/Resource**

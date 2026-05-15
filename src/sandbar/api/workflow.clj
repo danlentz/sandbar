@@ -23,6 +23,7 @@
      ?subject=12345               - Filter by subject entity ID
      ?limit=100                   - Max results"
   (:require [clojure.string :as str]
+            [sandbar.entity-ref :as eref]
             [clojure.tools.logging :as log]
             [datomic.api :as d]
             [sandbar.db.datomic :as db]
@@ -61,11 +62,12 @@
   "Convert a state entity to an API response map."
   [state]
   (when state
-    {:id (:db/id state)
-     :name (:workflow/state-name state)
-     :label (:workflow/state-label state)
-     :initial? (:workflow/initial? state)
-     :terminal? (:workflow/terminal? state)}))
+    {:id            (:db/id state)
+     :name          (:workflow/state-name state)
+     :label         (:workflow/state-label state)
+     :initial?      (:workflow/initial? state)
+     :terminal?     (:workflow/terminal? state)
+     :terminal-kind (:workflow/terminal-kind state)}))
 
 (defn- transition->response
   "Convert a transition entity to an API response map."
@@ -145,8 +147,8 @@
       :states [{:name :order/pending :label \"Pending\" :initial? true}
                {:name :order/confirmed :label \"Confirmed\"}
                {:name :order/shipped :label \"Shipped\"}
-               {:name :order/delivered :label \"Delivered\" :terminal? true}
-               {:name :order/cancelled :label \"Cancelled\" :terminal? true}]
+               {:name :order/delivered :label \"Delivered\" :terminal? true :terminal-kind :success}
+               {:name :order/cancelled :label \"Cancelled\" :terminal? true :terminal-kind :cancel}]
       :transitions [{:name :confirm :from :order/pending :to :order/confirmed}
                     {:name :ship :from :order/confirmed :to :order/shipped}
                     {:name :deliver :from :order/shipped :to :order/delivered}
@@ -298,18 +300,23 @@
 
       :else
       (if-let [workflow-def (wf/find-workflow wf-name)]
-        (if-let [subject-entity (db/entity subject-id)]
-          (try
-            (let [process (wf/start-process! workflow-def subject-entity :data data)]
-              (log/info :API/PROCESS-STARTED {:process-id (:db/id process)
-                                               :workflow wf-name
-                                               :subject subject-id})
-              (return http-status/created
-                      {:created true
-                       :process (process->response process)}))
-            (catch Exception e
-              (return http-status/bad-request {:error (.getMessage e)})))
-          (return http-status/not-found {:error "Subject entity not found" :id subject-id}))
+        (let [{:keys [valid? entity reasons message]} (eref/validate subject-id)]
+          (if valid?
+            (try
+              (let [process (wf/start-process! workflow-def entity :data data)]
+                (log/info :API/PROCESS-STARTED {:process-id (:db/id process)
+                                                 :workflow wf-name
+                                                 :subject subject-id})
+                (return http-status/created
+                        {:created true
+                         :process (process->response process)}))
+              (catch Exception e
+                (return http-status/bad-request {:error (.getMessage e)})))
+            (return http-status/not-found
+                    {:error "Subject entity not found"
+                     :id subject-id
+                     :reasons reasons
+                     :message message})))
         (return http-status/not-found {:error "Workflow not found" :name wf-name})))))
 
 (defhandler get-available-transitions

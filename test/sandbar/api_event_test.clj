@@ -5,7 +5,7 @@
             [io.pedestal.test :refer [response-for]]
             [sandbar.api.event :as event-api]
             [sandbar.db.datomic :as db]
-            [sandbar.test-util :as tu :refer [with-auth-headers]]
+            [sandbar.test-util :as tu :refer [service with-auth-headers]]
             [sandbar.util.event :as event])
   (:import [java.util UUID Date]))
 
@@ -18,7 +18,7 @@
 
 (deftest create-event-with-type-test
   (testing "Create ServerEvent via POST /api/events"
-    (let [response (response-for tu/service :post "/api/events"
+    (let [response (response-for service :post "/api/events"
                                  :headers (with-auth-headers {"Content-Type" "application/edn"
                                            "Accept" "application/edn"})
                                  :body (pr-str {:dt/type :event/ServerEvent
@@ -32,7 +32,7 @@
       (is (= "Test event" (get-in body [:event :event/name])))))
 
   (testing "Create UserEvent via POST /api/events"
-    (let [response (response-for tu/service :post "/api/events"
+    (let [response (response-for service :post "/api/events"
                                  :headers (with-auth-headers {"Content-Type" "application/edn"
                                            "Accept" "application/edn"})
                                  :body (pr-str {:dt/type :event/UserEvent
@@ -43,14 +43,14 @@
       (is (= :event/UserEvent (:type body)))))
 
   (testing "Missing :dt/type returns 400"
-    (let [response (response-for tu/service :post "/api/events"
+    (let [response (response-for service :post "/api/events"
                                  :headers (with-auth-headers {"Content-Type" "application/edn"
                                            "Accept" "application/edn"})
                                  :body (pr-str {:event/name "No type"}))]
       (is (= 400 (:status response)))))
 
   (testing "Invalid :dt/type returns 400"
-    (let [response (response-for tu/service :post "/api/events"
+    (let [response (response-for service :post "/api/events"
                                  :headers (with-auth-headers {"Content-Type" "application/edn"
                                            "Accept" "application/edn"})
                                  :body (pr-str {:dt/type :invalid/Type
@@ -63,7 +63,7 @@
 
 (deftest create-server-event-test
   (testing "POST /api/events/server creates ServerEvent"
-    (let [response (response-for tu/service :post "/api/events/server"
+    (let [response (response-for service :post "/api/events/server"
                                  :headers (with-auth-headers {"Content-Type" "application/edn"
                                            "Accept" "application/edn"})
                                  :body (pr-str {:event/name "Server event"
@@ -76,7 +76,7 @@
 
 (deftest create-user-event-test
   (testing "POST /api/events/user creates UserEvent"
-    (let [response (response-for tu/service :post "/api/events/user"
+    (let [response (response-for service :post "/api/events/user"
                                  :headers (with-auth-headers {"Content-Type" "application/edn"
                                            "Accept" "application/edn"})
                                  :body (pr-str {:event/name "User event"
@@ -87,7 +87,7 @@
 
 (deftest create-system-event-test
   (testing "POST /api/events/system creates SystemEvent"
-    (let [response (response-for tu/service :post "/api/events/system"
+    (let [response (response-for service :post "/api/events/system"
                                  :headers (with-auth-headers {"Content-Type" "application/edn"
                                            "Accept" "application/edn"})
                                  :body (pr-str {:event/name "System startup"
@@ -99,7 +99,7 @@
 
 (deftest create-http-event-test
   (testing "POST /api/events/http creates HttpRequest"
-    (let [response (response-for tu/service :post "/api/events/http"
+    (let [response (response-for service :post "/api/events/http"
                                  :headers (with-auth-headers {"Content-Type" "application/edn"
                                            "Accept" "application/edn"})
                                  :body (pr-str {:event/name "GET /api/test"
@@ -117,7 +117,7 @@
 
 (deftest create-api-event-test
   (testing "POST /api/events/api creates ApiCall"
-    (let [response (response-for tu/service :post "/api/events/api"
+    (let [response (response-for service :post "/api/events/api"
                                  :headers (with-auth-headers {"Content-Type" "application/edn"
                                            "Accept" "application/edn"})
                                  :body (pr-str {:event/name "API call"
@@ -132,7 +132,7 @@
 
 (deftest create-transaction-event-test
   (testing "POST /api/events/transaction creates Transaction"
-    (let [response (response-for tu/service :post "/api/events/transaction"
+    (let [response (response-for service :post "/api/events/transaction"
                                  :headers (with-auth-headers {"Content-Type" "application/edn"
                                            "Accept" "application/edn"})
                                  :body (pr-str {:event/name "DB transaction"
@@ -244,7 +244,7 @@
 
 (deftest create-event-json-test
   (testing "POST /api/events/server with JSON"
-    (let [response (response-for tu/service :post "/api/events/server"
+    (let [response (response-for service :post "/api/events/server"
                                  :headers (with-auth-headers {"Content-Type" "application/json"
                                                               "Accept" "application/json"})
                                  :body "{\"event/name\": \"JSON event\", \"event/level\": \"info\", \"event/namespace\": \"test\"}")
@@ -312,6 +312,49 @@
       (is (= :failure (:event/status event)))
       (is (some? (:event/exception event)))
       (is (some? (:event/stacktrace event))))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; F-SF-2 / Phase R Stage R-4 — log-error! must NOT leak stacktrace
+;; to stderr; the entire stacktrace must land in :event/stacktrace.
+;;
+;; Pre-fix: (with-out-str (.printStackTrace ex)) only rebinds *out*;
+;; (.printStackTrace ex) with no args writes to System.err, so the
+;; stacktrace leaked to stderr and :event/stacktrace was an empty
+;; string.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(deftest log-error-does-not-leak-to-stderr
+  (testing "F-SF-2: (log-error! msg ex) writes ZERO bytes to stderr"
+    (let [ex             (ex-info "Test error for stderr-leak check"
+                                  {:code 500})
+          original-err   System/err
+          captured-stream (java.io.ByteArrayOutputStream.)
+          captured-err   (java.io.PrintStream. captured-stream true "UTF-8")]
+      (try
+        (System/setErr captured-err)
+        (event/log-error! "Operation failed" ex)
+        (.flush captured-err)
+        (let [stderr-content (.toString captured-stream "UTF-8")]
+          (is (= "" stderr-content)
+              (str "log-error! must NOT leak to stderr; got: "
+                   (pr-str stderr-content))))
+        (finally
+          (System/setErr original-err))))))
+
+(deftest log-error-populates-stacktrace-data-field
+  (testing "F-SF-2: :event/stacktrace contains the actual stacktrace
+            content (not the empty string the pre-fix bug produced)"
+    (let [ex (ex-info "Stacktrace-population test" {:code 42})
+          event (event/log-error! "Test" ex)
+          stacktrace (:event/stacktrace event)]
+      (is (string? stacktrace))
+      (is (pos? (count stacktrace))
+          ":event/stacktrace must be non-empty post-fix")
+      ;; The stacktrace must mention the exception class + message.
+      (is (re-find #"(?i)clojure.lang.ExceptionInfo|Stacktrace-population"
+                   stacktrace)
+          (str ":event/stacktrace must contain exception class or "
+               "message text; got: " (pr-str stacktrace))))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Auto timestamp
@@ -463,7 +506,7 @@
 
 (deftest verify-post-request-event-test
   (testing "POST request logs correct method and status"
-    (let [response (response-for tu/service :post "/api/events/server"
+    (let [response (response-for service :post "/api/events/server"
                                  :headers (with-auth-headers {"Content-Type" "application/edn"
                                            "Accept" "application/edn"})
                                  :body (pr-str {:event/name "Test POST"
@@ -501,7 +544,16 @@
         (let [duration (:event/duration event)]
           (is (number? duration))
           (is (>= duration 0) "Duration should be non-negative")
-          (is (<= duration (- after before 50)) "Duration should be less than total test time"))))))
+          ;; Switched 2026-05-13 from absolute-margin form to the structurally
+          ;; sound invariant: recorded duration cannot exceed wall-clock span.
+          ;; The original 50ms margin (and 250ms first-pass remediation) both
+          ;; fail when the test's total wall span is itself small — when the
+          ;; API call IS the test, there's no "extra overhead" to subtract a
+          ;; margin against.  Captured as test-quality bug
+          ;; (memory/bugs/api_event_test_absolute_timing_margin_brittle_2026_05_13.md);
+          ;; Dan-principle 2026-05-13 — absolute timing tests are frequently
+          ;; problematic; prefer relative/structural assertions.
+          (is (<= duration (- after before)) "Event duration must not exceed wall-clock span"))))))
 
 (deftest verify-multiple-requests-separate-events-test
   (testing "Multiple requests create separate events"

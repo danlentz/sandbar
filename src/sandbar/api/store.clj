@@ -18,6 +18,7 @@
     GET /api/store/classes/:ns/:name/subclasses   - Subclasses
     GET /api/store/classes/:ns/:name/ancestors    - Ancestors
     GET /api/store/classes/:ns/:name/parents      - Direct parents
+    GET /api/store/classes/:ns/:name/validate     - Validate all instances
 
   ## Properties
     GET /api/store/properties                     - List all properties
@@ -27,6 +28,7 @@
 
   ## Entities
     GET /api/store/entities/:ns/:name             - Get by namespaced ident
+    GET /api/store/entities/:ns/:name/validate    - Validate single entity
 
   ## Type Predicates
     GET /api/store/types/instance-of/:ns/:name/:entity-ns/:entity-name
@@ -121,6 +123,9 @@
 ;; Type predicates
 (defvalidator ::instance-of [_] identity)
 (defvalidator ::subclass-of [_] identity)
+
+;; Validation
+(defvalidator ::validate-instances [_] identity)
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Schema Overview
@@ -367,6 +372,30 @@
          :valid? (nil? validation)
          :validation (or validation {:status "valid"})})
       (endpoint/not-found {:error "Entity not found" :id ref}))))
+
+(defhandler validate-instances
+  "GET /api/store/classes/:ns/:name/validate - Validate all instances of a class.
+
+   Validates all instances of the class and its subclasses.
+   For example, validating :dt/Resource will validate everything.
+
+   Response:
+     {:class :dt/Resource
+      :total 150
+      :valid 148
+      :invalid 2
+      :errors [{:entity 123 :class :example/User :errors [...]}]}"
+  [_ _ {:keys [ns name]}]
+  (let [class-kw (parse-entity-ref ns name)]
+    (if (class-exists? class-kw)
+      (let [results (dt/validate-all-instances class-kw)]
+        {:class class-kw
+         :total (:total results)
+         :valid (:valid results)
+         :invalid (:invalid results)
+         :all-valid? (zero? (:invalid results))
+         :errors (:errors results)})
+      (endpoint/not-found {:error "Class not found" :class class-kw}))))
 
 (defhandler entity-class
   "GET /api/store/entities/:ns/:name/class - Get entity's class"

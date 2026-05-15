@@ -358,6 +358,98 @@ X-API-Key: inventory-sync:super-secret-api-key-123
 
 The service name is a keyword (without the leading colon), and the API key is verified against the stored hash.
 
+### MCP Bearer Token Authentication
+
+The MCP server (POST `/mcp`, GET `/mcp/sse`) uses **Bearer-token authentication** that reuses the same service-account / API-key infrastructure as the `X-API-Key` header above. The MCP layer adds a thin Bearer-extraction interceptor — token validation routes through the same `authenticate-api-key` path (Buddy-hashers under the hood).
+
+#### Header format
+
+```http
+Authorization: Bearer <service-name>:<api-key>
+```
+
+The token is the `<service-name>:<api-key>` pair, joined by a colon, with the literal prefix `Bearer ` (case-insensitive). Example:
+
+```http
+Authorization: Bearer claude:super-secret-mcp-key
+```
+
+#### Interceptors
+
+The MCP route's interceptor chain (in `sandbar.service.routes`):
+
+```clojure
+["/mcp" ^:interceptors [event-util/log-request
+                        content/data-body
+                        content/log-response
+                        content/accept-content
+                        params/parsed-params
+                        mcp-auth/bearer-interceptor
+                        mcp-auth/require-bearer]
+ {:post mcp-transport/mcp-handler}
+ ["/sse" {:get mcp-transport/sse-handler}]]
+```
+
+| Interceptor | Behavior |
+|-------------|----------|
+| `mcp-auth/bearer-interceptor` | Extracts the Bearer token, parses `<service>:<key>`, calls `authenticate-api-key`. Attaches `:identity` on success. Pass-through on missing/malformed token (so other auth interceptors can attempt the request). |
+| `mcp-auth/require-bearer` | Terminates the request with HTTP 401 + `WWW-Authenticate: Bearer realm="sandbar-mcp"` (per RFC 6750) if no `:identity` is attached by any upstream interceptor. |
+
+Note that `bearer-interceptor` is composable with `session-interceptor` and `api-key-interceptor` — `require-bearer` only checks that *some* upstream attached `:identity`, so a request authenticated by session or X-API-Key passes the MCP gate too.
+
+#### Failure-mode responses
+
+| Scenario | Response |
+|----------|----------|
+| Missing Authorization header | 401 + `WWW-Authenticate: Bearer realm="sandbar-mcp"` + `{"error":"Bearer token required"}` |
+| Malformed token (no `:` separator) | 401 (same shape; warning log `:reason :token-missing-colon-separator`) |
+| Unknown service name | 401 (`authenticate-api-key` returns `{:success false :reason :unknown-service}`) |
+| API key mismatch | 401 (`{:success false :reason :invalid-key}`) |
+| Service account inactive | 401 (`{:success false :reason :account-inactive}`) |
+
+#### Issuing tokens for MCP clients
+
+Use the standard `auth/ServiceAccount` flow to issue an MCP client a token:
+
+```clojure
+(require '[sandbar.db.datatype :as dt])
+(require '[sandbar.util.auth   :as auth])
+
+(def api-key "super-secret-mcp-key")
+
+(dt/make :auth/ServiceAccount
+  {:auth/service-name   :service/claude
+   :auth/principal-name "Claude MCP Client"
+   :auth/api-key-hash   (auth/hash-password api-key)
+   :auth/active?        true})
+
+;; Authenticate via Bearer header
+(let [token "claude:super-secret-mcp-key"
+      [svc key] (clojure.string/split token #":" 2)]
+  (auth/authenticate-api-key (keyword svc) key))
+;; => {:success true :principal <entity>}
+```
+
+#### MCP client configuration
+
+A typical client registration (`.mcp.json` in Claude Code, for example):
+
+```json
+{
+  "mcpServers": {
+    "sandbar": {
+      "type": "http",
+      "url":  "http://localhost:8080/mcp",
+      "headers": {
+        "Authorization": "Bearer ${SANDBAR_TOKEN:-disabled}"
+      }
+    }
+  }
+}
+```
+
+The `:-disabled` shell-expansion fallback means the registration is committed-but-inert until the operator sets `SANDBAR_TOKEN` in their shell. See [doc/mcp-server.md](mcp-server.md) for the full MCP surface.
+
 ## Authorization
 
 ### Role-Based Access Control

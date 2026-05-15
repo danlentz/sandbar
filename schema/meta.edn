@@ -143,7 +143,7 @@
 ;; Fundamental Properties
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
- [{:db/ident :dt/namespace ;; TODO: -> dt/context; first class context
+ [{:db/ident :dt/context ;; TODO: -> dt/context; first class context
    :dt/type  :dt/Property
    :dt/domain :dt/Resource
    :dt/range :db.type/string
@@ -248,7 +248,92 @@
    :dt/range :db.type/symbol
    :db/valueType :db.type/symbol
    :db/cardinality :db.cardinality/one
-   :db/doc "Fully-qualified symbol of a custom validator function (fn [entity] -> nil | error-map)."}]
+   :db/doc "Fully-qualified symbol of a custom validator function (fn [entity] -> nil | error-map)."}
+
+  {:db/ident :dt/native-codec
+   :dt/type  :dt/Property
+   :dt/domain :dt/Class
+   :dt/range :db.type/keyword
+   :db/valueType :db.type/keyword
+   :db/cardinality :db.cardinality/one
+   :db/doc "Per-class default codec format hint. The codec mediator
+            (sandbar.codec) uses this when no explicit :format hint is
+            provided. E.g., :mm/Memory → :markdown. Per
+            decisions/sandbar_codec_layer_owns_wire_format_concerns_consumer_native_representation_2026_05_12.md §2.5."}
+
+  {:db/ident :dt/codec-aliases
+   :dt/type  :dt/Property
+   :dt/domain :dt/Class
+   :dt/range :db.type/tuple
+   :db/valueType :db.type/tuple
+   :db/tupleType :db.type/keyword
+   :db/cardinality :db.cardinality/many
+   :db/doc "Per-class codec-layer alias map.  Each tuple is
+            [short-key slot-ident] — a codec wire-form short name
+            paired with the canonical namespaced slot ident.  Codecs
+            read this via `sandbar.db.datatype/codec-aliases-of` for
+            class-declared alias resolution.
+
+            NOTE — these are NOT owl:sameAs-shaped identity aliases.
+            They are context-specific naming conventions for the codec
+            layer ONLY: when a class is encoded via a codec, short-key
+            surfaces in the wire form as a stand-in for the canonical
+            namespaced slot.  The slot retains its full canonical
+            identity in the model; only the wire-form name is short.
+
+            Attribute name `:dt/codec-aliases` (not `:dt/aliases`)
+            chosen to disambiguate from OWL identity-relation
+            semantics + to match the `:dt/native-codec` sister
+            attribute naming pattern, per
+            interaction/check_substrate_schema_attribute_names_against_rdf_owl_semantics_2026_05_13.md.
+
+            Example: on :mm/Memory, [:type :mm.memory/memory-type]
+            tells the markdown codec that frontmatter key `type:` maps
+            to slot :mm.memory/memory-type (avoiding collision with
+            the :dt/type system attribute).
+
+            Replaces the prior hardcoded `known-class-slot-aliases`
+            map in `sandbar.codec.markdown` per
+            interaction/no_hardcoded_consumer_class_knowledge_in_substrate_2026_05_13.md
+            + decisions/sandbar_dt_star_explicit_ident_entity_helper_split_2026_05_13.md."}
+
+  {:db/ident :dt/bm25f-weights
+   :dt/type  :dt/Property
+   :dt/domain :dt/Class
+   :dt/range :db.type/tuple
+   :db/valueType :db.type/tuple
+   :db/tupleTypes [:db.type/keyword :db.type/double]
+   :db/cardinality :db.cardinality/many
+   :db/doc "Per-class default BM25F field-weights for fulltext search.
+            Each entry is [slot-ident weight] — a heterogeneous tuple
+            pairing the canonical namespaced slot ident with its
+            multi-field BM25F scoring weight.  Consumed by
+            sandbar.search/search-bm25f when no :field-weights opt is
+            provided on the query; a per-query :field-weights opt
+            overrides.
+
+            Algorithm-specific name (`bm25f-weights`) chosen over a
+            bare `weights` to disambiguate from any RDF/OWL weighted-
+            axiom semantics, per
+            interaction/check_substrate_schema_attribute_names_against_rdf_owl_semantics_2026_05_13.md.
+
+            Heterogeneous tuple shape ([keyword double]) declared via
+            :db/tupleTypes (plural) — Datomic's fixed-length typed-pair
+            form, distinct from :db/tupleType (singular, homogeneous).
+            Sister attribute :dt/codec-aliases uses the homogeneous
+            form (two keywords); :dt/bm25f-weights mixes keyword +
+            double so requires the plural form.
+
+            Example: on :mm/Memory,
+              [[:mm.memory/name 12.0]
+               [:mm.memory/description 8.0]
+               [:mm.memory/body-raw 1.0]]
+            tells sandbar.search/search-bm25f to weight name-matches
+            12x, description-matches 8x, and body-matches 1x when
+            scoring fulltext hits against the memory class.
+
+            Per fulltext arc Stage 1 of
+            plans/sandbar_fulltext_search_substrate_arc_2026_05_13.md."}]
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Fundamental Classes
@@ -256,23 +341,23 @@
 
  [{:db/ident :dt/Resource
    :dt/type  :dt/Class
-   :dt/namespace "meta"
+   :dt/context "meta"
    :dt/label "Resource"
    :db/doc "Resource is the abstract superclass of all classes"
-   :dt/slots [:db/doc :db/ident :dt/namespace :dt/label :dt/type]}
+   :dt/slots [:db/doc :db/ident :dt/context :dt/label :dt/type]}
 
   {:db/ident :dt/Class
    :dt/type :dt/Class
-   :dt/namespace "meta"
+   :dt/context "meta"
    :dt/subclass-of :dt/Resource
    :dt/label "Class"
-   :dt/slots [:dt/subclass-of :dt/abstract? :dt/list :dt/component :dt/slots :dt/validator]}
+   :dt/slots [:dt/subclass-of :dt/abstract? :dt/list :dt/component :dt/slots :dt/validator :dt/native-codec :dt/codec-aliases :dt/bm25f-weights]}
 
   {:db/ident :dt/Property
    :dt/type :dt/Class
    :dt/subclass-of :dt/Resource
    :dt/label "Property"
-   :dt/namespace "meta"
+   :dt/context "meta"
    :dt/slots [:db/cardinality :db/unique :db/fulltext
               :dt/domain :dt/range :dt/subproperty-of :dt/required?]}
 
@@ -280,17 +365,17 @@
    :dt/type :dt/Class
    :dt/subclass-of :dt/Resource
    :dt/label "List"
-   :dt/namespace "meta"
+   :dt/context "meta"
    :dt/slots [:dt/first :dt/rest]}]
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; nil maybe, maybe not
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
- [{:db/ident :nil
+ [{:db/ident :Nil
    :dt/type  :dt/List
-   :dt/label "nil"
-   :dt/namespace "meta"}]
+   :dt/label "Nil"
+   :dt/context "meta"}]
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Extended Property Types (WIP)
@@ -299,7 +384,7 @@
  [{:db/ident :dt/TransitiveProperty
    :dt/type :dt/Class
    :dt/subclass-of :dt/Property
-   :dt/namespace "meta"
+   :dt/context "meta"
    :dt/slots []
    :dt/label "TransitiveProperty"
    :db/doc "A property whose value chain is transitive"}
@@ -307,7 +392,7 @@
   {:db/ident :dt/ReflexiveProperty
    :dt/type :dt/Class
    :dt/subclass-of :dt/Property
-   :dt/namespace "meta"
+   :dt/context "meta"
    :dt/slots []
    :dt/label "Reflexive Property"
    :db/doc "A property whose value is self-referential"}
@@ -315,7 +400,7 @@
   {:db/ident :dt/InverseProperty
    :dt/type :dt/Class
    :dt/subclass-of :dt/Property
-   :dt/namespace "meta"
+   :dt/context "meta"
    :dt/slots []
    :dt/label "Inverse Property"
    :db/doc "A property which allows reverse linking"}]
@@ -328,7 +413,7 @@
 
  [{:db/id #db/id[:db.part/user -1]
    :dt/type :dt/Class
-   :dt/namespace "meta"
+   :dt/context "meta"
    :dt/label "Resource[]"
    :db/ident :dt/Resource*
    :dt/subclass-of :dt/Resource
@@ -339,7 +424,7 @@
 
   {:db/id #db/id[:db.part/user -2]
    :dt/type :dt/Class
-   :dt/namespace "meta"
+   :dt/context "meta"
    :dt/label "Resource[][]"
    :db/ident :dt/Resource**
    :dt/subclass-of :dt/Resource
@@ -353,7 +438,7 @@
  [{:db/id #db/id[:db.part/user -1]
    :dt/type :dt/Class
    :dt/subclass-of :dt/Resource*
-   :dt/namespace "meta"
+   :dt/context "meta"
    :dt/label "Class[]"
    :db/ident :dt/Class*
    :db/doc "Single-dimensional aggregate of Class instances"
@@ -364,7 +449,7 @@
   {:db/id #db/id[:db.part/user -2]
    :dt/type :dt/Class
    :dt/subclass-of :dt/Resource**
-   :dt/namespace "meta"
+   :dt/context "meta"
    :dt/label "Class[][]"
    :db/ident :dt/Class**
    :db/doc "Multi-dimensional aggregate of Class instances"

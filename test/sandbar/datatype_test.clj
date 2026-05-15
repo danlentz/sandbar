@@ -85,6 +85,35 @@
     (is (= :dt/Class (dt/class-of :model/User)) ":model/User should be instance of :dt/Class")
     (is (= :dt/Property (dt/class-of :dt/type)) ":dt/type should be instance of :dt/Property")))
 
+(deftest class-ident-of-test
+  (testing "class-ident-of returns the class IDENT (keyword)"
+    (is (= :dt/Class (dt/class-ident-of :dt/Property)))
+    (is (= :dt/Class (dt/class-ident-of :model/User)))
+    (is (= :dt/Property (dt/class-ident-of :dt/type)))
+    (is (keyword? (dt/class-ident-of :dt/Property)) "Return is a keyword ident")))
+
+(deftest class-entity-of-test
+  (testing "class-entity-of returns the class ENTITY (full map) for a class-ident"
+    (let [ent (dt/class-entity-of :dt/Property)]
+      (is (some? ent) "Returns a non-nil entity for a real class ident")
+      (is (= :dt/Property (:db/ident ent))
+          ":db/ident on the result matches the class ident")
+      (is (or (associative? ent) (instance? datomic.Entity ent))
+          "Result behaves like a map (entity)")
+      ;; The critical regression test: the prior `(:dt/native-codec
+      ;; (class-of x))` pattern returned nil because class-of resolved to
+      ;; :dt/Class.  class-entity-of resolves to the class itself, so
+      ;; reading metadata works.
+      (is (nil? (:dt/native-codec ent))
+          ":dt/Property has no :dt/native-codec declared")))
+  (testing "class-entity-of on :dt/Class returns the meta-class entity itself"
+    (let [ent (dt/class-entity-of :dt/Class)]
+      (is (= :dt/Class (:db/ident ent)))))
+  (testing "class-entity-of on nonexistent ident returns nil-equivalent"
+    (let [ent (dt/class-entity-of :nonexistent/SomeClass)]
+      (is (or (nil? ent) (nil? (:db/ident ent)))
+          "Returns nil or a sentinel-empty entity for unknown ident"))))
+
 (deftest instance-of?-test
   (testing "instance-of? checks instance relationship"
     (is (dt/instance-of? :dt/Class :model/User) "User is instance of Class")
@@ -111,6 +140,211 @@
       (is (seq class-instances) "Should have some named instances")
       (is (some #{:model/User} class-instances) "Should include :model/User")
       (is (every? keyword? class-instances) "All results should be keywords"))))
+
+(deftest named-idents-of-test
+  (testing "named-idents-of returns idents (keywords)"
+    (let [class-instances (dt/named-idents-of :dt/Class)]
+      (is (seq class-instances))
+      (is (some #{:model/User} class-instances))
+      (is (every? keyword? class-instances) "All results are keywords")))
+  (testing "named-idents-of is the canonical name; all-named-instances-of is a deprecated alias"
+    (is (= (set (dt/named-idents-of :dt/Class))
+           (set (dt/all-named-instances-of :dt/Class))))))
+
+(deftest named-entities-of-test
+  (testing "named-entities-of returns entity MAPS (not idents)"
+    (let [class-entities (dt/named-entities-of :dt/Class)]
+      (is (seq class-entities))
+      (is (every? (fn [e] (or (associative? e) (instance? datomic.Entity e)))
+                  class-entities)
+          "All results are entity-shaped (associative)")
+      (is (some (fn [e] (= :model/User (:db/ident e))) class-entities)
+          "Reading :db/ident off an entity result works")
+      (is (every? (fn [e] (some? (:db/ident e))) class-entities)
+          ":db/ident is readable on every result")))
+  (testing "named-idents-of and named-entities-of return the same set when projected to idents"
+    (is (= (set (dt/named-idents-of :dt/Class))
+           (set (map :db/ident (dt/named-entities-of :dt/Class)))))))
+
+(deftest find-by-ident-test
+  (testing "find-by-ident returns the entity for a known ident"
+    (let [ent (dt/find-by-ident :model/User)]
+      (is (some? ent))
+      (is (= :model/User (:db/ident ent)))))
+  (testing "find-by-ident on unknown ident returns nil-equivalent"
+    (is (or (nil? (dt/find-by-ident :nonexistent/Thing))
+            (nil? (:db/ident (dt/find-by-ident :nonexistent/Thing)))))))
+
+(deftest native-codec-of-class-test
+  (testing "native-codec-of-class returns nil for classes with no :dt/native-codec"
+    (is (nil? (dt/native-codec-of-class :dt/Property)))
+    (is (nil? (dt/native-codec-of-class :model/User))))
+  (testing "native-codec-of-class returns the declared codec for classes that have one"
+    ;; Positive-path: :mm/Memory + :mm/Section declare :dt/native-codec :markdown
+    ;; in schema/mm.edn.
+    (is (= :markdown (dt/native-codec-of-class :mm/Memory))
+        ":mm/Memory declares :dt/native-codec :markdown")
+    (is (= :markdown (dt/native-codec-of-class :mm/Section))
+        ":mm/Section declares :dt/native-codec :markdown"))
+  (testing "native-codec-of-class does NOT traverse :dt/type (codex MUST-FIX #1 regression test)"
+    ;; The prior `(:dt/native-codec (entity (dt/class-of x)))` bug
+    ;; resolved to :dt/Class and returned nil.  This helper reads the
+    ;; codec off the class entity directly — no :dt/type traversal.
+    ;; The test above (= :markdown ...) proves this works correctly:
+    ;; if we WERE traversing :dt/type, we'd get nil (since :dt/Class
+    ;; doesn't declare :dt/native-codec).
+    (is (nil? (dt/native-codec-of-class :nonexistent/Class))
+        "Returns nil for nonexistent class, not an error")))
+
+(deftest codec-aliases-of-test
+  (testing "codec-aliases-of returns {} for classes with no :dt/codec-aliases declared"
+    (is (= {} (dt/codec-aliases-of :dt/Property)))
+    (is (= {} (dt/codec-aliases-of :model/User)))
+    (is (= {} (dt/codec-aliases-of :mm/Section))
+        ":mm/Section has :dt/native-codec but no :dt/codec-aliases"))
+  (testing "codec-aliases-of returns the declared alias map for classes that have one"
+    ;; Positive-path: :mm/Memory declares :dt/codec-aliases for :type
+    ;; (avoids collision with :dt/type system attribute).
+    (let [aliases (dt/codec-aliases-of :mm/Memory)]
+      (is (= {:type :mm.memory/memory-type} aliases)
+          ":mm/Memory's :dt/codec-aliases map [:type :mm.memory/memory-type] reconstructs as a map")))
+  (testing "codec-aliases-of return shape is always a map (never nil, never seq)"
+    (is (map? (dt/codec-aliases-of :dt/Property))
+        "Empty case is {}")
+    (is (map? (dt/codec-aliases-of :mm/Memory))
+        "Non-empty case is a map of [short-key slot-ident] pairs")
+    (is (map? (dt/codec-aliases-of :nonexistent/Class))
+        "Nil-equivalent input still returns {}"))
+  ;; Attribute named :dt/codec-aliases (not :dt/aliases) to disambiguate
+  ;; from OWL sameAs-shaped identity relations per
+  ;; interaction/check_substrate_schema_attribute_names_against_rdf_owl_semantics_2026_05_13.md.
+  )
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Fulltext primitives (Stage 2 of fulltext arc)
+;; plans/sandbar_fulltext_search_substrate_arc_2026_05_13.md
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(deftest bm25f-weights-of-test
+  (testing "bm25f-weights-of returns {} for classes with no :dt/bm25f-weights declared"
+    (is (= {} (dt/bm25f-weights-of :dt/Property)))
+    (is (= {} (dt/bm25f-weights-of :model/User)))
+    (is (= {} (dt/bm25f-weights-of :mm/Tag))
+        ":mm/Tag has no per-class :dt/bm25f-weights declaration"))
+  (testing "bm25f-weights-of returns the declared weight map for :mm/Memory"
+    ;; Positive-path: :mm/Memory declares
+    ;;   [[:mm.memory/name 12.0] [:mm.memory/description 8.0] [:mm.memory/body-raw 1.0]]
+    ;; in schema/mm.edn per fulltext arc Stage 1.
+    (let [weights (dt/bm25f-weights-of :mm/Memory)]
+      (is (= {:mm.memory/name        12.0
+              :mm.memory/description  8.0
+              :mm.memory/body-raw     1.0}
+             weights)
+          ":mm/Memory's :dt/bm25f-weights tuples reconstruct as {slot weight} map")))
+  (testing "bm25f-weights-of returns the declared weight map for :mm/Section"
+    (let [weights (dt/bm25f-weights-of :mm/Section)]
+      (is (= {:mm.section/heading 6.0
+              :mm.section/body    1.0}
+             weights)
+          ":mm/Section's :dt/bm25f-weights tuples reconstruct as {slot weight} map")))
+  (testing "bm25f-weights-of return shape is always a map (never nil, never seq)"
+    (is (map? (dt/bm25f-weights-of :dt/Property)) "Empty case is {}")
+    (is (map? (dt/bm25f-weights-of :mm/Memory)) "Non-empty case is a map")
+    (is (map? (dt/bm25f-weights-of :nonexistent/Class))
+        "Nil-equivalent input still returns {}"))
+  ;; Heterogeneous tuple shape [keyword double] declared via :db/tupleTypes
+  ;; (plural form) per schema/meta.edn — distinct from :dt/codec-aliases's
+  ;; homogeneous :db/tupleType (singular) two-keyword shape.
+  )
+
+(deftest fulltext-indexed?-test
+  (testing "fulltext-indexed? returns true for slots declared :db/fulltext true"
+    ;; Stage 1 added :db/fulltext to six mm/* body-shaped string slots.
+    (is (true? (dt/fulltext-indexed? :mm.memory/name)))
+    (is (true? (dt/fulltext-indexed? :mm.memory/description)))
+    (is (true? (dt/fulltext-indexed? :mm.memory/body-raw)))
+    (is (true? (dt/fulltext-indexed? :mm.section/heading)))
+    (is (true? (dt/fulltext-indexed? :mm.section/body)))
+    (is (true? (dt/fulltext-indexed? :mm.tag/value))))
+  (testing "fulltext-indexed? returns false for slots NOT declared :db/fulltext"
+    ;; Non-text slots — exact-match enums, identifiers, refs, timestamps.
+    (is (false? (dt/fulltext-indexed? :mm.memory/identity))
+        "UUID-identity slot is not fulltext-indexed")
+    (is (false? (dt/fulltext-indexed? :mm.memory/rel-path))
+        "rel-path is exact-match for retrieval, not fulltext")
+    (is (false? (dt/fulltext-indexed? :mm.memory/memory-type))
+        "Memory-type is a keyword enum, faceted not fulltext")
+    (is (false? (dt/fulltext-indexed? :mm.memory/created))
+        "Timestamp instants are not fulltext-indexed")
+    (is (false? (dt/fulltext-indexed? :mm.section/heading-level))
+        "Long-valued slots are not fulltext-indexed")
+    (is (false? (dt/fulltext-indexed? :dt/type))
+        "Ref slots are not fulltext-indexed"))
+  (testing "fulltext-indexed? returns false for nonexistent attribute (no error)"
+    (is (false? (dt/fulltext-indexed? :nonexistent/attribute))
+        "Nonexistent attribute returns false, not nil or throw"))
+  (testing "fulltext-indexed? composes with slots-of for class-level enumeration"
+    (let [memory-fulltext-slots (->> (dt/slots-of :mm/Memory)
+                                     (filter dt/fulltext-indexed?)
+                                     set)]
+      (is (contains? memory-fulltext-slots :mm.memory/name))
+      (is (contains? memory-fulltext-slots :mm.memory/description))
+      (is (contains? memory-fulltext-slots :mm.memory/body-raw))
+      (is (not (contains? memory-fulltext-slots :mm.memory/identity)))
+      (is (not (contains? memory-fulltext-slots :mm.memory/memory-type))))))
+
+(deftest search-fulltext-test
+  (testing "search-fulltext returns hits on a fulltext-indexed attribute"
+    ;; Stage 1 added :db/fulltext true to :mm.memory/body-raw.  Insert
+    ;; two memorials with distinct body text; query for a term in one.
+    (dt/make :mm/Memory {:mm.memory/rel-path "test/datomic.md"
+                         :mm.memory/body-raw "datomic project graph realizes Anderson lineage"})
+    (dt/make :mm/Memory {:mm.memory/rel-path "test/lucene.md"
+                         :mm.memory/body-raw "lucene scoring example for BM25F"})
+    (let [results (dt/search-fulltext :mm.memory/body-raw "datomic")]
+      (is (seq results) "At least one hit for 'datomic'")
+      (is (= 1 (count results)) "Exactly one memorial mentions 'datomic'")
+      (is (every? (fn [[eid score]]
+                    (and (integer? eid) (number? score)))
+                  results)
+          "Each hit is an [eid score] tuple with integer eid + numeric score")))
+  (testing "search-fulltext returns empty for unmatched terms"
+    (let [results (dt/search-fulltext :mm.memory/body-raw "zzzzznomatchterm")]
+      (is (empty? results)
+          "Unmatched term returns empty seq, not nil and not error")))
+  (testing "search-fulltext on a non-fulltext attribute returns empty"
+    ;; :mm.memory/memory-type is not :db/fulltext — Datomic returns no
+    ;; hits without erroring.
+    (let [results (dt/search-fulltext :mm.memory/memory-type "decision")]
+      (is (empty? results)
+          "Query against non-fulltext attribute returns empty, not error"))))
+
+(deftest mm-schema-loaded-test
+  (testing "mm/* classes are registered in the metamodel"
+    (let [classes (set (dt/all-classes))]
+      (is (contains? classes :mm/Memory))
+      (is (contains? classes :mm/Section))
+      (is (contains? classes :mm/Tag))
+      (is (contains? classes :mm/Link))
+      (is (contains? classes :mm/Frontmatter))))
+  (testing "mm/* classes inherit from :dt/Resource"
+    (is (dt/subclass-of? :dt/Resource :mm/Memory))
+    (is (dt/subclass-of? :dt/Resource :mm/Section)))
+  (testing "mm/Memory has the expected slot set"
+    (let [slots (dt/slots-of :mm/Memory)]
+      (is (contains? slots :mm.memory/rel-path))
+      (is (contains? slots :mm.memory/name))
+      (is (contains? slots :mm.memory/memory-type))
+      (is (contains? slots :mm.memory/first-section))
+      (is (contains? slots :mm.memory/body-raw))))
+  (testing "mm/Section has the expected slot set"
+    (let [slots (dt/slots-of :mm/Section)]
+      (is (contains? slots :mm.section/heading))
+      (is (contains? slots :mm.section/heading-level))
+      (is (contains? slots :mm.section/body))
+      (is (contains? slots :mm.section/parent))
+      (is (contains? slots :mm.section/next-sibling))
+      (is (contains? slots :mm.section/previous-sibling)))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Slot Tests
@@ -330,3 +564,151 @@
       ;; Both should either pass or fail
       (is (= (nil? pre-result) (nil? post-result))
           "Pre and post validation should agree"))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Batch Validation Tests
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(deftest validate-all-instances-basic-test
+  (testing "validate-all-instances returns correct structure"
+    (let [result (dt/validate-all-instances :dt/Class)]
+      (is (map? result) "Should return a map")
+      (is (= :dt/Class (:class result)) "Should include the class")
+      (is (number? (:total result)) "Should include total count")
+      (is (number? (:valid result)) "Should include valid count")
+      (is (number? (:invalid result)) "Should include invalid count")
+      (is (vector? (:errors result)) "Should include errors vector")
+      (is (= (:total result) (+ (:valid result) (:invalid result)))
+          "Total should equal valid + invalid"))))
+
+(deftest validate-all-instances-with-valid-entities-test
+  (testing "validate-all-instances with valid entities"
+    ;; Create some valid User instances
+    (dt/make* :model/User {:user/login "batch-user-1"})
+    (dt/make* :model/User {:user/login "batch-user-2"})
+    (let [result (dt/validate-all-instances :model/User)]
+      (is (pos? (:total result)) "Should have instances")
+      (is (>= (:valid result) 2) "Should have at least 2 valid instances")
+      ;; Check that errors only contain actual errors
+      (is (every? #(contains? % :errors) (:errors result))
+          "Each error entry should have :errors key"))))
+
+(deftest validate-all-instances-includes-subclasses-test
+  (testing "validate-all-instances includes subclass instances"
+    ;; dt/Resource is the root class, so validating it should include
+    ;; instances from all subclasses (Class, Property, User, etc.)
+    (let [result (dt/validate-all-instances :dt/Resource)]
+      (is (pos? (:total result))
+          "Should find instances (classes, properties, etc. are all Resources)")
+      ;; Verify it found more than just direct instances
+      (let [direct-result (dt/validate-all-instances :dt/Class)]
+        (is (>= (:total result) (:total direct-result))
+            "Resource validation should include at least as many as Class")))))
+
+(deftest validate-all-instances-empty-class-test
+  (testing "validate-all-instances handles classes with no instances"
+    ;; dt/Literal is abstract and shouldn't have direct instances
+    (let [result (dt/validate-all-instances :dt/Literal)]
+      (is (map? result) "Should return a map even for empty/abstract class")
+      (is (= :dt/Literal (:class result))
+          "Should include the class name")
+      (is (number? (:total result))
+          "Should have a total (possibly 0)")
+      (is (= (:total result) (+ (:valid result) (:invalid result)))
+          "Counts should be consistent"))))
+
+(deftest validate-all-instances-error-structure-test
+  (testing "validate-all-instances errors have correct structure"
+    ;; Create an untyped entity to ensure we have something invalid
+    (let [result @(d/transact (db/conn) [{:db/doc "untyped for batch test"}])
+          eid (-> result :tempids vals first)
+          ;; Note: This entity won't be found by validate-all-instances
+          ;; because it has no :dt/type. But we can check valid entities.
+          validation-result (dt/validate-all-instances :model/User)]
+      ;; The errors should be properly structured
+      (doseq [error (:errors validation-result)]
+        (is (contains? error :entity) "Error should have :entity")
+        (is (contains? error :class) "Error should have :class")
+        (is (contains? error :errors) "Error should have :errors list")
+        (is (vector? (:errors error)) "Errors list should be a vector")))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; degree-of / backlink-density-of — F-MF-2 / Phase R Stage R-3
+;;
+;; Pre-fix: the :inverse / :bidirectional :find clauses projected
+;; [?s ?a] (source first, attribute second), but the `match?`
+;; predicate destructured `[a _]` and read position 0 as the
+;; attribute.  Result: any :predicates-filtered :inverse /
+;; :bidirectional call silently returned 0 because the predicate
+;; filter applied to source-eids rather than attribute-idents.
+;;
+;; Post-fix: :find ?a ?s aligns the inverse row shape to match the
+;; outbound :find ?a ?v — the predicate destructure now reads the
+;; attribute correctly for both directions.
+;;
+;; Cross-source: ultrareview UR-3 independently confirmed this
+;; defect at the same file:line (~0.98 confidence).  See
+;; observations/sandbar_degree_of_inverse_predicate_filter_row_shape_bug_2026_05_14.md
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(deftest degree-of-inverse-direction-with-predicate-filter
+  (testing "(degree-of {:direction :inverse :predicate-filter
+            :dt/subclass-of}) returns the COUNT of inbound
+            :dt/subclass-of edges — not 0 (pre-fix bug)"
+    ;; :dt/Resource is the root; many entities have :dt/subclass-of
+    ;; edges pointing AT it in the metamodel fixture.
+    (let [n (dt/degree-of :dt/Resource
+                          {:direction :inverse
+                           :predicates [:dt/subclass-of]})]
+      (is (pos? n)
+          (str "Expected positive inbound :dt/subclass-of count for "
+               ":dt/Resource (root class); got " n ".  Pre-R-3 fix "
+               "returned 0 because the predicate filter applied to "
+               "the wrong row column.")))))
+
+(deftest degree-of-bidirectional-with-predicate-filter
+  (testing "(degree-of {:direction :bidirectional :predicate-filter
+            :dt/subclass-of}) returns outbound + inbound — both
+            counts must be reflected"
+    ;; :dt/Class itself has both outbound :dt/subclass-of edges
+    ;; (towards :dt/Resource) AND inbound (from its subclasses).
+    (let [forward (dt/degree-of :dt/Class
+                                {:direction :forward
+                                 :predicates [:dt/subclass-of]})
+          inverse (dt/degree-of :dt/Class
+                                {:direction :inverse
+                                 :predicates [:dt/subclass-of]})
+          both    (dt/degree-of :dt/Class
+                                {:direction :bidirectional
+                                 :predicates [:dt/subclass-of]})]
+      (is (= both (+ forward inverse))
+          (str ":bidirectional must be the sum of :forward + :inverse "
+               "with the same predicate filter; got " both " vs "
+               "(+ " forward " " inverse ") = " (+ forward inverse))))))
+
+(deftest degree-of-outbound-continues-working-no-regression
+  (testing "F-MF-2 fix preserves :forward direction with predicate
+            filter (no regression)"
+    (let [n (dt/degree-of :dt/Class
+                          {:direction :forward
+                           :predicates [:dt/subclass-of]})]
+      (is (pos? n) ":dt/Class has outbound :dt/subclass-of edges"))))
+
+(deftest backlink-density-of-with-predicate-filter
+  (testing "(backlink-density-of :dt/Resource :dt/subclass-of) returns
+            positive inbound count — shares the same code path as
+            degree-of inverse, so this verifies the fix at the named
+            distinct retrieval axis (per multi-axis catalog ADR axes
+            6 vs 7)"
+    (let [n (dt/backlink-density-of :dt/Resource [:dt/subclass-of])]
+      (is (pos? n)
+          (str "Expected positive backlink-density for :dt/Resource "
+               "with :dt/subclass-of filter; got " n)))))
+
+(deftest degree-of-unfiltered-still-counts-correctly
+  (testing "No-predicate-filter call still counts all ref-typed
+            outbound+inbound edges (the no-filter path uses
+            `(constantly true)` and was never broken; verify no
+            regression)"
+    (let [n (dt/degree-of :dt/Class)]
+      (is (pos? n) ":dt/Class has at least some ref-typed edges"))))

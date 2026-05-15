@@ -17,8 +17,8 @@
          {:states [{:name :order/pending :initial? true}
                    {:name :order/confirmed}
                    {:name :order/shipped}
-                   {:name :order/delivered :terminal? true}
-                   {:name :order/cancelled :terminal? true}]
+                   {:name :order/delivered :terminal? true :terminal-kind :success}
+                   {:name :order/cancelled :terminal? true :terminal-kind :cancel}]
           :transitions [{:name :confirm :from :order/pending :to :order/confirmed}
                         {:name :ship :from :order/confirmed :to :order/shipped}
                         {:name :deliver :from :order/shipped :to :order/delivered}
@@ -36,6 +36,11 @@
      (wf/available-transitions process)
      ;; => [{:name :deliver} {:name :cancel}]
 
+   ## Loading Workflows from Resources
+
+     ;; Load a workflow definition from resources/workflows/
+     (wf/load-workflow-from-resource! \"workflows/resource-validation.edn\")
+
    ## Guard Functions
 
    Transitions can have guard functions that control when they're allowed:
@@ -46,16 +51,54 @@
       :guard 'myapp.guards/inventory-available?}
 
    Guard functions receive (process context) and return boolean."
-  (:require [clojure.tools.logging :as log]
+  (:require [clojure.edn :as edn]
+            [clojure.java.io :as io]
+            [clojure.string :as str]
+            [clojure.tools.logging :as log]
             [datomic.api :as d]
             [sandbar.db.datatype :as dt]
             [sandbar.db.datomic :as db]
             [sandbar.util.event :as event])
-  (:import [java.util Date]))
+  (:import [java.net JarURLConnection]
+           [java.util Date]
+           [java.util.jar JarFile]))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; State Management
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(def valid-terminal-kinds
+  "Closed set of terminal-kind classifications per
+   decisions/sandbar_workflow_cancellation_modeled_as_terminal_kind_on_states_2026_05_12.md.
+
+   :success — process completed its intended purpose
+   :failure — process encountered an outcome-blocking problem
+   :cancel  — process was deliberately stopped"
+  #{:success :failure :cancel})
+
+(defn- validate-terminal-kind!
+  "Validate :terminal-kind against the closed set + terminal? consistency.
+   Throws ex-info on violation per F-B-002 ADR acceptance criterion A.4."
+  [state-name terminal? terminal-kind]
+  (cond
+    (and terminal? (not terminal-kind))
+    (throw (ex-info ":workflow/State terminal? true requires :terminal-kind"
+                    {:reason  :terminal-without-kind
+                     :state   state-name
+                     :allowed valid-terminal-kinds}))
+
+    (and (not terminal?) terminal-kind)
+    (throw (ex-info ":workflow/State :terminal-kind only meaningful when terminal? true"
+                    {:reason        :non-terminal-with-kind
+                     :state         state-name
+                     :terminal-kind terminal-kind}))
+
+    (and terminal-kind (not (contains? valid-terminal-kinds terminal-kind)))
+    (throw (ex-info (str ":workflow/State :terminal-kind must be one of " valid-terminal-kinds)
+                    {:reason        :invalid-terminal-kind
+                     :state         state-name
+                     :terminal-kind terminal-kind
+                     :allowed       valid-terminal-kinds}))))
 
 (defn create-state!
   "Create a workflow state.
@@ -64,19 +107,28 @@
      state-name - Keyword identifier (e.g., :order/pending)
 
    Options:
-     :label     - Human-readable name
-     :initial?  - Is this the starting state?
-     :terminal? - Is this a final state (no outgoing transitions)?
-     :metadata  - Additional state data (any EDN-serializable value)
+     :label         - Human-readable name
+     :initial?      - Is this the starting state?
+     :terminal?     - Is this a final state (no outgoing transitions)?
+     :terminal-kind - Classification of terminal outcome: :success / :failure / :cancel.
+                      REQUIRED when :terminal? is true; rejected otherwise.
+     :metadata      - Additional state data (any EDN-serializable value)
 
-   Returns the created state entity."
-  [state-name & {:keys [label initial? terminal? metadata]}]
+   Returns the created state entity.
+
+   Throws ex-info if :terminal? is true without :terminal-kind, or if
+   :terminal-kind is not in #{:success :failure :cancel}, or if
+   :terminal-kind is supplied when :terminal? is not true.  Per
+   decisions/sandbar_workflow_cancellation_modeled_as_terminal_kind_on_states_2026_05_12.md."
+  [state-name & {:keys [label initial? terminal? terminal-kind metadata]}]
+  (validate-terminal-kind! state-name terminal? terminal-kind)
   (dt/make :workflow/State
     (cond-> {:workflow/state-name state-name
              :workflow/state-label (or label (name state-name))}
-      initial? (assoc :workflow/initial? true)
-      terminal? (assoc :workflow/terminal? true)
-      metadata (assoc :workflow/state-metadata (pr-str metadata)))))
+      initial?      (assoc :workflow/initial? true)
+      terminal?     (assoc :workflow/terminal? true)
+      terminal-kind (assoc :workflow/terminal-kind terminal-kind)
+      metadata      (assoc :workflow/state-metadata (pr-str metadata)))))
 
 (defn find-state
   "Find a state by name. Returns entity map or nil."
@@ -160,18 +212,23 @@
                        :transitions - Vector of transition specs
                        :version     - Optional version number
 
-   State spec: {:name :state-name :label \"Label\" :initial? bool :terminal? bool}
+   State spec: {:name :state-name :label \"Label\" :initial? bool :terminal? bool
+                :terminal-kind :success|:failure|:cancel}
    Transition spec: {:name :action :from :state :to :state :guard 'fn :requires-reason? bool}
+
+   Terminal state specs MUST declare :terminal-kind per
+   decisions/sandbar_workflow_cancellation_modeled_as_terminal_kind_on_states_2026_05_12.md.
 
    Returns the created workflow definition entity."
   [definition-name {:keys [states transitions version] :or {version 1}}]
   ;; Create states first
   (let [state-entities (into {}
-                             (map (fn [{:keys [name label initial? terminal? metadata]}]
+                             (map (fn [{:keys [name label initial? terminal? terminal-kind metadata]}]
                                     [name (create-state! name
                                                          :label label
                                                          :initial? initial?
                                                          :terminal? terminal?
+                                                         :terminal-kind terminal-kind
                                                          :metadata metadata)])
                                   states))
         ;; Create transitions
@@ -294,6 +351,29 @@
       (when (:workflow/started-at entity)
         entity))))
 
+(defn update-process-data!
+  "Replace a workflow process's `:workflow/process-data` payload.
+
+   Encapsulates the raw Datomic transact for process-data updates,
+   so service-layer code can stay at the workflow boundary instead of
+   reaching into Datomic directly.  Per
+   interaction/target_sandbar_introspection_api_layer_not_raw_datomic_2026_05_12.md
+   + codex SHOULD-FIX #1 (validation-as-workflow leaks raw transact).
+
+   The value is `pr-str`'d on write (Sandbar's current process-data
+   shape; per codex DEFER #1 this is the EDN-string substrate that
+   may evolve post-0.1.0 into typed slot decomposition).
+
+   Returns the refreshed process entity after the transact completes."
+  [process data]
+  (let [process-id (or (:db/id process) process)]
+    (when-not (number? process-id)
+      (throw (ex-info "update-process-data! requires a process entity or :db/id"
+                      {:process process})))
+    @(d/transact (db/conn)
+                 [[:db/add process-id :workflow/process-data (pr-str data)]])
+    (db/entity process-id)))
+
 (defn find-process-by-subject
   "Find all processes for a subject entity."
   [subject]
@@ -303,6 +383,46 @@
                     :where [?e :workflow/subject ?subject]]
                   (db/db) subject-id)]
     (map db/entity eids)))
+
+(declare get-current-state)
+
+(defn list-processes
+  "Enumerate all workflow processes in the system.
+
+   Returns: vector of process entity maps, sorted by `:workflow/started-at`
+   descending (most-recently-started first).
+
+   Per Dan-directive 2026-05-14 PM endorsing process-enumeration as a
+   valuable feature — the substrate had no public primitive for listing
+   workflow processes prior to this addition.
+
+   Consumers: `sandbar.mcp.tasks/handle-list` (MCP `tasks/list` verb);
+   future REST listing endpoint + admin tooling."
+  []
+  (let [eids (d/q '[:find [?p ...]
+                    :where [?p :workflow/started-at _]]
+                  (db/db))]
+    (->> eids
+         (map db/entity)
+         (sort-by :workflow/started-at)
+         reverse
+         vec)))
+
+(defn list-active-processes
+  "Enumerate workflow processes whose current state is NOT terminal —
+   i.e., processes still in-flight.
+
+   Returns: vector of process entity maps, sorted by `:workflow/started-at`
+   descending.  A non-active process is one whose current state has
+   `:workflow/terminal? true` (per the workflow-state-machine
+   convention).
+
+   Companion to `list-processes` (which returns all processes
+   regardless of terminal state).  Per Dan-directive 2026-05-14 PM."
+  []
+  (->> (list-processes)
+       (remove #(boolean (:workflow/terminal? (get-current-state %))))
+       vec))
 
 (defn get-current-state
   "Get the current state of a process."
@@ -653,3 +773,209 @@
      :completed completed
      :active active
      :total (+ completed active)}))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Resource Loading
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defn load-workflow-spec
+  "Load a workflow specification from a resource file (EDN).
+
+   Arguments:
+     resource-path - Path to the resource file (e.g., \"workflows/resource-validation.edn\")
+
+   Returns the parsed EDN map, or nil if resource not found."
+  [resource-path]
+  (when-let [resource (io/resource resource-path)]
+    (with-open [reader (io/reader resource)]
+      (edn/read (java.io.PushbackReader. reader)))))
+
+(defn load-workflow-from-resource!
+  "Load and define a workflow from a resource file.
+
+   Arguments:
+     resource-path - Path to the resource file (e.g., \"workflows/resource-validation.edn\")
+
+   The resource file should be an EDN map with keys:
+     :name        - Keyword identifier for the workflow
+     :version     - Optional version number
+     :states      - Vector of state specs
+     :transitions - Vector of transition specs
+
+   Returns the created workflow definition entity, or the existing workflow
+   if it was already defined."
+  [resource-path]
+  (if-let [spec (load-workflow-spec resource-path)]
+    (let [workflow-name (:name spec)]
+      (if-let [existing (find-workflow workflow-name)]
+        (do
+          (log/debug :WORKFLOW/ALREADY-EXISTS {:name workflow-name})
+          existing)
+        (do
+          (log/info :WORKFLOW/LOAD-FROM-RESOURCE {:path resource-path :name workflow-name})
+          (define-workflow! workflow-name spec))))
+    (throw (ex-info "Workflow resource not found" {:path resource-path}))))
+
+(defn- list-classpath-resources
+  "List filenames of resources inside a classpath directory.  Works
+   uniformly for both filesystem-backed (lein dev) and JAR-backed
+   (uberjar / Clojars-consumed dependency) classloader URLs.
+
+   The legacy `(file-seq (io/file (io/resource dir)))` idiom fails on
+   JAR URLs (`jar:file:.../X.jar!/dir`) because `java.io.File` cannot
+   traverse JAR internals.  This helper dispatches on the URL protocol:
+
+   - `file:` (development) — use `file-seq` over the directory
+   - `jar:` (production / Clojars consumer) — walk JarFile entries via
+     `JarURLConnection`
+
+   Per Phase U Stage U-2 fix for ultrareview UR-1
+   (`observations/sandbar_workflow_resource_load_jar_uberjar_break_2026_05_14.md`).
+
+   Returns: vector of filename strings (basename only, no directory
+   prefix).  Empty vector when the resource directory is absent."
+  [dir]
+  (let [url (io/resource dir)]
+    (cond
+      (nil? url) []
+
+      (= "file" (.getProtocol url))
+      (->> (io/file url)
+           file-seq
+           (filter #(.isFile ^java.io.File %))
+           (mapv #(.getName ^java.io.File %)))
+
+      (= "jar" (.getProtocol url))
+      (let [^JarURLConnection conn (.openConnection url)
+            ^JarFile jar (.getJarFile conn)
+            prefix (str dir "/")]
+        (with-open [_ jar]
+          (->> (enumeration-seq (.entries jar))
+               (map #(.getName %))
+               (filter #(str/starts-with? % prefix))
+               (remove #(str/ends-with? % "/"))
+               (map #(subs % (count prefix)))
+               (remove str/blank?)
+               (remove #(str/includes? % "/")) ; flat directory only — no nested
+               vec)))
+
+      :else [])))
+
+(defn load-all-workflows-from-resources!
+  "Load all workflow definitions from resources/workflows/ directory.
+
+   Works uniformly across development (filesystem-backed classpath)
+   and production (JAR-backed classpath; e.g., consumer pulling
+   sandbar as a Clojars dependency).  Per Phase U Stage U-2 fix for
+   ultrareview UR-1.
+
+   Returns a map of workflow names to workflow definition entities."
+  []
+  (let [workflows-dir "workflows"
+        filenames (list-classpath-resources workflows-dir)
+        edn-files (filter #(str/ends-with? % ".edn") filenames)]
+    (into {}
+          (for [filename edn-files]
+            (let [path (str workflows-dir "/" filename)
+                  workflow (load-workflow-from-resource! path)]
+              [(:workflow/definition-name workflow) workflow])))))
+
+(defn ensure-workflow!
+  "Ensure a workflow is defined, loading from resource if necessary.
+
+   Arguments:
+     workflow-name - Keyword identifier for the workflow
+     resource-path - Optional path to resource file; defaults to
+                     \"workflows/{name}.edn\" where name is the workflow name
+
+   Returns the workflow definition entity."
+  [workflow-name & [resource-path]]
+  (or (find-workflow workflow-name)
+      (let [path (or resource-path
+                     (str "workflows/" (name workflow-name) ".edn"))]
+        (load-workflow-from-resource! path))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Cancellation
+;;
+;; Per the layer-targeting + improve-abstraction-not-bypass disciplines:
+;; the MCP layer (sandbar.mcp.tasks/handle-cancel) needs a generic
+;; cancellation primitive. Rather than each consumer reaching into raw
+;; d/transact, we expose cancel-process! as a workflow-aware operation
+;; that composes with transition!.
+;;
+;; Convention (per
+;; decisions/sandbar_workflow_cancellation_modeled_as_terminal_kind_on_states_2026_05_12.md):
+;; a workflow that supports cancellation declares one or more terminal
+;; states with :workflow/terminal-kind :cancel and at least one
+;; transition leading to such a state from a non-terminal state.
+;; Cancelability is determined by modeled classification, NOT by
+;; ident-name string heuristic.
+
+(defn- cancel-transition-for
+  "Find an available transition that targets a state classified
+   :workflow/terminal-kind :cancel.  Returns the transition entity, or
+   nil if no cancel-shaped transition is available from the process's
+   current state.  Per F-B-002 ADR; replaces the prior ident-name string
+   heuristic."
+  [process]
+  (let [transitions (available-transitions process)]
+    (->> transitions
+         (filter (fn [t]
+                   (when-let [target (:workflow/to-state t)]
+                     (= :cancel (:workflow/terminal-kind target)))))
+         first)))
+
+(defn cancel-process!
+  "Cancel a running workflow process. Finds an available transition that
+   targets a state classified :workflow/terminal-kind :cancel and executes
+   it via transition!.
+
+   Arguments:
+     process - The process entity (or eid; resolved via find-process)
+
+   Options:
+     :actor  - User/principal performing the cancellation
+     :reason - Reason/comment for the cancellation (passed to transition!)
+
+   Returns the updated process entity.
+
+   Throws ex-info with :reason :no-cancel-transition when the workflow
+   doesn't declare a cancellation path from the current state.
+
+   This is the discipline-correct cancellation path per
+   interaction/target_sandbar_introspection_api_layer_not_raw_datomic_2026_05_12.md
+   — consumers call this instead of constructing raw transact data."
+  [process & {:keys [actor reason]
+              :or   {reason "Cancelled by consumer (via workflow/cancel-process!)"}}]
+  (let [process-entity (if (number? process) (find-process process) process)
+        cancel-tx      (cancel-transition-for process-entity)]
+    (when-not process-entity
+      (throw (ex-info "Process not found"
+                      {:reason :process-not-found
+                       :input  process})))
+    (when-not cancel-tx
+      (throw (ex-info "Workflow does not support cancellation from the current state"
+                      {:reason         :no-cancel-transition
+                       :process-id     (:db/id process-entity)
+                       :current-state  (some-> process-entity get-current-state :db/ident)})))
+    ;; Transitions don't carry :db/ident (not :db.unique/identity); the
+    ;; canonical action keyword lives on :workflow/transition-name.  Keep
+    ;; :db/ident as the first preference for schema-defined transitions
+    ;; that might carry an explicit ident in some future setup.
+    (let [transition-name (or (:db/ident cancel-tx)
+                              (:workflow/transition-name cancel-tx))]
+      (log/info :workflow/cancel-process
+                {:process-id (:db/id process-entity)
+                 :transition transition-name
+                 :actor      actor})
+      (transition! process-entity transition-name
+                   :actor  actor
+                   :reason reason))))
+
+(defn can-cancel?
+  "Predicate: is the process in a state from which cancellation is
+   possible? True iff at least one available transition targets a
+   cancellation-shaped state."
+  [process]
+  (boolean (cancel-transition-for process)))

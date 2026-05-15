@@ -174,7 +174,7 @@ Tests use in-memory Datomic databases:
  [{:db/ident :model/Product
    :dt/type :dt/Class
    :dt/subclass-of :dt/Ref
-   :dt/namespace "model"
+   :dt/context "model"
    :dt/label "Product"
    :db/doc "A product in the catalog"
    :dt/slots [:product/name :product/price]}]
@@ -182,7 +182,7 @@ Tests use in-memory Datomic databases:
  ;; Define aggregates
  [{:db/id #db/id[:db.part/user -1]
    :dt/type :dt/Class
-   :dt/namespace "model"
+   :dt/context "model"
    :dt/label "Product[]"
    :db/ident :model/Product*
    :dt/subclass-of :dt/Resource*
@@ -193,7 +193,7 @@ Tests use in-memory Datomic databases:
 
   {:db/id #db/id[:db.part/user -2]
    :dt/type :dt/Class
-   :dt/namespace "model"
+   :dt/context "model"
    :dt/label "Product[][]"
    :db/ident :model/Product**
    :dt/subclass-of :dt/Resource**
