@@ -87,10 +87,56 @@
 ;; Publish (broadcast to all subscribers)
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
+(defn- deliver-event!
+  "Internal: call a subscriber's `send!` with `event`, returning true on
+   successful delivery + false on any failure shape.  Two failure modes
+   are recognized + treated identically (evict + warn):
+
+   1. **Exception path** — `send!` throws (e.g., transport encountered an
+      I/O error the underlying machinery surfaces as an exception).
+   2. **Falsey-return path** — `send!` returns false / nil.  This is the
+      core.async `async/put!` semantics: put! to a CLOSED channel returns
+      false WITHOUT throwing.  Per ultrareview UR-13 + observation
+      `sandbar_sse_subscriber_async_put_closed_channel_silent_drop_2026_05_14`:
+      treating exceptions as the only failure signal silently drops
+      notifications to disconnected clients + leaks subscriber-registry
+      entries across connect-disconnect cycles.
+
+   On failure: log warn with `:reason` (`:exception` or `:closed-channel`)
+   + `unregister!` the subscriber.  Returns true iff `send!` returned a
+   truthy value AND did not throw."
+  [id send! event method]
+  (try
+    (let [result (send! event)]
+      (if result
+        true
+        (do
+          (log/warn :MCP/notification-send-failed
+                    {:subscriber-id id
+                     :method        method
+                     :reason        :closed-channel})
+          (unregister! id)
+          false)))
+    (catch Exception e
+      (log/warn e :MCP/notification-send-failed
+                {:subscriber-id id
+                 :method        method
+                 :reason        :exception})
+      (unregister! id)
+      false)))
+
 (defn publish!
   "Broadcast a JSON-RPC notification to all registered subscribers.
-   Failures (e.g., a subscriber's send! throws because the client
-   disconnected) are caught + the offending subscriber is unregistered.
+   Failures are detected via two mechanisms (see `deliver-event!`):
+
+   1. `send!` throws (caught + subscriber unregistered)
+   2. `send!` returns falsey (closed core.async channel — `async/put!`
+      returns false to a closed channel WITHOUT throwing; subscriber
+      unregistered, log warn emitted)
+
+   Per ultrareview UR-13: ignoring the falsey return value silently
+   drops notifications + leaks subscriber-registry entries across SSE
+   client connect-disconnect cycles.
 
    Returns the count of subscribers that received the notification
    successfully."
@@ -100,14 +146,9 @@
                {:method method :subscribers (subscriber-count)})
     (reduce-kv
       (fn [n id {:keys [send!]}]
-        (try
-          (send! event)
+        (if (deliver-event! id send! event method)
           (inc n)
-          (catch Exception e
-            (log/warn e :MCP/notification-send-failed
-                      {:subscriber-id id :method method})
-            (unregister! id)
-            n)))
+          n))
       0
       @+subscribers+)))
 
@@ -116,6 +157,11 @@
    Per-URI / per-subscription routing per F-S-001 resolution; the broadcast
    shape of `publish!` is the fallback for legacy `::broadcast`-bound
    subscriptions.
+
+   Failure detection matches `publish!`: both exception + falsey-return
+   from `send!` trigger eviction + a warn log (closed core.async channels
+   manifest as the falsey-return path — see `deliver-event!` docstring +
+   ultrareview UR-13).
 
    subscriber-ids — collection of subscriber-id strings registered via
                     `register!`.  Unknown ids are silently skipped.
@@ -128,14 +174,9 @@
     (reduce
       (fn [n id]
         (if-let [{:keys [send!]} (get subs id)]
-          (try
-            (send! event)
+          (if (deliver-event! id send! event method)
             (inc n)
-            (catch Exception e
-              (log/warn e :MCP/notification-send-failed
-                        {:subscriber-id id :method method})
-              (unregister! id)
-              n))
+            n)
           n))
       0
       subscriber-ids)))
