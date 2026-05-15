@@ -96,6 +96,23 @@
   [tag child-ast]
   (symbol (str tag "-" (ast-suffix child-ast))))
 
+(defn- dedupe-rules
+  "Dedupe a sequence of compiled rules by full-structure equality.
+
+   `rule-name` is content-derived (via `ast-suffix`) — same child AST
+   produces the same rule symbol — so two rules with identical
+   structure are functionally identical; emitting both causes Datomic
+   to reject the query as duplicate-rule-definition.
+
+   Phase U Stage U-6 (UR-11) fix: nested `(:REP+ ...)` / `(:REP* ...)`
+   compositions whose children contain repeated subterms (e.g.,
+   `(:REP+ (:SEQ (:REP+ a) b))` or
+   `(:OR (:REP+ a) (:REP+ b))` when both branches share predicates)
+   used to emit the same rule twice through different traversal
+   paths.  `(vec (distinct rules))` collapses to one copy."
+  [rules]
+  (vec (distinct rules)))
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Per-operator compilation.
 ;;
@@ -162,7 +179,9 @@
                          res (compile-node (nth args i) cur nxt ctr)]
                      (recur (inc i) nxt (conj acc res)))))]
     {:where (vec (mapcat :where pairs))
-     :rules (vec (mapcat :rules pairs))}))
+     ;; UR-11 (Phase U Stage U-6): repeated sub-terms across SEQ
+     ;; positions emit identical rules; dedupe.
+     :rules (dedupe-rules (mapcat :rules pairs))}))
 
 (defn- compile-or
   "(:OR p1 p2 ... pN) from ?x to ?y → (or-join [?x ?y] <branch> ...)
@@ -172,7 +191,10 @@
   (let [branches (mapv (fn [child]
                          (compile-node child from-var to-var ctr))
                        (:args ast))
-        rules    (vec (mapcat :rules branches))
+        ;; UR-11 (Phase U Stage U-6): branches with shared sub-rules
+        ;; (e.g., (:OR (:REP+ p) (:REP+ q)) where both branches emit
+        ;; the same recursive rule) emit duplicates pre-dedupe.
+        rules    (dedupe-rules (mapcat :rules branches))
         ;; Each branch's :where becomes one clause-list inside or-join.
         ;; If a branch produces multiple clauses, wrap in (and ...).
         wrap-branch (fn [clauses]
@@ -205,7 +227,10 @@
         rec-rule  (into [(list rname '?rep-from '?rep-to)]
                         (concat (:where step-comp)
                                 [(list rname rec-mid '?rep-to)]))
-        child-rules (concat (:rules base-comp) (:rules step-comp))]
+        ;; UR-11 (Phase U Stage U-6): base-comp + step-comp both
+        ;; compile the same child AST and emit identical sub-rules;
+        ;; dedupe to avoid Datomic duplicate-rule rejection.
+        child-rules (dedupe-rules (concat (:rules base-comp) (:rules step-comp)))]
     {:where [(list rname from-var to-var)]
      :rules (into [base-rule rec-rule] child-rules)}))
 
@@ -232,7 +257,9 @@
                        (concat (:where step)
                                [(list rname rec-mid '?rep-to)]))]
     {:where [(list rname from-var to-var)]
-     :rules (into [id-rule rec-rule] (:rules step))}))
+     ;; UR-11 (Phase U Stage U-6): dedupe nested rules surfaced by
+     ;; the step compile (composite children with repeated subterms).
+     :rules (into [id-rule rec-rule] (dedupe-rules (:rules step)))}))
 
 (defn- compile-inv
   "(:INV p) from ?x to ?y → compile p from ?y to ?x (swap variables).

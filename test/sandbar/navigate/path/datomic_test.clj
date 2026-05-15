@@ -89,6 +89,64 @@
     (let [{:keys [rules]} (compile-expr [:REP* :cites])]
       (is (= 2 (count rules))))))
 
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; UR-11 (Phase U Stage U-6): nested REP compositions must NOT emit
+;; structurally-duplicate recursive-rule definitions.  `rule-name` is
+;; content-derived; same child AST → same rule symbol AND same body.
+;; Without dedupe, multiple sub-compile passes emit identical rules and
+;; Datomic rejects the query at execution time with a duplicate-rule
+;; error.
+;;
+;; Note: two rules with the SAME HEAD but DIFFERENT bodies is the
+;; normal recursive-rule shape (base case + recursive case both define
+;; the head as UNION).  The defect is specifically structurally-
+;; identical rules — same head AND same body — repeated.
+;;
+;; The IR canonicalizer's `collapse-rep` reduces direct
+;; `(:REP+ (:REP+ p))` to `(:REP+ p)`, so the worst-case duplicate path
+;; is composite children with repeated subterms — e.g.,
+;; `(:OR (:REP+ a) (:REP+ a))` (a manual duplicate that survives IR),
+;; or `(:SEQ (:REP+ a) (:REP+ a))`.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(deftest compile-rep-plus-of-rep-plus-no-duplicate-rules
+  (testing "(:REP+ (:REP+ p)) compiles without structurally-identical
+            rule emissions even if the IR doesn't collapse the outer wrap"
+    (let [{:keys [rules]} (compile-expr [:REP+ [:REP+ :cites]])]
+      (is (= (count rules) (count (distinct rules)))
+          (str "structurally-duplicate rules emitted: " (vec rules))))))
+
+(deftest compile-rep-star-of-rep-plus-no-duplicate-rules
+  (testing "(:REP* (:REP+ p)) compiles without structurally-duplicate rules"
+    (let [{:keys [rules]} (compile-expr [:REP* [:REP+ :cites]])]
+      (is (= (count rules) (count (distinct rules)))
+          (str "structurally-duplicate rules emitted: " (vec rules))))))
+
+(deftest compile-or-of-rep-plus-twice-no-duplicate-rules
+  (testing "(:OR (:REP+ p) (:REP+ p)) — both branches emit the same
+            recursive rule; the OR-compile dedupes structurally"
+    (let [{:keys [rules]} (compile-expr [:OR [:REP+ :cites] [:REP+ :cites]])]
+      (is (= (count rules) (count (distinct rules)))
+          (str "structurally-duplicate rules emitted: " (vec rules))))))
+
+(deftest compile-or-of-different-rep-plus-keeps-distinct-rules
+  (testing "(:OR (:REP+ p) (:REP+ q)) — distinct branches produce
+            distinct rules; dedupe must NOT collapse them"
+    (let [{:keys [rules]} (compile-expr [:OR [:REP+ :cites] [:REP+ :slots]])]
+      (is (= (count rules) (count (distinct rules)))
+          (str "structurally-duplicate rules emitted: " (vec rules)))
+      ;; 2 rules per branch (base + recursive) × 2 distinct branches = 4
+      (is (= 4 (count rules))
+          "two branches with distinct predicates = 4 distinct rules"))))
+
+(deftest compile-seq-of-rep-plus-twice-no-duplicate-rules
+  (testing "(:SEQ (:REP+ p) (:REP+ p)) — same recursive rule reached
+            through two chain steps; sub-compilers dedupe via the
+            SEQ propagation"
+    (let [{:keys [rules]} (compile-expr [:SEQ [:REP+ :cites] [:REP+ :cites]])]
+      (is (= (count rules) (count (distinct rules)))
+          (str "structurally-duplicate rules emitted: " (vec rules))))))
+
 (deftest compile-inv-of-predicate
   (testing "(:INV p) swaps from/to vars — compiles as inverse pattern"
     (let [{:keys [where]} (compile-expr [:INV :cites])]
