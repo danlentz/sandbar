@@ -595,8 +595,19 @@
                             [?e ?a ?v]
                             [?a :db/valueType :db.type/ref]]
                           (db/db) eid))
+         ;; F-MF-2 fix (Phase R Stage R-3): inverse rows project
+         ;; ?a (attribute) in position 0 to match the out-rows shape;
+         ;; the `match?` predicate destructures `[a _]` (attribute
+         ;; first), so both row shapes must align.  Pre-fix:
+         ;; `:find ?s ?a` placed the source in position 0 and the
+         ;; attribute in position 1; `match?` then read the SOURCE
+         ;; as the attribute and the predicate filter silently
+         ;; missed every inverse row (returned 0 for any
+         ;; :predicates-filtered :inverse / :bidirectional call).
+         ;; Aligning to `:find ?a ?s` restores per-direction
+         ;; symmetry without per-direction match functions.
          in-rows   (when (#{:inverse :bidirectional} direction)
-                     (d/q '[:find ?s ?a
+                     (d/q '[:find ?a ?s
                             :in $ ?e
                             :where
                             [?s ?a ?e]

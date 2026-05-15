@@ -631,3 +631,84 @@
         (is (contains? error :class) "Error should have :class")
         (is (contains? error :errors) "Error should have :errors list")
         (is (vector? (:errors error)) "Errors list should be a vector")))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; degree-of / backlink-density-of — F-MF-2 / Phase R Stage R-3
+;;
+;; Pre-fix: the :inverse / :bidirectional :find clauses projected
+;; [?s ?a] (source first, attribute second), but the `match?`
+;; predicate destructured `[a _]` and read position 0 as the
+;; attribute.  Result: any :predicates-filtered :inverse /
+;; :bidirectional call silently returned 0 because the predicate
+;; filter applied to source-eids rather than attribute-idents.
+;;
+;; Post-fix: :find ?a ?s aligns the inverse row shape to match the
+;; outbound :find ?a ?v — the predicate destructure now reads the
+;; attribute correctly for both directions.
+;;
+;; Cross-source: ultrareview UR-3 independently confirmed this
+;; defect at the same file:line (~0.98 confidence).  See
+;; observations/sandbar_degree_of_inverse_predicate_filter_row_shape_bug_2026_05_14.md
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(deftest degree-of-inverse-direction-with-predicate-filter
+  (testing "(degree-of {:direction :inverse :predicate-filter
+            :dt/subclass-of}) returns the COUNT of inbound
+            :dt/subclass-of edges — not 0 (pre-fix bug)"
+    ;; :dt/Resource is the root; many entities have :dt/subclass-of
+    ;; edges pointing AT it in the metamodel fixture.
+    (let [n (dt/degree-of :dt/Resource
+                          {:direction :inverse
+                           :predicates [:dt/subclass-of]})]
+      (is (pos? n)
+          (str "Expected positive inbound :dt/subclass-of count for "
+               ":dt/Resource (root class); got " n ".  Pre-R-3 fix "
+               "returned 0 because the predicate filter applied to "
+               "the wrong row column.")))))
+
+(deftest degree-of-bidirectional-with-predicate-filter
+  (testing "(degree-of {:direction :bidirectional :predicate-filter
+            :dt/subclass-of}) returns outbound + inbound — both
+            counts must be reflected"
+    ;; :dt/Class itself has both outbound :dt/subclass-of edges
+    ;; (towards :dt/Resource) AND inbound (from its subclasses).
+    (let [forward (dt/degree-of :dt/Class
+                                {:direction :forward
+                                 :predicates [:dt/subclass-of]})
+          inverse (dt/degree-of :dt/Class
+                                {:direction :inverse
+                                 :predicates [:dt/subclass-of]})
+          both    (dt/degree-of :dt/Class
+                                {:direction :bidirectional
+                                 :predicates [:dt/subclass-of]})]
+      (is (= both (+ forward inverse))
+          (str ":bidirectional must be the sum of :forward + :inverse "
+               "with the same predicate filter; got " both " vs "
+               "(+ " forward " " inverse ") = " (+ forward inverse))))))
+
+(deftest degree-of-outbound-continues-working-no-regression
+  (testing "F-MF-2 fix preserves :forward direction with predicate
+            filter (no regression)"
+    (let [n (dt/degree-of :dt/Class
+                          {:direction :forward
+                           :predicates [:dt/subclass-of]})]
+      (is (pos? n) ":dt/Class has outbound :dt/subclass-of edges"))))
+
+(deftest backlink-density-of-with-predicate-filter
+  (testing "(backlink-density-of :dt/Resource :dt/subclass-of) returns
+            positive inbound count — shares the same code path as
+            degree-of inverse, so this verifies the fix at the named
+            distinct retrieval axis (per multi-axis catalog ADR axes
+            6 vs 7)"
+    (let [n (dt/backlink-density-of :dt/Resource [:dt/subclass-of])]
+      (is (pos? n)
+          (str "Expected positive backlink-density for :dt/Resource "
+               "with :dt/subclass-of filter; got " n)))))
+
+(deftest degree-of-unfiltered-still-counts-correctly
+  (testing "No-predicate-filter call still counts all ref-typed
+            outbound+inbound edges (the no-filter path uses
+            `(constantly true)` and was never broken; verify no
+            regression)"
+    (let [n (dt/degree-of :dt/Class)]
+      (is (pos? n) ":dt/Class has at least some ref-typed edges"))))
