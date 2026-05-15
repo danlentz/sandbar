@@ -2,7 +2,7 @@
 
 All notable changes to Sandbar are documented in this file.  Format informed by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html) at and after 0.1.0.
 
-## [0.1.0] — 2026-05-14 — first public release
+## [0.1.0] — 2026-05-15 — first public release
 
 First public release of Sandbar.  Foundational substrate: metacircular RDFS-style metamodel on Datomic, the codec layer, the bidirectional projection primitive, the workflow substrate, the MCP server, and the comprehensive four-axis retrieval surface (search / aggregate / navigate / orient).
 
@@ -85,11 +85,20 @@ First public release of Sandbar.  Foundational substrate: metacircular RDFS-styl
 - **`projection` rename** — top-level Sandbar namespaces should read unambiguously as nouns; `project-graph` / `ingest-graph` function names preserved as verbs at call site
 - **MCP LLM-consumability discipline** — every catalog verb description covers WHICH / WHEN / HOW / ORDER / COMBINATION; the catalog teaches its own use
 
-### Pre-release stabilization (Phase R + Phase U remediation, 2026-05-14)
+### Pre-release stabilization (Phase R + Phase U remediation, 2026-05-14 → 2026-05-15)
 
 Two parallel review-driven remediation arcs closed before 0.1.0 tag, joint-gating the release per `plans/sandbar_fulltext_search_substrate_arc_2026_05_13.md`:
 
-**Phase R** (codex `--effort xhigh` review remediation; 9 findings) — closed via the `sandbar.entity-ref` boundary abstraction + 11 F-MF-3-surface MCP handler migrations + REST handler `db/entity → eref/validate` migration + Pedestal `entity-ref-error-interceptor` projecting structured ex-info to HTTP 400 / 404 + `handle-call` catch widening (AssertionError + Exception separately) + ref-arg `:pre` drops at navigate/orient surfaces.
+**Phase R** (codex `--effort xhigh` review remediation; 9 findings across 9 stages) closed across two days:
+
+- **R-1** (F-MF-3, 2026-05-14): `sandbar.entity-ref` boundary abstraction + 11 MCP handler migrations + REST handler `db/entity → eref/validate` migration + Pedestal `entity-ref-error-interceptor` projecting structured ex-info to HTTP 400 / 404 + `handle-call` catch widening (AssertionError + Exception separately) + ref-arg `:pre` drops at navigate/orient surfaces.
+- **R-2** (F-MF-1, 2026-05-14): `:ANY` path-grammar operator constrained to ref-typed attributes in the compiler (`compile-any` emits `[?pred :db/valueType :db.type/ref]` guard); restores the typed-edge algebra invariant.  Adversarial tests at compiler / wrapper / REST / MCP layers.
+- **R-3** (F-MF-2 / cross-source-confirmed UR-3, 2026-05-15): `dt/degree-of` inverse-row destructure fix — aligned `:find ?a ?s` so the shared `match?` predicate destructures the attribute correctly under `:direction :inverse` / `:bidirectional` with `:predicates` filter (pre-fix silently returned 0).
+- **R-4** (F-SF-2, 2026-05-15): `log-error!` stacktrace capture without stderr leak — replaced `(with-out-str (.printStackTrace ex))` with PrintWriter/StringWriter capture; the stacktrace lands in `:event/stacktrace` data field and stderr stays clean.
+- **R-5** (F-SF-1, 2026-05-15): `search-bm25f` docstring narrowed to bag-of-words contract; `search-attribute` distinguished as the Lucene-query-syntax surface.  Pinned-difference contract tests prevent future docstring drift.
+- **R-6** (F-DF-1 Phase 1+2, 2026-05-15): bench scaffolding — new `bench/sandbar/bench/` namespace tree (harness + synthetic-graph factory + orchestrator) + `lein bench` alias + `doc/BENCH.md` discipline + initial `bench-results/baseline.edn` (10/100/1k/10k ladder).  Phase 3 (optimization) deferred post-0.1.0 per triage decision D-2.
+- **R-7** (F-DB-1 Option D + Policy A, 2026-05-15): path-data reconstruction — new `sandbar.navigate.path.evaluate` namespace (Clojure-side BFS IR evaluator over all 8 Canonical-8 operators with frontier-as-map + Policy A first-arrival + path.value substrate); `:include #{:paths}` surface now populates real path data through wrapper + REST + MCP layers (`:path-data-deferred` placeholder permanently dropped).
+- **R-8** (release-readiness audit, 2026-05-15): full `lein test` green + namespace-load smoke + F-SF-3 audit + CHANGELOG entry + version + gpg-key verification.
 
 **Phase U** (parallel ultrareview remediation; 13 findings) — closed via:
 
@@ -106,11 +115,11 @@ Two parallel review-driven remediation arcs closed before 0.1.0 tag, joint-gatin
 - **UR-13**: SSE `publish!` detects closed-channel return + evicts dead subscribers from the registry; bounded across connect-disconnect cycles
 - **UR-14**: `doc/guides/sandbar-as-substrate.md` Configuration section reconciled to actual `config.edn` schema (`:db {:url :sid}` / `:nrepl {:port}` nested shape)
 
-Cumulative test delta from the remediation arcs: net +38 tests / +83 assertions over the start-of-2026-05-14 baseline.
+Cumulative test delta from the remediation arcs: net +78 tests / +245 assertions over the start-of-2026-05-14 baseline (+38/+83 through Phase U closure end-of-2026-05-14; additional +40/+162 through Phase R Stages R-2/R-3/R-4/R-5/R-7 by end-of-2026-05-15).
 
 ### Tests
 
-- **887 tests / 4436 assertions, all green** (final end-of-cycle verification)
+- **927 tests / 4611 assertions, all green** (final end-of-cycle verification at 2026-05-15)
 - Namespace-load smoke test covers every public-API namespace shipping at 0.1.0 (release-gate per F-M-005)
 - Per-operator path-grammar compilation tests (structural + end-to-end against metamodel fixture); nested REP composition rule-dedupe regression guards (Phase U Stage U-6)
 - Round-trip codec tests (markdown + JSON); persisted-entity emit excludes `:db/*` regression guards (Phase U Stage U-2)
