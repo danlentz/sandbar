@@ -60,7 +60,16 @@
 
   :profiles {:dev {:aliases {"run-dev" ["trampoline" "run" "-m" "sandbar.core/go"]}
                    :dependencies [[io.pedestal/pedestal.service-tools "0.7.2"]]}
+             ;; F-DF-1 Phase 1+2 (Phase R Stage R-6) — bench scaffolding.
+             ;; `lein bench` runs the structural-rank + path-grammar
+             ;; harnesses at the 10 / 100 / 1k / 10k size ladder and
+             ;; emits bench-results/baseline.edn for regression
+             ;; comparison.  See doc/BENCH.md for the discipline.
+             :bench {:source-paths ["bench"]}
              :uberjar {:aot [sandbar.core] }}
+
+  :aliases {"bench" ["with-profile" "+bench"
+                     "run" "-m" "sandbar.bench.run"]}
 
 
   :asciidoc {:sources ["doc/*.adoc"]
