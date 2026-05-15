@@ -58,7 +58,7 @@ jobs:
       # bump correctly invalidates; restore-keys provide partial reuse on
       # near-misses.
       - name: Cache ~/.m2
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.m2/repository
           key: ${{ runner.os }}-jdk25-maven-${{ hashFiles('project.clj') }}
