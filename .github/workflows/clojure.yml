@@ -44,6 +44,15 @@ jobs:
         with:
           lein: latest
 
+      # `config/config.edn` is .gitignore'd (per-developer database
+      # URL / nREPL port).  The fixture machinery reads it via
+      # `sandbar.util.edn/config-value :required-schema`; a missing
+      # file surfaces as `Cannot open <nil> as a Reader` from every
+      # DB-backed test's fixture setup.  CI bootstraps from the
+      # committed `config-example.edn` template.
+      - name: Bootstrap config.edn from example
+        run: cp config/config-example.edn config/config.edn
+
       # Cache the local Maven repo so subsequent runs skip re-downloading
       # the dependency graph.  Key includes project.clj's hash so a deps
       # bump correctly invalidates; restore-keys provide partial reuse on
