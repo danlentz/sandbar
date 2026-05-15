@@ -40,7 +40,7 @@ jobs:
       # Leiningen / clojure CLI / Babashka / clj-kondo on GitHub-hosted
       # runners; supports all the Clojure-tooling installers.
       - name: Set up Clojure tooling
-        uses: DeLaGuardo/setup-clojure@13.0
+        uses: DeLaGuardo/setup-clojure@13.5
         with:
           lein: latest
 
