@@ -132,15 +132,49 @@
 ;; Per fulltext arc plan §9.2 + §13 Stage 5.
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
+(defn- valid-where-shape?
+  "True if `where-clauses` is a vector-of-clause-vectors —
+   `[[?e :slot value] [?e :other-slot ?bound] ...]`.
+
+   Phase U Stage U-9 (UR-9) input-shape guard: `where-matching-eids`
+   was failing with opaque Datalog stack traces when given malformed
+   shapes (e.g., a flat single clause `[?e :slot value]` instead of
+   `[[?e :slot value]]`).  This predicate codifies the accepted
+   contract; the `:pre` on `where-matching-eids` enforces it at the
+   boundary."
+  [where-clauses]
+  (and (sequential? where-clauses)
+       (every? sequential? where-clauses)))
+
 (defn- where-matching-eids
   "Run a Datalog query restricting to instances of `class` AND the
-  user-supplied `:where` clauses (which must reference `?e` as the
-  entity variable).  Returns a set of matching eids.
+  user-supplied `:where` clauses.  Returns a set of matching eids.
+
+  `where-clauses` MUST be a vector-of-clause-vectors:
+  `[[?e :slot value] [?e :other-slot ?bound] ...]` — each clause is a
+  sequential `[entity-var attribute value-or-var]` triple.  Each
+  clause must reference `?e` as the entity variable for the join with
+  the class instance-of constraint to take effect.
+
+  Acceptable inputs (per the `valid-where-shape?` contract):
+  - `[]`                                 — empty vec; no restriction
+  - `[[?e :mm.memory/scope :global]]`    — single clause
+  - `[[?e :slot v] [?e :other-slot v2]]` — multiple clauses
+
+  REJECTED at the boundary (`:pre` throws AssertionError):
+  - `'[?e :slot value]`     — flat single clause; missing outer vec
+  - `'[:slot value]`        — bare keyword-slot; no entity-var
+  - non-sequential          — string, number, map
 
   The query splices user clauses onto a base query that constrains
   `?e` to be a direct instance of `class`.  Uses `instance-of`
-  recursive rule for subclass coverage."
+  recursive rule for subclass coverage.
+
+  Phase U Stage U-9 (UR-9): the boundary `:pre` replaces an opaque
+  deep-Datalog failure with a structured AssertionError carrying
+  the malformed-input shape."
   [class where-clauses]
+  {:pre [(valid-where-shape? where-clauses)]}
   (let [base-query   '[:find ?e
                        :in $ % ?class
                        :where (instance-of ?class ?e)]

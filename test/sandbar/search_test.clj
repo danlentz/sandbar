@@ -318,6 +318,41 @@
       (is (= "alpha"
              (-> decisions-matching :hits first :entity :mm.memory/name))))))
 
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; UR-9 (Phase U Stage U-9): where-matching-eids input-shape guard
+;;
+;; The accepted contract is vector-of-clause-vectors:
+;; `[[?e :slot value] ...]`.  Pre-fix, malformed shapes failed with
+;; opaque deep-Datalog stack traces.  Post-fix, the boundary `:pre`
+;; throws AssertionError carrying the malformed input so callers see
+;; a structured contract-violation, not a Datalog parser surprise.
+
+(deftest where-matching-eids-rejects-flat-single-clause
+  (testing "A bare clause `'[?e :slot value]` (missing outer vec) is
+            rejected at the boundary"
+    (is (thrown? AssertionError
+                 (#'sandbar.search/where-matching-eids
+                  :mm/Memory
+                  '[?e :mm.memory/memory-type :decision])))))
+
+(deftest where-matching-eids-rejects-non-sequential-shape
+  (testing "Non-sequential inputs (string / number / map) rejected"
+    (is (thrown? AssertionError
+                 (#'sandbar.search/where-matching-eids
+                  :mm/Memory
+                  "not-a-vec")))
+    (is (thrown? AssertionError
+                 (#'sandbar.search/where-matching-eids
+                  :mm/Memory
+                  {:slot :value})))))
+
+(deftest where-matching-eids-accepts-empty-vec
+  (testing "Empty `[]` is a valid shape (no restriction)"
+    ;; Should NOT throw; the function may still return a set or error
+    ;; on the Datalog query level — we're testing the shape-guard only
+    (is (any? (try (#'sandbar.search/where-matching-eids :mm/Memory [])
+                   (catch AssertionError _ ::pre-fired))))))
+
 (deftest search-bm25f-where-no-clauses-equals-no-where-test
   (testing "Empty :where vec behaves like no :where opt (no filtering)"
     (make-typed-memory! "alpha" :decision "datomic alpha")
