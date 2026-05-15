@@ -311,8 +311,26 @@
   `sandbar.search.bm25f`, and projects results into the canonical
   `{:hits :total :returned :timing}` shape.
 
+  ## Query language contract (narrow scope; F-SF-1 fix, Phase R Stage R-5)
+
+  `:query` is a bag-of-words string.  It is tokenized via
+  `sandbar.search.analysis` (Porter stemmer + lowercase + word-boundary
+  split) and scored token-by-token across the entity's BM25F-weighted
+  slots.  Boolean operators (`AND` / `OR` / `NOT`), phrase quoting
+  (`\"exact phrase\"`), wildcards (`term*`), fuzzy matching (`term~`),
+  field-prefixes (`field:value`) and other Lucene-query-parser shapes
+  are NOT recognized — they tokenize as literal terms (e.g., the query
+  `\"AND\"` matches the literal stem `\"and\"` wherever it appears).
+
+  For Lucene-query-syntax support, use `search-attribute` instead — it
+  hits Datomic's `:db.fn/fulltext-search` over a single :db/fulltext-
+  indexed slot.  The BM25F surface deliberately stays narrow so
+  multi-field length-normalized scoring (Robertson & Zaragoza 2009 §3.4)
+  is the only concern.
+
   Required opts:
-    :query  — query string; Lucene syntax accepted (phrase, boolean, etc.)
+    :query  — query string (bag-of-words; NO Lucene query-language
+              parsing — see contract above)
     :class  — class ident (e.g. `:mm/Memory`) whose `:dt/bm25f-weights`
               declaration drives field selection + per-slot weighting
 

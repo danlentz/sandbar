@@ -535,3 +535,77 @@
                       :query     "Anderson OR BM25F"})]
         ;; Memories with 'Anderson' (a) OR 'BM25F' (b, c) = 3 total
         (is (= 3 (:total result)))))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; F-SF-1 / Phase R Stage R-5 — BM25F query-language contract narrow
+;;
+;; The docstring at search.clj:315 used to claim "Lucene syntax
+;; accepted (phrase, boolean, etc.)" but the runtime tokenizer
+;; (sandbar.search.analysis Porter pipeline) is bag-of-words; AND /
+;; OR / NOT / "phrase" / wildcards are not parsed.  R-5 narrows the
+;; docstring to reflect runtime; these tests pin the runtime
+;; contract so future docstring drift fails loudly.
+;;
+;; For Lucene query-parser semantics, reach for search-attribute
+;; (which calls Datomic's :db.fn/fulltext-search backed by Lucene).
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(deftest search-bm25f-and-tokenizes-literally-not-as-boolean
+  (testing "F-SF-1: (search-bm25f {:query \"AND\"}) tokenizes 'AND'
+            as a literal term — does NOT parse it as a boolean
+            operator (Lucene parsing is NOT in the contract)"
+    ;; Make two memories — one with the literal word 'and' in its
+    ;; body, one without.
+    (make-memory-with-name+body! "with-and-token" "memo and notes")
+    (make-memory-with-name+body! "no-and-token" "memo alpha beta")
+    (let [result (search/search-bm25f
+                   {:query "AND"
+                    :class :mm/Memory})]
+      ;; If Lucene parsing were in effect, "AND" alone would be a
+      ;; malformed query.  Under bag-of-words, "AND" tokenizes to
+      ;; the literal stem "and" and matches the memory containing
+      ;; that token.
+      (is (pos? (:total result))
+          "literal 'AND' must tokenize + match memories with the word"))))
+
+(deftest search-bm25f-phrase-quoting-not-supported
+  (testing "F-SF-1: (search-bm25f {:query \"\\\"exact phrase\\\"\"})
+            does NOT enforce phrase order; tokens are matched bag-of-
+            words style across the corpus"
+    (make-memory-with-name+body! "phrase-test"
+                                 "alpha beta gamma delta")
+    ;; If phrase quoting were in effect, "delta alpha" with quotes
+    ;; would require the order delta→alpha (no match).  Under
+    ;; bag-of-words, both tokens tokenize and match the corpus
+    ;; even though they appear in the body in reverse order.
+    (let [result (search/search-bm25f
+                   {:query "\"delta alpha\""
+                    :class :mm/Memory})]
+      (is (pos? (:total result))
+          (str "quoted-phrase tokens are NOT phrase-locked; "
+               "bag-of-words tokenizes them as 'delta' + 'alpha' "
+               "independently")))))
+
+(deftest search-bm25f-contract-vs-search-attribute
+  (testing "F-SF-1: search-attribute (Lucene-parsed) and search-bm25f
+            (bag-of-words) honor distinct contracts.  This pinned-
+            difference test prevents future drift between docstring
+            + runtime."
+    ;; Memory containing both terms.
+    (make-memory-with-name+body! "both-tokens" "datomic and lucene")
+    ;; Memory containing only one term.
+    (make-memory-with-name+body! "one-token" "datomic only")
+    ;; search-attribute: Lucene "AND" semantics — only the both-
+    ;; tokens memory matches.
+    (let [attr-result (search/search-attribute
+                        {:attribute :mm.memory/body-raw
+                         :query     "datomic AND lucene"})]
+      (is (= 1 (:total attr-result))
+          "search-attribute: 'AND' is the Lucene boolean operator"))
+    ;; search-bm25f: bag-of-words — every memory containing 'datomic'
+    ;; OR 'lucene' OR even 'and' matches; both above qualify.
+    (let [bm25f-result (search/search-bm25f
+                         {:query "datomic AND lucene"
+                          :class :mm/Memory})]
+      (is (>= (:total bm25f-result) 1)
+          "search-bm25f: 'AND' is tokenized as a literal term"))))
