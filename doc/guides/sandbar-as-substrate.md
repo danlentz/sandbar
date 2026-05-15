@@ -163,15 +163,18 @@ Schema migrations are themselves a candidate for workflow-substrate modeling —
 Sandbar reads `config/config.edn`:
 
 ```clojure
-{:datomic-uri "datomic:dev://localhost:4334/your-app"
- :http-port 8080
- :nrepl-port 28888
- :required-schema [:meta :literal :ref :fn :any :workflow :mm
+{:db {:url "datomic:dev://localhost:4334/"
+      :sid "your-app"}                      ; Datomic database name; matches the scope name per
+                                            ; decisions/sandbar_sid_reconciliation_db_name_matches_scope_name_2026_05_12.md
+ :required-schema [:meta :ref :literal :fn :any :context :event :user
+                   :auth :audit :workflow :job :mm
                    :your-domain-1 :your-domain-2]
- :project-graph-root "/var/lib/your-app/sandbar-canonical/"}
+ :nrepl {:port 28888}}
 ```
 
-Override per-environment via standard 12-factor patterns (env vars, environment-specific config files).
+Config is read via `sandbar.util.edn/config-value` with path access — e.g., `(config-value :db :sid)` returns the database name; `(config-value :required-schema)` returns the schema vector.  Per
+`decisions/sandbar_sid_reconciliation_db_name_matches_scope_name_2026_05_12.md`, the current
+shape is INTERIM; a late-bound registry-driven config is the target.  Override per-environment via standard 12-factor patterns (env vars, environment-specific config files).
 
 ### Lifecycle
 
