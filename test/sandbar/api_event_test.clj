@@ -314,6 +314,49 @@
       (is (some? (:event/stacktrace event))))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; F-SF-2 / Phase R Stage R-4 — log-error! must NOT leak stacktrace
+;; to stderr; the entire stacktrace must land in :event/stacktrace.
+;;
+;; Pre-fix: (with-out-str (.printStackTrace ex)) only rebinds *out*;
+;; (.printStackTrace ex) with no args writes to System.err, so the
+;; stacktrace leaked to stderr and :event/stacktrace was an empty
+;; string.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(deftest log-error-does-not-leak-to-stderr
+  (testing "F-SF-2: (log-error! msg ex) writes ZERO bytes to stderr"
+    (let [ex             (ex-info "Test error for stderr-leak check"
+                                  {:code 500})
+          original-err   System/err
+          captured-stream (java.io.ByteArrayOutputStream.)
+          captured-err   (java.io.PrintStream. captured-stream true "UTF-8")]
+      (try
+        (System/setErr captured-err)
+        (event/log-error! "Operation failed" ex)
+        (.flush captured-err)
+        (let [stderr-content (.toString captured-stream "UTF-8")]
+          (is (= "" stderr-content)
+              (str "log-error! must NOT leak to stderr; got: "
+                   (pr-str stderr-content))))
+        (finally
+          (System/setErr original-err))))))
+
+(deftest log-error-populates-stacktrace-data-field
+  (testing "F-SF-2: :event/stacktrace contains the actual stacktrace
+            content (not the empty string the pre-fix bug produced)"
+    (let [ex (ex-info "Stacktrace-population test" {:code 42})
+          event (event/log-error! "Test" ex)
+          stacktrace (:event/stacktrace event)]
+      (is (string? stacktrace))
+      (is (pos? (count stacktrace))
+          ":event/stacktrace must be non-empty post-fix")
+      ;; The stacktrace must mention the exception class + message.
+      (is (re-find #"(?i)clojure.lang.ExceptionInfo|Stacktrace-population"
+                   stacktrace)
+          (str ":event/stacktrace must contain exception class or "
+               "message text; got: " (pr-str stacktrace))))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Auto timestamp
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
