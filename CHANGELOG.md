@@ -85,13 +85,38 @@ First public release of Sandbar.  Foundational substrate: metacircular RDFS-styl
 - **`projection` rename** — top-level Sandbar namespaces should read unambiguously as nouns; `project-graph` / `ingest-graph` function names preserved as verbs at call site
 - **MCP LLM-consumability discipline** — every catalog verb description covers WHICH / WHEN / HOW / ORDER / COMBINATION; the catalog teaches its own use
 
+### Pre-release stabilization (Phase R + Phase U remediation, 2026-05-14)
+
+Two parallel review-driven remediation arcs closed before 0.1.0 tag, joint-gating the release per `plans/sandbar_fulltext_search_substrate_arc_2026_05_13.md`:
+
+**Phase R** (codex `--effort xhigh` review remediation; 9 findings) — closed via the `sandbar.entity-ref` boundary abstraction + 11 F-MF-3-surface MCP handler migrations + REST handler `db/entity → eref/validate` migration + Pedestal `entity-ref-error-interceptor` projecting structured ex-info to HTTP 400 / 404 + `handle-call` catch widening (AssertionError + Exception separately) + ref-arg `:pre` drops at navigate/orient surfaces.
+
+**Phase U** (parallel ultrareview remediation; 13 findings) — closed via:
+
+- **UR-1**: workflow loading works under `lein uberjar` packaging via `JarURLConnection` dispatch
+- **UR-2** (CRITICAL): JSON codec reads class-specific knowledge from metamodel at runtime (`dt/codec-aliases-of` + `dt/range-of`); no hardcoded consumer-class table
+- **UR-4**: MCP protocol-version doc/code reconciled (4 occurrences updated to canonical `2025-11-25`)
+- **UR-5**: MCP `tasks/list` dispatch entry registered; new `workflow/list-processes` + `workflow/list-active-processes` substrate primitives
+- **UR-6 + UR-7**: codec emit excludes `:db/*` / `:db.*` / `:mm.memory/rel-path` from both markdown and JSON wire formats
+- **UR-8**: Bearer scheme detection is RFC-compliant case-insensitive (`Bearer`, `bearer`, `BEARER`, `BeArEr` all accepted)
+- **UR-9**: `search/where-matching-eids` boundary `:pre` guard replaces opaque deep-Datalog failure with structured AssertionError
+- **UR-10**: MCP `server-info` version aligned to `project.clj` (`0.1.0`)
+- **UR-11**: `sandbar.navigate.path.datomic` dedupes structurally-identical recursive rules across nested REP / OR / SEQ compositions
+- **UR-12**: `split-frontmatter` reads regex match position via `re-matcher` (handles `---` recurring inside body)
+- **UR-13**: SSE `publish!` detects closed-channel return + evicts dead subscribers from the registry; bounded across connect-disconnect cycles
+- **UR-14**: `doc/guides/sandbar-as-substrate.md` Configuration section reconciled to actual `config.edn` schema (`:db {:url :sid}` / `:nrepl {:port}` nested shape)
+
+Cumulative test delta from the remediation arcs: net +38 tests / +83 assertions over the start-of-2026-05-14 baseline.
+
 ### Tests
 
-- 871 tests / 4386 assertions, all green
+- **887 tests / 4436 assertions, all green** (final end-of-cycle verification)
 - Namespace-load smoke test covers every public-API namespace shipping at 0.1.0 (release-gate per F-M-005)
-- Per-operator path-grammar compilation tests (structural + end-to-end against metamodel fixture)
-- Round-trip codec tests (markdown + JSON)
+- Per-operator path-grammar compilation tests (structural + end-to-end against metamodel fixture); nested REP composition rule-dedupe regression guards (Phase U Stage U-6)
+- Round-trip codec tests (markdown + JSON); persisted-entity emit excludes `:db/*` regression guards (Phase U Stage U-2)
 - Workflow state-machine tests including Zorp's Galactic Footwear Emporium narrative coverage
+- Bearer-token auth case-insensitivity adversarial coverage (Phase U Stage U-5)
+- SSE notifications channel-close + bounded-registry adversarial coverage (Phase U Stage U-7)
 - **`sandbar.mcp.tools-db-test`** — DB-backed handler-dispatch acceptance suite (sibling to the shape-only `tools-test`): F-MF-3 verbatim falsification calls (integer eid + bogus ref + lookup-vector) + 5-shape roundtrip (keyword / prefixed-string / unprefixed-string / integer eid / entity-map) for the F-MF-3 surfaces (`path-via` + `library-card`) + per-handler error-projection sanity for every migrated handler family (Navigate/Orient + Entity + Aggregate + Type-predicates)
 
 ### Internal
