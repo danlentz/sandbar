@@ -37,6 +37,10 @@
       (is (some? (:serverInfo result)))
       (is (= "sandbar" (-> result :serverInfo :name))))
 
+    (testing "serverInfo version matches project version (UR-10 guard)"
+      (is (= "0.1.0" (-> result :serverInfo :version))
+          "server-info :version must match project.clj's declared version"))
+
     (testing "capabilities include tools / resources / prompts / logging"
       (let [caps (:capabilities result)]
         (is (true? (-> caps :tools :listChanged)))

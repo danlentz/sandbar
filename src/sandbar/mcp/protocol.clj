@@ -34,10 +34,10 @@
 
 (def server-info
   "Identity returned to clients in the `initialize` response.
-   Version aligns with Sandbar's project version."
+   Version aligns with Sandbar's project version (project.clj)."
   {:name    "sandbar"
    :title   "Sandbar"
-   :version "0.0.1-SNAPSHOT"})
+   :version "0.1.0"})
 
 (def protocol-version
   "MCP protocol version this server speaks.
