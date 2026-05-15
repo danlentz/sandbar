@@ -46,7 +46,7 @@ curl -X POST http://localhost:8080/mcp \
     "id": 1,
     "method": "initialize",
     "params": {
-      "protocolVersion": "2025-06-18",
+      "protocolVersion": "2025-11-25",
       "clientInfo": {"name": "my-client", "version": "0.1.0"},
       "capabilities": {}
     }
@@ -60,7 +60,7 @@ Response:
   "jsonrpc": "2.0",
   "id": 1,
   "result": {
-    "protocolVersion": "2025-06-18",
+    "protocolVersion": "2025-11-25",
     "serverInfo": {"name": "sandbar", "version": "0.1.0"},
     "capabilities": {
       "tools": {},
@@ -364,7 +364,7 @@ class SandbarMCP:
 
 # Usage
 mcp = SandbarMCP("http://localhost:8080/mcp", token)
-mcp.call("initialize", {"protocolVersion": "2025-06-18",
+mcp.call("initialize", {"protocolVersion": "2025-11-25",
                         "clientInfo": {"name": "py-client", "version": "0.1.0"},
                         "capabilities": {}})
 mcp.call("notifications/initialized")

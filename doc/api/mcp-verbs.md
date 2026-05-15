@@ -324,7 +324,7 @@ First call on a new session.  Negotiates protocol version + capabilities.
 
 ```json
 {"params": {
-  "protocolVersion": "2025-06-18",
+  "protocolVersion": "2025-11-25",
   "clientInfo": {"name": "<client-name>", "version": "<client-version>"},
   "capabilities": {}
 }}
