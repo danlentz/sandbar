@@ -83,3 +83,21 @@
                             "&include=paths"))]
       (is (= http-status/success status))
       (is (true? (:path-data-deferred body))))))
+
+(deftest path-via-endpoint-any-returns-structured-response
+  (testing "F-MF-1 anti-regression: GET /api/navigate/path?via=%3AANY
+            returns 200 + structured response; does NOT propagate the
+            pre-fix :db.error/not-a-keyword crash through the REST
+            envelope.
+
+            URL-encoded :ANY = %3AANY (colon = %3A)."
+    (let [{:keys [status body]}
+          (api-get-edn "/api/navigate/path?from=:dt/Property&via=%3AANY")]
+      (is (= http-status/success status)
+          (str "REST endpoint must return 200 for :ANY, not propagate the "
+               "F-MF-1 :db.error crash; got " status " body: " (pr-str body)))
+      (is (contains? body :reachable))
+      (is (contains? body :total))
+      (is (contains? body :returned))
+      (is (every? map? (:reachable body))
+          ":ANY endpoints projected through REST must be entity-maps"))))

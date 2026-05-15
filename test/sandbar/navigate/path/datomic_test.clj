@@ -172,14 +172,43 @@
       (is (= 'identity (first (first (first where))))))))
 
 (deftest compile-any
-  (testing ":ANY emits variable in predicate position"
-    (let [{:keys [where]} (compile-expr :ANY)]
-      (is (= 1 (count where)))
-      (let [clause (first where)]
-        (is (= '?start (first clause)))
-        (is (= '?end (last clause)))
-        ;; Middle is a fresh ?int- var
-        (is (symbol? (second clause)))))))
+  (testing ":ANY emits variable in predicate position + ref-type guard
+            (F-MF-1 fix; mirrors :NOT's ref-only constraint to preserve
+            the typed-edge algebra invariant)"
+    (let [{:keys [where rules]} (compile-expr :ANY)]
+      (is (= 2 (count where)) ":ANY emits 2 clauses (value clause + ref-type guard)")
+      (is (= [] rules))
+      (let [[value-clause ref-clause] where]
+        ;; First clause: [?start ?p ?end]
+        (is (= '?start (first value-clause)))
+        (is (= '?end (last value-clause)))
+        (is (symbol? (second value-clause))
+            "Middle position is a fresh ?int- predicate-variable")
+        ;; Second clause: [?p :db/valueType :db.type/ref] — constrains
+        ;; the predicate-variable to ref-valued attributes only.
+        (is (= (second value-clause) (first ref-clause))
+            "ref-type guard predicate-var matches the value clause's pred-var")
+        (is (= :db/valueType (second ref-clause)))
+        (is (= :db.type/ref (last ref-clause)))))))
+
+(deftest compile-any-only-ref-typed-destinations
+  (testing "F-MF-1 anti-regression: :ANY ranges only over ref-typed
+            attributes — running it on a class with mixed ref + scalar
+            slots does NOT return scalar values as endpoints.
+
+            Pre-fix repro: (path-via {:from :dt/Property :via :ANY})
+            crashed with :db.error/not-a-keyword because :db/doc string
+            values were being db/entity'd.  Post-fix: only ref-typed
+            destinations are returned, so every endpoint is an entity."
+    (let [reachable (run-path :ANY :dt/Property)]
+      ;; Every returned eid must be ref-typed — `run-path`'s nil-ident
+      ;; filter is permissive, but the underlying query should not
+      ;; surface scalar values at all.  Sanity-check by verifying
+      ;; the result is a set of keywords (idents) or an empty set —
+      ;; no strings, no longs, no dates.
+      (is (every? keyword? reachable)
+          (str ":ANY returned non-keyword endpoint(s); ref-type guard "
+               "failed.  Got: " (pr-str reachable))))))
 
 (deftest compile-restrict
   (testing "(:RESTRICT [pred value]) emits constraint at from-var + binds to-var=from-var"

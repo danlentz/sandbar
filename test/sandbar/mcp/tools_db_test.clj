@@ -120,6 +120,37 @@
       (is (re-find #"(?i)lookup.*vector|malformed|entity-ref" (error-text response))))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; F-MF-1 anti-regression — :ANY ref-type guard (Phase R Stage R-2)
+;;
+;; Pre-fix: compile-any emitted [?start ?p ?end] with no constraint on
+;; ?p's value-type; scalar attribute values (strings, longs) were
+;; treated as entity ids and db/entity'd, propagating
+;; :db.error/not-a-keyword through the MCP envelope as an uncaught
+;; throw.  Post-fix (compile-any:147): ref-type guard
+;; [?p :db/valueType :db.type/ref] constrains :ANY to typed edges; the
+;; MCP boundary now produces a structured success envelope.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(deftest f-mf-1-path-via-any-returns-structured-success
+  (testing "F-MF-1 verbatim: (handle-call \"sandbar.navigate.path-via\"
+                                          {:from :dt/Property :via :ANY})
+            returns structured MCP success envelope, NOT uncaught
+            :db.error/not-a-keyword crash"
+    (let [response (call "sandbar.navigate.path-via"
+                         {"from" ":dt/Property" "via" ":ANY"})]
+      (is (success? response)
+          (str ":ANY at MCP boundary must produce a success envelope; "
+               "got " (pr-str response)))
+      ;; Content carries the path-via result payload (JSON-encoded).
+      (let [body (json/parse-string (error-text response) true)]
+        (is (contains? body :reachable)
+            ":reachable must be present in the success-envelope content")
+        (is (contains? body :total))
+        (is (contains? body :returned))
+        (is (every? map? (:reachable body))
+            ":ANY endpoints projected through MCP must be entity-maps")))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Five input-form roundtrip (ADR §Acceptance — Runtime)
 ;;
 ;; \"Integer eid + keyword ident + prefixed-string ident + unprefixed-string

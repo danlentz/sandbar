@@ -135,13 +135,27 @@
    :rules []})
 
 (defn- compile-any
-  ":ANY from ?x to ?y → [?x ?_ ?y]  (variable in predicate position)
+  ":ANY from ?x to ?y → [?x ?p ?y] [?p :db/valueType :db.type/ref]
+   (variable in predicate position, constrained to typed/ref edges).
+
+   The ref-type guard `[?p :db/valueType :db.type/ref]` constrains :ANY
+   to entity-to-entity traversal — the typed-edge algebra invariant
+   honored by every other Canonical-8 operator.  Without it, ?y would
+   include scalar attribute values (strings, longs, dates), which
+   `path-via` then tries to `db/entity` and crashes on; that is F-MF-1
+   from codex 2026-05-14.  :NOT applies the same constraint for the
+   same reason; this restores symmetry.  Public semantics:
+   :ANY = 'any typed (ref-valued) edge' — literal-valued attributes
+   are out of scope for path-grammar traversal; reach for :TEST or
+   :FILTER for literal-side concerns.
+
    Note: planner cannot use predicate-specific indexes; full EAVT scan
    bounded by ?x cardinality.  Document the cost; allow but don't
    optimize."
   [_ast from-var to-var ctr]
   (let [pred-var (fresh-var ctr)]
-    {:where [[from-var pred-var to-var]]
+    {:where [[from-var pred-var to-var]
+             [pred-var :db/valueType :db.type/ref]]
      :rules []}))
 
 (defn- compile-restrict

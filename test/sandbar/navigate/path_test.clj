@@ -126,3 +126,28 @@
           ":OPT includes seed (zero applications)")
       (is (contains? idents :dt/Resource)
           ":OPT also reaches one-application target"))))
+
+(deftest path-via-any-returns-structured-response
+  (testing "F-MF-1 anti-regression: (path-via {:from :dt/Property :via :ANY})
+            returns a structured response without crashing on
+            :db.error/not-a-keyword.
+
+            Pre-fix: :ANY emitted [?start ?p ?end] without constraining ?p
+            to ref-typed attributes; scalar values like :db/doc strings
+            were treated as entity ids and db/entity'd, crashing the call.
+            Post-fix: the compile-time ref-type guard ensures every
+            endpoint is a ref-typed entity."
+    (let [result (nav-path/path-via {:from :dt/Property :via :ANY})]
+      (is (contains? result :reachable))
+      (is (contains? result :total))
+      (is (contains? result :returned))
+      ;; Endpoints are projected entities — every entry should be a map
+      ;; (entity projection), not a raw scalar value.
+      (is (every? map? (:reachable result))
+          ":ANY endpoints must be entity-maps, not raw scalars"))))
+
+(deftest path-via-any-as-edn-string
+  (testing ":ANY also works through the EDN-string :via path"
+    (let [result (nav-path/path-via {:from :dt/Property :via ":ANY"})]
+      (is (contains? result :reachable))
+      (is (every? map? (:reachable result))))))
