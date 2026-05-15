@@ -19,25 +19,22 @@ concurrency:
 permissions:
   contents: read
 
-env:
-  # OpenJDK 25 (September 2025 LTS) per decision
-  # `decisions/sandbar_ci_uses_openjdk_25_2026_05_15.md` (corpus).
-  JDK_VERSION: '25'
-
 jobs:
   test:
-    name: Test (OpenJDK ${{ env.JDK_VERSION }})
+    # OpenJDK 25 (September 2025 LTS) per decision
+    # `decisions/sandbar_ci_uses_openjdk_25_2026_05_15.md` (corpus).
+    name: Test (OpenJDK 25)
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up OpenJDK ${{ env.JDK_VERSION }}
+      - name: Set up OpenJDK 25
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: ${{ env.JDK_VERSION }}
+          java-version: '25'
 
       # DeLaGuardo/setup-clojure is the canonical action for installing
       # Leiningen / clojure CLI / Babashka / clj-kondo on GitHub-hosted
@@ -55,9 +52,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.m2/repository
-          key: ${{ runner.os }}-jdk${{ env.JDK_VERSION }}-maven-${{ hashFiles('project.clj') }}
+          key: ${{ runner.os }}-jdk25-maven-${{ hashFiles('project.clj') }}
           restore-keys: |
-            ${{ runner.os }}-jdk${{ env.JDK_VERSION }}-maven-
+            ${{ runner.os }}-jdk25-maven-
 
       # Maven Central rate-limits aggregator runners under burst load and
       # returns HTTP 429.  Retry the deps resolution with exponential
