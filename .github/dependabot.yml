@@ -1,0 +1,20 @@
+# Dependabot configuration — version updates + security alerts.
+# Per the project's adoption of modern GitHub practices: keep
+# pinned GitHub Actions versions fresh + receive security advisories
+# for the Action ecosystem.
+#
+# Clojure / Java dependencies are managed by Leiningen + project.clj
+# directly; Dependabot's `leiningen` ecosystem is not yet supported,
+# so deps freshness for the JVM side is handled separately via
+# `lein ancient` (project plugin already declared in project.clj).
+
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: chore(deps)
+      include: scope

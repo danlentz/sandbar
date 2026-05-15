@@ -5,15 +5,64 @@ on:
     branches: [ "master" ]
   pull_request:
     branches: [ "master" ]
+  workflow_dispatch: {}
+
+# Cancel in-progress runs for the same branch when a new commit lands —
+# saves runner minutes on rapid-iteration PRs without losing the final-
+# commit signal.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Least-privilege by default; raise on specific jobs only if needed
+# (e.g. release-publish workflows would request `contents: write`).
+permissions:
+  contents: read
 
 jobs:
-  build:
-
+  test:
+    name: Test (JDK ${{ matrix.jdk }})
     runs-on: ubuntu-latest
 
+    strategy:
+      # Don't abort the rest of the matrix on a single-JDK failure —
+      # we want to see the full compatibility picture per run.
+      fail-fast: false
+      matrix:
+        jdk: ['17', '21']
+
     steps:
-    - uses: actions/checkout@v4
-    - name: Install dependencies
-      run: lein deps
-    - name: Run tests
-      run: lein test
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK ${{ matrix.jdk }}
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ matrix.jdk }}
+
+      # DeLaGuardo/setup-clojure is the canonical action for installing
+      # Leiningen / clojure CLI / Babashka / clj-kondo on GitHub-hosted
+      # runners; supports all the Clojure-tooling installers.
+      - name: Set up Clojure tooling
+        uses: DeLaGuardo/setup-clojure@13.0
+        with:
+          lein: latest
+
+      # Cache the local Maven repo so subsequent runs skip re-downloading
+      # the dependency graph.  Key includes project.clj's hash so a deps
+      # bump correctly invalidates; restore-keys provide partial reuse on
+      # near-misses.
+      - name: Cache ~/.m2
+        uses: actions/cache@v4
+        with:
+          path: ~/.m2/repository
+          key: ${{ runner.os }}-jdk${{ matrix.jdk }}-maven-${{ hashFiles('project.clj') }}
+          restore-keys: |
+            ${{ runner.os }}-jdk${{ matrix.jdk }}-maven-
+
+      - name: Resolve dependencies
+        run: lein deps
+
+      - name: Run tests
+        run: lein test
