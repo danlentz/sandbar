@@ -14,32 +14,30 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-# Least-privilege by default; raise on specific jobs only if needed
-# (e.g. release-publish workflows would request `contents: write`).
+# Least-privilege by default; raise per-job only if needed (e.g. release-
+# publish workflows would request `contents: write`).
 permissions:
   contents: read
 
+env:
+  # OpenJDK 25 (September 2025 LTS) per decision
+  # `decisions/sandbar_ci_uses_openjdk_25_2026_05_15.md` (corpus).
+  JDK_VERSION: '25'
+
 jobs:
   test:
-    name: Test (JDK ${{ matrix.jdk }})
+    name: Test (OpenJDK ${{ env.JDK_VERSION }})
     runs-on: ubuntu-latest
-
-    strategy:
-      # Don't abort the rest of the matrix on a single-JDK failure —
-      # we want to see the full compatibility picture per run.
-      fail-fast: false
-      matrix:
-        jdk: ['17', '21']
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up JDK ${{ matrix.jdk }}
+      - name: Set up OpenJDK ${{ env.JDK_VERSION }}
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: ${{ matrix.jdk }}
+          java-version: ${{ env.JDK_VERSION }}
 
       # DeLaGuardo/setup-clojure is the canonical action for installing
       # Leiningen / clojure CLI / Babashka / clj-kondo on GitHub-hosted
@@ -57,12 +55,28 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.m2/repository
-          key: ${{ runner.os }}-jdk${{ matrix.jdk }}-maven-${{ hashFiles('project.clj') }}
+          key: ${{ runner.os }}-jdk${{ env.JDK_VERSION }}-maven-${{ hashFiles('project.clj') }}
           restore-keys: |
-            ${{ runner.os }}-jdk${{ matrix.jdk }}-maven-
+            ${{ runner.os }}-jdk${{ env.JDK_VERSION }}-maven-
 
-      - name: Resolve dependencies
-        run: lein deps
+      # Maven Central rate-limits aggregator runners under burst load and
+      # returns HTTP 429.  Retry the deps resolution with exponential
+      # backoff to absorb transient flakes; legitimate dep failures
+      # (typo, missing artifact in every retry) still surface after the
+      # cap.
+      - name: Resolve dependencies (with retry on transient Maven flake)
+        shell: bash
+        run: |
+          for attempt in 1 2 3; do
+            if lein deps; then
+              exit 0
+            fi
+            backoff=$((10 * attempt))
+            echo "::warning::lein deps failed on attempt ${attempt}; retrying in ${backoff}s..."
+            sleep "${backoff}"
+          done
+          echo "::error::lein deps failed after 3 attempts"
+          exit 1
 
       - name: Run tests
         run: lein test
