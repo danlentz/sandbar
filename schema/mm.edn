@@ -802,8 +802,8 @@
    :dt/domain      :mm/Memory
    :dt/range       :db.type/string
    :db/valueType   :db.type/string
-   :db/cardinality :db.cardinality/one
-   :db/doc "Parent-hierarchy typed-edge (frontmatter `parent:`).  Rel-path to a parent memorial (single-valued).  Per memory/predicates/parent.md (TBD)."}
+   :db/cardinality :db.cardinality/many
+   :db/doc "Parent-hierarchy typed-edge (frontmatter `parent:`).  Rel-paths to parent memorials — :db.cardinality/many to accommodate the corpus's genuine multi-parent semantics (e.g., :tasks/* memorials with multiple parent plans).  Cardinality bumped from :one → :many at 2026-05-20 per `~/claude/memory/bugs/sandbar_mm_memory_parent_slot_cardinality_one_vs_corpus_multi_parent_usage_2026_05_20.md` — Stage 3.B canonical-ingest validation surfaced 60-of-1502 group failures all sharing the wrong-type-for-attribute pattern.  Consumers reading :mm.memory/parent get a set-of-strings (Datomic many-cardinality return shape)."}
 
   {:db/ident       :mm.memory/informs
    :dt/type        :dt/Property
