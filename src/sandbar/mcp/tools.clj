@@ -1141,14 +1141,14 @@
         (throw (ex-info (str "Tag with new value already exists: " new-val)
                         {:value new-val
                          :hint "Use sandbar.tag.consolidate to merge instead."})))
-      ;; Hidden-label-then-rename: add old as hidden-label, then change canonical.
-      ;; Two separate transactions because Datomic disallows changing a
-      ;; :db.unique/identity attr's value in the same tx that adds a related
-      ;; field referencing the OLD value.
+      ;; Atomic rename — single transaction targeting :db/id directly.
+      ;; (Lookup-ref form `[:mm.tag/value old-val]` would fail because the
+      ;; same tx also reassigns :mm.tag/value; but :db/id-direct assertions
+      ;; don't depend on the lookup-ref resolving post-tx.)
       @(d/transact (db/conn)
-                   [[:db/add (:db/id old-ent) :mm.tag/hidden-label old-val]])
-      @(d/transact (db/conn)
-                   [[:db/add (:db/id old-ent) :mm.tag/value new-val]])
+                   [{:db/id              (:db/id old-ent)
+                     :mm.tag/value       new-val
+                     :mm.tag/hidden-label old-val}])
       (log/info :MCP/tag-rename {:old old-val :new new-val})
       {:old                    old-val
        :new                    new-val
