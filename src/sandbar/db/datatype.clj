@@ -513,6 +513,43 @@
   [class-ident]
   (into {} (or (:dt/codec-aliases (db/entity class-ident)) [])))
 
+(defn codec-type-keyword-of
+  "Returns the `:dt/codec-type-keyword` value declared on the class, or
+  nil if none.
+
+  Per-class CLASS-ROUTING keyword: when a markdown document's
+  frontmatter carries `type: <kw>`, the codec routes to the class
+  whose `:dt/codec-type-keyword` matches `<kw>`.  Example: :mm/Tag
+  declares `:dt/codec-type-keyword :tag` so files with `type: tag`
+  parse as :mm/Tag entities.
+
+  Per decisions/tag_as_first_class_introspectable_type_in_metamodel_2026_05_20.md
+  Stage 7.C codec class-routing."
+  [class-ident]
+  (:dt/codec-type-keyword (db/entity class-ident)))
+
+(defn class-for-codec-type-keyword
+  "Returns the class-ident whose `:dt/codec-type-keyword` matches
+  `type-kw`, or nil if no class claims that type-keyword.
+
+  Used by `sandbar.codec.markdown/parse-document` for metamodel-driven
+  class routing — when a frontmatter's `type:` value matches a class's
+  declared type-keyword, the codec parses the document as that class.
+
+  Schema-attribute is `:db.unique/identity` per meta.edn, so the lookup
+  is an O(1) resolution via Datomic's unique-identity index.  Bypasses
+  `sandbar.db.datomic/entity` because that wrapper treats vectors as
+  already-associative and short-circuits before `d/entity` runs — the
+  lookup-ref shape would never reach Datomic.  We call `d/entity`
+  directly with the lookup-ref instead.
+
+  Per decisions/tag_as_first_class_introspectable_type_in_metamodel_2026_05_20.md
+  Stage 7.C."
+  [type-kw]
+  (when type-kw
+    (when-let [e (d/entity (db/db) [:dt/codec-type-keyword type-kw])]
+      (:db/ident e))))
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Fulltext primitives — Stage 2 of fulltext arc
 ;; (plans/sandbar_fulltext_search_substrate_arc_2026_05_13.md)

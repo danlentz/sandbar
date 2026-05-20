@@ -229,8 +229,10 @@
   (testing "bm25f-weights-of returns {} for classes with no :dt/bm25f-weights declared"
     (is (= {} (dt/bm25f-weights-of :dt/Property)))
     (is (= {} (dt/bm25f-weights-of :model/User)))
-    (is (= {} (dt/bm25f-weights-of :mm/Tag))
-        ":mm/Tag has no per-class :dt/bm25f-weights declaration"))
+    ;; Stage 7.A added :dt/bm25f-weights to :mm/Tag (decisions/tag_as_first_class_introspectable_type_in_metamodel_2026_05_20.md).
+    ;; :mm/Link remains a no-weights class — use it for the empty-case probe.
+    (is (= {} (dt/bm25f-weights-of :mm/Link))
+        ":mm/Link has no per-class :dt/bm25f-weights declaration"))
   (testing "bm25f-weights-of returns the declared weight map for :mm/Memory"
     ;; Positive-path: :mm/Memory declares
     ;;   [[:mm.memory/name 12.0] [:mm.memory/description 8.0] [:mm.memory/body-raw 1.0]]

@@ -30,9 +30,13 @@
     (let [names (map :name tools/verb-catalog)]
       (is (= (count names) (count (distinct names))))))
 
-  (testing "names follow the sandbar.<group>.<verb> convention"
+  (testing "names follow the sandbar.<group>(.<verb>)? convention"
+    ;; Most verbs are sandbar.<group>.<verb> (3 dot-separated segments).
+    ;; Stage 7.D introduced sandbar.ground (2 segments) as an intentional
+    ;; sandbar-level entry point — per ADR §2.5, the grounding workflow is
+    ;; load-bearing and NOT in a sub-namespace.  Regex accepts both forms.
     (doseq [entry tools/verb-catalog]
-      (is (re-matches #"sandbar\.[a-z]+\.[a-z][a-z\-]*"
+      (is (re-matches #"sandbar\.[a-z]+(\.[a-z][a-z\-]*)?"
                       (:name entry))
           (str ":name doesn't match convention: " (:name entry))))))
 
@@ -115,7 +119,20 @@
 
   (testing "orientation library-card verb (Phase O — fulltext arc)"
     (let [names (set (map :name tools/verb-catalog))]
-      (is (contains? names "sandbar.orient.library-card")))))
+      (is (contains? names "sandbar.orient.library-card"))))
+
+  (testing "tag-vocabulary verbs (Stage 7.D — tag-modeling first-class arc)"
+    ;; Per decisions/tag_as_first_class_introspectable_type_in_metamodel_2026_05_20.md §2.5
+    (let [names (set (map :name tools/verb-catalog))]
+      (is (contains? names "sandbar.ground")           "compositional grounding workflow (sandbar-level)")
+      (is (contains? names "sandbar.tag.lookup")       "tag-vocabulary primitive")
+      (is (contains? names "sandbar.tag.define")       "author new canonical tag")
+      (is (contains? names "sandbar.tag.audit")        "run 7 tag-lifecycle invariants")
+      (is (contains? names "sandbar.tag.consolidate")  "merge tags; preserve alt-label")
+      (is (contains? names "sandbar.tag.split")        "partition into narrower tags")
+      (is (contains? names "sandbar.tag.rename")       "rename canonical; preserve hidden-label")
+      (is (contains? names "sandbar.tag.align")        "cross-vocabulary SKOS mapping")
+      (is (contains? names "sandbar.tag.harmonize")    "bulk-harmonization DRY-RUN report"))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Aggregation verb input-schema + handler-error tests (Stage 14)

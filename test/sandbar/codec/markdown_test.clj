@@ -497,6 +497,94 @@
     (is (= :decisions/special__next-steps  (-> parsed last :db/ident)))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Stage 7.C — class-routing via :dt/codec-type-keyword
+;;
+;; Per decisions/tag_as_first_class_introspectable_type_in_metamodel_2026_05_20.md
+;; Stage 7.C — codec resolves the target class from frontmatter `type:`
+;; via metamodel introspection (no hardcoded class knowledge per
+;; interaction/no_hardcoded_consumer_class_knowledge_in_substrate_2026_05_13.md).
+
+(deftest resolve-document-class-defaults-to-memory
+  ;; type: decision → :mm/Memory (no class claims :decision; default)
+  (let [src "---\nname: Foo\ntype: decision\n---\n# Body\n"]
+    (is (= :mm/Memory (md/resolve-document-class src)))))
+
+(deftest resolve-document-class-without-frontmatter
+  ;; No frontmatter → default :mm/Memory
+  (let [src "# Just body\n\nNo frontmatter here."]
+    (is (= :mm/Memory (md/resolve-document-class src)))))
+
+(deftest resolve-document-class-without-type-field
+  ;; Frontmatter present but no `type:` key → default :mm/Memory
+  (let [src "---\nname: Foo\n---\n# Body\n"]
+    (is (= :mm/Memory (md/resolve-document-class src)))))
+
+(deftest resolve-document-class-routes-tag-via-metamodel
+  ;; type: tag → :mm/Tag because :mm/Tag declares :dt/codec-type-keyword :tag
+  (let [src (str "---\n"
+                 "name: Audit\n"
+                 "type: tag\n"
+                 "definition: A discipline-checking pass over the corpus.\n"
+                 "---\n"
+                 "Body of the tag memorial.\n")]
+    (is (= :mm/Tag (md/resolve-document-class src)))))
+
+(deftest parse-document-routes-tag-files-to-mm-tag-class
+  ;; type: tag → entity-spec has :dt/type :mm/Tag (not :mm/Memory)
+  (let [src (str "---\n"
+                 "name: Audit\n"
+                 "type: tag\n"
+                 "value: audit\n"
+                 "definition: A discipline-checking pass over the corpus.\n"
+                 "scope-note: Applies when verifying capture-discipline gaps.\n"
+                 "---\n"
+                 "Body narrative.\n")
+        entities (md/parse-document src "tags/audit.md")]
+    (is (= 1 (count entities)) "tag document = single entity; no section decomposition")
+    (let [tag (first entities)]
+      (is (= :mm/Tag    (:dt/type tag)) "routes to :mm/Tag class")
+      (is (= :tags/audit (:db/ident tag)) "ident derives from rel-path")
+      (is (= "audit"    (:mm.tag/value tag)) "value slot populated from frontmatter")
+      (is (= "A discipline-checking pass over the corpus."
+             (:mm.tag/definition tag)) "definition slot populated")
+      (is (= "Applies when verifying capture-discipline gaps."
+             (:mm.tag/scope-note tag)) "scope-note slot populated")
+      ;; The :type field is consumed by routing — not assigned as a slot
+      ;; (no :mm.tag/type slot exists; the class IS the type-signal).
+      (is (not (contains? tag :mm.tag/type))
+          ":type frontmatter consumed by routing; not slotted on :mm/Tag")
+      ;; :mm.memory/rel-path is NOT set on tag entities (rel-path is derived
+      ;; from the memory/tags/<canonical-name>.md convention).
+      (is (not (contains? tag :mm.memory/rel-path))
+          "tag entities don't carry :mm.memory/rel-path"))))
+
+(deftest parse-document-tag-files-do-not-decompose-into-sections
+  ;; Even when a tag memorial has markdown headings in its body, no section
+  ;; decomposition runs — :mm/Tag has no section-tree convention.
+  (let [src (str "---\n"
+                 "name: Audit\n"
+                 "type: tag\n"
+                 "value: audit\n"
+                 "---\n"
+                 "## Why this exists\n\nNarrative.\n\n"
+                 "## Examples\n\nMore narrative.\n")
+        entities (md/parse-document src "tags/audit.md")]
+    (is (= 1 (count entities)) "tag document = single entity even with headings")
+    (is (= :mm/Tag (:dt/type (first entities))))))
+
+(deftest parse-document-memory-files-still-decompose-into-sections
+  ;; Regression guard — Stage 7.C must not break existing :mm/Memory routing.
+  (let [src (str "---\n"
+                 "name: Test\n"
+                 "type: decision\n"
+                 "---\n"
+                 "## Section A\n\nBody A.\n\n"
+                 "## Section B\n\nBody B.\n")
+        entities (md/parse-document src "decisions/test.md")]
+    (is (= 3 (count entities)) "memory + 2 sections — section decomposition intact")
+    (is (= :mm/Memory (:dt/type (first entities))))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; B.4 — Performance baseline (informational; assertions soft)
 ;;
 ;; Target per B.0 ADR §7.4: ~30ms per typical 10KB file.  The corpus

@@ -784,36 +784,103 @@
                         (not (:mm.section/previous-sibling s))))
                  sections)))
 
-(defn parse-document
-  "Full mm/Memory document parse: split frontmatter + body, build the
-   section tree, return a vector of entity-specs.
+(defn- peek-type-keyword
+  "Peek at the frontmatter to extract the `type:` keyword value WITHOUT
+   doing full class-specific slot mapping.  Used by `parse-document` for
+   class-routing — the codec needs to know which class to parse AS before
+   the class-aware frontmatter→slot pass runs.
 
-   First element is the mm/Memory entity (with :first-section ref to the
-   chain head); subsequent elements are mm/Section entities in document
-   order with full sibling-chain wiring.
+   Returns the keyword form of the type value (`type: tag` → `:tag`), or
+   nil when frontmatter is absent / `type:` is absent / value is unparseable.
+
+   Per Stage 7.C of
+   decisions/tag_as_first_class_introspectable_type_in_metamodel_2026_05_20.md
+   class-routing — the type-keyword maps to a class via
+   `dt/class-for-codec-type-keyword`."
+  [source]
+  (let [[fm-text _body] (split-frontmatter source)
+        fm-map          (when (and fm-text (not (str/blank? fm-text)))
+                          (parse-frontmatter-text fm-text))
+        t               (:type fm-map)]
+    (cond
+      (keyword? t) t
+      (string?  t) (keyword t)
+      :else        nil)))
+
+(defn resolve-document-class
+  "Resolve the codec target class for a markdown document based on its
+   frontmatter `type:` value, via metamodel introspection (NOT hardcoded
+   class knowledge per
+   interaction/no_hardcoded_consumer_class_knowledge_in_substrate_2026_05_13.md).
+
+   Resolution:
+     1. Peek frontmatter `type:` value.
+     2. Look up the class via `dt/class-for-codec-type-keyword` —
+        returns the class whose `:dt/codec-type-keyword` declaration
+        matches.
+     3. Fall back to `:mm/Memory` when no class claims the type-keyword
+        (the default for the corpus's universe of memorial documents).
+
+   Examples:
+     `type: tag`      → :mm/Tag  (when :mm/Tag declares :dt/codec-type-keyword :tag)
+     `type: decision` → :mm/Memory  (no class claims :decision; :mm/Memory's
+                                     :dt/codec-aliases consumes :type into
+                                     :mm.memory/memory-type instead)
+     no `type:`       → :mm/Memory  (default)
+
+   Public so tests + tooling can dispatch on the resolved class
+   independently."
+  [source]
+  (let [type-kw (peek-type-keyword source)]
+    (or (try (dt/class-for-codec-type-keyword type-kw)
+             (catch Exception _ nil))
+        :mm/Memory)))
+
+(defn parse-document
+  "Full markdown document parse: split frontmatter + body, resolve the
+   target class via `:dt/codec-type-keyword` routing, decompose into
+   sections when appropriate, return a vector of entity-specs.
+
+   Class routing (Stage 7.C — per
+   decisions/tag_as_first_class_introspectable_type_in_metamodel_2026_05_20.md):
+   The codec peeks the frontmatter's `type:` value + resolves a class
+   via `dt/class-for-codec-type-keyword`.  Default routing target is
+   :mm/Memory.  For :mm/Tag (and other classes lacking a section-tree
+   convention), no section decomposition runs — the document is a
+   single entity.
 
    Inputs:
      source   — markdown source text
-     rel-path — corpus rel-path (e.g., 'decisions/foo.md') — REQUIRED for
-                path-derived idents
+     rel-path — corpus rel-path (e.g., 'decisions/foo.md' or
+                'tags/audit.md') — REQUIRED for path-derived idents
 
-   When body has no headings, returns a single-element vector with just
-   the mm/Memory entity."
+   Returns:
+     - For :mm/Memory: vector starting with the memory entity (carrying
+       :mm.memory/rel-path + :mm.memory/first-section when sections present)
+       followed by section entities in document order.
+     - For non-:mm/Memory classes (e.g., :mm/Tag): single-element vector
+       with the class entity.  No section decomposition; no rel-path slot
+       (path is derivable from `memory/<plural>/<name>.md` convention)."
   [source rel-path]
-  (let [memory-ident (or (memory-ident-from-rel-path rel-path)
-                         (throw (ex-info "parse-document requires a rel-path that yields a valid memory ident"
-                                         {:rel-path rel-path})))
-        c          (make-codec)
-        memory-ent (proto/parse c source {:class :mm/Memory})
-        memory-ent (assoc memory-ent :db/ident memory-ident
-                                     :mm.memory/rel-path rel-path)
-        body-raw   (:mm.memory/body-raw memory-ent)
-        sections   (parse-sections body-raw memory-ident)]
-    (if (empty? sections)
-      [memory-ent]
-      (let [first-sec (first-section-of sections memory-ident)]
-        (into [(assoc memory-ent :mm.memory/first-section (:db/ident first-sec))]
-              sections)))))
+  (let [memory-ident   (or (memory-ident-from-rel-path rel-path)
+                           (throw (ex-info "parse-document requires a rel-path that yields a valid memory ident"
+                                           {:rel-path rel-path})))
+        resolved-class (resolve-document-class source)
+        c              (make-codec)
+        entity         (proto/parse c source {:class resolved-class})
+        entity         (cond-> (assoc entity :db/ident memory-ident)
+                         (= resolved-class :mm/Memory)
+                         (assoc :mm.memory/rel-path rel-path))]
+    (if (= resolved-class :mm/Memory)
+      (let [body-raw (:mm.memory/body-raw entity)
+            sections (parse-sections body-raw memory-ident)]
+        (if (empty? sections)
+          [entity]
+          (let [first-sec (first-section-of sections memory-ident)]
+            (into [(assoc entity :mm.memory/first-section (:db/ident first-sec))]
+                  sections))))
+      ;; Non-:mm/Memory class — single-entity vector; no section decomposition.
+      [entity])))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Section-tree emit — reconstruct markdown body from section chain

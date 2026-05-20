@@ -238,12 +238,13 @@
 
 (deftest search-bm25f-no-weights-throws-test
   (testing "search-bm25f throws when class has no :dt/bm25f-weights AND no override given"
-    ;; :mm/Tag class has no :dt/bm25f-weights declaration; weights map is {}
-    ;; throws via ex-info with substrate-helpful message.
+    ;; Stage 7.A added :dt/bm25f-weights to :mm/Tag (decisions/tag_as_first_class_introspectable_type_in_metamodel_2026_05_20.md).
+    ;; :mm/Link remains a no-weights class — use it as the empty-weights probe.
+    ;; Throws via ex-info with substrate-helpful message.
     (is (thrown? clojure.lang.ExceptionInfo
                  (search/search-bm25f
                    {:query "anything"
-                    :class :mm/Tag})))))
+                    :class :mm/Link})))))
 
 (deftest search-bm25f-hits-sorted-by-score-test
   (testing "search-bm25f hits are sorted by score descending"

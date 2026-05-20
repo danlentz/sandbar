@@ -370,3 +370,203 @@
     (is (jsonrpc-error? response))
     (is (= -32602 (-> response :error :code))
         "unknown tool should produce invalid-params")))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Stage 7.D tag-vocabulary verbs — behavior tests
+;;
+;; Per decisions/tag_as_first_class_introspectable_type_in_metamodel_2026_05_20.md
+;; §2.5 — sandbar.ground + sandbar.tag.{lookup, define, audit, consolidate,
+;; split, rename, align, harmonize} verb surface.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defn- result-content-edn
+  "Extract the result text from a successful MCP response and parse it as
+   JSON with keyword keys.  Per tools.clj:1728 — content is emitted as
+   `(json/generate-string data {:pretty true})`.  Helper-name kept as
+   `-edn` for historical reasons + parallel with existing helpers; the
+   actual format is JSON."
+  [response]
+  (let [text (-> response :result :content first :text)]
+    (json/parse-string text true)))
+
+;; ---------- sandbar.tag.define ----------
+
+(deftest tag-define-creates-canonical-tag
+  (let [response (call "sandbar.tag.define"
+                       {"name"  "audit"
+                        "slots" {"definition" "A discipline-checking pass over the corpus."
+                                 "scope-note" "Applies when verifying capture-discipline gaps."}})]
+    (is (success? response) "define should succeed")
+    (let [payload (result-content-edn response)]
+      (is (true? (:created payload)))
+      (is (= "audit" (-> payload :tag :value))))))
+
+(deftest tag-define-rejects-duplicate-canonical
+  (call "sandbar.tag.define" {"name" "audit" "slots" {"definition" "First."}})
+  (let [response (call "sandbar.tag.define" {"name" "audit" "slots" {"definition" "Duplicate."}})]
+    (is (user-error? response)
+        "second define with same :name should be user-error")
+    (is (re-find #"already exists" (error-text response)))))
+
+(deftest tag-define-requires-name
+  (let [response (call "sandbar.tag.define" {"slots" {"definition" "Missing name."}})]
+    (is (user-error? response))
+    (is (re-find #"name" (error-text response)))))
+
+;; ---------- sandbar.tag.lookup ----------
+
+(deftest tag-lookup-finds-by-value-exact-match
+  (call "sandbar.tag.define" {"name"  "datomic"
+                              "slots" {"definition" "Datomic database."}})
+  (let [response (call "sandbar.tag.lookup" {"concept" "datomic"})]
+    (is (success? response))
+    (let [payload (result-content-edn response)]
+      (is (false? (:gap? payload)))
+      (is (pos? (count (:matches payload))))
+      (is (= "datomic" (-> payload :matches first :value))))))
+
+(deftest tag-lookup-reports-gap-when-no-match
+  (let [response (call "sandbar.tag.lookup" {"concept" "totally-unknown-concept-xyz"})]
+    (is (success? response))
+    (let [payload (result-content-edn response)]
+      (is (true? (:gap? payload)))
+      (is (zero? (count (:matches payload))))
+      (is (re-find #"sandbar.tag.define" (str (:gap-hint payload)))))))
+
+(deftest tag-lookup-finds-via-scope-note
+  (call "sandbar.tag.define"
+        {"name"  "discipline"
+         "slots" {"definition" "Verifying capture pattern."
+                  "scope-note" "Used during audit work on the corpus."}})
+  (let [response (call "sandbar.tag.lookup" {"concept" "corpus"})]
+    (is (success? response))
+    (let [payload (result-content-edn response)
+          values  (set (map :value (:matches payload)))]
+      (is (contains? values "discipline")
+          "scope-note containing 'corpus' should match via the lookup scorer"))))
+
+;; ---------- sandbar.tag.audit ----------
+
+(deftest tag-audit-returns-seven-invariant-report
+  ;; Define a couple of tags so the audit has shape; doesn't matter which.
+  (call "sandbar.tag.define" {"name" "well-defined-tag" "slots" {"definition" "Has defn."}})
+  (call "sandbar.tag.define" {"name" "2026-05-12"})  ; date-pattern
+  (let [response (call "sandbar.tag.audit" {})]
+    (is (success? response))
+    (let [payload (result-content-edn response)]
+      (is (= 7 (count (:invariants payload))))
+      (is (re-find #"violations" (:summary payload))))))
+
+;; ---------- sandbar.tag.consolidate ----------
+
+(deftest tag-consolidate-merges-into-canonical
+  (call "sandbar.tag.define" {"name" "tags" "slots" {"definition" "plural form"}})
+  (call "sandbar.tag.define" {"name" "tag"  "slots" {"definition" "singular form (canonical)"}})
+  (let [response (call "sandbar.tag.consolidate" {"from" "tags" "into" "tag"})]
+    (is (success? response))
+    (let [payload (result-content-edn response)]
+      (is (= "tags" (:from payload)))
+      (is (= "tag"  (:into payload)))
+      (is (= "tags" (:alt-label-added payload)))
+      ;; JSON serialization stringifies keywords; payload sees "superseded" string.
+      (is (= "superseded" (:lifecycle-status payload))))))
+
+(deftest tag-consolidate-rejects-missing-from
+  (call "sandbar.tag.define" {"name" "tag"  "slots" {"definition" "exists"}})
+  (let [response (call "sandbar.tag.consolidate" {"from" "nonexistent" "into" "tag"})]
+    (is (user-error? response))
+    (is (re-find #"not found" (error-text response)))))
+
+;; ---------- sandbar.tag.rename ----------
+
+(deftest tag-rename-changes-value-preserves-old-as-hidden-label
+  (call "sandbar.tag.define" {"name" "old-canonical" "slots" {"definition" "to be renamed"}})
+  (let [response (call "sandbar.tag.rename" {"old" "old-canonical" "new" "new-canonical"})]
+    (is (success? response))
+    (let [payload (result-content-edn response)]
+      (is (= "old-canonical" (:old payload)))
+      (is (= "new-canonical" (:new payload)))
+      (is (= "old-canonical" (:hidden-label-preserved payload))))))
+
+(deftest tag-rename-rejects-when-new-name-taken
+  (call "sandbar.tag.define" {"name" "alpha" "slots" {"definition" "first"}})
+  (call "sandbar.tag.define" {"name" "beta"  "slots" {"definition" "second"}})
+  (let [response (call "sandbar.tag.rename" {"old" "alpha" "new" "beta"})]
+    (is (user-error? response))
+    (is (re-find #"already exists" (error-text response)))))
+
+;; ---------- sandbar.tag.split ----------
+
+(deftest tag-split-creates-narrower-tags-with-broader-generic-ref
+  (call "sandbar.tag.define" {"name" "parent-tag" "slots" {"definition" "to be split"}})
+  (let [response (call "sandbar.tag.split"
+                       {"tag" "parent-tag"
+                        "into-tags" [{"value" "child-a" "scope-note" "First child"}
+                                     {"value" "child-b" "scope-note" "Second child"}]})]
+    (is (success? response))
+    (let [payload (result-content-edn response)]
+      (is (= "parent-tag" (:parent payload)))
+      (is (= 2 (count (:into-tags payload))))
+      (is (re-find #"NOT auto-rerouted" (:note payload))))))
+
+(deftest tag-split-requires-2-or-more-into-tags
+  (call "sandbar.tag.define" {"name" "parent" "slots" {"definition" "exists"}})
+  (let [response (call "sandbar.tag.split"
+                       {"tag" "parent"
+                        "into-tags" [{"value" "single-child"}]})]
+    (is (user-error? response))))
+
+;; ---------- sandbar.tag.align ----------
+
+(deftest tag-align-creates-exact-match-mapping
+  (call "sandbar.tag.define" {"name" "datomic"
+                              "slots" {"definition" "Datomic database"}})
+  (let [response (call "sandbar.tag.align"
+                       {"tag"          "datomic"
+                        "external-iri" "http://www.wikidata.org/entity/Q5273260"
+                        "mapping-type" "exact-match"})]
+    (is (success? response))
+    (let [payload (result-content-edn response)]
+      (is (= "datomic" (:tag payload)))
+      (is (= "exact-match" (:mapping-type payload)))
+      (is (re-find #"exact-match" (:slot payload))))))
+
+(deftest tag-align-rejects-invalid-mapping-type
+  (call "sandbar.tag.define" {"name" "datomic" "slots" {"definition" "x"}})
+  (let [response (call "sandbar.tag.align"
+                       {"tag" "datomic" "external-iri" "http://example.org/x"
+                        "mapping-type" "bogus-relation"})]
+    (is (user-error? response))
+    (is (re-find #"Invalid mapping-type" (error-text response)))))
+
+;; ---------- sandbar.tag.harmonize ----------
+
+(deftest tag-harmonize-returns-dry-run-report
+  (call "sandbar.tag.define" {"name" "tag"})
+  (call "sandbar.tag.define" {"name" "tags"})
+  (let [response (call "sandbar.tag.harmonize" {})]
+    (is (success? response))
+    (let [payload (result-content-edn response)]
+      (is (contains? payload :audit-report))
+      (is (contains? payload :drift-clusters))
+      (is (re-find #"DRY-RUN" (:note payload))))))
+
+;; ---------- sandbar.ground ----------
+
+(deftest ground-returns-multi-step-grounding-output
+  (call "sandbar.tag.define" {"name"  "audit"
+                              "slots" {"definition" "Discipline-checking pass."}})
+  (let [response (call "sandbar.ground" {"concept" "audit"})]
+    (is (success? response))
+    (let [payload (result-content-edn response)]
+      (is (= "audit" (:concept payload)))
+      (is (contains? payload :step-1-tag-lookup))
+      (is (contains? payload :step-2-meta-vocab))
+      (is (contains? payload :step-3-suggested-next))
+      (is (false? (-> payload :step-1-tag-lookup :gap?)))
+      (is (pos? (count (-> payload :step-1-tag-lookup :matches)))))))
+
+(deftest ground-requires-concept
+  (let [response (call "sandbar.ground" {})]
+    (is (user-error? response))
+    (is (re-find #"concept" (error-text response)))))

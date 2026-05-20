@@ -37,7 +37,9 @@
             [clojure.edn                :as edn]
             [clojure.string             :as str]
             [clojure.tools.logging      :as log]
+            [datomic.api                :as d]
             [sandbar.aggregate          :as aggregate]
+            [sandbar.audit.tag          :as audit-tag]
             [sandbar.codec              :as codec]
             [sandbar.entity-ref         :as eref]
             [sandbar.navigate.path      :as nav-path]
@@ -919,6 +921,363 @@
                 (validation/recent-validations))}))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Tag-vocabulary operations — Stage 7.D of
+;; decisions/tag_as_first_class_introspectable_type_in_metamodel_2026_05_20.md
+;;
+;; Verbs:
+;;   sandbar.ground <concept>                — compositional grounding workflow
+;;   sandbar.tag.lookup <concept>            — tag-vocabulary primitive
+;;   sandbar.tag.define <name> <slots>       — author new canonical tag
+;;   sandbar.tag.audit                       — run sandbar.audit.tag/audit-all
+;;   sandbar.tag.consolidate <from> <into>   — merge into canonical; preserve alt-label
+;;   sandbar.tag.split <tag> <new>           — declare partition into narrower tags
+;;   sandbar.tag.rename <old> <new>          — rename canonical; preserve hidden-label
+;;   sandbar.tag.align <tag> <iri> <type>    — declare cross-vocabulary mapping
+;;   sandbar.tag.harmonize                   — bulk harmonization report
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defn- tag-by-value
+  "Resolve a tag's canonical :mm.tag/value string to its entity-map, or
+   nil if no tag claims that value.  Uses Datomic's unique-identity index
+   on :mm.tag/value (O(1))."
+  [value]
+  (when (and (string? value) (seq value))
+    (d/entity (db/db) [:mm.tag/value value])))
+
+(defn- string-contains-ci?
+  "Case-insensitive substring containment.  nil-safe."
+  [haystack needle]
+  (and (string? haystack) (string? needle)
+       (str/includes? (str/lower-case haystack) (str/lower-case needle))))
+
+(defn- tag-match-score
+  "Heuristic alignment score between a tag entity-map and a query concept.
+   Weighted-substring match: exact :value (10) > :alt-label / :hidden-label
+   (5) > :definition / :scope-note (3) > :example (1).  Score = 0 means
+   no match.  This is the Stage 7.D MVP scorer — Stage 7.F refinement will
+   replace with `sandbar.search.bm25f/search` using the :mm/Tag
+   :dt/bm25f-weights declaration."
+  [tag concept]
+  (let [v   (or (:mm.tag/value tag) "")
+        alt (:mm.tag/alt-label tag)        ; many
+        hid (:mm.tag/hidden-label tag)     ; many
+        def (or (:mm.tag/definition tag) "")
+        sn  (or (:mm.tag/scope-note tag) "")
+        ex  (or (:mm.tag/example tag) "")
+        c   (str concept)]
+    (cond-> 0
+      (= (str/lower-case v) (str/lower-case c))                    (+ 100)
+      (and (not= v c) (string-contains-ci? v c))                   (+ 10)
+      (some #(= (str/lower-case %) (str/lower-case c)) (seq alt))  (+ 7)
+      (some #(string-contains-ci? % c) (seq alt))                  (+ 5)
+      (some #(string-contains-ci? % c) (seq hid))                  (+ 5)
+      (string-contains-ci? def c)                                  (+ 3)
+      (string-contains-ci? sn c)                                   (+ 3)
+      (string-contains-ci? ex c)                                   (+ 1))))
+
+(defn- tag-summary
+  "Project a tag entity-map to a JSON-friendly summary map carrying the
+   canonical value + key documentation slots + broader/narrower context."
+  [tag]
+  (let [project-ref (fn [x] (some-> x :mm.tag/value))
+        project-refs (fn [xs] (vec (keep project-ref xs)))]
+    (cond-> {:value (:mm.tag/value tag)}
+      (:db/ident tag)              (assoc :ident (str (:db/ident tag)))
+      (seq (:mm.tag/alt-label tag))    (assoc :alt-label    (vec (:mm.tag/alt-label tag)))
+      (seq (:mm.tag/hidden-label tag)) (assoc :hidden-label (vec (:mm.tag/hidden-label tag)))
+      (:mm.tag/definition tag)     (assoc :definition (:mm.tag/definition tag))
+      (:mm.tag/scope-note tag)     (assoc :scope-note (:mm.tag/scope-note tag))
+      (:mm.tag/example tag)        (assoc :example    (:mm.tag/example tag))
+      (:mm.tag/canonical? tag)     (assoc :canonical? (:mm.tag/canonical? tag))
+      (:mm.tag/lifecycle-status tag) (assoc :lifecycle-status (:mm.tag/lifecycle-status tag))
+      (seq (:mm.tag/broader-generic tag))    (assoc :broader-generic    (project-refs (:mm.tag/broader-generic tag)))
+      (seq (:mm.tag/broader-instantial tag)) (assoc :broader-instantial (project-refs (:mm.tag/broader-instantial tag)))
+      (seq (:mm.tag/broader-partitive tag))  (assoc :broader-partitive  (project-refs (:mm.tag/broader-partitive tag)))
+      (seq (:mm.tag/related tag))            (assoc :related            (project-refs (:mm.tag/related tag))))))
+
+(defn- all-tag-entities
+  "Return all entities with :mm.tag/value populated — see
+   sandbar.audit.tag/all-tag-entities for rationale (substrate carries both
+   canonical :dt/type :mm/Tag entities + legacy F#18 anonymous-upsert
+   entities; both are tag-shaped)."
+  []
+  (let [eids (d/q '[:find [?e ...]
+                    :where [?e :mm.tag/value _]]
+                  (db/db))]
+    (mapv #(d/entity (db/db) %) eids)))
+
+(defn- tag-lookup-handler
+  "Step 1 of the sandbar.ground compositional workflow: tag-vocabulary
+   primitive.  Surfaces tags whose canonical-form / alt-label / scope-note
+   align with the query concept; returns ranked candidates with broader/
+   narrower context.  When no tag scores above the threshold, reports the
+   gap suggesting a sandbar.tag.define call."
+  [args]
+  (let [concept (or (get args "concept") (get args :concept))
+        limit   (or (get args "limit")   (get args :limit) 10)]
+    (when (str/blank? (str concept))
+      (throw (ex-info "Missing required argument: concept" {:args args})))
+    (let [tags    (all-tag-entities)
+          scored  (->> tags
+                       (map (fn [t] {:score (tag-match-score t concept) :tag t}))
+                       (filter #(pos? (:score %)))
+                       (sort-by (comp - :score))
+                       (take limit))]
+      {:concept   concept
+       :matches   (vec (for [{:keys [score tag]} scored]
+                         (assoc (tag-summary tag) :score score)))
+       :gap?      (empty? scored)
+       :gap-hint  (when (empty? scored)
+                    (str "No tag in the corpus aligns with \"" concept
+                         "\".  Consider sandbar.tag.define :name \"" concept
+                         "\" :slots {:definition \"...\" :scope-note \"...\"}"))})))
+
+(defn- tag-define-handler
+  "Author a new canonical tag.  Per ADR §2.5 — `sandbar.tag.define` forces
+   explicit definition before a tag can be applied; the :scope-note slot
+   should be supplied to anchor the canonical boundary.  Errors if a tag
+   with this :value already exists (use sandbar.tag.consolidate to merge
+   into an existing canonical, or sandbar.tag.rename to change canonical)."
+  [args]
+  (let [value (or (get args "name") (get args :name))
+        slots (or (get args "slots") (get args :slots) {})]
+    (when (str/blank? (str value))
+      (throw (ex-info "Missing required argument: name" {:args args})))
+    (when (tag-by-value value)
+      (throw (ex-info (str "Tag already exists with value: " value)
+                      {:value value
+                       :hint "Use sandbar.tag.consolidate to merge, or sandbar.tag.rename to change canonical."})))
+    (let [coerced (coerce-slot-map :mm/Tag slots)
+          props   (merge {:mm.tag/value value} coerced)
+          new-ent (dt/make :mm/Tag props {})]
+      (log/info :MCP/tag-define {:value value :entity-id (:db/id new-ent)})
+      {:tag     (tag-summary new-ent)
+       :created true})))
+
+(defn- tag-audit-handler
+  "Run the full tag-lifecycle audit (sandbar.audit.tag/audit-all).  No
+   arguments — runs all 7 invariants."
+  [_args]
+  (audit-tag/audit-all))
+
+(defn- tag-consolidate-handler
+  "Merge :from tag INTO :into tag.  Effects:
+   (1) :from's :value becomes a :mm.tag/alt-label on :into
+   (2) :from is marked :mm.tag/lifecycle-status :superseded
+   (3) :from gains :mm.tag/superseded-by ref to :into
+   (4) Every :mm.memory/tags ref to :from is rewritten to :into
+
+   Errors if either tag is missing."
+  [args]
+  (let [from-val (or (get args "from") (get args :from))
+        into-val (or (get args "into") (get args :into))]
+    (when (str/blank? (str from-val)) (throw (ex-info "Missing required argument: from" {:args args})))
+    (when (str/blank? (str into-val)) (throw (ex-info "Missing required argument: into" {:args args})))
+    (when (= from-val into-val) (throw (ex-info "from and into must differ" {:args args})))
+    (let [from-ent (tag-by-value from-val)
+          into-ent (tag-by-value into-val)]
+      (when (nil? from-ent) (throw (ex-info (str "Tag not found: " from-val) {:value from-val})))
+      (when (nil? into-ent) (throw (ex-info (str "Tag not found: " into-val) {:value into-val})))
+      ;; Step (1)-(3): alt-label + lifecycle + supersede
+      @(d/transact (db/conn)
+                   [[:db/add (:db/id into-ent) :mm.tag/alt-label from-val]
+                    [:db/add (:db/id from-ent) :mm.tag/lifecycle-status :superseded]
+                    [:db/add (:db/id from-ent) :mm.tag/superseded-by    (:db/id into-ent)]])
+      ;; Step (4): rewrite all :mm.memory/tags refs
+      (let [memorials-with-from (d/q '[:find [?m ...]
+                                       :in $ ?from
+                                       :where [?m :mm.memory/tags ?from]]
+                                     (db/db) (:db/id from-ent))
+            rewrite-tx (vec (mapcat (fn [m]
+                                      [[:db/retract m :mm.memory/tags (:db/id from-ent)]
+                                       [:db/add     m :mm.memory/tags (:db/id into-ent)]])
+                                    memorials-with-from))]
+        (when (seq rewrite-tx)
+          @(d/transact (db/conn) rewrite-tx))
+        (log/info :MCP/tag-consolidate
+                  {:from from-val :into into-val :memorials (count memorials-with-from)})
+        {:from               from-val
+         :into               into-val
+         :memorials-rewritten (count memorials-with-from)
+         :alt-label-added    from-val
+         :lifecycle-status   :superseded}))))
+
+(defn- tag-split-handler
+  "Declare that :tag is being partitioned into multiple narrower tags
+   :into-tags (vec of `{:value :scope-note}` maps).  Creates each new tag
+   as :mm.tag/broader-generic :tag.  Does NOT auto-reroute existing
+   memorial refs — editorial reassignment is a follow-on per the ADR
+   (split surfaces the partition; memorial migration is per-memorial
+   judgment)."
+  [args]
+  (let [tag-val   (or (get args "tag")        (get args :tag))
+        into-tags (or (get args "into-tags")  (get args :into-tags))]
+    (when (str/blank? (str tag-val))
+      (throw (ex-info "Missing required argument: tag" {:args args})))
+    (when (or (not (sequential? into-tags)) (< (count into-tags) 2))
+      (throw (ex-info "Missing or invalid :into-tags — must be a vector of 2+ tag specs"
+                      {:args args})))
+    (let [parent-ent (tag-by-value tag-val)]
+      (when (nil? parent-ent) (throw (ex-info (str "Tag not found: " tag-val) {:value tag-val})))
+      (doseq [spec into-tags
+              :let [v  (or (get spec "value") (get spec :value))]]
+        (when (str/blank? (str v))
+          (throw (ex-info "into-tags entry missing :value" {:spec spec})))
+        (when (tag-by-value v)
+          (throw (ex-info (str "into-tags entry already exists: " v) {:value v}))))
+      (let [new-tx (vec (for [spec into-tags
+                              :let [v  (or (get spec "value")      (get spec :value))
+                                    sn (or (get spec "scope-note") (get spec :scope-note))]]
+                          (cond-> {:mm.tag/value v
+                                   :mm.tag/broader-generic (:db/id parent-ent)}
+                            sn (assoc :mm.tag/scope-note sn))))]
+        @(d/transact (db/conn) new-tx)
+        (log/info :MCP/tag-split {:parent tag-val :into-tags (map :value new-tx)})
+        {:parent      tag-val
+         :into-tags   (mapv :mm.tag/value new-tx)
+         :note        (str "Created " (count new-tx) " narrower tags under "
+                           tag-val ".  Memorial refs NOT auto-rerouted — "
+                           "editorial reassignment is per-memorial judgment.")}))))
+
+(defn- tag-rename-handler
+  "Change a tag's canonical :mm.tag/value from :old to :new.  Preserves
+   :old as :mm.tag/hidden-label (search-recall path).  Refs by :db/id are
+   unaffected.  Errors if :new is already taken."
+  [args]
+  (let [old-val (or (get args "old") (get args :old))
+        new-val (or (get args "new") (get args :new))]
+    (when (str/blank? (str old-val)) (throw (ex-info "Missing required argument: old" {:args args})))
+    (when (str/blank? (str new-val)) (throw (ex-info "Missing required argument: new" {:args args})))
+    (when (= old-val new-val) (throw (ex-info "old and new must differ" {:args args})))
+    (let [old-ent (tag-by-value old-val)]
+      (when (nil? old-ent) (throw (ex-info (str "Tag not found: " old-val) {:value old-val})))
+      (when (tag-by-value new-val)
+        (throw (ex-info (str "Tag with new value already exists: " new-val)
+                        {:value new-val
+                         :hint "Use sandbar.tag.consolidate to merge instead."})))
+      ;; Hidden-label-then-rename: add old as hidden-label, then change canonical.
+      ;; Two separate transactions because Datomic disallows changing a
+      ;; :db.unique/identity attr's value in the same tx that adds a related
+      ;; field referencing the OLD value.
+      @(d/transact (db/conn)
+                   [[:db/add (:db/id old-ent) :mm.tag/hidden-label old-val]])
+      @(d/transact (db/conn)
+                   [[:db/add (:db/id old-ent) :mm.tag/value new-val]])
+      (log/info :MCP/tag-rename {:old old-val :new new-val})
+      {:old                    old-val
+       :new                    new-val
+       :hidden-label-preserved old-val})))
+
+(defn- tag-align-handler
+  "Declare a cross-vocabulary mapping from :tag to :external-iri under one
+   of the SKOS mapping relations (:exact-match / :close-match /
+   :broader-match / :narrower-match / :related-match).  Per ADR §2.1 Tier E.
+
+   MVP: stores the external IRI as a :mm.tag/<mapping-type> ref to a
+   :mm/Tag entity whose :mm.tag/value is the external IRI string.  A
+   richer :mm/Vocabulary-aware federation backbone lands in Stage 8."
+  [args]
+  (let [tag-val      (or (get args "tag")          (get args :tag))
+        external-iri (or (get args "external-iri") (get args :external-iri))
+        mapping-type (or (get args "mapping-type") (get args :mapping-type) "exact-match")
+        slot         (keyword "mm.tag" mapping-type)]
+    (when (str/blank? (str tag-val)) (throw (ex-info "Missing required argument: tag" {:args args})))
+    (when (str/blank? (str external-iri)) (throw (ex-info "Missing required argument: external-iri" {:args args})))
+    (when-not (#{:mm.tag/exact-match :mm.tag/close-match :mm.tag/broader-match
+                 :mm.tag/narrower-match :mm.tag/related-match} slot)
+      (throw (ex-info (str "Invalid mapping-type: " mapping-type)
+                      {:valid #{"exact-match" "close-match" "broader-match" "narrower-match" "related-match"}})))
+    (let [tag-ent (tag-by-value tag-val)]
+      (when (nil? tag-ent) (throw (ex-info (str "Tag not found: " tag-val) {:value tag-val})))
+      ;; Upsert the external IRI as a :mm/Tag entity (via :mm.tag/value
+      ;; unique identity) + create the mapping ref on the local tag.
+      ;; Uses map-form transaction so Datomic resolves the nested upsert
+      ;; before linking; :db/add with a bare upsert-map fails because
+      ;; :db/add expects an already-resolvable entity reference.
+      @(d/transact (db/conn)
+                   [{:db/id (:db/id tag-ent)
+                     slot   {:mm.tag/value external-iri}}])
+      (log/info :MCP/tag-align {:tag tag-val :external-iri external-iri :mapping-type mapping-type})
+      {:tag           tag-val
+       :external-iri  external-iri
+       :mapping-type  mapping-type
+       :slot          (str slot)})))
+
+(defn- tag-harmonize-handler
+  "Bulk-harmonization report.  Runs the full audit + identifies auto-
+   mergeable drift clusters (M.3 candidates).  MVP returns a DRY-RUN
+   report — actual auto-merge requires explicit user invocation of
+   sandbar.tag.consolidate per cluster.
+
+   Per ADR §2.6 M.3 — silent-remap policy is configurable via a future
+   :auto-apply? flag once Stage 8 migration begins; for now the verb is
+   advisory."
+  [_args]
+  (let [report          (audit-tag/audit-all)
+        drift-report    (->> (:invariants report)
+                             (filter #(= :drift (:invariant %)))
+                             first)
+        drift-clusters  (:violations drift-report)]
+    {:audit-report     report
+     :drift-clusters   drift-clusters
+     :drift-cluster-count (count drift-clusters)
+     :auto-mergeable-count (->> drift-clusters
+                                (filter #(= 2 (count (:variants %))))
+                                count)
+     :note (str "DRY-RUN.  Apply per-cluster consolidations via "
+                "sandbar.tag.consolidate :from <variant> :into <canonical>.  "
+                "Auto-apply policy (M.3 silent-remap) deferred to Stage 8.")}))
+
+(defn- ground-handler
+  "Compositional grounding workflow at sandbar level (NOT in tag namespace).
+   Multi-step orchestration that composes tag-vocabulary examination +
+   meta-vocabulary discovery + future BM25F/path-grammar integration.
+
+   Stage 7.D MVP returns structured output the LLM consumer can use:
+     :step-1-tag-lookup     — tag-vocabulary primitive (tag-lookup-handler)
+     :step-2-meta-vocab     — class + predicate candidates aligned with concept
+     :step-3-suggested-next — next actions the consumer might want
+
+   Stage 7.F+ refinement: integrate sandbar.search.bm25f for fulltext +
+   sandbar.navigate.path-via for typed-edge traversal.
+
+   Per observations/grounding_is_compositional_mcp_workflow_thin_client_2026_05_20.md."
+  [args]
+  (let [concept (or (get args "concept") (get args :concept))]
+    (when (str/blank? (str concept))
+      (throw (ex-info "Missing required argument: concept" {:args args})))
+    (let [tag-result    (tag-lookup-handler {"concept" concept "limit" 10})
+          ;; Meta-vocab: classes whose ident-name or label contains the concept
+          all-classes   (dt/all-classes)
+          class-matches (->> all-classes
+                             (filter (fn [c]
+                                       (or (string-contains-ci? (name c) concept)
+                                           (string-contains-ci? (some-> (db/entity c) :dt/label) concept))))
+                             (mapv ->ident-str)
+                             (sort))
+          ;; Predicates whose ident-name contains the concept
+          all-props     (dt/all-properties)
+          pred-matches  (->> all-props
+                             (filter (fn [p] (string-contains-ci? (name p) concept)))
+                             (mapv ->ident-str)
+                             (sort))]
+      {:concept              concept
+       :step-1-tag-lookup    tag-result
+       :step-2-meta-vocab    {:classes-matching    class-matches
+                              :predicates-matching pred-matches}
+       :step-3-suggested-next
+       (cond
+         (:gap? tag-result)
+         ["sandbar.tag.define — author the canonical tag with definition + scope-note"
+          "sandbar.search.bm25f — try a fulltext sweep over corpus body content"]
+
+         (seq (:matches tag-result))
+         ["sandbar.tag.lookup — inspect specific candidate tags"
+          "sandbar.search.bm25f — fulltext sweep informed by selected tag's scope-note"
+          "sandbar.navigate.outbound :from <tag> — explore broader/narrower context"])
+       :note "Stage 7.D MVP — full BM25F + path-grammar integration follows in 7.F."})))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Verb catalog — data-driven dispatch
 ;;
 ;; Each entry: tool name + title + description + inputSchema + handler.
@@ -1274,7 +1633,74 @@
                               :items {:type "string"}
                               :description "Projection options; supports 'paths' (deferred surfacing)"}}
                    [:from :via])
-    :handler navigate-path-via-handler}])
+    :handler navigate-path-via-handler}
+
+   ;; Tag-vocabulary operations — Stage 7.D of decisions/tag_as_first_class_introspectable_type_in_metamodel_2026_05_20.md
+   {:name "sandbar.ground"
+    :title "Compositional grounding workflow — tag lookup + meta-vocab + suggested next-step"
+    :description "WHICH: load-bearing entry point for grounding-before-action.  Composes tag-vocabulary examination (step 1) + meta-vocabulary discovery (step 2; classes / predicates aligned with concept) + suggested-next-step routing (step 3).  Per observations/grounding_is_compositional_mcp_workflow_thin_client_2026_05_20.md — grounding is a multi-step MCP workflow, NOT a single primitive verb.\n\nWHEN: use BEFORE introspection / planning / authoring / research to anchor the concept in the substrate's vocabulary.  The 5th retrieval axis (formal-semantic vocabulary) per observations/tags_as_5th_retrieval_axis_with_formal_semantics_2026_05_20.md.  Composes with the other four retrieval axes (search / aggregation / orientation / navigation).  When NOT to use: the concept is already grounded (e.g., you have a concrete tag / class / predicate ident); skip to the specific verb.\n\nHOW: `:concept` is the concept-string to ground.  Returns:\n  `:step-1-tag-lookup` — sandbar.tag.lookup result (canonical / alt-label / scope-note matching)\n  `:step-2-meta-vocab` — classes + predicates whose name aligns with the concept\n  `:step-3-suggested-next` — vec of suggested next MCP calls based on what step-1 and step-2 surfaced\n\nORDER: typically the FIRST call when an LLM consumer encounters a new concept in user input.  After this verb, the consumer either (a) calls sandbar.tag.define if step-1 reported `:gap? true`, (b) calls sandbar.search.bm25f informed by a selected tag's scope-note, or (c) calls sandbar.navigate.outbound to explore typed-edge context from a matched tag.\n\nCOMBINATION: anchor for tag.* operations.  Stage 7.D MVP scope — Stage 7.F+ refinement integrates sandbar.search.bm25f + sandbar.navigate.path-via for true compositional workflow."
+    :inputSchema (one-required {:concept {:type "string" :description "Concept-string to ground"}}
+                               [:concept])
+    :handler ground-handler}
+   {:name "sandbar.tag.lookup"
+    :title "Tag-vocabulary primitive — find canonical tags aligned with a concept"
+    :description "WHICH: surfaces tags whose canonical-form / alt-label / hidden-label / definition / scope-note / example align with the query concept.  Step 1 of the sandbar.ground compositional workflow.  Returns ranked candidates with broader/narrower context.\n\nWHEN: use to discover whether the corpus's tag vocabulary already has a concept covered before authoring a new tag.  Disambiguation primitive — if scope-notes differ across candidates, the right tag becomes obvious.  When NOT to use: (a) the concept is corpus-wide (try sandbar.search.bm25f over body content instead); (b) you already have a specific tag-value (use sandbar.entity.find or read directly).\n\nHOW: `:concept` is the concept-string; `:limit` (optional) caps returned matches (default 10).  Returns `:concept`, `:matches` (vec of tag-summary maps with `:score`), `:gap?` (true when no tag matches), `:gap-hint` (suggested sandbar.tag.define invocation when gap).\n\nORDER: step 1 of sandbar.ground.  Called directly when you want JUST the tag-vocabulary primitive (no meta-vocab / suggested-next).\n\nCOMBINATION: pairs with sandbar.tag.define (when `:gap? true` — author the canonical), sandbar.tag.consolidate (when matches show drift), sandbar.tag.audit (which tags' lifecycle-status is healthy?)."
+    :inputSchema (one-required {:concept {:type "string" :description "Concept-string to look up"}
+                                :limit   {:type "integer" :description "Max matches returned (default 10)"}}
+                               [:concept])
+    :handler tag-lookup-handler}
+   {:name "sandbar.tag.define"
+    :title "Author a new canonical :mm/Tag with required documentation slots"
+    :description "WHICH: creates a new :mm/Tag entity with the supplied canonical :value + optional documentation slots (definition / scope-note / example / broader-* / in-scheme / etc.).  Forces explicit authoring at the boundary — `sandbar.tag.audit` will surface tags without definitions as the `:undefined-used` invariant.\n\nWHEN: use after sandbar.tag.lookup reports `:gap? true` (no canonical exists for this concept).  Authoring includes scope-note — the editorial boundary anchoring the canonical.  When NOT to use: (a) a canonical already exists — use sandbar.tag.consolidate to merge instead; (b) you want to rename — use sandbar.tag.rename; (c) the new tag overlaps a memorial-type — don't define (memorial-type slot already carries that information).\n\nHOW: `:name` is the canonical tag string (becomes :mm.tag/value).  `:slots` (optional) is a map of additional :mm.tag/* slot values:\n  `:definition`  — SKOS canonical definition\n  `:scope-note`  — editorial boundary\n  `:example`     — usage illustration\n  `:in-scheme`   — :mm/ConceptScheme ref (e.g., `:memory-system-meta-vocabulary`)\n  `:canonical?`  — boolean (default true once defined)\n  `:vocabulary-level` — :substrate-level / :corpus-level / etc.\n  `:lifecycle-status` — :proposed / :active / :deprecated / :superseded\n\nReturns `{:tag <tag-summary> :created true}`.  Errors when a tag with this :value already exists.\n\nORDER: after sandbar.tag.lookup confirms gap.\n\nCOMBINATION: pairs with sandbar.tag.lookup (gap discovery), sandbar.tag.audit (post-define audit-check), sandbar.tag.align (cross-vocabulary mapping after defining)."
+    :inputSchema (one-required {:name  {:type "string" :description "Canonical tag string (becomes :mm.tag/value)"}
+                                :slots {:type "object" :description "Optional :mm.tag/* slots (definition, scope-note, example, broader-*, etc.)"}}
+                               [:name])
+    :handler tag-define-handler}
+   {:name "sandbar.tag.audit"
+    :title "Run the 7 tag-lifecycle invariants and return the violation report"
+    :description "WHICH: runs `sandbar.audit.tag/audit-all` — seven independent invariants over the corpus's tag vocabulary.  Returns per-invariant violations + an aggregate count.\n\nThe seven invariants:\n  1. `:undefined-used`      — tags referenced via :mm.memory/tags lacking :mm.tag/definition\n  2. `:defined-unused`      — tags with :mm.tag/definition but no inbound :mm.memory/tags refs\n  3. `:orphan`              — tags with no :mm.tag/in-scheme membership\n  4. `:date-pattern`        — tags whose :mm.tag/value matches a date pattern\n  5. `:type-pattern`        — tags whose :mm.tag/value overlaps a memorial-type keyword\n  6. `:drift`               — clusters of tags with same normalized form (case + plural)\n  7. `:closure-consistency` — cycles on broader-* / asymmetries on :related / missing inverse pairs on :superseded-by\n\nWHEN: use periodically to monitor vocabulary health.  Foundational pre-step for sandbar.tag.harmonize.  Foundational diagnostic for migration M.1-M.5 staging.  When NOT to use: (a) you want ONE invariant — call sandbar.audit.tag/<invariant-fn> via the in-process API directly (no individual MCP verb yet; aggregate-only at this stage).\n\nHOW: no arguments.  Returns `{:invariants [<map per invariant>] :total-violations N :summary <string>}`.\n\nORDER: no prerequisites; foundational diagnostic.\n\nCOMBINATION: feeds sandbar.tag.harmonize (drift cluster reconciliation), sandbar.tag.consolidate (per-cluster merges), sandbar.tag.define (for :undefined-used findings)."
+    :inputSchema no-args-schema
+    :handler tag-audit-handler}
+   {:name "sandbar.tag.consolidate"
+    :title "Merge :from tag INTO :into tag; preserves :from as alt-label + lifecycle :superseded"
+    :description "WHICH: merges two tags by adding :from's canonical :value as a :mm.tag/alt-label on :into, marking :from with :mm.tag/lifecycle-status :superseded + :mm.tag/superseded-by ref to :into, and rewriting every :mm.memory/tags ref from :from to :into.  The merge preserves history (alt-label + superseded-by) for search-recall + audit trail.\n\nWHEN: use to resolve drift clusters surfaced by sandbar.tag.audit `:drift` invariant — `{tag, tags}` → consolidate \"tags\" into \"tag\".  Also use for editorial vocabulary cleanup (synonyms / variant spellings).  When NOT to use: (a) the tags are NOT synonyms — keep them separate; (b) you want a true rename (no source tag preserved) — use sandbar.tag.rename instead; (c) you want to partition a tag into narrower tags — use sandbar.tag.split.\n\nHOW: `:from` is the variant being merged out; `:into` is the canonical being merged into.  Both are :mm.tag/value strings.  Returns `:from`, `:into`, `:memorials-rewritten` (count of memorials whose :tags ref was rewritten), `:alt-label-added` (the preserved-as-alt-label value), `:lifecycle-status`.\n\nORDER: after sandbar.tag.audit surfaces a drift cluster + editorial decision selects canonical.\n\nCOMBINATION: pairs with sandbar.tag.audit (cluster discovery), sandbar.tag.harmonize (bulk drift-cluster planner), sandbar.tag.rename (when no merge is needed)."
+    :inputSchema (one-required {:from {:type "string" :description "Tag :value to merge OUT (becomes alt-label on :into)"}
+                                :into {:type "string" :description "Tag :value to merge INTO (canonical preserved)"}}
+                               [:from :into])
+    :handler tag-consolidate-handler}
+   {:name "sandbar.tag.split"
+    :title "Partition a tag into narrower tags (creates :broader-generic children)"
+    :description "WHICH: declares that :tag is being partitioned into 2+ narrower tags (:into-tags).  Each new tag is created as :mm.tag/broader-generic :tag.  Does NOT auto-reroute existing memorial refs — surfaces the partition; per-memorial reassignment is editorial follow-on.\n\nWHEN: use when scope-creep has accumulated under a single tag and the editorial decision is to partition (e.g., \"audit\" → \"audit-corpus\" + \"audit-discipline\" + \"audit-schema\").  When NOT to use: (a) you want to merge tags — sandbar.tag.consolidate; (b) you want to rename — sandbar.tag.rename; (c) the narrower tags already exist — manually wire :broader-generic via sandbar.entity.update.\n\nHOW: `:tag` is the parent tag :value.  `:into-tags` is a vector of `{:value :scope-note}` maps (2+ entries).  Returns `:parent`, `:into-tags` (vec of created values), `:note` (reminder about manual memorial reassignment).\n\nORDER: after editorial decision to partition.  After this verb, manually reassign existing memorial :mm.memory/tags refs via sandbar.entity.update.\n\nCOMBINATION: pairs with sandbar.entity.update (for memorial reassignment), sandbar.tag.audit (post-split, audit confirms partition is wired)."
+    :inputSchema (one-required {:tag {:type "string" :description "Parent tag :value to partition"}
+                                :into-tags {:type "array"
+                                            :description "Vector of {:value :scope-note} maps for narrower tags (2+ entries)"
+                                            :items {:type "object"
+                                                    :properties {:value      {:type "string"}
+                                                                 :scope-note {:type "string"}}
+                                                    :required ["value"]}}}
+                               [:tag :into-tags])
+    :handler tag-split-handler}
+   {:name "sandbar.tag.rename"
+    :title "Change a tag's canonical :value; preserves old as hidden-label"
+    :description "WHICH: changes the canonical :mm.tag/value from :old to :new.  Preserves :old as :mm.tag/hidden-label (kept in fulltext search index for recall; not displayed as canonical or alt-label).  Refs by :db/id are unaffected — no memorial rewrite needed.\n\nWHEN: use when canonical form needs to change (typo fix; convention shift; canonicalization).  When NOT to use: (a) you want to merge with an existing canonical — sandbar.tag.consolidate; (b) you want to split — sandbar.tag.split; (c) the tag should be deprecated, not renamed — use sandbar.entity.update to set :mm.tag/lifecycle-status :deprecated.\n\nHOW: `:old` is the current :value; `:new` is the new canonical.  Both must be non-blank strings; must differ.  Returns `:old`, `:new`, `:hidden-label-preserved`.\n\nErrors when `:new` is already taken by another tag — use sandbar.tag.consolidate to merge instead.\n\nORDER: no prerequisites beyond having the tag in the corpus.\n\nCOMBINATION: pairs with sandbar.tag.audit (post-rename verification), sandbar.tag.consolidate (alternative when merging instead of pure-rename)."
+    :inputSchema (one-required {:old {:type "string" :description "Current canonical :value"}
+                                :new {:type "string" :description "New canonical :value (becomes :mm.tag/value)"}}
+                               [:old :new])
+    :handler tag-rename-handler}
+   {:name "sandbar.tag.align"
+    :title "Declare a cross-vocabulary SKOS mapping from a tag to an external IRI"
+    :description "WHICH: records a cross-vocabulary mapping from :tag to :external-iri under a SKOS mapping relation (`:exact-match` / `:close-match` / `:broader-match` / `:narrower-match` / `:related-match`).  Per ADR §2.1 Tier E + ISO 25964 Part 2 inter-vocabulary mapping.\n\nWHEN: use when the corpus's tag aligns with a tag in an external vocabulary (e.g., a Wikidata Q-id, a Dewey class, a Schema.org type, a SKOS concept in a referenced ontology).  Foundational for the federation backbone — VoID :mm/Linkset entities aggregate these mappings.  When NOT to use: (a) the external concept isn't actually mapped — don't fabricate; (b) you want a tag-to-tag mapping within the corpus — use :mm.tag/related instead.\n\nHOW: `:tag` is the corpus tag :value.  `:external-iri` is the external concept's IRI (e.g., \"http://www.wikidata.org/entity/Q12345\").  `:mapping-type` is one of \"exact-match\" / \"close-match\" / \"broader-match\" / \"narrower-match\" / \"related-match\" (default \"exact-match\").\n\nReturns `:tag`, `:external-iri`, `:mapping-type`, `:slot` (the resolved :mm.tag/<type> slot).\n\nMVP: stores the external IRI as a :mm/Tag entity (via :mm.tag/value upsert) referenced by the mapping slot.  Stage 8+ federation lands richer :mm/Vocabulary / :mm/Linkset modeling.\n\nORDER: after the tag is defined (sandbar.tag.define).\n\nCOMBINATION: pairs with sandbar.tag.audit (the alignment is auditable as a SKOS-mapping relation), sandbar.tag.harmonize (bulk alignment proposals from Wikidata / external SKOS schemes)."
+    :inputSchema (one-required {:tag           {:type "string" :description "Corpus tag :value"}
+                                :external-iri  {:type "string" :description "External concept IRI (e.g., Wikidata Q-id URL)"}
+                                :mapping-type  {:type "string"
+                                                :description "SKOS mapping relation — one of exact-match / close-match / broader-match / narrower-match / related-match (default exact-match)"}}
+                               [:tag :external-iri])
+    :handler tag-align-handler}
+   {:name "sandbar.tag.harmonize"
+    :title "Bulk-harmonization DRY-RUN report — drift clusters + auto-mergeable counts"
+    :description "WHICH: runs the full audit + identifies auto-mergeable drift clusters (M.3 candidates).  DRY-RUN report — actual auto-merge requires per-cluster sandbar.tag.consolidate invocations.\n\nWHEN: use during migration M.1-M.5 staging to plan the consolidation pass.  Surfaces which drift clusters are safe to auto-merge (2-variant clusters where canonical choice is obvious) vs. those needing editorial review (3+ variants; ambiguous canonical).  When NOT to use: (a) you want to apply consolidations — call sandbar.tag.consolidate per cluster (this verb is advisory-only at MVP); (b) you want one specific invariant — sandbar.tag.audit returns all 7.\n\nHOW: no arguments.  Returns `:audit-report` (full audit), `:drift-clusters` (M.3 cluster list), `:drift-cluster-count`, `:auto-mergeable-count`, `:note` (explains DRY-RUN + auto-apply policy deferred to Stage 8).\n\nORDER: pre-step for the M.3 phase of vocabulary migration.\n\nCOMBINATION: feeds sandbar.tag.consolidate (per-cluster merges).  Composes with sandbar.tag.audit (deeper audit detail) and sandbar.tag.split (when a cluster reveals partition need)."
+    :inputSchema no-args-schema
+    :handler tag-harmonize-handler}])
 
 (def ^:private verb-by-name
   (into {} (map (juxt :name identity)) verb-catalog))

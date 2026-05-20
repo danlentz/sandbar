@@ -848,44 +848,52 @@
 ;; :dt/type system attribute).
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
- [{:db/ident         :mm/Tag
-   :dt/type          :dt/Class
-   :dt/subclass-of   :dt/Resource
-   :dt/context       "mm"
-   :dt/label         "Tag"
-   :dt/slots         [;; Tier A — Identity (per ADR §2.1)
-                      :mm.tag/value
-                      :mm.tag/alt-label
-                      :mm.tag/hidden-label
-                      ;; Tier B — Documentation
-                      :mm.tag/definition
-                      :mm.tag/scope-note
-                      :mm.tag/example
-                      :mm.tag/editorial-note
-                      :mm.tag/change-note
-                      :mm.tag/history-note
-                      ;; Tier C — Concept relations
-                      :mm.tag/broader-generic
-                      :mm.tag/broader-instantial
-                      :mm.tag/broader-partitive
-                      :mm.tag/related
-                      :mm.tag/in-scheme
-                      ;; Tier D — Lifecycle
-                      :mm.tag/vocabulary-level
-                      :mm.tag/lifecycle-status
-                      :mm.tag/superseded-by
-                      :mm.tag/category-type
-                      :mm.tag/canonical?
-                      ;; Tier E — Federation + provenance + validation
-                      :mm.tag/introduced-in
-                      :mm.tag/constraints
-                      :mm.tag/sort-key
-                      :mm.tag/exact-match
-                      :mm.tag/close-match
-                      :mm.tag/broader-match
-                      :mm.tag/narrower-match
-                      :mm.tag/related-match]
-   :dt/abstract?     false
+ [{:db/ident             :mm/Tag
+   :dt/type              :dt/Class
+   :dt/subclass-of       :dt/Resource
+   :dt/context           "mm"
+   :dt/label             "Tag"
+   :dt/native-codec      :markdown                         ;; tag memorials are markdown documents
+   :dt/codec-type-keyword :tag                             ;; frontmatter `type: tag` routes to :mm/Tag (Stage 7.C class-routing)
+   :dt/bm25f-weights     [[:mm.tag/value         12.0]
+                          [:mm.tag/alt-label      8.0]
+                          [:mm.tag/definition     6.0]
+                          [:mm.tag/scope-note     4.0]
+                          [:mm.tag/hidden-label   2.0]
+                          [:mm.tag/example        1.0]]
+   :dt/slots             [;; Tier A — Identity (per ADR §2.1)
+                          :mm.tag/value
+                          :mm.tag/alt-label
+                          :mm.tag/hidden-label
+                          ;; Tier B — Documentation
+                          :mm.tag/definition
+                          :mm.tag/scope-note
+                          :mm.tag/example
+                          :mm.tag/editorial-note
+                          :mm.tag/change-note
+                          :mm.tag/history-note
+                          ;; Tier C — Concept relations
+                          :mm.tag/broader-generic
+                          :mm.tag/broader-instantial
+                          :mm.tag/broader-partitive
+                          :mm.tag/related
+                          :mm.tag/in-scheme
+                          ;; Tier D — Lifecycle
+                          :mm.tag/vocabulary-level
+                          :mm.tag/lifecycle-status
+                          :mm.tag/superseded-by
+                          :mm.tag/category-type
+                          :mm.tag/canonical?
+                          ;; Tier E — Federation + provenance + validation
+                          :mm.tag/introduced-in
+                          :mm.tag/constraints
+                          :mm.tag/sort-key
+                          :mm.tag/exact-match
+                          :mm.tag/close-match
+                          :mm.tag/broader-match
+                          :mm.tag/narrower-match
+                          :mm.tag/related-match]
+   :dt/abstract?         false
    :db/doc "A canonical tag entity — first-class introspectable reflective type in the metamodel.  Per decisions/tag_as_first_class_introspectable_type_in_metamodel_2026_05_20.md ADR §2.1 (Tag-Modeling First-Class Arc Stage 6 crystallization).  17 slots across 5 tiers: Identity (value/alt-label/hidden-label) + Documentation (definition/scope-note/example/editorial-note/change-note/history-note) + Concept-relations (broader-generic/broader-instantial/broader-partitive/related/in-scheme) + Lifecycle (vocabulary-level/lifecycle-status/superseded-by/category-type/canonical?) + Federation/provenance/validation (introduced-in/constraints/sort-key/exact-match/close-match/broader-match/narrower-match/related-match).  All slot designs grounded in established ontologies (SKOS + ISO 25964 + Z39.19 + Wikidata + SHACL + IPTC + Dydra-revisioned-RDF + DCAT) per the 14 library-studies of the arc + interaction/consult_established_ontologies_before_new_class_type_predicate_2026_05_20.md."}
 
   {:db/ident         :mm/Link
