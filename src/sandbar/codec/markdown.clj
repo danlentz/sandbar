@@ -882,6 +882,32 @@
       ;; Non-:mm/Memory class — single-entity vector; no section decomposition.
       [entity])))
 
+(defn group-by-source
+  "Walk a flat entity-spec vector from `sandbar.projection/ingest-graph` +
+   group by source file.  Each `:mm/Memory` starts a new group; subsequent
+   `:mm/Section` entities join that group until the next `:mm/Memory`.
+   Returns a seq of vectors, each a complete one-file unit suitable for
+   a single atomic Datomic transaction (via `entity-specs->tx-data`).
+
+   Per F#17 of plans/sandbar_0_1_1_coevolution_arc_2026_05_20.md — per-entity
+   transactions can't resolve same-tx forward refs (e.g.,
+   `:mm.memory/first-section` to an in-tx section).  Per-file atomic
+   transactions resolve cross-entity refs via tempid translation.
+
+   Promoted to public + codec-layer at 2026-05-20 consolidation per
+   observations/sandbar_codec_md_entity_specs_to_tx_data_duplicates_mcp_prep_temp_ids_2026_05_20.md."
+  [entities]
+  (loop [acc [] cur [] [e & rst] entities]
+    (cond
+      (nil? e)
+      (cond-> acc (seq cur) (conj cur))
+
+      (= :mm/Memory (:dt/type e))
+      (recur (cond-> acc (seq cur) (conj cur)) [e] rst)
+
+      :else
+      (recur acc (conj cur e) rst))))
+
 (defn- ref-slot?
   "Returns true if `slot-ident` is a `:db.type/ref`-typed attribute per
    the metamodel — sandbar's convention is `:dt/range` carries the target

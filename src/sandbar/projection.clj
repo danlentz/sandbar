@@ -336,8 +336,20 @@
                        (when (or (nil? (:tree-filter filter-spec))
                                  (str/starts-with? rel-path
                                                    (:tree-filter filter-spec)))
-                         (let [source (slurp (io/file root rel-path))]
-                           (md/parse-document source rel-path))))
+                         (try
+                           (let [source (slurp (io/file root rel-path))]
+                             (md/parse-document source rel-path))
+                           (catch Throwable ex
+                             ;; Per-file parse failures don't abort the whole
+                             ;; walk — e.g., a section-ident slug collision
+                             ;; in ONE file shouldn't poison the entire corpus
+                             ;; ingest.  Log + skip.  Consumers downstream
+                             ;; (project-import-handler) report per-group
+                             ;; failures explicitly.
+                             (log/warn :SANDBAR/INGEST-PARSE-SKIP
+                                       {:rel-path rel-path
+                                        :error    (.getMessage ex)})
+                             nil))))
                      (walk-markdown-files root)))]
        (if (or (nil? filter-spec) (empty? filter-spec))
          all-entities

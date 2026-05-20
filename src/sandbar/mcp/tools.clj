@@ -492,35 +492,11 @@
        :exported (count result)
        :files    (mapv :rel-path result)})))
 
-(defn- group-entities-by-source
-  "Walk the flat entity-spec vector from `pg/ingest-graph` + group by
-   source file.  Each `:mm/Memory` starts a new group; subsequent
-   `:mm/Section` entities join that group until the next `:mm/Memory`.
-   Returns a seq of vectors, each a complete one-file unit suitable
-   for a single atomic Datomic transaction.
-
-   Added per F#17 of memory/plans/sandbar_0_1_1_coevolution_arc_-
-   2026_05_20.md — per-entity transactions can't resolve forward
-   refs to sections cited from `:mm.memory/first-section`; per-file
-   atomic transactions resolve cross-entity refs via Datomic's
-   :db/ident upsert semantics within a single tx."
-  [entities]
-  (loop [acc [] cur [] [e & rst] entities]
-    (cond
-      (nil? e)
-      (cond-> acc (seq cur) (conj cur))
-
-      (= :mm/Memory (:dt/type e))
-      (recur (cond-> acc (seq cur) (conj cur)) [e] rst)
-
-      :else
-      (recur acc (conj cur e) rst))))
-
-;; F#17 tempid-translation logic moved to `sandbar.codec.markdown/entity-specs->tx-data`
-;; per consolidation 2026-05-20 (was duplicated as `prep-temp-ids` + `ref-slot?` here).
-;; Single source of truth at the codec layer per
+;; F#17 transact-boundary helpers (group-by-source + tempid-translation) moved
+;; to `sandbar.codec.markdown/group-by-source` + `entity-specs->tx-data` per
+;; 2026-05-20 consolidation.  Single source of truth at the codec layer per
 ;; decisions/sandbar_codec_layer_owns_wire_format_concerns_consumer_native_representation_2026_05_12.md.
-;; Callers below delegate to `codec.markdown/entity-specs->tx-data`.
+;; Callers below delegate to the codec helpers.
 
 (defn- project-import-handler [args]
   (let [from        (or (get args "from") (get args :from))
@@ -548,7 +524,7 @@
         ;; Cross-entity refs (Memory ↔ Section) resolve via :db/ident
         ;; upsert within the single tx.  Per-group failures isolated;
         ;; one bad file does NOT abort the whole import.
-        (let [groups  (group-entities-by-source entities)
+        (let [groups  (codec-md/group-by-source entities)
               results (reduce
                        (fn [acc group]
                          (let [memory     (first group)
