@@ -41,6 +41,7 @@
             [sandbar.aggregate          :as aggregate]
             [sandbar.audit.tag          :as audit-tag]
             [sandbar.codec              :as codec]
+            [sandbar.codec.markdown     :as codec-md]
             [sandbar.entity-ref         :as eref]
             [sandbar.navigate.path      :as nav-path]
             [sandbar.navigate.siblings  :as nav-siblings]
@@ -515,70 +516,11 @@
       :else
       (recur acc (conj cur e) rst))))
 
-(defn- ref-slot?
-  "Returns true if the slot ident is a Datomic ref (`:db.type/ref`).
-   Sandbar schema convention: `:dt/range` for ref attributes is the
-   TARGET CLASS keyword (e.g. `:mm/Section`); for scalar attributes
-   it's the Datomic primitive (`:db.type/string` / `:db.type/instant`
-   / etc.).  So a slot is a ref iff its `dt/range-of` returns a
-   keyword NOT in the `db.type` namespace.
-
-   Used to decide whether a keyword value at that slot should be
-   wrapped as a `[:db/ident kw]` lookup-ref before transact."
-  [slot]
-  (let [range (dt/range-of slot)]
-    (and (keyword? range)
-         (not= "db.type" (namespace range)))))
-
-(defn- prep-temp-ids
-  "Walk a group of entity-specs; assign Datomic string temp-ids + rewrite
-   ref-valued slots that point at OTHER entities in the same group from
-   bare keywords (`:preferences/foo__sec1`) to those temp-ids
-   (`\"tempid-1\"`).  Datomic transact resolves string temp-ids WITHIN
-   the same tx — this is the only mechanism that handles circular refs
-   between entities being created together (`mm/Memory` ↔ `mm/Section`
-   :first-section / :parent).
-
-   Neither bare keywords nor `[:db/ident kw]` lookup-refs resolve to
-   within-tx upserts; they require the target entity to PRE-EXIST.
-   Temp-ids are the canonical Datomic pattern for atomic multi-entity
-   creation with cross-refs.
-
-   Per F#17 of memory/plans/sandbar_0_1_1_coevolution_arc_2026_05_20.md
-   — final form of the fix after testing keyword+lookup-ref variants
-   that don't resolve same-tx upserts."
-  [group]
-  (let [;; ident → temp-id map; one temp-id per entity in this group
-        ident->tempid (into {}
-                            (map-indexed (fn [i e]
-                                           [(:db/ident e) (str "tempid-" i)])
-                                         group))
-        rewrite-value (fn [k v]
-                        (cond
-                          ;; Single keyword ref pointing inside this group
-                          (and (keyword? v) (ref-slot? k)
-                               (contains? ident->tempid v))
-                          (get ident->tempid v)
-
-                          ;; Many-keyword ref slot
-                          (and (sequential? v) (ref-slot? k))
-                          (mapv (fn [x]
-                                  (if (and (keyword? x) (contains? ident->tempid x))
-                                    (get ident->tempid x)
-                                    x))
-                                v)
-
-                          :else v))]
-    (mapv (fn [e]
-            (let [tempid (get ident->tempid (:db/ident e))
-                  e'     (reduce-kv (fn [acc k v]
-                                      (assoc acc k (rewrite-value k v)))
-                                    {}
-                                    e)]
-              ;; Add explicit :db/id temp-id so cross-refs can resolve;
-              ;; :db/ident still upserts the entity to that ident.
-              (assoc e' :db/id tempid)))
-          group)))
+;; F#17 tempid-translation logic moved to `sandbar.codec.markdown/entity-specs->tx-data`
+;; per consolidation 2026-05-20 (was duplicated as `prep-temp-ids` + `ref-slot?` here).
+;; Single source of truth at the codec layer per
+;; decisions/sandbar_codec_layer_owns_wire_format_concerns_consumer_native_representation_2026_05_12.md.
+;; Callers below delegate to `codec.markdown/entity-specs->tx-data`.
 
 (defn- project-import-handler [args]
   (let [from        (or (get args "from") (get args :from))
@@ -612,7 +554,7 @@
                          (let [memory     (first group)
                                ident      (:db/ident memory)
                                class-ident (:dt/type memory)
-                               tx-data    (-> (prep-temp-ids group)
+                               tx-data    (-> (codec-md/entity-specs->tx-data group)
                                                (->> (mapv #(dissoc % :dt/type))))]
                            (try
                              (dt/make-all* tx-data)

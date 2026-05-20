@@ -882,55 +882,86 @@
       ;; Non-:mm/Memory class — single-entity vector; no section decomposition.
       [entity])))
 
+(defn- ref-slot?
+  "Returns true if `slot-ident` is a `:db.type/ref`-typed attribute per
+   the metamodel — sandbar's convention is `:dt/range` carries the target
+   class keyword (e.g., `:mm/Tag`) for refs, vs `:db.type/*` primitives
+   for scalars.
+
+   Used by `entity-specs->tx-data` to identify ref slots whose values
+   may need tempid translation.  Metamodel-driven; NO hardcoded slot
+   knowledge per
+   interaction/no_hardcoded_consumer_class_knowledge_in_substrate_2026_05_13.md."
+  [slot-ident]
+  (let [range (dt/range-of slot-ident)]
+    (and (keyword? range)
+         (not= "db.type" (namespace range)))))
+
 (defn entity-specs->tx-data
-  "Convert a `parse-document` result (entity-specs with keyword-ident refs)
-   into Datomic tx-data with TEMPID-based refs so a single `d/transact` call
-   resolves the in-tx references atomically.
+  "Convert an entity-spec collection (e.g., from `parse-document` OR any
+   other source that emits ident-form refs) into Datomic tx-data with
+   TEMPID-based refs so a single `d/transact` resolves in-tx references
+   atomically.
 
-   Per bugs/sandbar_parse_document_tx_ordering_section_ident_resolution_2026_05_20.md:
-   Datomic's `:db/ident` resolution fires before tx-data is fully processed,
-   so a memory entity's `:mm.memory/first-section :section-X` ref fails when
-   :section-X is defined LATER in the same tx-data.  Solution: assign string
-   tempids to every entity + translate every in-tx-pointing ref slot value
-   to the corresponding tempid.  Section / memory `:db/ident` assertions
-   stay intact — they're the canonical post-tx addressing handles.
+   Per bugs/sandbar_parse_document_tx_ordering_section_ident_resolution_2026_05_20.md
+   + F#17 of plans/sandbar_0_1_1_coevolution_arc_2026_05_20.md:
+   Datomic's `:db/ident` resolution fires before tx-data is fully
+   processed, so an entity's keyword-ident ref to a SIBLING in-tx entity
+   fails (`:db.error/not-an-entity`).  Solution: assign string tempids
+   to every entity (via `:db/id`) + translate every ref-slot value whose
+   target is an in-tx sibling to the corresponding tempid.  Each entity's
+   `:db/ident` assertion stays intact — that's the canonical post-tx
+   addressing handle.
 
-   Affects ref slots: `:mm.memory/first-section`, `:mm.section/parent`,
-   `:mm.section/previous-sibling`, `:mm.section/next-sibling`.
+   GENERALIZED — works for ANY class, not just :mm/Memory + :mm/Section.
+   Ref slots are identified via `ref-slot?` (metamodel-driven; reads
+   `:dt/range` from the slot's :dt/Property definition).  Per the
+   no-hardcoded-consumer-class-knowledge-in-substrate rule.
 
-   Call this immediately before `d/transact` when ingesting parse-document
-   output:
+   Single-source-of-truth at the codec layer per
+   decisions/sandbar_codec_layer_owns_wire_format_concerns_consumer_native_representation_2026_05_12.md
+   — tx-shape IS a wire-format concern.  Consolidates the previously
+   duplicated `sandbar.mcp.tools/prep-temp-ids` (F#17) into a single
+   helper at the codec layer.
+
+   Call this immediately before `d/transact`:
 
        @(d/transact conn (entity-specs->tx-data (parse-document src rel-path)))
 
    `parse-document` keeps the ident-form output so existing test fixtures
-   + round-trip comparisons stay unaffected.  This is the transact-boundary
-   shim."
+   + round-trip comparisons stay unaffected."
   [entity-specs]
-  (let [;; Build ident → tempid map across every entity that has a :db/ident
-        ident->tempid (->> entity-specs
+  (let [ident->tempid (->> entity-specs
                            (map-indexed (fn [i e]
                                           (when-let [id (:db/ident e)]
-                                            [id (str "tempid-" i "-" (subs (str id) 1))])))
+                                            [id (str "tempid-" i)])))
                            (remove nil?)
                            (into {}))
-        translate     (fn [v] (if (some? v) (get ident->tempid v v) v))]
+        translate-value
+        (fn [v]
+          (cond
+            (and (keyword? v) (contains? ident->tempid v))
+            (get ident->tempid v)
+
+            (sequential? v)
+            (mapv (fn [x]
+                    (if (and (keyword? x) (contains? ident->tempid x))
+                      (get ident->tempid x)
+                      x))
+                  v)
+
+            :else v))]
     (mapv (fn [e]
-            (let [id (:db/ident e)
-                  tid (get ident->tempid id)
-                  ;; Translate every ref slot we know about.  Use `cond->`
-                  ;; so we don't add slots that weren't present in the input.
-                  e' (cond-> e
-                       (contains? e :mm.memory/first-section)
-                       (update :mm.memory/first-section translate)
-                       (contains? e :mm.section/parent)
-                       (update :mm.section/parent translate)
-                       (contains? e :mm.section/previous-sibling)
-                       (update :mm.section/previous-sibling translate)
-                       (contains? e :mm.section/next-sibling)
-                       (update :mm.section/next-sibling translate))]
-              (cond-> e'
-                tid (assoc :db/id tid))))
+            (let [tid (get ident->tempid (:db/ident e))
+                  e'  (reduce-kv
+                        (fn [acc k v]
+                          (assoc acc k
+                                 (if (and (try (ref-slot? k) (catch Exception _ false)))
+                                   (translate-value v)
+                                   v)))
+                        {}
+                        e)]
+              (cond-> e' tid (assoc :db/id tid))))
           entity-specs)))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
