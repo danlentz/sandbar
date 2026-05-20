@@ -100,9 +100,9 @@
             (println "=== AUDIT SUMMARY ===")
             (println (:summary report))
             (doseq [inv (:invariants report)]
-              (printf "  %-22s violations: %d%n"
-                      (name (:invariant inv))
-                      (:violation-count inv)))
+              (println (format "  %-22s violations: %d"
+                               (name (:invariant inv))
+                               (:violation-count inv))))
             report))
         (finally
           (reset! db/**conn* nil)
