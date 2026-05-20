@@ -313,7 +313,203 @@
    :db/valueType   :db.type/string
    :db/cardinality :db.cardinality/one
    :db/fulltext    true
-   :db/doc "The raw markdown body (everything after the frontmatter ---).  Preserved for byte-stability round-trip + cases where structural decomposition loses information.  Fulltext-indexed as a fallback search axis for content that doesn't decompose cleanly into sections; per-section indexing on mm.section/body is preferred for relevance attribution."}]
+   :db/doc "The raw markdown body (everything after the frontmatter ---).  Preserved for byte-stability round-trip + cases where structural decomposition loses information.  Fulltext-indexed as a fallback search axis for content that doesn't decompose cleanly into sections; per-section indexing on mm.section/body is preferred for relevance attribution."}
+
+  ;; ==========================================================================
+  ;; Typed-edge slots — Friction #14 of the 0.1.1 co-evolution arc resolved
+  ;; here as part of the bootstrap-memory-substrate sub-arc (Stage 2.A).
+  ;; Memory-corpus side: memory/plans/sandbar_bootstrap_memory_substrate_arc_-
+  ;; 2026_05_20.md.  All Tier-A typed-edge predicates per the corpus's
+  ;; predicate vocabulary (memory/predicates/*.md) are declared as
+  ;; cardinality-many string slots on mm/Memory.  Values are rel-paths
+  ;; into the consumer's memory tree (e.g., "decisions/foo.md");
+  ;; navigation requires a join via :mm.memory/rel-path on the target side.
+  ;; A future ADR may migrate to :db.type/ref once the corpus is fully
+  ;; ingested + entity-resolution is stable.
+
+  {:db/ident       :mm.memory/related
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Memory
+   :dt/range       :db.type/string
+   :db/valueType   :db.type/string
+   :db/cardinality :db.cardinality/many
+   :db/doc "See-also typed-edge (frontmatter `related:`).  Rel-paths to sibling memorials whose topic / authority overlaps.  Most-used corpus typed-edge (1236 of 1388 memorials).  Per memory/predicates/related.md."}
+
+  {:db/ident       :mm.memory/cites
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Memory
+   :dt/range       :db.type/string
+   :db/valueType   :db.type/string
+   :db/cardinality :db.cardinality/many
+   :db/doc "Citation typed-edge (frontmatter `cites:`).  Rel-paths to memorials authoring source claims or vocabulary this memorial relies on.  Per memory/predicates/cites.md."}
+
+  {:db/ident       :mm.memory/motivated-by
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Memory
+   :dt/range       :db.type/string
+   :db/valueType   :db.type/string
+   :db/cardinality :db.cardinality/many
+   :db/doc "Causal-motivation typed-edge (frontmatter `motivated-by:`).  Rel-paths to memorials whose existence motivates THIS memorial.  Inverse of :mm.memory/motivates.  Per memory/predicates/motivated-by.md."}
+
+  {:db/ident       :mm.memory/motivates
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Memory
+   :dt/range       :db.type/string
+   :db/valueType   :db.type/string
+   :db/cardinality :db.cardinality/many
+   :db/doc "Inverse of :mm.memory/motivated-by (frontmatter `motivates:`).  Per memory/predicates/motivates.md."}
+
+  {:db/ident       :mm.memory/composes-with
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Memory
+   :dt/range       :db.type/string
+   :db/valueType   :db.type/string
+   :db/cardinality :db.cardinality/many
+   :db/doc "Composition typed-edge (frontmatter `composes-with:`).  Rel-paths to memorials whose decisions / discipline compose with THIS one.  Per memory/predicates/composes-with.md."}
+
+  {:db/ident       :mm.memory/refines
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Memory
+   :dt/range       :db.type/string
+   :db/valueType   :db.type/string
+   :db/cardinality :db.cardinality/many
+   :db/doc "Refinement typed-edge (frontmatter `refines:`).  Rel-paths to memorials this memorial refines (narrows / corrects / extends).  Per memory/predicates/refines.md."}
+
+  {:db/ident       :mm.memory/supersedes
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Memory
+   :dt/range       :db.type/string
+   :db/valueType   :db.type/string
+   :db/cardinality :db.cardinality/many
+   :db/doc "Supersession typed-edge (frontmatter `supersedes:`).  Rel-paths to memorials this memorial replaces.  Per memory/predicates/supersedes.md."}
+
+  {:db/ident       :mm.memory/superseded-by
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Memory
+   :dt/range       :db.type/string
+   :db/valueType   :db.type/string
+   :db/cardinality :db.cardinality/many
+   :db/doc "Inverse of :mm.memory/supersedes (frontmatter `superseded-by:`).  Per memory/predicates/superseded-by.md."}
+
+  {:db/ident       :mm.memory/conforms-to
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Memory
+   :dt/range       :db.type/string
+   :db/valueType   :db.type/string
+   :db/cardinality :db.cardinality/many
+   :db/doc "Type-conformance typed-edge (frontmatter `conforms-to:`).  Rel-paths to type / meta-type / pattern memorials this memorial conforms to.  Per memory/predicates/conforms-to.md."}
+
+  {:db/ident       :mm.memory/part-of
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Memory
+   :dt/range       :db.type/string
+   :db/valueType   :db.type/string
+   :db/cardinality :db.cardinality/many
+   :db/doc "Hierarchy typed-edge (frontmatter `part-of:`).  Rel-paths to enclosing memorials (arc / parent-plan / etc.).  Per memory/predicates/part-of.md."}
+
+  {:db/ident       :mm.memory/has-part
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Memory
+   :dt/range       :db.type/string
+   :db/valueType   :db.type/string
+   :db/cardinality :db.cardinality/many
+   :db/doc "Inverse of :mm.memory/part-of (frontmatter `has-part:`).  Per memory/predicates/has-part.md."}
+
+  {:db/ident       :mm.memory/descends-from
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Memory
+   :dt/range       :db.type/string
+   :db/valueType   :db.type/string
+   :db/cardinality :db.cardinality/many
+   :db/doc "Lineage typed-edge (frontmatter `descends-from:`).  Rel-paths to ancestor memorials in a derivation chain.  Per memory/predicates/descends-from.md."}
+
+  {:db/ident       :mm.memory/evidenced-by
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Memory
+   :dt/range       :db.type/string
+   :db/valueType   :db.type/string
+   :db/cardinality :db.cardinality/many
+   :db/doc "Evidence typed-edge (frontmatter `evidenced-by:`).  Rel-paths to memorials providing supporting evidence for THIS one.  Per memory/predicates/evidenced-by.md."}
+
+  {:db/ident       :mm.memory/evidences
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Memory
+   :dt/range       :db.type/string
+   :db/valueType   :db.type/string
+   :db/cardinality :db.cardinality/many
+   :db/doc "Inverse of :mm.memory/evidenced-by (frontmatter `evidences:`).  Per memory/predicates/evidences.md."}
+
+  {:db/ident       :mm.memory/documented-by
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Memory
+   :dt/range       :db.type/string
+   :db/valueType   :db.type/string
+   :db/cardinality :db.cardinality/many
+   :db/doc "Documentation typed-edge (frontmatter `documented-by:`).  Rel-paths to memorials documenting THIS one.  Per memory/predicates/documented-by.md."}
+
+  {:db/ident       :mm.memory/documents
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Memory
+   :dt/range       :db.type/string
+   :db/valueType   :db.type/string
+   :db/cardinality :db.cardinality/many
+   :db/doc "Inverse of :mm.memory/documented-by (frontmatter `documents:`).  Per memory/predicates/documents.md."}
+
+  {:db/ident       :mm.memory/triggered-by
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Memory
+   :dt/range       :db.type/string
+   :db/valueType   :db.type/string
+   :db/cardinality :db.cardinality/many
+   :db/doc "Causal-trigger typed-edge (frontmatter `triggered-by:`).  Rel-paths to memorials whose event / decision triggered THIS one's existence.  Per memory/predicates/triggered-by.md."}
+
+  {:db/ident       :mm.memory/touches
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Memory
+   :dt/range       :db.type/string
+   :db/valueType   :db.type/string
+   :db/cardinality :db.cardinality/many
+   :db/doc "Topical-touch typed-edge (frontmatter `touches:`).  Rel-paths to memorials whose topic THIS one engages with (lighter than `:cites`).  Per memory/predicates/touches.md (TBD if predicate doc exists)."}
+
+  {:db/ident       :mm.memory/parent
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Memory
+   :dt/range       :db.type/string
+   :db/valueType   :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/doc "Parent-hierarchy typed-edge (frontmatter `parent:`).  Rel-path to a parent memorial (single-valued).  Per memory/predicates/parent.md (TBD)."}
+
+  {:db/ident       :mm.memory/informs
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Memory
+   :dt/range       :db.type/string
+   :db/valueType   :db.type/string
+   :db/cardinality :db.cardinality/many
+   :db/doc "Informational typed-edge (frontmatter `informs:`).  Rel-paths to memorials whose decision-making this memorial informs.  Per memory/predicates/informs.md."}
+
+  {:db/ident       :mm.memory/informed-by
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Memory
+   :dt/range       :db.type/string
+   :db/valueType   :db.type/string
+   :db/cardinality :db.cardinality/many
+   :db/doc "Inverse of :mm.memory/informs (frontmatter `informed-by:`).  Per memory/predicates/informed-by.md."}
+
+  {:db/ident       :mm.memory/implements
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Memory
+   :dt/range       :db.type/string
+   :db/valueType   :db.type/string
+   :db/cardinality :db.cardinality/many
+   :db/doc "Implementation typed-edge (frontmatter `implements:`).  Rel-paths to memorials this memorial implements / realizes.  Per memory/predicates/implements.md."}
+
+  {:db/ident       :mm.memory/introduced-in
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Memory
+   :dt/range       :db.type/string
+   :db/valueType   :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/doc "Version / release marker (frontmatter `introduced-in:`).  Tracks substrate version when memorial was added.  Used in 493 / 1388 memorials."}]
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Class Definitions
@@ -385,7 +581,22 @@
                       :mm.memory/last-reviewed :mm.memory/created-by
                       :mm.memory/importance :mm.memory/tags
                       :mm.memory/frontmatter :mm.memory/first-section
-                      :mm.memory/links :mm.memory/body-raw]
+                      :mm.memory/links :mm.memory/body-raw
+                      ;; Typed-edge slots (sub-arc Stage 2.A; F#14 resolution)
+                      :mm.memory/related :mm.memory/cites
+                      :mm.memory/motivated-by :mm.memory/motivates
+                      :mm.memory/composes-with :mm.memory/refines
+                      :mm.memory/supersedes :mm.memory/superseded-by
+                      :mm.memory/conforms-to
+                      :mm.memory/part-of :mm.memory/has-part
+                      :mm.memory/descends-from
+                      :mm.memory/evidenced-by :mm.memory/evidences
+                      :mm.memory/documented-by :mm.memory/documents
+                      :mm.memory/triggered-by :mm.memory/touches
+                      :mm.memory/parent
+                      :mm.memory/informs :mm.memory/informed-by
+                      :mm.memory/implements
+                      :mm.memory/introduced-in]
    :dt/abstract?     false
    :db/doc "A corpus memorial — a markdown document under memory/ with YAML frontmatter and a markdown body.  Decomposed at multiple granularities: well-known frontmatter as direct properties; long-tail frontmatter via mm/Frontmatter; tags via mm/Tag refs; body as a sibling chain of mm/Section entities reachable via :mm.memory/first-section + :mm.section/next-sibling walk; markdown links via mm/Link refs."}]
 
