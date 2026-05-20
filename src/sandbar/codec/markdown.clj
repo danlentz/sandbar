@@ -341,6 +341,24 @@
     (sequential? v) (mapv coerce-string->keyword v)
     :else v))
 
+(defn- coerce-string->instant
+  "Coerce a YAML-parsed string to a java.util.Date for an instant-typed
+   slot.  Accepts ISO-8601 forms understood by `clojure.instant/read-
+   instant-date` (date-only YYYY-MM-DD; datetime with offset; etc.).
+   Lists of strings → vectors of Dates.  Date / Instant pass-through.
+   Falls back to the original value on parse failure (the transact
+   layer will surface a loud type error if the shape doesn't fit —
+   the right discipline per F-S-002 fail-loud).  Added 2026-05-20 per
+   F#15 of memory/plans/sandbar_0_1_1_coevolution_arc_2026_05_20.md +
+   Stage 2.A of the bootstrap-memory-substrate sub-arc."
+  [v]
+  (cond
+    (instance? java.util.Date v) v
+    (string? v)     (try (clojure.instant/read-instant-date v)
+                         (catch Exception _ v))
+    (sequential? v) (mapv coerce-string->instant v)
+    :else v))
+
 (defn- keyword-typed-slot?
   "Returns true if `slot-ident`'s declared `:dt/range` is `:db.type/keyword`.
 
@@ -350,21 +368,44 @@
   [slot-ident]
   (= :db.type/keyword (dt/range-of slot-ident)))
 
+(defn- instant-typed-slot?
+  "Returns true if `slot-ident`'s declared `:dt/range` is
+   `:db.type/instant`.  Reads the slot's range via `dt/range-of`."
+  [slot-ident]
+  (= :db.type/instant (dt/range-of slot-ident)))
+
+(defn- slot-declared?
+  "Returns true when `slot-ident` is a declared attribute on the
+   metamodel (i.e., `dt/range-of` returns a non-nil range).  Used by
+   `frontmatter->slots` to drop unknown frontmatter keys rather than
+   transacting them as non-existent attributes — per F#16 of the
+   0.1.1 co-evolution arc (sandbar adapts to the corpus's long-tail
+   without failing on unfamiliar slots).  A future refinement may
+   route unknowns into `:mm.memory/frontmatter` ref (:mm/Frontmatter
+   entity with :mm.frontmatter/extra carrying the EDN map) rather
+   than dropping."
+  [slot-ident]
+  (some? (dt/range-of slot-ident)))
+
 (defn frontmatter->slots
   "Transform a YAML-parsed frontmatter map into a slot map for the given
-   class.  Each key is run through `frontmatter-key->slot`; values of
-   keyword-typed slots (detected via `dt/range-of`) are coerced
-   string → keyword.
+   class.  Each key is run through `frontmatter-key->slot`; values are
+   coerced per slot type — string → keyword for keyword-typed slots,
+   string → Date for instant-typed slots.  Unknown slots (no `dt/range-of`)
+   are DROPPED with a debug-log; this prevents the codec from emitting
+   non-existent-attribute idents that would fail at transact.
 
-   No per-class hardcoding — the codec reads the keyword-typed property
-   set from the metamodel at runtime."
+   No per-class hardcoding — the codec reads slot type via metamodel
+   introspection at runtime."
   [class-ident frontmatter-map]
   (into {}
         (for [[k v] frontmatter-map
-              :let [slot (frontmatter-key->slot class-ident k)
-                    v'   (if (keyword-typed-slot? slot)
-                           (coerce-string->keyword v)
-                           v)]]
+              :let [slot (frontmatter-key->slot class-ident k)]
+              :when (slot-declared? slot)
+              :let [v' (cond
+                         (keyword-typed-slot? slot) (coerce-string->keyword v)
+                         (instant-typed-slot? slot) (coerce-string->instant v)
+                         :else v)]]
           [slot v'])))
 
 (defn- coerce-keyword->string
