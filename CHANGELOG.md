@@ -18,7 +18,7 @@ Follow-on after 0.1.1 ships: return to the actor-context-rules deep-dive arc wit
 
 ### Added
 
-- _(pending — populated as arc proceeds)_
+- **`lein issue-mcp-token`** — bootstrap script for provisioning MCP-client service-accounts.  Creates an `auth/ServiceAccount` entity, hashes the API key via Buddy, and emits the `<service-name>:<api-key>` Bearer-token shape plus a ready-to-paste `export SANDBAR_TOKEN=...` shell line.  Resolves Friction Item #1 of the memory-corpus arc plan (`memory/plans/sandbar_0_1_1_coevolution_arc_2026_05_20.md` §3) — the MCP client could not previously authenticate without a hand-rolled REPL session.  New namespace at `src/sandbar/scripts/issue_mcp_token.clj`; lein alias added to `project.clj`; usage documented in `doc/auth.md` §'Issuing tokens for MCP clients'.
 
 ### Changed
 

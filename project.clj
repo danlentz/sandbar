@@ -69,7 +69,8 @@
              :uberjar {:aot [sandbar.core] }}
 
   :aliases {"bench" ["with-profile" "+bench"
-                     "run" "-m" "sandbar.bench.run"]}
+                     "run" "-m" "sandbar.bench.run"]
+            "issue-mcp-token" ["run" "-m" "sandbar.scripts.issue-mcp-token"]}
 
 
   :asciidoc {:sources ["doc/*.adoc"]
