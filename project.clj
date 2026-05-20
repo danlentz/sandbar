@@ -1,4 +1,4 @@
-(defproject com.github.danlentz/sandbar "0.1.0"
+(defproject com.github.danlentz/sandbar "0.1.1-SNAPSHOT"
   :description "Metacircular metamodel platform on Datomic — RDFS-style classes + properties + inheritance, equipped with a four-axis retrieval surface (BM25F fulltext search, structural + temporal aggregation, Wilbur-lineage path-grammar navigation, library-card orientation), exposed simultaneously through HTTP REST and Model Context Protocol (MCP) for AI clients"
   :author "Dan Lentz"
   :url "https://github.com/danlentz/sandbar"

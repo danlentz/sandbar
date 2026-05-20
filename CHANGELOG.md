@@ -2,6 +2,32 @@
 
 All notable changes to Sandbar are documented in this file.  Format informed by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html) at and after 0.1.0.
 
+## [Unreleased] — Memory-Model Co-Evolution arc
+
+This release is being authored as the **Memory-Model Co-Evolution arc** per Dan-directive 2026-05-20 (memory-corpus side decision at [`memory/decisions/sandbar_0_1_1_coevolution_with_memory_model_2026_05_20.md`](https://github.com/danlentz/claude/blob/master/memory/decisions/sandbar_0_1_1_coevolution_with_memory_model_2026_05_20.md); arc plan at [`memory/plans/sandbar_0_1_1_coevolution_arc_2026_05_20.md`](https://github.com/danlentz/claude/blob/master/memory/plans/sandbar_0_1_1_coevolution_arc_2026_05_20.md)).
+
+Rather than the corpus immediately switching to canonical Clojars consumption of 0.1.0 (the path anticipated by the 2026-05-12 prior decision), Dan opened a co-evolution branch: corpus (memory-model client) begins integrating + consuming Sandbar 0.1.1-SNAPSHOT via local `lein install`; integration friction surfacing during memory-model consumption is analyzed at the architectural boundary; evolutions land on either the Sandbar foundation OR the memory-model per layering principles + substrate-first-friction discipline + improve-abstraction-not-bypass.
+
+When the arc closes:
+
+- `project.clj` bumps from `0.1.1-SNAPSHOT` → `0.1.1`
+- Sandbar 0.1.1 cuts to Clojars (Dan-deploy)
+- Corpus migrates to canonical Clojars consumption per the prior 2026-05-12 decision
+
+Follow-on after 0.1.1 ships: return to the actor-context-rules deep-dive arc with sandbar-backend awareness in hand (per `authorizations/actor_context_rules_deep_dive_arc_2026_05_11.md` — standing since 2026-05-11; paused during Phase R).
+
+### Added
+
+- _(pending — populated as arc proceeds)_
+
+### Changed
+
+- _(pending)_
+
+### Fixed
+
+- _(pending)_
+
 ## [0.1.0] — 2026-05-15 — first public release
 
 First public release of Sandbar.  Foundational substrate: metacircular RDFS-style metamodel on Datomic, the codec layer, the bidirectional projection primitive, the workflow substrate, the MCP server, and the comprehensive four-axis retrieval surface (search / aggregate / navigate / orient).
