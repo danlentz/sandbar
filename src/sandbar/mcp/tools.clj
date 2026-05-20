@@ -46,6 +46,7 @@
             [sandbar.navigate.siblings  :as nav-siblings]
             [sandbar.orient             :as orient]
             [sandbar.projection      :as pg]
+            [sandbar.search             :as search]
             [sandbar.db.datatype        :as dt]
             [sandbar.db.datomic         :as db]
             [sandbar.mcp.envelope       :as envelope]
@@ -950,31 +951,6 @@
   (and (string? haystack) (string? needle)
        (str/includes? (str/lower-case haystack) (str/lower-case needle))))
 
-(defn- tag-match-score
-  "Heuristic alignment score between a tag entity-map and a query concept.
-   Weighted-substring match: exact :value (10) > :alt-label / :hidden-label
-   (5) > :definition / :scope-note (3) > :example (1).  Score = 0 means
-   no match.  This is the Stage 7.D MVP scorer — Stage 7.F refinement will
-   replace with `sandbar.search.bm25f/search` using the :mm/Tag
-   :dt/bm25f-weights declaration."
-  [tag concept]
-  (let [v   (or (:mm.tag/value tag) "")
-        alt (:mm.tag/alt-label tag)        ; many
-        hid (:mm.tag/hidden-label tag)     ; many
-        def (or (:mm.tag/definition tag) "")
-        sn  (or (:mm.tag/scope-note tag) "")
-        ex  (or (:mm.tag/example tag) "")
-        c   (str concept)]
-    (cond-> 0
-      (= (str/lower-case v) (str/lower-case c))                    (+ 100)
-      (and (not= v c) (string-contains-ci? v c))                   (+ 10)
-      (some #(= (str/lower-case %) (str/lower-case c)) (seq alt))  (+ 7)
-      (some #(string-contains-ci? % c) (seq alt))                  (+ 5)
-      (some #(string-contains-ci? % c) (seq hid))                  (+ 5)
-      (string-contains-ci? def c)                                  (+ 3)
-      (string-contains-ci? sn c)                                   (+ 3)
-      (string-contains-ci? ex c)                                   (+ 1))))
-
 (defn- tag-summary
   "Project a tag entity-map to a JSON-friendly summary map carrying the
    canonical value + key documentation slots + broader/narrower context."
@@ -995,42 +971,52 @@
       (seq (:mm.tag/broader-partitive tag))  (assoc :broader-partitive  (project-refs (:mm.tag/broader-partitive tag)))
       (seq (:mm.tag/related tag))            (assoc :related            (project-refs (:mm.tag/related tag))))))
 
-(defn- all-tag-entities
-  "Return all entities with :mm.tag/value populated — see
-   sandbar.audit.tag/all-tag-entities for rationale (substrate carries both
-   canonical :dt/type :mm/Tag entities + legacy F#18 anonymous-upsert
-   entities; both are tag-shaped)."
-  []
-  (let [eids (d/q '[:find [?e ...]
-                    :where [?e :mm.tag/value _]]
-                  (db/db))]
-    (mapv #(d/entity (db/db) %) eids)))
-
 (defn- tag-lookup-handler
   "Step 1 of the sandbar.ground compositional workflow: tag-vocabulary
-   primitive.  Surfaces tags whose canonical-form / alt-label / scope-note
-   align with the query concept; returns ranked candidates with broader/
-   narrower context.  When no tag scores above the threshold, reports the
-   gap suggesting a sandbar.tag.define call."
+   primitive.  Surfaces tags whose canonical-form / alt-label / hidden-label
+   / definition / scope-note / example align with the query concept; returns
+   ranked candidates with broader/narrower context.  When no canonical tag
+   scores positive, reports the gap suggesting a sandbar.tag.define call.
+
+   Uses `sandbar.search/search-bm25f` against `:mm/Tag` — leverages the
+   `:dt/bm25f-weights` declaration shipped at Stage 7.A:
+     :mm.tag/value         12.0
+     :mm.tag/alt-label      8.0
+     :mm.tag/definition     6.0
+     :mm.tag/scope-note     4.0
+     :mm.tag/hidden-label   2.0
+     :mm.tag/example        1.0
+
+   Note: search-bm25f operates over `:dt/type :mm/Tag` instances.  F#18
+   anonymous-upsert entities (pre-Stage-7.A; lack :dt/type) won't appear
+   in lookup results — they surface in `sandbar.tag.audit` as
+   `:undefined-used` violations + migrate to canonical via Stage 8 M.2."
   [args]
   (let [concept (or (get args "concept") (get args :concept))
         limit   (or (get args "limit")   (get args :limit) 10)]
     (when (str/blank? (str concept))
       (throw (ex-info "Missing required argument: concept" {:args args})))
-    (let [tags    (all-tag-entities)
-          scored  (->> tags
-                       (map (fn [t] {:score (tag-match-score t concept) :tag t}))
-                       (filter #(pos? (:score %)))
-                       (sort-by (comp - :score))
-                       (take limit))]
-      {:concept   concept
-       :matches   (vec (for [{:keys [score tag]} scored]
-                         (assoc (tag-summary tag) :score score)))
-       :gap?      (empty? scored)
-       :gap-hint  (when (empty? scored)
-                    (str "No tag in the corpus aligns with \"" concept
-                         "\".  Consider sandbar.tag.define :name \"" concept
-                         "\" :slots {:definition \"...\" :scope-note \"...\"}"))})))
+    (let [{:keys [hits total]}
+          (try
+            (search/search-bm25f {:query concept
+                                  :class :mm/Tag
+                                  :limit limit})
+            (catch Exception e
+              ;; Defensive — surface the gap rather than crash if BM25F
+              ;; isn't ready (e.g., no :mm/Tag instances yet).
+              {:hits [] :total 0 :error (.getMessage e)}))]
+      {:concept     concept
+       :matches     (vec (for [hit hits]
+                           (assoc (tag-summary (:entity hit))
+                                  :score (:score hit))))
+       :match-total total
+       :gap?        (zero? (count hits))
+       :gap-hint    (when (zero? (count hits))
+                      (str "No tag in the corpus aligns with \"" concept
+                           "\".  Consider sandbar.tag.define :name \"" concept
+                           "\" :slots {:definition \"...\" :scope-note \"...\"}.  "
+                           "F#18 anonymous tags (if any) surface in sandbar.tag.audit's "
+                           ":undefined-used invariant."))})))
 
 (defn- tag-define-handler
   "Author a new canonical tag.  Per ADR §2.5 — `sandbar.tag.define` forces
