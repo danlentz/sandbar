@@ -341,16 +341,29 @@
                      (walk-markdown-files root)))]
        (if (or (nil? filter-spec) (empty? filter-spec))
          all-entities
-         ;; Filter memories first; drop sections of dropped memories
-         (let [memories       (clojure.core/filter #(= :mm/Memory (:dt/type %)) all-entities)
-               pass-memories  (apply-filter memories filter-spec)
-               pass-mem-idents (set (map :db/ident pass-memories))
-               sections       (clojure.core/filter #(= :mm/Section (:dt/type %)) all-entities)
-               pass-sections  (vec (clojure.core/filter
-                                     (fn [s] (contains? pass-mem-idents
-                                                        (:mm.section/parent s)))
-                                     sections))]
-           (into pass-memories pass-sections)))))))
+         ;; Filter memories per the spec; sections of dropped memories drop too.
+         ;; Walk the in-order all-entities preserving per-file interleaving
+         ;; (memory followed by its sections in document order — the documented
+         ;; contract of `ingest-graph`'s return value).  Prior implementation
+         ;; via `(into pass-memories pass-sections)` reordered into
+         ;; [all-memories then all-sections], violating the contract +
+         ;; breaking downstream per-file grouping in callers like
+         ;; `sandbar.mcp.tools/project-import-handler`.  Surfaced as
+         ;; Friction #17 of memory/plans/sandbar_0_1_1_coevolution_arc_-
+         ;; 2026_05_20.md / bootstrap-memory-substrate sub-arc Stage 2.A.
+         (let [memories        (clojure.core/filter #(= :mm/Memory (:dt/type %)) all-entities)
+               pass-mem-idents (set (map :db/ident (apply-filter memories filter-spec)))]
+           (loop [out [] include? false [e & rst] all-entities]
+             (cond
+               (nil? e)
+               out
+
+               (= :mm/Memory (:dt/type e))
+               (let [inc? (contains? pass-mem-idents (:db/ident e))]
+                 (recur (cond-> out inc? (conj e)) inc? rst))
+
+               :else
+               (recur (cond-> out include? (conj e)) include? rst)))))))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Round-trip-test convenience
