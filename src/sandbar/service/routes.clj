@@ -166,6 +166,7 @@
                               content/log-response
                               content/accept-content
                               params/parsed-params
+                              params/validated-params
                               mcp-auth/bearer-interceptor
                               mcp-auth/require-bearer]
        {:post mcp-transport/mcp-handler}
