@@ -488,6 +488,30 @@
        :exported (count result)
        :files    (mapv :rel-path result)})))
 
+(defn- group-entities-by-source
+  "Walk the flat entity-spec vector from `pg/ingest-graph` + group by
+   source file.  Each `:mm/Memory` starts a new group; subsequent
+   `:mm/Section` entities join that group until the next `:mm/Memory`.
+   Returns a seq of vectors, each a complete one-file unit suitable
+   for a single atomic Datomic transaction.
+
+   Added per F#17 of memory/plans/sandbar_0_1_1_coevolution_arc_-
+   2026_05_20.md — per-entity transactions can't resolve forward
+   refs to sections cited from `:mm.memory/first-section`; per-file
+   atomic transactions resolve cross-entity refs via Datomic's
+   :db/ident upsert semantics within a single tx."
+  [entities]
+  (loop [acc [] cur [] [e & rst] entities]
+    (cond
+      (nil? e)
+      (cond-> acc (seq cur) (conj cur))
+
+      (= :mm/Memory (:dt/type e))
+      (recur (cond-> acc (seq cur) (conj cur)) [e] rst)
+
+      :else
+      (recur acc (conj cur e) rst))))
+
 (defn- project-import-handler [args]
   (let [from        (or (get args "from") (get args :from))
         filter-spec (->filter-spec (or (get args "filter") (get args :filter)))
@@ -510,27 +534,36 @@
                            {:dt/type (:dt/type e)
                             :ident   (:db/ident e)})
                          entities)}
-        ;; Persist: dt/make each entity; capture per-entity success / failure
-        (let [results (reduce
-                       (fn [acc e]
-                         (let [class-ident (:dt/type e)
-                               props       (dissoc e :dt/type)
-                               ident       (:db/ident e)]
+        ;; Persist: group by source file; one atomic transact per group.
+        ;; Cross-entity refs (Memory ↔ Section) resolve via :db/ident
+        ;; upsert within the single tx.  Per-group failures isolated;
+        ;; one bad file does NOT abort the whole import.
+        (let [groups  (group-entities-by-source entities)
+              results (reduce
+                       (fn [acc group]
+                         (let [memory     (first group)
+                               ident      (:db/ident memory)
+                               class-ident (:dt/type memory)
+                               tx-data    (mapv #(dissoc % :dt/type) group)]
                            (try
-                             (dt/make class-ident props {:validate? false})
+                             (dt/make-all* tx-data)
                              (update acc :persisted conj
-                                     {:dt/type class-ident :ident ident})
+                                     {:dt/type     class-ident
+                                      :ident       ident
+                                      :tx-entities (count group)})
                              (catch Throwable ex
                                (update acc :failed conj
-                                       {:dt/type class-ident
-                                        :ident   ident
-                                        :error   (.getMessage ex)})))))
+                                       {:dt/type     class-ident
+                                        :ident       ident
+                                        :tx-entities (count group)
+                                        :error       (.getMessage ex)})))))
                        {:persisted [] :failed []}
-                       entities)]
+                       groups)]
           {:from           from
            :filter         filter-spec
            :persist?       true
            :imported       (count entities)
+           :groups         (count groups)
            :persisted-count (count (:persisted results))
            :failed-count   (count (:failed results))
            :failed         (:failed results)})))))

@@ -147,6 +147,40 @@
      (log/debug :DT/MAKE {:class dt :entity-id (:db/id new-entity)})
      new-entity)))
 
+(defn make-all*
+  "Creates a batch of typed instances in a SINGLE atomic Datomic
+   transaction — WITHOUT validation.  Batch analog of `make*` extending
+   the `make` / `make*` validated / no-validation parallelism to the
+   batch shape; `make-all` (validated batch) reserved for future
+   addition.
+
+   Arguments:
+     entity-specs - vec of entity-spec maps; each carries `:dt/type` +
+                    sandbar / Datomic keys (`:db/ident`, slot idents).
+
+   Returns the Datomic transaction result map.
+
+   Use when multiple entities must be created atomically with cross-
+   references intact — e.g., an `mm/Memory` plus its child `mm/Section`
+   entities from one corpus markdown file.  Cross-entity refs resolve
+   via Datomic's `:db/ident` upsert semantics within the single tx;
+   forward references inside the batch resolve at transaction time.
+
+   For single-entity creation with pre-transaction validation, use
+   `make` instead.  For single-entity without validation, use `make*`.
+   For batch creation WITH validation, use `make-all` (TBD — not yet
+   defined).
+
+   Added 2026-05-20 per F#17 of memory/plans/sandbar_0_1_1_coevolution_-
+   arc_2026_05_20.md — `sandbar.project.import :persist? true` needs to
+   transact each markdown file's memory + sections atomically so that
+   `:mm.memory/first-section` and `:mm.section/parent` cross-refs
+   resolve via :db/ident upsert."
+  [entity-specs]
+  (let [result @(d/transact (db/conn) entity-specs)]
+    (log/debug :DT/MAKE-ALL* {:count (count entity-specs)})
+    result))
+
 (declare validate-data)  ;; forward declaration
 
 (defn make
