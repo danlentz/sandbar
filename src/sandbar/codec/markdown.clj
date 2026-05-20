@@ -486,22 +486,69 @@
 ;; YAML emission helpers
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
+(defn- unwrap-upsert-map
+  "Reverse the parse-side `{unique-attr value}` wrapping that
+   `coerce-string->upsert-map` applies to ref-slot values.  Used at emit
+   time so the YAML wire-form shows plain strings instead of nested maps
+   like `- mm.tag/value: actor`.
+
+   Single map → string (when the map is just `{unique-attr value}`).
+   Vector of maps → vector of strings.
+   Pass-through for non-upsert shapes."
+  [v]
+  (let [unwrap-one (fn [x]
+                     (if (and (map? x) (= 1 (count x))
+                              (let [k (first (keys x))]
+                                (and (keyword? k)
+                                     (= "db.unique" (some-> (some #(when (= % :db.unique/identity)
+                                                                     :db.unique/identity)
+                                                                   [:db.unique/identity])
+                                                            namespace)))))
+                       ;; map is shape {ident value} — extract the value
+                       (first (vals x))
+                       x))]
+    (cond
+      ;; Match {<keyword> <string>} shape — single upsert-map
+      (and (map? v) (= 1 (count v))
+           (let [k (first (keys v))]
+             (and (keyword? k) (string? (get v k)))))
+      (first (vals v))
+
+      ;; Vector of upsert-maps
+      (and (sequential? v)
+           (every? (fn [x]
+                     (and (map? x) (= 1 (count x))
+                          (let [k (first (keys x))]
+                            (and (keyword? k) (string? (get x k))))))
+                   v))
+      (mapv (fn [x] (first (vals x))) v)
+
+      :else v)))
+
 (defn- emit-frontmatter
   "Emit a slot map as YAML frontmatter text (without the `---` fences).
    Uses block-style YAML for readability.  Empty map → empty string.
-   Keyword-typed slot values (detected via `dt/range-of` →
-   `:db.type/keyword`) are coerced keyword → bare-name string so YAML
-   emits idiomatic bare names (e.g., `type: decision` instead of
-   `type: :decision`)."
+
+   Value transformations applied:
+   - Keyword-typed slot values (detected via `dt/range-of` →
+     `:db.type/keyword`) are coerced keyword → bare-name string so YAML
+     emits idiomatic bare names (e.g., `type: decision` instead of
+     `type: :decision`).
+   - Ref-slot values shaped as F#18 upsert-maps (`{:mm.tag/value \"x\"}`
+     or vec-of-those) are unwrapped back to plain strings — reverses
+     the parse-side `coerce-string->upsert-map` transformation.
+     Without this, emitted YAML would show `tags: [{mm.tag/value: x}]`
+     instead of the canonical `tags: [x]` shape the corpus uses."
   [slot-map class-ident]
   (if (empty? slot-map)
     ""
     (let [yaml-map (into {}
                          (for [[slot v] slot-map
                                :let [yaml-key (slot->frontmatter-key class-ident slot)
-                                     yaml-val (if (keyword-typed-slot? slot)
-                                                (coerce-keyword->string v)
-                                                v)]]
+                                     yaml-val (cond->> v
+                                                true             unwrap-upsert-map
+                                                (keyword-typed-slot? slot)
+                                                coerce-keyword->string)]]
                            [yaml-key yaml-val]))]
       (yaml/generate-string yaml-map :dumper-options {:flow-style :block}))))
 
