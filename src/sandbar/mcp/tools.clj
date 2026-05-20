@@ -490,19 +490,50 @@
 
 (defn- project-import-handler [args]
   (let [from        (or (get args "from") (get args :from))
-        filter-spec (->filter-spec (or (get args "filter") (get args :filter)))]
+        filter-spec (->filter-spec (or (get args "filter") (get args :filter)))
+        persist?    (boolean (or (get args "persist?")
+                                  (get args "persist")
+                                  (get args :persist?)
+                                  (get args :persist)))]
     (when-not from
       (throw (ex-info "project.import requires :from (input directory path)"
                       {:args args})))
     (let [entities (pg/ingest-graph from (cond-> {}
                                             filter-spec (assoc :filter filter-spec)))]
-      {:from     from
-       :filter   filter-spec
-       :imported (count entities)
-       :entities (mapv (fn [e]
-                         {:dt/type (:dt/type e)
-                          :ident   (:db/ident e)})
-                       entities)})))
+      (if-not persist?
+        ;; Dry-run: return summaries only
+        {:from     from
+         :filter   filter-spec
+         :persist? false
+         :imported (count entities)
+         :entities (mapv (fn [e]
+                           {:dt/type (:dt/type e)
+                            :ident   (:db/ident e)})
+                         entities)}
+        ;; Persist: dt/make each entity; capture per-entity success / failure
+        (let [results (reduce
+                       (fn [acc e]
+                         (let [class-ident (:dt/type e)
+                               props       (dissoc e :dt/type)
+                               ident       (:db/ident e)]
+                           (try
+                             (dt/make class-ident props {:validate? false})
+                             (update acc :persisted conj
+                                     {:dt/type class-ident :ident ident})
+                             (catch Throwable ex
+                               (update acc :failed conj
+                                       {:dt/type class-ident
+                                        :ident   ident
+                                        :error   (.getMessage ex)})))))
+                       {:persisted [] :failed []}
+                       entities)]
+          {:from           from
+           :filter         filter-spec
+           :persist?       true
+           :imported       (count entities)
+           :persisted-count (count (:persisted results))
+           :failed-count   (count (:failed results))
+           :failed         (:failed results)})))))
 
 ;; ---------- Aggregation operations (Stage 14 — fulltext arc Phase G) ----------
 ;;
@@ -1052,9 +1083,11 @@
     :title "Ingest entities from a filesystem hierarchy (inverse of project.export)"
     :description "WHICH: walks the `:from` directory, parses each file via the appropriate codec (per file extension / declared format), and returns the parsed entity-spec maps.  The ingestion half of the Anderson `de.setf.rdf:project-graph` boundary-layer primitive — inverse of `sandbar.project.export`.\n\nWHEN: use to load filesystem-canonical entity state into the substrate — restore from a project-export, ingest external content, or round-trip-validate after editing files manually.  When NOT to use: (a) you want to create entities programmatically — `sandbar.entity.create`; (b) you want to write TO filesystem — `sandbar.project.export`.\n\nHOW: `:from` is the input directory path (REQUIRED).  `:filter` (optional) restricts which entities ingest; same shape as `sandbar.project.export`'s filter — `:class`, `:classes`, `:tree-filter`.  Returns `{:from :filter :imported <count> :entities [<entity-summary>...]}`.\n\nORDER: idempotent on the same filesystem state.  Note: ingestion validates against schema; failures raise.  Pre-check schema compatibility via `sandbar.entity.validate` for sample inputs if uncertain.\n\nCOMBINATION: inverse of `sandbar.project.export`.  Round-trip property: `ingest-graph(project-graph(entities)) = entities` — verify via dual export + import + comparison.  Codec selection by file extension; registered codecs visible via `sandbar.codec.list`."
     :inputSchema (one-required
-                   {:from   {:type "string" :description "Input directory path"}
-                    :filter {:type "object"
-                              :description "Optional filter spec (same shape as project.export)"}}
+                   {:from     {:type "string" :description "Input directory path"}
+                    :filter   {:type "object"
+                               :description "Optional filter spec (same shape as project.export)"}
+                    :persist? {:type        "boolean"
+                               :description "When true, dt/make each parsed entity-spec into the Datomic substrate after import (one-shot ingest).  When false / omitted, this verb is a DRY-RUN that returns entity summaries without persisting.  Per Friction Item #11 of the 0.1.1 co-evolution arc — gives clients a single-call bootstrap path instead of N+1 round-trips (import + entity.create per).  On persist failure for any individual entity, the per-entity failure is captured in the response's `:failed` list (does NOT abort the whole ingest).  Returns `{:persisted-count :failed-count :failed [...]}` when :persist? true."}}
                    [:from])
     :handler project-import-handler}
 
