@@ -120,6 +120,111 @@
           [nil s]))
       [nil s])))
 
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Lenient line-based frontmatter parser (corpus-convention compatible)
+;;
+;; Ported from etc/lib/memory.clj/parse-frontmatter in the danlentz/claude
+;; memory corpus per Friction Item #12 of plans/sandbar_0_1_1_coevolution_-
+;; arc_2026_05_20.md (2026-05-20).  The corpus convention universally
+;; uses unquoted descriptions containing colons (e.g.
+;; `description: Dan's 2026-05-13 directive ...: ...`), which strict
+;; clj-yaml rejects with "mapping values are not allowed here".  The
+;; lenient line-based parser splits on the FIRST `:` per line — the
+;; rest of the line is the value, colons and all.
+;;
+;; Handles: scalar keys, list values (YAML `-` items), `[a, b, c]`
+;; inline-array values (common for :tags), and minimal scalar coercion
+;; (boolean true/false + double-/single-quoted strings).  Per the
+;; "filesystem is canonical; any backend must comply" discipline in
+;; memory/interaction/filesystem_native_format_is_canonical_backend_-
+;; compliance_required_hybrid_backend_experimentation_essential_2026_05_13.md
+;; — sandbar (the backend) adapts to the corpus's established
+;; frontmatter shape.
+
+(defn- coerce-scalar
+  "Minimal YAML scalar coercion for the lenient parser:
+   - bare `true` / `false` → real booleans
+   - double-quoted `\"...\"` → unquoted string contents
+   - single-quoted `'...'`   → unquoted string contents
+   Everything else passes through as the original trimmed string."
+  [v]
+  (cond
+    (= v "true")  true
+    (= v "false") false
+    (and (>= (count v) 2)
+         (str/starts-with? v "\"")
+         (str/ends-with?   v "\""))
+    (subs v 1 (dec (count v)))
+
+    (and (>= (count v) 2)
+         (str/starts-with? v "'")
+         (str/ends-with?   v "'"))
+    (subs v 1 (dec (count v)))
+
+    :else v))
+
+(defn parse-frontmatter-text
+  "Parse the frontmatter text (already split from `---` delimiters by
+   `split-frontmatter`) into a Clojure map with keyword keys.  Lenient
+   line-based parser — splits on the FIRST `:` per line, so values
+   containing additional colons are preserved as-is.
+
+   Public so tests + tooling can call directly.  See ns-block comment
+   above for rationale + the corpus-convention compatibility story."
+  [fm-text]
+  (let [lines (str/split-lines (str/trim fm-text))]
+    (loop [[line & rest] lines
+           cur-key nil
+           cur-buf []
+           acc     {}]
+      (cond
+        (nil? line)
+        (cond-> acc
+          cur-key (assoc cur-key
+                         (if (= 1 (count cur-buf))
+                           (first cur-buf)
+                           cur-buf)))
+
+        ;; List item continuation
+        (str/starts-with? (str/triml line) "-")
+        (recur rest cur-key
+               (conj cur-buf (-> line str/triml (subs 1) str/triml))
+               acc)
+
+        ;; New key — line doesn't start with whitespace + contains `:`
+        (and (not (str/starts-with? line " "))
+             (str/includes? line ":"))
+        (let [[k v] (str/split line #":" 2)
+              k     (keyword (str/trim k))
+              v     (str/trim v)
+              acc*  (cond-> acc
+                      cur-key (assoc cur-key
+                                     (if (= 1 (count cur-buf))
+                                       (first cur-buf)
+                                       cur-buf)))]
+          (cond
+            ;; Inline-array: tags: [a, b, c]
+            (and (str/starts-with? v "[") (str/ends-with? v "]"))
+            (recur rest nil []
+                   (assoc acc* k
+                          (->> (subs v 1 (dec (count v)))
+                               (#(str/split % #","))
+                               (map str/trim)
+                               (remove str/blank?)
+                               vec)))
+
+            ;; Inline scalar
+            (seq v)
+            (recur rest nil [] (assoc acc* k (coerce-scalar v)))
+
+            ;; List follows (YAML block under this key)
+            :else
+            (recur rest k [] acc*)))
+
+        ;; Unrecognized line — skip
+        :else
+        (recur rest cur-key cur-buf acc)))))
+
 (defn- strip-trailing-non-hardbreak-whitespace
   "Strip trailing whitespace from each line UNLESS it's a markdown
    hard-break (line ending with 2+ trailing spaces per CommonMark §4.2.6).
@@ -327,7 +432,7 @@
                                           {:opts opts})))
           [fm-text body-text] (split-frontmatter input)
           fm-map      (when (and fm-text (not (str/blank? fm-text)))
-                        (yaml/parse-string fm-text :keywords true))
+                        (parse-frontmatter-text fm-text))
           slot-map    (frontmatter->slots class-ident fm-map)
           normalized  (normalize-body body-text)]
       (merge {:dt/type class-ident
