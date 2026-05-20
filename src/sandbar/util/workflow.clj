@@ -851,7 +851,7 @@
             prefix (str dir "/")]
         (with-open [_ jar]
           (->> (enumeration-seq (.entries jar))
-               (map #(.getName %))
+               (map #(.getName ^java.util.jar.JarEntry %))
                (filter #(str/starts-with? % prefix))
                (remove #(str/ends-with? % "/"))
                (map #(subs % (count prefix)))

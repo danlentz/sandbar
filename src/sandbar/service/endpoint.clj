@@ -92,7 +92,7 @@
    Per `decisions/sandbar_entity_ref_abstraction_2026_05_14.md` §D-3.4."
   [context info]
   (let [reasons (entity-ref-reasons info)
-        message (some-> info .getMessage)
+        message (some-> ^Throwable info .getMessage)
         details (ex-data info)]
     (cond
       (contains? reasons :entity-ref/not-found)
