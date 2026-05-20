@@ -882,6 +882,57 @@
       ;; Non-:mm/Memory class — single-entity vector; no section decomposition.
       [entity])))
 
+(defn entity-specs->tx-data
+  "Convert a `parse-document` result (entity-specs with keyword-ident refs)
+   into Datomic tx-data with TEMPID-based refs so a single `d/transact` call
+   resolves the in-tx references atomically.
+
+   Per bugs/sandbar_parse_document_tx_ordering_section_ident_resolution_2026_05_20.md:
+   Datomic's `:db/ident` resolution fires before tx-data is fully processed,
+   so a memory entity's `:mm.memory/first-section :section-X` ref fails when
+   :section-X is defined LATER in the same tx-data.  Solution: assign string
+   tempids to every entity + translate every in-tx-pointing ref slot value
+   to the corresponding tempid.  Section / memory `:db/ident` assertions
+   stay intact — they're the canonical post-tx addressing handles.
+
+   Affects ref slots: `:mm.memory/first-section`, `:mm.section/parent`,
+   `:mm.section/previous-sibling`, `:mm.section/next-sibling`.
+
+   Call this immediately before `d/transact` when ingesting parse-document
+   output:
+
+       @(d/transact conn (entity-specs->tx-data (parse-document src rel-path)))
+
+   `parse-document` keeps the ident-form output so existing test fixtures
+   + round-trip comparisons stay unaffected.  This is the transact-boundary
+   shim."
+  [entity-specs]
+  (let [;; Build ident → tempid map across every entity that has a :db/ident
+        ident->tempid (->> entity-specs
+                           (map-indexed (fn [i e]
+                                          (when-let [id (:db/ident e)]
+                                            [id (str "tempid-" i "-" (subs (str id) 1))])))
+                           (remove nil?)
+                           (into {}))
+        translate     (fn [v] (if (some? v) (get ident->tempid v v) v))]
+    (mapv (fn [e]
+            (let [id (:db/ident e)
+                  tid (get ident->tempid id)
+                  ;; Translate every ref slot we know about.  Use `cond->`
+                  ;; so we don't add slots that weren't present in the input.
+                  e' (cond-> e
+                       (contains? e :mm.memory/first-section)
+                       (update :mm.memory/first-section translate)
+                       (contains? e :mm.section/parent)
+                       (update :mm.section/parent translate)
+                       (contains? e :mm.section/previous-sibling)
+                       (update :mm.section/previous-sibling translate)
+                       (contains? e :mm.section/next-sibling)
+                       (update :mm.section/next-sibling translate))]
+              (cond-> e'
+                tid (assoc :db/id tid))))
+          entity-specs)))
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Section-tree emit — reconstruct markdown body from section chain
 

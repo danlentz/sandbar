@@ -74,8 +74,9 @@
       (let [rp     (rel-path root-file f)
             source (slurp f)]
         (try
-          (let [entities (md/parse-document source rp)]
-            @(d/transact (db/conn) entities)
+          (let [entities (md/parse-document source rp)
+                tx-data  (md/entity-specs->tx-data entities)]
+            @(d/transact (db/conn) tx-data)
             (swap! outcome update :ingested inc))
           (catch Exception e
             (swap! outcome update :errors conj {:rel-path rp
