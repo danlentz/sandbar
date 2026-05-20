@@ -35,8 +35,18 @@
   (endpoint/return {"Content-Type" "image/png"} http-status/success (favicon)))
 
 (def routes
-  `[[["/" {:get home-page} ^:interceptors [(body-params/body-params (content/body-parsers))
-                                           params/url-decode-path-params]
+  ;; NOTE: body-params is ALREADY added by `conn/with-default-interceptors`
+  ;; in sandbar.server.pedestal/create-connector-map.  Adding it again at the
+  ;; route level would cause it to run TWICE — the first run consumes the
+  ;; body stream + populates :json-params; the second run reads from the now-
+  ;; empty stream + OVERWRITES :json-params with nil.  This was Friction
+  ;; Item #9 of the 0.1.1 co-evolution arc, surfaced 2026-05-20.
+  ;;
+  ;; If/when sandbar wants its CSV / EDN-with-tagged-literal extensions, the
+  ;; right move is to replace `with-default-interceptors` with a custom
+  ;; interceptor stack that uses `(body-params/body-params (content/body-parsers))`
+  ;; instead of the default — NOT to layer a second body-params on top.
+  `[[["/" {:get home-page} ^:interceptors [params/url-decode-path-params]
       ["/favicon.ico" {:get favicon-ico}]
 
       ;; Public auth endpoints (no authentication required)
