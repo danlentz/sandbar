@@ -26,7 +26,7 @@ Follow-on after 0.1.1 ships: return to the actor-context-rules deep-dive arc wit
 
 ### Fixed
 
-- _(pending)_
+- **`sandbar.util.diff` namespace path/declaration mismatch** — `src/sandbar/util/diff.clj` previously declared its namespace as `sandbar.diff` (path was `sandbar/util/diff.clj`), which caused `lein check` to fail with `Could not locate sandbar/diff.clj on classpath`.  Re-ported from upstream `fgl.diff` ([clj-fgl](https://github.com/danlentz/clj-fgl/blob/master/src/fgl/diff.clj)) per Dan-directive 2026-05-20: copy code, no dependency.  The re-port also restores the upstream `merge*` (which the prior port dropped) + drops inert `:require [fgl.util]` and `:use [print.foo]` (neither's symbols referenced in upstream or port).  Resolves Friction Item #4 of the memory-corpus arc plan `memory/plans/sandbar_0_1_1_coevolution_arc_2026_05_20.md` §3.
 
 ## [0.1.0] — 2026-05-15 — first public release
 

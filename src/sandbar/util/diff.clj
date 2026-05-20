@@ -1,10 +1,54 @@
-(ns sandbar.diff
-  "map differencing and patching"
-  (:refer-clojure :exclude [cat])
-  (:require [sandbar.util.common :as utx]))
+(ns sandbar.util.diff
+  "Map differencing and patching.
 
-;(:require [print.foo :as foo :refer :all]))
+   Cassius-style diff algorithm — produces a patch in the form
+   `{:+ {[path] v} :- {[path] v} :* {[path] [old new]}}` describing
+   the insertions, deletions, and changes required to transform one
+   (possibly nested) map into another.  `patch` applies a patch with
+   contextual-validity assertions; `patch-unchecked` skips the
+   assertions.
 
+   ## Provenance
+
+   Adapted from [`fgl.diff`](https://github.com/danlentz/clj-fgl/blob/master/src/fgl/diff.clj)
+   in the [clj-fgl](https://github.com/danlentz/clj-fgl) library
+   (Dan Lentz; same EPL lineage as Sandbar).  Per Dan-directive
+   2026-05-20 (memory-corpus arc plan `sandbar_0_1_1_coevolution_-
+   arc_2026_05_20.md` Friction Item #4): incorporated by copy
+   rather than via a Maven dependency to keep Sandbar's dep surface
+   lean + allow Sandbar-specific adaptations to land without
+   upstream coordination.
+
+   The prior in-tree port at this path declared its namespace as
+   `sandbar.diff` (path/namespace mismatch — broke `lein check`)
+   and was missing `merge*`.  This re-port fixes the namespace to
+   `sandbar.util.diff` matching the file path + restores `merge*`.
+   The original `fgl.diff` `:require [fgl.util]` and `:use [print.foo]`
+   were both inert in the upstream (no symbols from either namespace
+   were referenced in the body) — they are dropped here.
+
+   ## Usage
+
+       (diff old new)        ; => {:+ ... :- ... :* ...}  | nil if equal
+       (patch m p)           ; checked transformations
+       (patch-unchecked m p) ; skip the contextual-validity assertions
+
+   See the `Examples` block at the bottom of this file for shape
+   illustrations.")
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Merge
+
+(defn merge*
+  "Recursively merge 0 or more hierarchically nested maps, returning a new
+  map that contains a composite all data."
+  [& maps]
+  (if (every? map? maps)
+    (apply merge-with merge* maps)
+    (last maps)))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Diff (Cassius algorithm)
 
 (defn diff-inserts
   ([m1 m2]
@@ -20,6 +64,7 @@
              (nil? v2)                 (swap! summary conj
                                          [(conj pv k) v1]))))
        @summary)))
+
 
 (defn diff-changes
   ([m1 m2]
@@ -37,6 +82,7 @@
                                           [(conj pv k) [v1 v2]]))))
        @summary)))
 
+
 (defn- maybe-assoc [m k v]
   (when (seq v)
     (assoc m k v)))
@@ -45,6 +91,7 @@
   (into m1
     (filter (comp #(and (coll? %) (seq %)) second)
       (seq m2))))
+
 
 (defn diff
   "return a map of insertions (:+) deletions (:-) and changes (:*)
@@ -56,6 +103,8 @@
         m  (assoc-full {} {:+ v+ :- v- :* v*})]
     (if-not (empty? m) m)))
 
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Patch primitives
 
 (defn ins [m [ks v]]
   (assert (map? m))
@@ -63,6 +112,7 @@
 
 (defn ins-unchecked [m [ks v]]
   (apply assoc-in m ks [v]))
+
 
 (defn del [m [ks v]]
   (assert (map? m))
@@ -78,6 +128,7 @@
     (update-in m (subvec ks 0 (dec (count ks)))
       dissoc (last ks))))
 
+
 (defn chg [m [ks [old new]]]
   (assert (map? m))
   (assert (= (get-in m ks) old))
@@ -92,6 +143,8 @@
     (update-in m (subvec ks 0 (dec (count ks)))
       assoc (last ks) new)))
 
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Patch
 
 (defn patch
   "Apply a sequence of transformations to map 'm' specified by patch 'p' and
