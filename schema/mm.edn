@@ -41,11 +41,19 @@
 ;; Forward Declarations
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
- [{:db/ident :mm/Tag         :db/doc "A canonical tag entity"}
-  {:db/ident :mm/Link        :db/doc "A markdown link extracted from memorial body"}
-  {:db/ident :mm/Section     :db/doc "An addressable markdown section within a memorial"}
-  {:db/ident :mm/Frontmatter :db/doc "Long-tail / per-type frontmatter keys"}
-  {:db/ident :mm/Memory      :db/doc "A corpus memorial markdown document"}]
+ [{:db/ident :mm/Tag             :db/doc "A canonical tag entity"}
+  {:db/ident :mm/Link            :db/doc "A markdown link extracted from memorial body"}
+  {:db/ident :mm/Section         :db/doc "An addressable markdown section within a memorial"}
+  {:db/ident :mm/Frontmatter     :db/doc "Long-tail / per-type frontmatter keys"}
+  {:db/ident :mm/Memory          :db/doc "A corpus memorial markdown document"}
+  ;; New classes per decisions/tag_as_first_class_introspectable_type_in_metamodel_2026_05_20.md ADR §2.2
+  {:db/ident :mm/ConceptScheme   :db/doc "Tag-vocabulary scheme (analog of skos:ConceptScheme); see ADR §2.2"}
+  {:db/ident :mm/Dataset         :db/doc "Named dataset with declared vocabulary uses (analog of void:Dataset); see ADR §2.2"}
+  {:db/ident :mm/Vocabulary      :db/doc "Vocabulary identifier (e.g. :vocab/skos); see ADR §2.2"}
+  {:db/ident :mm/Linkset         :db/doc "Inter-dataset typed cross-link metadata (analog of void:Linkset); see ADR §2.2"}
+  {:db/ident :mm/Shape           :db/doc "SHACL-semantics shape definition for machine-checkable validation; see ADR §2.2"}
+  {:db/ident :mm/ThesaurusArray  :db/doc "Sibling-concept grouping with NodeLabel (analog of iso-thes:ThesaurusArray); see ADR §2.2"}
+  {:db/ident :mm/ConceptGroup    :db/doc "Cross-cutting facet membership (analog of iso-thes:ConceptGroup); see ADR §2.2"}]
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; mm.tag/* Properties
@@ -59,7 +67,317 @@
    :db/cardinality :db.cardinality/one
    :db/unique      :db.unique/identity
    :db/fulltext    true
-   :db/doc "The tag string itself (e.g. 'audit', 'datomic-multi-store').  Unique identity so multiple memorials with the same tag value reference one mm/Tag entity.  Fulltext-indexed for tag-keyword search via sandbar.search/search-bm25f."}]
+   :db/doc "The tag string itself (e.g. 'audit', 'datomic-multi-store').  Unique identity so multiple memorials with the same tag value reference one mm/Tag entity.  Fulltext-indexed for tag-keyword search via sandbar.search/search-bm25f.  TIER A IDENTITY per decisions/tag_as_first_class_introspectable_type_in_metamodel_2026_05_20.md ADR §2.1 — preferred canonical label (SKOS prefLabel analog)."}
+
+  ;; ============================================================================
+  ;; Tier A — Identity (per ADR §2.1)
+  ;; ============================================================================
+
+  {:db/ident       :mm.tag/alt-label
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Tag
+   :dt/range       :db.type/string
+   :db/valueType   :db.type/string
+   :db/cardinality :db.cardinality/many
+   :db/fulltext    true
+   :db/doc "Alternative labels for the tag — synonyms, plurals, abbreviations.  SKOS altLabel analog.  Multi-valued.  Fulltext-indexed for search recall on non-canonical forms.  Per decisions/tag_as_first_class_introspectable_type_in_metamodel_2026_05_20.md ADR §2.1 Tier A."}
+
+  {:db/ident       :mm.tag/hidden-label
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Tag
+   :dt/range       :db.type/string
+   :db/valueType   :db.type/string
+   :db/cardinality :db.cardinality/many
+   :db/fulltext    true
+   :db/doc "Hidden labels for search recall only — typos, deprecated forms, misspellings.  SKOS hiddenLabel analog.  Present in fulltext index but NOT shown as canonical or alternative.  Multi-valued.  Per decisions/tag_as_first_class_introspectable_type_in_metamodel_2026_05_20.md ADR §2.1 Tier A."}
+
+  ;; ============================================================================
+  ;; Tier B — Documentation (per ADR §2.1)
+  ;; ============================================================================
+
+  {:db/ident       :mm.tag/definition
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Tag
+   :dt/range       :db.type/string
+   :db/valueType   :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/fulltext    true
+   :db/doc "Formal canonical definition of the tag.  SKOS definition analog.  One-paragraph canonical narrative.  Per ADR §2.1 Tier B."}
+
+  {:db/ident       :mm.tag/scope-note
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Tag
+   :dt/range       :db.type/string
+   :db/valueType   :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/fulltext    true
+   :db/doc "When-to-use / when-NOT-to-use note for the tag.  SKOS scopeNote analog.  The 'express intent' property per Dan-directive 2026-05-20 — every canonical tag MUST have a scope-note before sandbar.tag.define accepts it.  Per ADR §2.1 Tier B."}
+
+  {:db/ident       :mm.tag/example
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Tag
+   :dt/range       :db.type/string
+   :db/valueType   :db.type/string
+   :db/cardinality :db.cardinality/many
+   :db/doc "Concrete usage examples of the tag in action.  SKOS example analog.  Multi-valued.  Per ADR §2.1 Tier B."}
+
+  {:db/ident       :mm.tag/editorial-note
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Tag
+   :dt/range       :db.type/string
+   :db/valueType   :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/doc "Vocabulary-maintainer private notes for the tag.  SKOS editorialNote analog.  Not shown to consumers; only relevant to vocabulary curation.  Per ADR §2.1 Tier B."}
+
+  {:db/ident       :mm.tag/change-note
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Tag
+   :dt/range       :db.type/string
+   :db/valueType   :db.type/string
+   :db/cardinality :db.cardinality/many
+   :db/doc "What changed and why — lifecycle audit trail entries.  SKOS changeNote analog.  Multi-valued; append-only.  Per ADR §2.1 Tier B."}
+
+  {:db/ident       :mm.tag/history-note
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Tag
+   :dt/range       :db.type/string
+   :db/valueType   :db.type/string
+   :db/cardinality :db.cardinality/many
+   :db/doc "Past meanings of the tag.  SKOS historyNote analog.  Preserves narrative continuity when tag meaning shifts.  Multi-valued.  Per ADR §2.1 Tier B."}
+
+  ;; ============================================================================
+  ;; Tier C — Concept relations (per ADR §2.1)
+  ;; ============================================================================
+
+  {:db/ident       :mm.tag/broader-generic
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Tag
+   :dt/range       :mm/Tag
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/many
+   :db/doc "Generic class-superclass hierarchical relation (is-a).  ISO 25964 broaderGeneric analog.  Sub-property of skos:broader.  Transitive + acyclic (enforced by audit).  Per ADR §2.1 Tier C."}
+
+  {:db/ident       :mm.tag/broader-instantial
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Tag
+   :dt/range       :mm/Tag
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/many
+   :db/doc "Instance-class hierarchical relation (instance-of).  ISO 25964 broaderInstantial analog.  Sub-property of skos:broader.  Per ADR §2.1 Tier C."}
+
+  {:db/ident       :mm.tag/broader-partitive
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Tag
+   :dt/range       :mm/Tag
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/many
+   :db/doc "Part-whole hierarchical relation.  ISO 25964 broaderPartitive analog.  Sub-property of skos:broader.  Transitive.  Per ADR §2.1 Tier C."}
+
+  {:db/ident       :mm.tag/related
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Tag
+   :dt/range       :mm/Tag
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/many
+   :db/doc "Symmetric associative relation; non-hierarchical 'see also' link between tags.  SKOS related analog.  Symmetric + irreflexive (enforced by audit).  Per ADR §2.1 Tier C."}
+
+  {:db/ident       :mm.tag/in-scheme
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Tag
+   :dt/range       :mm/ConceptScheme
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/many
+   :db/doc "Microthesaurus / scheme membership.  SKOS inScheme + ISO 25964 microThesaurusOf analog.  A tag may belong to multiple concept schemes (sandbar substrate scheme + consumer corpus scheme + federated scheme).  Per ADR §2.1 Tier C."}
+
+  ;; ============================================================================
+  ;; Tier D — Lifecycle (per ADR §2.1)
+  ;; ============================================================================
+
+  {:db/ident       :mm.tag/vocabulary-level
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Tag
+   :dt/range       :db.type/keyword
+   :db/valueType   :db.type/keyword
+   :db/cardinality :db.cardinality/one
+   :db/doc "Z39.19 four-type vocabulary lattice level: :list (flat enumeration; only :value populated), :synonym-ring (adds :alt-label), :taxonomy (adds :broader-* hierarchy), :thesaurus (full set).  Signals which other slots are populated; enables graduated tag-vocabulary structure (start as list; promote to thesaurus as substance accumulates).  Per ADR §2.1 Tier D."}
+
+  {:db/ident       :mm.tag/lifecycle-status
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Tag
+   :dt/range       :db.type/keyword
+   :db/valueType   :db.type/keyword
+   :db/cardinality :db.cardinality/one
+   :db/doc "Lifecycle state: :active (canonical; in use), :draft (proposed; not yet ready for use), :deprecated (still queryable for backwards compat but new use discouraged), :retired (frontmatter rewritten away; archived).  Per ADR §2.1 Tier D + Stage 2.A SO burnination + Stage 2.B Wikipedia CfD patterns."}
+
+  {:db/ident       :mm.tag/superseded-by
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Tag
+   :dt/range       :mm/Tag
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/one
+   :db/doc "Lifecycle dagger — the canonical tag that replaces this one.  DC replaces analog + predicates-as-first-class lifecycle pattern.  Asymmetric + acyclic.  Per ADR §2.1 Tier D."}
+
+  {:db/ident       :mm.tag/category-type
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Tag
+   :dt/range       :db.type/keyword
+   :db/valueType   :db.type/keyword
+   :db/cardinality :db.cardinality/one
+   :db/doc "Content vs process vs admin distinction (per Wikipedia hidden-categories pattern; Stage 2.B finding).  :content (subject classification visible to all consumers), :process (workflow/lifecycle markers), :admin (vocabulary-maintenance internals).  Per ADR §2.1 Tier D."}
+
+  {:db/ident       :mm.tag/canonical?
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Tag
+   :dt/range       :db.type/boolean
+   :db/valueType   :db.type/boolean
+   :db/cardinality :db.cardinality/one
+   :db/doc "Is this tag the canonical form, or a redirect-shape to one?  True for canonical preferred forms; false for variants that should route to a canonical via :superseded-by + :alt-label.  Per ADR §2.1 Tier D."}
+
+  ;; ============================================================================
+  ;; Tier E — Federation + provenance + validation (per ADR §2.1)
+  ;; ============================================================================
+
+  {:db/ident       :mm.tag/introduced-in
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Tag
+   :dt/range       :db.type/string
+   :db/valueType   :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/doc "Schema-version provenance — which sandbar/bootstrap version introduced this tag.  Per ADR §2.1 Tier E + predicates-as-first-class pattern."}
+
+  {:db/ident       :mm.tag/constraints
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Tag
+   :dt/range       :mm/Shape
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/many
+   :db/doc "Machine-checkable usage constraints — references to :mm/Shape instances enforcing per-tag invariants.  SHACL-targeted per Dan-affirmation 2026-05-20 'shacl has been an early commitment and wise investment as a foundational ontology'.  Wikidata-constraint-property analog + PoolParty's commercial SHACL adoption validation.  Per ADR §2.1 Tier E."}
+
+  {:db/ident       :mm.tag/sort-key
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Tag
+   :dt/range       :db.type/string
+   :db/valueType   :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/doc "Display ordering distinct from canonical name (Wikipedia sortkey pattern).  Useful when canonical name doesn't sort correctly (e.g. 'Rich Hickey' sorts as 'Hickey, Rich' via this slot).  Per ADR §2.1 Tier E."}
+
+  ;; --- Mapping relations (ISO 25964 Part 2 + IPTC NewsCodes pattern) ---
+
+  {:db/ident       :mm.tag/exact-match
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Tag
+   :dt/range       :mm/Tag
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/many
+   :db/doc "Inter-vocabulary mapping — this tag is exactly equivalent to the target tag (typically in a different concept scheme).  SKOS exactMatch + ISO 25964 Part 2 + IPTC operational pattern.  Per ADR §2.1 Tier E."}
+
+  {:db/ident       :mm.tag/close-match
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Tag
+   :dt/range       :mm/Tag
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/many
+   :db/doc "Inter-vocabulary mapping — this tag is similar but not interchangeable in all cases.  SKOS closeMatch.  Per ADR §2.1 Tier E."}
+
+  {:db/ident       :mm.tag/broader-match
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Tag
+   :dt/range       :mm/Tag
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/many
+   :db/doc "Inter-vocabulary mapping — this tag is broader than the target (in the target vocabulary).  SKOS broaderMatch.  Per ADR §2.1 Tier E."}
+
+  {:db/ident       :mm.tag/narrower-match
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Tag
+   :dt/range       :mm/Tag
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/many
+   :db/doc "Inter-vocabulary mapping — this tag is narrower than the target.  SKOS narrowerMatch.  Per ADR §2.1 Tier E."}
+
+  {:db/ident       :mm.tag/related-match
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Tag
+   :dt/range       :mm/Tag
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/many
+   :db/doc "Inter-vocabulary mapping — this tag is associatively related to the target (non-hierarchical).  SKOS relatedMatch.  Per ADR §2.1 Tier E."}]
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; mm.concept-scheme/* Properties — per ADR §2.2 :mm/ConceptScheme class
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident       :mm.concept-scheme/scheme-id
+   :dt/type        :dt/Property
+   :dt/domain      :mm/ConceptScheme
+   :dt/range       :db.type/string
+   :db/valueType   :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/unique      :db.unique/identity
+   :db/doc "Unique identifier for the concept scheme (e.g. 'sandbar-substrate-tags-v1' or 'corpus-domain-tags').  Unique identity so multiple references resolve to one entity.  Per ADR §2.2."}
+
+  {:db/ident       :mm.concept-scheme/version
+   :dt/type        :dt/Property
+   :dt/domain      :mm/ConceptScheme
+   :dt/range       :db.type/string
+   :db/valueType   :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/doc "Semantic version of the concept scheme (e.g. '1.0.0').  Enables version-aware loading per consumer.  Per ADR §2.2."}
+
+  {:db/ident       :mm.concept-scheme/description
+   :dt/type        :dt/Property
+   :dt/domain      :mm/ConceptScheme
+   :dt/range       :db.type/string
+   :db/valueType   :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/fulltext    true
+   :db/doc "Human-readable description of the scheme's scope + purpose.  Per ADR §2.2."}
+
+  {:db/ident       :mm.concept-scheme/license
+   :dt/type        :dt/Property
+   :dt/domain      :mm/ConceptScheme
+   :dt/range       :db.type/keyword
+   :db/valueType   :db.type/keyword
+   :db/cardinality :db.cardinality/one
+   :db/doc "License keyword for the vocabulary (e.g. :cc-by-4.0; :public-domain; :proprietary).  Per ADR §2.2 + IPTC CC-BY-4.0 federation-at-scale enabler pattern."}]
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; mm.shape/* Properties — per ADR §2.2 :mm/Shape class (SHACL-targeted)
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident       :mm.shape/shape-id
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Shape
+   :dt/range       :db.type/string
+   :db/valueType   :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/unique      :db.unique/identity
+   :db/doc "Unique identifier for the shape (e.g. 'mm-tag-canonical-shape').  Unique identity.  Per ADR §2.2."}
+
+  {:db/ident       :mm.shape/applies-to
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Shape
+   :dt/range       :dt/Class
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/one
+   :db/doc "Which sandbar dt/Class this shape validates.  SHACL `sh:targetClass` analog.  Per ADR §2.2."}
+
+  {:db/ident       :mm.shape/description
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Shape
+   :dt/range       :db.type/string
+   :db/valueType   :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/fulltext    true
+   :db/doc "Human-readable description of what the shape enforces.  Per ADR §2.2."}
+
+  {:db/ident       :mm.shape/required-property
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Shape
+   :dt/range       :dt/Property
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/many
+   :db/doc "Properties that MUST be present on instances of `applies-to` class.  SHACL `sh:minCount 1` analog.  Per ADR §2.2."}]
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; mm.link/* Properties
@@ -280,7 +598,15 @@
    :dt/range       :mm/Tag
    :db/valueType   :db.type/ref
    :db/cardinality :db.cardinality/many
-   :db/doc "Set of mm/Tag references — orientation/search axis."}
+   :db/doc "Set of mm/Tag references — orientation/search axis.  Includes both free-text and canonical tags; per ADR §2.3 DCAT two-tier pattern, this slot remains the free-text + canonical-mixed surface while :mm.memory/themes carries the controlled-vocabulary typed-reference tier."}
+
+  {:db/ident       :mm.memory/themes
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Memory
+   :dt/range       :mm/Tag
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/many
+   :db/doc "Controlled-vocabulary canonical-tag references — DCAT theme analog per decisions/tag_as_first_class_introspectable_type_in_metamodel_2026_05_20.md ADR §2.3.  Coexists with :mm.memory/tags (free-text) — the DCAT two-tier pattern lets free-text tags + canonical themes both be populated.  Migration M.3 (per ADR §2.6) promotes free-text tags → canonical themes where evidence supports.  Stage 7.A first increment lands the slot; codec wiring of `themes:` frontmatter key lands subsequent Stage 7 increment."}
 
   {:db/ident       :mm.memory/frontmatter
    :dt/type        :dt/Property
@@ -527,9 +853,40 @@
    :dt/subclass-of   :dt/Resource
    :dt/context       "mm"
    :dt/label         "Tag"
-   :dt/slots         [:mm.tag/value]
+   :dt/slots         [;; Tier A — Identity (per ADR §2.1)
+                      :mm.tag/value
+                      :mm.tag/alt-label
+                      :mm.tag/hidden-label
+                      ;; Tier B — Documentation
+                      :mm.tag/definition
+                      :mm.tag/scope-note
+                      :mm.tag/example
+                      :mm.tag/editorial-note
+                      :mm.tag/change-note
+                      :mm.tag/history-note
+                      ;; Tier C — Concept relations
+                      :mm.tag/broader-generic
+                      :mm.tag/broader-instantial
+                      :mm.tag/broader-partitive
+                      :mm.tag/related
+                      :mm.tag/in-scheme
+                      ;; Tier D — Lifecycle
+                      :mm.tag/vocabulary-level
+                      :mm.tag/lifecycle-status
+                      :mm.tag/superseded-by
+                      :mm.tag/category-type
+                      :mm.tag/canonical?
+                      ;; Tier E — Federation + provenance + validation
+                      :mm.tag/introduced-in
+                      :mm.tag/constraints
+                      :mm.tag/sort-key
+                      :mm.tag/exact-match
+                      :mm.tag/close-match
+                      :mm.tag/broader-match
+                      :mm.tag/narrower-match
+                      :mm.tag/related-match]
    :dt/abstract?     false
-   :db/doc "A canonical tag entity.  Multiple memorials sharing a tag string reference one mm/Tag entity.  Enables tag-as-first-class navigation + future tag metadata."}
+   :db/doc "A canonical tag entity — first-class introspectable reflective type in the metamodel.  Per decisions/tag_as_first_class_introspectable_type_in_metamodel_2026_05_20.md ADR §2.1 (Tag-Modeling First-Class Arc Stage 6 crystallization).  17 slots across 5 tiers: Identity (value/alt-label/hidden-label) + Documentation (definition/scope-note/example/editorial-note/change-note/history-note) + Concept-relations (broader-generic/broader-instantial/broader-partitive/related/in-scheme) + Lifecycle (vocabulary-level/lifecycle-status/superseded-by/category-type/canonical?) + Federation/provenance/validation (introduced-in/constraints/sort-key/exact-match/close-match/broader-match/narrower-match/related-match).  All slot designs grounded in established ontologies (SKOS + ISO 25964 + Z39.19 + Wikidata + SHACL + IPTC + Dydra-revisioned-RDF + DCAT) per the 14 library-studies of the arc + interaction/consult_established_ontologies_before_new_class_type_predicate_2026_05_20.md."}
 
   {:db/ident         :mm/Link
    :dt/type          :dt/Class
@@ -564,6 +921,72 @@
    :dt/abstract?     false
    :db/doc "Container for unknown / per-type frontmatter keys.  Well-known frontmatter keys (name, description, type, etc.) live directly on mm/Memory; the long tail goes here as a structured EDN map."}
 
+  ;; --- ADR §2.2 supporting classes (Tag-Modeling First-Class Arc Stage 7) ---
+
+  {:db/ident         :mm/ConceptScheme
+   :dt/type          :dt/Class
+   :dt/subclass-of   :dt/Resource
+   :dt/context       "mm"
+   :dt/label         "ConceptScheme"
+   :dt/slots         [:mm.concept-scheme/scheme-id
+                      :mm.concept-scheme/version
+                      :mm.concept-scheme/description
+                      :mm.concept-scheme/license]
+   :dt/abstract?     false
+   :db/doc "Tag-vocabulary scheme — analog of skos:ConceptScheme.  Per decisions/tag_as_first_class_introspectable_type_in_metamodel_2026_05_20.md ADR §2.2.  Supports the multi-scheme federation pattern (sandbar substrate scheme + consumer corpus scheme + federated schemes) per IPTC NewsCodes operational model + ISO 25964 microthesaurus federation."}
+
+  {:db/ident         :mm/Shape
+   :dt/type          :dt/Class
+   :dt/subclass-of   :dt/Resource
+   :dt/context       "mm"
+   :dt/label         "Shape"
+   :dt/slots         [:mm.shape/shape-id
+                      :mm.shape/applies-to
+                      :mm.shape/description
+                      :mm.shape/required-property]
+   :dt/abstract?     false
+   :db/doc "SHACL-semantics shape definition for machine-checkable validation of mm/* class instances.  Per ADR §2.2 + Dan-affirmation 2026-05-20 ('shacl has been an early commitment and wise investment as a foundational ontology').  Validated by PoolParty's commercial SHACL adoption (Stage 4.C library study).  Currently minimal shape model; future evolution may add :mm.shape/value-constraints + :mm.shape/cardinality-constraints + :mm.shape/scope per the ADR §5.3."}
+
+  {:db/ident         :mm/Dataset
+   :dt/type          :dt/Class
+   :dt/subclass-of   :dt/Resource
+   :dt/context       "mm"
+   :dt/label         "Dataset"
+   :dt/abstract?     false
+   :db/doc "Named dataset with declared vocabulary uses — analog of void:Dataset.  Per ADR §2.2.  Sandbar substrate + each consumer corpus represented as a Dataset; carries `:uses-vocabulary` (multi) + `:scope` declarations once those slots are added in subsequent Stage 7 increment.  Currently minimal class declaration; substrate-architecture-accommodates v1."}
+
+  {:db/ident         :mm/Vocabulary
+   :dt/type          :dt/Class
+   :dt/subclass-of   :dt/Resource
+   :dt/context       "mm"
+   :dt/label         "Vocabulary"
+   :dt/abstract?     false
+   :db/doc "Vocabulary identifier (e.g. :vocab/dublin-core; :vocab/skos; :vocab/sandbar-mm).  Per ADR §2.2.  Currently minimal class declaration; substrate-architecture-accommodates v1."}
+
+  {:db/ident         :mm/Linkset
+   :dt/type          :dt/Class
+   :dt/subclass-of   :dt/Resource
+   :dt/context       "mm"
+   :dt/label         "Linkset"
+   :dt/abstract?     false
+   :db/doc "Inter-dataset typed cross-link metadata — analog of void:Linkset.  Per ADR §2.2.  Will carry `:subjects-target` + `:objects-target` slots in subsequent Stage 7 increment.  Currently minimal class declaration."}
+
+  {:db/ident         :mm/ThesaurusArray
+   :dt/type          :dt/Class
+   :dt/subclass-of   :dt/Resource
+   :dt/context       "mm"
+   :dt/label         "ThesaurusArray"
+   :dt/abstract?     false
+   :db/doc "Sibling-concept grouping with NodeLabel — analog of iso-thes:ThesaurusArray.  Per ADR §2.2.  Used for facet-grouping siblings under a parent tag (e.g., tags grouped 'by content domain' vs 'by lifecycle stage' — distinct arrays under the same parent tag).  Currently minimal class declaration."}
+
+  {:db/ident         :mm/ConceptGroup
+   :dt/type          :dt/Class
+   :dt/subclass-of   :dt/Resource
+   :dt/context       "mm"
+   :dt/label         "ConceptGroup"
+   :dt/abstract?     false
+   :db/doc "Cross-cutting facet membership — analog of iso-thes:ConceptGroup.  Per ADR §2.2.  Used for SUBSET grouping across the thesaurus (orthogonal to hierarchy).  Will carry :sub-group + :super-group + :microthesaurus-of slots in subsequent Stage 7 increment.  Currently minimal class declaration."}
+
   {:db/ident         :mm/Memory
    :dt/type          :dt/Class
    :dt/subclass-of   :dt/Resource
@@ -580,6 +1003,7 @@
                       :mm.memory/created :mm.memory/last-touched
                       :mm.memory/last-reviewed :mm.memory/created-by
                       :mm.memory/importance :mm.memory/tags
+                      :mm.memory/themes                          ;; ADR §2.3 DCAT controlled-vocabulary tier
                       :mm.memory/frontmatter :mm.memory/first-section
                       :mm.memory/links :mm.memory/body-raw
                       ;; Typed-edge slots (sub-arc Stage 2.A; F#14 resolution)

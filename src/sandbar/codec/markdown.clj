@@ -387,24 +387,69 @@
   [slot-ident]
   (some? (dt/range-of slot-ident)))
 
+;; F#18 resolution: look up the unique-identity slot for ref-target
+;; classes via metamodel introspection (`dt/unique-identity-slot-of`)
+;; rather than hardcoding a consumer-class → slot map.  Per the TIER-0
+;; substrate-quality rule
+;; `interaction/no_hardcoded_consumer_class_knowledge_in_substrate_2026_05_13.md`
+;; — sandbar's codec must not carry hardcoded knowledge of corpus
+;; classes (`:mm/Tag`).  The metamodel knows; query it.
+
+(defn- ref-slot-target-class
+  "Returns the target class ident for a ref-typed slot, or nil if the
+   slot isn't a ref (i.e., `:dt/range` is `:db.type/*`)."
+  [slot-ident]
+  (let [range (dt/range-of slot-ident)]
+    (when (and (keyword? range) (not= "db.type" (namespace range)))
+      range)))
+
+(defn- coerce-string->upsert-map
+  "Wrap a string (or vec of strings) as a unique-identity upsert map.
+   `\"foo\"` + unique-attr `:mm.tag/value` → `{:mm.tag/value \"foo\"}`.
+   Vec → mapv.  Pass-through for non-strings.  Per F#18."
+  [v unique-attr]
+  (cond
+    (string? v)     {unique-attr v}
+    (sequential? v) (mapv (fn [x]
+                            (if (string? x) {unique-attr x} x))
+                          v)
+    :else v))
+
 (defn frontmatter->slots
   "Transform a YAML-parsed frontmatter map into a slot map for the given
    class.  Each key is run through `frontmatter-key->slot`; values are
-   coerced per slot type — string → keyword for keyword-typed slots,
-   string → Date for instant-typed slots.  Unknown slots (no `dt/range-of`)
-   are DROPPED with a debug-log; this prevents the codec from emitting
-   non-existent-attribute idents that would fail at transact.
+   coerced per slot type:
 
-   No per-class hardcoding — the codec reads slot type via metamodel
-   introspection at runtime."
+   - string → keyword for keyword-typed slots
+   - string → java.util.Date for instant-typed slots
+   - string → `{unique-attr string}` upsert-map for ref-typed slots
+     whose target class has a known `:db.unique/identity` attr (per
+     `class->unique-identity`)
+
+   Unknown slots (no `dt/range-of`) are DROPPED with a debug-log; this
+   prevents the codec from emitting non-existent-attribute idents that
+   would fail at transact."
   [class-ident frontmatter-map]
   (into {}
         (for [[k v] frontmatter-map
               :let [slot (frontmatter-key->slot class-ident k)]
               :when (slot-declared? slot)
-              :let [v' (cond
-                         (keyword-typed-slot? slot) (coerce-string->keyword v)
-                         (instant-typed-slot? slot) (coerce-string->instant v)
+              :let [target-class (ref-slot-target-class slot)
+                    unique-attr  (when target-class (dt/unique-identity-slot-of target-class))
+                    v' (cond
+                         (keyword-typed-slot? slot)
+                         (coerce-string->keyword v)
+
+                         (instant-typed-slot? slot)
+                         (coerce-string->instant v)
+
+                         ;; Ref-slot with string values + known unique attr:
+                         ;; wrap as upsert map.  Per F#18.
+                         (and unique-attr
+                              (or (string? v)
+                                  (and (sequential? v) (every? string? v))))
+                         (coerce-string->upsert-map v unique-attr)
+
                          :else v)]]
           [slot v'])))
 

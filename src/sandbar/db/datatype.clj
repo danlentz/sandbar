@@ -147,6 +147,32 @@
      (log/debug :DT/MAKE {:class dt :entity-id (:db/id new-entity)})
      new-entity)))
 
+(declare slots-of)  ; forward reference; defined later in this ns
+
+(defn unique-of
+  "Returns the `:db/unique` value of a slot (`:db.unique/identity` /
+   `:db.unique/value` / nil) — looks up the Property entity by ident
+   via the live Datomic connection.
+
+   Added 2026-05-20 for the bootstrap-memory-substrate sub-arc — needed
+   by `sandbar.codec.markdown/frontmatter->slots` to resolve string
+   values at ref-typed slots as unique-identity upsert maps without
+   hardcoding consumer-class knowledge."
+  [slot]
+  (when slot
+    (some-> slot entity :db/unique)))
+
+(defn unique-identity-slot-of
+  "Returns the FIRST `:db.unique/identity` slot declared on `class-ident`,
+   or nil if none exists.  Used by `sandbar.codec.markdown` to wrap
+   string values at ref-typed slots as upsert maps without hardcoding
+   `{:mm/Tag :mm.tag/value}` consumer-class knowledge."
+  [class-ident]
+  (some (fn [slot]
+          (when (= :db.unique/identity (unique-of slot))
+            slot))
+        (slots-of class-ident)))
+
 (defn make-all*
   "Creates a batch of typed instances in a SINGLE atomic Datomic
    transaction — WITHOUT validation.  Batch analog of `make*` extending
