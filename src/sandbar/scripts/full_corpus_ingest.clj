@@ -90,12 +90,10 @@
             (println (str "  successes: " (count successes)))
             (println (str "  failures:  " (count failures)))
             (when (seq failures)
-              (println "First 5 failure samples:")
-              (doseq [f (take 5 failures)]
+              (println (str "ALL " (count failures) " failures:"))
+              (doseq [f failures]
                 (println (str "  " (:ident f) " (" (:group-size f) " entities): "
-                              (subs (str (:error f)) 0 (min 200 (count (str (:error f))))))))
-              (when (> (count failures) 5)
-                (println (str "  ... and " (- (count failures) 5) " more")))))
+                              (subs (str (:error f)) 0 (min 250 (count (str (:error f))))))))))
           (println "Running sandbar.audit.tag/audit-all...")
           (let [report (audit/audit-all)]
             (println)

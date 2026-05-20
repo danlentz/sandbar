@@ -581,7 +581,7 @@
    :dt/domain      :mm/Memory
    :dt/range       :db.type/string
    :db/valueType   :db.type/string
-   :db/cardinality :db.cardinality/one
+   :db/cardinality :db.cardinality/many
    :db/doc "Actor rel-path or sentinel (frontmatter `created-by:`)."}
 
   {:db/ident       :mm.memory/importance
