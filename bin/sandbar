@@ -1,0 +1,174 @@
+#!/usr/bin/env bash
+# sandbar — lifecycle wrapper for the Sandbar MCP server.
+#
+# Per plans/sandbar_operational_lifecycle_and_full_mcp_cutover_arc_2026_05_21.md
+# Stage X.1.A.
+#
+# Subcommands:
+#   start         — start sandbar if not running; idempotent
+#   stop          — stop sandbar if running; idempotent
+#   restart       — stop + start
+#   status        — show running state + token + memory-count
+#   rotate-token  — issue a new MCP token + persist to ~/.config/sandbar/token
+#   log           — tail the server log
+#
+# Configuration via env:
+#   SANDBAR_HOME    — repo root (default: $HOME/src/sandbar)
+#   SANDBAR_PORT    — MCP port (default: 8080)
+#   SANDBAR_TOKEN   — bearer token (overrides ~/.config/sandbar/token)
+
+set -euo pipefail
+
+SANDBAR_HOME="${SANDBAR_HOME:-$HOME/src/sandbar}"
+SANDBAR_CONFIG="${HOME}/.config/sandbar"
+SANDBAR_PID_FILE="${SANDBAR_CONFIG}/sandbar.pid"
+SANDBAR_LOG_FILE="${SANDBAR_CONFIG}/sandbar.log"
+SANDBAR_TOKEN_FILE="${SANDBAR_CONFIG}/token"
+SANDBAR_PORT="${SANDBAR_PORT:-8080}"
+
+mkdir -p "$SANDBAR_CONFIG"
+
+# A successful sentinel is "port is listening on a process".  We do NOT
+# tie this to the PID file because the PID file can drift (e.g., from a
+# crashed JVM) — the live port-listener is authoritative.
+running_pid() {
+  lsof -i :"$SANDBAR_PORT" -t 2>/dev/null | head -1
+}
+
+resolve_token() {
+  if [ -n "${SANDBAR_TOKEN:-}" ]; then
+    echo "$SANDBAR_TOKEN"
+  elif [ -f "$SANDBAR_TOKEN_FILE" ]; then
+    cat "$SANDBAR_TOKEN_FILE"
+  fi
+}
+
+cmd="${1:-status}"
+
+case "$cmd" in
+  start)
+    pid=$(running_pid || true)
+    if [ -n "$pid" ]; then
+      echo "sandbar already running on port $SANDBAR_PORT (PID $pid)"
+      exit 0
+    fi
+    cd "$SANDBAR_HOME"
+    nohup lein run > "$SANDBAR_LOG_FILE" 2>&1 &
+    new_pid=$!
+    echo "$new_pid" > "$SANDBAR_PID_FILE"
+    echo "starting sandbar (PID $new_pid) — log: $SANDBAR_LOG_FILE"
+    # Wait for ready — server answers ANY HTTP code on /mcp once Pedestal
+    # is up.  Polling at 1s for up to 90s (lein cold-start typical ~30s).
+    for i in $(seq 1 90); do
+      code=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:$SANDBAR_PORT/mcp" 2>/dev/null || true)
+      if [ -n "$code" ] && [ "$code" != "000" ]; then
+        echo "sandbar ready after ${i}s (HTTP $code)"
+        exit 0
+      fi
+      sleep 1
+    done
+    echo "sandbar failed to become ready within 90s" >&2
+    echo "last 10 lines of $SANDBAR_LOG_FILE:" >&2
+    tail -10 "$SANDBAR_LOG_FILE" >&2
+    exit 1
+    ;;
+
+  stop)
+    pid=$(running_pid || true)
+    if [ -z "$pid" ]; then
+      echo "sandbar not running"
+      rm -f "$SANDBAR_PID_FILE"
+      exit 0
+    fi
+    echo "stopping sandbar (PID $pid)"
+    kill "$pid" 2>/dev/null || true
+    for i in $(seq 1 30); do
+      pid=$(running_pid || true)
+      if [ -z "$pid" ]; then
+        echo "sandbar stopped after ${i}s"
+        rm -f "$SANDBAR_PID_FILE"
+        exit 0
+      fi
+      sleep 1
+    done
+    pid=$(running_pid || true)
+    if [ -n "$pid" ]; then
+      echo "force-killing PID $pid" >&2
+      kill -9 "$pid" 2>/dev/null || true
+    fi
+    rm -f "$SANDBAR_PID_FILE"
+    ;;
+
+  restart)
+    "$0" stop
+    "$0" start
+    ;;
+
+  status)
+    pid=$(running_pid || true)
+    if [ -n "$pid" ]; then
+      echo "RUNNING — port $SANDBAR_PORT (PID $pid)"
+      token=$(resolve_token)
+      if [ -n "$token" ]; then
+        echo "TOKEN  — present ($([ -f "$SANDBAR_TOKEN_FILE" ] && echo "$SANDBAR_TOKEN_FILE" || echo 'env'))"
+        body='{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"sandbar.aggregate.count","arguments":{"class":":mm/Memory"}}}'
+        # Inner text is JSON-encoded, so the `"count"` shows up as
+        # `\"count\"` in the response bytes.  Match either form.
+        cnt=$(curl -s -X POST "http://localhost:$SANDBAR_PORT/mcp" \
+              -H "Authorization: Bearer $token" \
+              -H "Content-Type: application/json" \
+              -d "$body" 2>/dev/null | grep -oE 'count[\\"]+ *: *[0-9]+' | head -1 | grep -oE '[0-9]+' || true)
+        if [ -n "$cnt" ]; then
+          echo "MEMORY — $cnt :mm/Memory entities in DB"
+        else
+          echo "MEMORY — could not read (token rejected? db empty?)"
+        fi
+      else
+        echo "TOKEN  — MISSING (run 'sandbar rotate-token corpus <key>')"
+      fi
+    else
+      echo "STOPPED — port $SANDBAR_PORT free"
+    fi
+    ;;
+
+  rotate-token)
+    service="${2:-corpus}"
+    key="${3:-default-$(date +%s)}"
+    cd "$SANDBAR_HOME"
+    out=$(lein issue-mcp-token "$service" "$key" --rotate 2>&1)
+    echo "$out"
+    new_token=$(echo "$out" | grep -oE 'SANDBAR_TOKEN="[^"]+"' | head -1 | sed 's/.*"\(.*\)"/\1/')
+    if [ -n "$new_token" ]; then
+      echo "$new_token" > "$SANDBAR_TOKEN_FILE"
+      chmod 600 "$SANDBAR_TOKEN_FILE"
+      echo "token written to $SANDBAR_TOKEN_FILE"
+    else
+      echo "warning: could not extract token from issue-mcp-token output" >&2
+      exit 1
+    fi
+    ;;
+
+  log)
+    tail -f "$SANDBAR_LOG_FILE"
+    ;;
+
+  *)
+    cat >&2 <<EOF
+Usage: sandbar <command>
+
+Commands:
+  start                          — start sandbar (idempotent)
+  stop                           — stop sandbar (idempotent)
+  restart                        — stop + start
+  status                         — show running state + token + memory-count
+  rotate-token <service> <key>   — issue a fresh MCP token + persist
+  log                            — tail the server log
+
+Config (env):
+  SANDBAR_HOME=$SANDBAR_HOME
+  SANDBAR_PORT=$SANDBAR_PORT
+  SANDBAR_TOKEN_FILE=$SANDBAR_TOKEN_FILE
+EOF
+    exit 2
+    ;;
+esac
