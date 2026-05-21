@@ -20,7 +20,8 @@
 set -euo pipefail
 
 SANDBAR_HOME="${SANDBAR_HOME:-$HOME/src/sandbar}"
-SANDBAR_CONFIG="${HOME}/.config/sandbar"
+SANDBAR_CLIENT_DIR="${SANDBAR_CLIENT_DIR:-$HOME/claude}"
+SANDBAR_CONFIG="${SANDBAR_CLIENT_DIR}/.sandbar"
 SANDBAR_PID_FILE="${SANDBAR_CONFIG}/sandbar.pid"
 SANDBAR_LOG_FILE="${SANDBAR_CONFIG}/sandbar.log"
 SANDBAR_TOKEN_FILE="${SANDBAR_CONFIG}/token"
@@ -257,7 +258,12 @@ Commands:
 Config (env):
   SANDBAR_HOME=$SANDBAR_HOME
   SANDBAR_PORT=$SANDBAR_PORT
+  SANDBAR_CLIENT_DIR=$SANDBAR_CLIENT_DIR
   SANDBAR_TOKEN_FILE=$SANDBAR_TOKEN_FILE
+
+Per decisions/sandbar_token_lives_in_client_project_not_user_global_2026_05_21.md:
+tokens live in the CLIENT PROJECT (.sandbar/token under the corpus root),
+not in a user-global ~/.config/sandbar/ location.  Gitignored.
 EOF
     exit 2
     ;;
