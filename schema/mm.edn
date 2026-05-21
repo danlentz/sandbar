@@ -836,6 +836,158 @@
    :db/cardinality :db.cardinality/many
    :db/doc "Implementation typed-edge (frontmatter `implements:`).  Rel-paths to memorials this memorial implements / realizes.  Per memory/predicates/implements.md."}
 
+  ;; ==========================================================================
+  ;; Stage 5.B.gap-A.2 (2026-05-21) — inverse pairs + new forwards added
+  ;; per observations/typed_edge_predicate_vocabulary_substrate_gaps_2026_05_21.md.
+  ;; Closes the 17-predicate gap between corpus-defined vocabulary + sandbar
+  ;; substrate.  All :db.type/ref with :dt/range :dt/Resource +
+  ;; :db.cardinality/many — same shape as the typed-edge block above.
+
+  ;; Inverses of existing forwards
+  {:db/ident       :mm.memory/implemented-by
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Memory
+   :dt/range       :dt/Resource
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/many
+   :db/doc "Inverse of :mm.memory/implements (frontmatter `implemented-by:`).  Per memory/predicates/implemented-by.md."}
+
+  {:db/ident       :mm.memory/ancestor-of
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Memory
+   :dt/range       :dt/Resource
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/many
+   :db/doc "Inverse of :mm.memory/descends-from (frontmatter `ancestor-of:`).  Per memory/predicates/ancestor-of.md."}
+
+  ;; New pairs — about / is-about-of
+  {:db/ident       :mm.memory/about
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Memory
+   :dt/range       :dt/Resource
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/many
+   :db/doc "Topical-aboutness typed-edge (frontmatter `about:`).  Rel-paths to memorials whose topic THIS memorial is fundamentally ABOUT.  Per memory/predicates/about.md."}
+
+  {:db/ident       :mm.memory/is-about-of
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Memory
+   :dt/range       :dt/Resource
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/many
+   :db/doc "Inverse of :mm.memory/about (frontmatter `is-about-of:`).  Per memory/predicates/is-about-of.md."}
+
+  ;; New pairs — consumes / consumed-by
+  {:db/ident       :mm.memory/consumes
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Memory
+   :dt/range       :dt/Resource
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/many
+   :db/doc "Library/artifact-consumption typed-edge (frontmatter `consumes:`).  Rel-paths to libraries / artifacts THIS memorial consumes.  Per memory/predicates/consumes.md."}
+
+  {:db/ident       :mm.memory/consumed-by
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Memory
+   :dt/range       :dt/Resource
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/many
+   :db/doc "Inverse of :mm.memory/consumes (frontmatter `consumed-by:`).  Per memory/predicates/consumed-by.md."}
+
+  ;; New pairs — demonstrates / demonstrated-by
+  {:db/ident       :mm.memory/demonstrates
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Memory
+   :dt/range       :dt/Resource
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/many
+   :db/doc "Example-of-concept typed-edge (frontmatter `demonstrates:`).  Rel-paths to concepts/patterns/principles THIS memorial demonstrates.  Per memory/predicates/demonstrates.md."}
+
+  {:db/ident       :mm.memory/demonstrated-by
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Memory
+   :dt/range       :dt/Resource
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/many
+   :db/doc "Inverse of :mm.memory/demonstrates (frontmatter `demonstrated-by:`).  Per memory/predicates/demonstrated-by.md."}
+
+  ;; New pairs — disagrees-with / is-disagreed-with-by
+  {:db/ident       :mm.memory/disagrees-with
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Memory
+   :dt/range       :dt/Resource
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/many
+   :db/doc "Anti-relation typed-edge (frontmatter `disagrees-with:`).  Rel-paths to memorials whose claims THIS memorial disagrees with.  Per memory/predicates/disagrees-with.md."}
+
+  {:db/ident       :mm.memory/is-disagreed-with-by
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Memory
+   :dt/range       :dt/Resource
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/many
+   :db/doc "Inverse of :mm.memory/disagrees-with (frontmatter `is-disagreed-with-by:`).  Per memory/predicates/is-disagreed-with-by.md."}
+
+  ;; New pairs — has-reply / reply-of
+  {:db/ident       :mm.memory/has-reply
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Memory
+   :dt/range       :dt/Resource
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/many
+   :db/doc "Reply-thread typed-edge (frontmatter `has-reply:`).  Rel-paths to reply memorials.  Per memory/predicates/has-reply.md."}
+
+  {:db/ident       :mm.memory/reply-of
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Memory
+   :dt/range       :dt/Resource
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/many
+   :db/doc "Inverse of :mm.memory/has-reply (frontmatter `reply-of:`).  Per memory/predicates/reply-of.md."}
+
+  ;; New pairs — mentions / is-mentioned-by
+  {:db/ident       :mm.memory/mentions
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Memory
+   :dt/range       :dt/Resource
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/many
+   :db/doc "Passing-reference typed-edge (frontmatter `mentions:`).  Rel-paths to memorials this memorial mentions in passing (weaker than `cites`).  Per memory/predicates/mentions.md."}
+
+  {:db/ident       :mm.memory/is-mentioned-by
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Memory
+   :dt/range       :dt/Resource
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/many
+   :db/doc "Inverse of :mm.memory/mentions (frontmatter `is-mentioned-by:`).  Per memory/predicates/is-mentioned-by.md."}
+
+  ;; New pairs — realizes / realized-by
+  {:db/ident       :mm.memory/realizes
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Memory
+   :dt/range       :dt/Resource
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/many
+   :db/doc "Realization typed-edge (frontmatter `realizes:`).  Rel-paths to abstract concepts/patterns THIS memorial realizes (concretizes).  Per memory/predicates/realizes.md."}
+
+  {:db/ident       :mm.memory/realized-by
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Memory
+   :dt/range       :dt/Resource
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/many
+   :db/doc "Inverse of :mm.memory/realizes (frontmatter `realized-by:`).  Per memory/predicates/realized-by.md."}
+
+  ;; Standalone — contradicts (no inverse in current vocabulary)
+  {:db/ident       :mm.memory/contradicts
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Memory
+   :dt/range       :dt/Resource
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/many
+   :db/doc "Contradiction typed-edge (frontmatter `contradicts:`).  Rel-paths to memorials whose claims THIS memorial contradicts.  Per memory/predicates/contradicts.md."}
+
   {:db/ident       :mm.memory/introduced-in
    :dt/type        :dt/Property
    :dt/domain      :mm/Memory
