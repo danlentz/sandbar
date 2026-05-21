@@ -504,6 +504,53 @@
                           v)
     :else v))
 
+(defn- rel-path->memory-ident
+  "Convert a corpus rel-path string to an :mm/Memory :db/ident keyword.
+   The corpus convention has frontmatter typed-edges write rel-paths
+   relative to the memory/ subtree (e.g., `cites: decisions/foo.md`),
+   but the ingested entities have idents prefixed `:memory.<dir>/<name>`
+   because the project.import path passes the full `memory/<dir>/<name>.md`
+   rel-path through `memory-ident-from-rel-path`.  Reconcile by adding
+   the `memory/` prefix if absent before keyword derivation.
+
+   'decisions/foo.md'         → :memory.decisions/foo
+   'memory/decisions/foo.md'  → :memory.decisions/foo
+   'patterns/x/y.md'          → :memory.patterns.x/y
+
+   Returns nil for unparseable input."
+  [rel-path]
+  (let [no-ext     (str/replace rel-path #"\.md$" "")
+        with-mem   (if (str/starts-with? no-ext "memory/")
+                     no-ext
+                     (str "memory/" no-ext))
+        parts      (str/split with-mem #"/")
+        ns-parts   (butlast parts)
+        local-name (last parts)]
+    (when (and (seq ns-parts) local-name)
+      (keyword (str/join "." ns-parts) local-name))))
+
+(defn- coerce-rel-path->ident-upsert
+  "Coerce a rel-path string (or vec) to a `:db/ident` upsert map for
+   cross-tx ref resolution.  Datomic's natural `:db/ident` upsert
+   semantics handle the target-not-yet-loaded case: if `:memory.decisions/foo`
+   doesn't exist yet, the transact creates a STUB entity with just
+   `:db/ident :memory.decisions/foo`; when the actual memorial loads
+   later, it upserts via the same ident.
+
+   'decisions/foo.md'         → {:db/ident :memory.decisions/foo}
+   Vec of strings             → mapv
+
+   Per decisions/mm_memory_typed_edge_migration_string_to_ref_2026_05_21.md."
+  [v]
+  (letfn [(coerce-one [s]
+            (if-let [ident (rel-path->memory-ident s)]
+              {:db/ident ident}
+              s))]
+    (cond
+      (string? v)     (coerce-one v)
+      (sequential? v) (mapv (fn [x] (if (string? x) (coerce-one x) x)) v)
+      :else v)))
+
 (defn frontmatter->slots
   "Transform a YAML-parsed frontmatter map into a slot map for the given
    class.  Each key is run through `frontmatter-key->slot`; values are
@@ -542,12 +589,28 @@
                        (boolean-typed-slot? slot)
                        (coerce-string->boolean v)
 
-                       ;; Ref-slot with string values + known unique attr:
-                       ;; wrap as upsert map.  Per F#18.
+                       ;; Ref-slot with string values + CLASS-SPECIFIC unique
+                       ;; attr (e.g., :mm/Tag → :mm.tag/value): wrap as upsert
+                       ;; map.  Per F#18.  Skip when unique-attr resolves to
+                       ;; :db/ident — that case wants ident-upsert (next
+                       ;; branch), not string-upsert (would produce
+                       ;; {:db/ident <string>} which Datomic rejects).
                        (and unique-attr
+                            (not= :db/ident unique-attr)
                             (or (string? v)
                                 (and (sequential? v) (every? string? v))))
                        (coerce-string->upsert-map v unique-attr)
+
+                       ;; Ref-slot WITHOUT class-specific unique attr (e.g.,
+                       ;; :dt/Resource, :mm/Memory, :mm/Actor — classes whose
+                       ;; instances are addressed by :db/ident): coerce
+                       ;; rel-path strings to :db/ident upsert maps via the
+                       ;; corpus's memory-ident convention.  Per
+                       ;; decisions/mm_memory_typed_edge_migration_string_to_ref_2026_05_21.md.
+                       (and target-class
+                            (or (string? v)
+                                (and (sequential? v) (every? string? v))))
+                       (coerce-rel-path->ident-upsert v)
 
                        :else v)]]
       (om/put! out slot v'))
@@ -586,42 +649,72 @@
 ;; YAML emission helpers
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
+(defn- memory-ident->rel-path
+  "Inverse of `rel-path->memory-ident` — convert a memorial :db/ident
+   keyword back to a corpus rel-path string.
+
+   :memory.types/task         → 'types/task.md'
+   :memory.patterns.x/y       → 'patterns/x/y.md'
+
+   Returns nil for keywords whose namespace doesn't start with 'memory.'
+   (those weren't derived from rel-paths)."
+  [ident]
+  (let [ns-part (some-> ident namespace)
+        nm      (some-> ident name)]
+    (when (and ns-part nm (str/starts-with? ns-part "memory."))
+      (let [dirs (-> ns-part
+                     (subs (count "memory."))
+                     (str/split #"\."))]
+        (str (str/join "/" dirs) "/" nm ".md")))))
+
 (defn- unwrap-upsert-map
   "Reverse the parse-side `{unique-attr value}` wrapping that
-   `coerce-string->upsert-map` applies to ref-slot values.  Used at emit
-   time so the YAML wire-form shows plain strings instead of nested maps
-   like `- mm.tag/value: actor`.
+   `coerce-string->upsert-map` (tag case) or `coerce-rel-path->ident-upsert`
+   (ref-via-:db/ident case) applies to ref-slot values.  Used at emit
+   time so the YAML wire-form shows plain strings instead of nested maps.
 
-   Single map → string (when the map is just `{unique-attr value}`).
+   Three reverse shapes:
+   - `{:mm.tag/value 'foo'}` → 'foo' (unwrap tag value)
+   - `{:db/ident :memory.types/foo}` → 'types/foo.md' (rel-path via ident)
+   - `{<other-keyword> <string>}` → <string> (generic single-key upsert)
+
+   Single map → string.
    Vector of maps → vector of strings.
    Pass-through for non-upsert shapes."
   [v]
-  (let [unwrap-one (fn [x]
-                     (if (and (map? x) (= 1 (count x))
-                              (let [k (first (keys x))]
-                                (and (keyword? k)
-                                     (= "db.unique" (some-> (some #(when (= % :db.unique/identity)
-                                                                     :db.unique/identity)
-                                                                   [:db.unique/identity])
-                                                            namespace)))))
-                       ;; map is shape {ident value} — extract the value
-                       (first (vals x))
-                       x))]
+  (letfn [(ident-upsert? [x]
+            ;; {:db/ident <keyword>} — produced by coerce-rel-path->ident-upsert
+            (and (map? x) (= 1 (count x))
+                 (= :db/ident (first (keys x)))
+                 (keyword? (get x :db/ident))))
+
+          (string-upsert? [x]
+            ;; {<keyword> <string>} — produced by coerce-string->upsert-map (tag case)
+            (and (map? x) (= 1 (count x))
+                 (let [k (first (keys x))]
+                   (and (keyword? k) (string? (get x k))))))
+
+          (unwrap-one [x]
+            (cond
+              (ident-upsert? x)
+              (or (memory-ident->rel-path (:db/ident x))
+                  ;; Fall back to keyword name if the ident doesn't fit
+                  ;; the memory.<dirs>/<name> shape.
+                  (subs (str (:db/ident x)) 1))
+
+              (string-upsert? x)
+              (first (vals x))
+
+              :else x))]
     (cond
-      ;; Match {<keyword> <string>} shape — single upsert-map
-      (and (map? v) (= 1 (count v))
-           (let [k (first (keys v))]
-             (and (keyword? k) (string? (get v k)))))
-      (first (vals v))
+      ;; Single upsert-map (either string or ident shape)
+      (or (ident-upsert? v) (string-upsert? v))
+      (unwrap-one v)
 
       ;; Vector of upsert-maps
       (and (sequential? v)
-           (every? (fn [x]
-                     (and (map? x) (= 1 (count x))
-                          (let [k (first (keys x))]
-                            (and (keyword? k) (string? (get x k))))))
-                   v))
-      (mapv (fn [x] (first (vals x))) v)
+           (every? (some-fn ident-upsert? string-upsert?) v))
+      (mapv unwrap-one v)
 
       :else v)))
 
