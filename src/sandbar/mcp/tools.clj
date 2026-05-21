@@ -715,6 +715,23 @@
         (g :limit)
         (assoc :limit (g :limit))))))
 
+(defn- orient-type-tree-handler [args]
+  (let [root-raw (or (get args "root") (get args :root))
+        opts     (cond-> {}
+                   root-raw (assoc :root (eref/resolve-ident root-raw)))]
+    (orient/type-tree opts)))
+
+(defn- orient-tree-handler [args]
+  (let [class-ident   (class-arg args)
+        path-slot-raw (or (get args "path-slot") (get args :path-slot))
+        sample-size   (or (get args "sample-size") (get args :sample-size))]
+    (when (nil? path-slot-raw)
+      (throw (ex-info "Missing required argument: path-slot" {:args args})))
+    (let [opts (cond-> {:class class-ident
+                        :path-slot (eref/resolve-ident path-slot-raw)}
+                 (some? sample-size) (assoc :sample-size sample-size))]
+      (orient/tree opts))))
+
 (defn- orient-library-card-handler [args]
   (let [entity-arg (or (get args "entity") (get args :entity))
         axes-arg   (or (get args "axes") (get args :axes))]
@@ -1597,6 +1614,29 @@
                                     :description "Optional {slot-ident weight} map overriding class declaration"}}
                    [:query :class])
     :handler search-bm25f-handler}
+
+   ;; Orientation — type-tree + tree (Stage 5.B-pre #3 — 0.1.1 co-evolution arc)
+   {:name "sandbar.orient.type-tree"
+    :title "Class-hierarchy subtree rooted at a class (nested rendering)"
+    :description "WHICH: returns the class-hierarchy subtree rooted at `:root` (default `:dt/Resource` — the metamodel root).  Recursive walk via `dt/direct-subclasses-of`; produces a nested-map tree with `:class` + `:children` per node.\n\nWHEN: use to visualize the full subclass hierarchy from a root class.  Underpins /memory-type-tree.  When NOT to use: (a) only direct subclasses needed — use `sandbar.class.subclasses`; (b) flat list of all subclasses — use `sandbar.class.subclasses` (returns flat).\n\nHOW: optional `:root` — root class ident string (default `:dt/Resource`).  Cycles in the inheritance graph are detected + flagged with `:cycle? true` (no infinite recursion).\n\nORDER: leaf-call shape.\n\nCOMBINATION: pairs with `sandbar.class.describe` / `.slots` (drill into individual classes) and `sandbar.types.subclass-of` (relation query).\n\nResult: `{:root <ident> :tree {:class <ident> :children [<subtree>...]}}`."
+    :inputSchema {:type "object"
+                  :properties {:root {:type "string"
+                                      :description "Root class ident (default ':dt/Resource')"}}
+                  :required []}
+    :handler orient-type-tree-handler}
+
+   {:name "sandbar.orient.tree"
+    :title "Top-level directory grouping of class instances by path-slot"
+    :description "WHICH: groups instances of `:class` by their `:path-slot` value's first-level directory prefix.  Returns per-directory counts + optional sample entities.\n\nWHEN: use for filesystem-style overview of a corpus subtree.  Underpins /memory-tree.  When NOT to use: (a) sibling enumeration within ONE directory — use `sandbar.navigate.siblings-of`; (b) recursive descent through sub-directories — compose multiple `tree` calls or use a path-grammar walk.\n\nHOW: `:class` is the class ident.  `:path-slot` is the slot carrying the filesystem-style path.  Optional `:sample-size` includes that many sample entities per directory in the result (default 0 = counts only).\n\nORDER: leaf-call shape.\n\nCOMBINATION: pairs with `sandbar.navigate.siblings-of` (drill into a single directory) and `sandbar.aggregate.group-by` (more general group-by-slot).\n\nResult: `{:dirs {<dir-name> {:count N :sample [<entity-map>...]?}} :total N}`."
+    :inputSchema (one-required
+                   {:class       {:type "string"
+                                  :description "Class ident whose instances to group"}
+                    :path-slot   {:type "string"
+                                  :description "Slot ident carrying filesystem-style path"}
+                    :sample-size {:type "integer"
+                                  :description "Sample entities per directory (default 0 = none)"}}
+                   [:class :path-slot])
+    :handler orient-tree-handler}
 
    ;; Orientation — library-card (Phase O — fulltext arc; substrate-quality scope per
    ;; corpus decisions/sandbar_phase_o_substrate_quality_scope_library_card_only_2026_05_14.md)

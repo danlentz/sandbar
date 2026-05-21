@@ -17,7 +17,8 @@
 
   Substrate-quality discipline preserved: class-agnostic; axis-specs are
   caller-supplied."
-  (:require [sandbar.db.datatype :as dt]))
+  (:require [sandbar.db.datatype :as dt]
+            [sandbar.db.datomic  :as db]))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Entity projection helper (mirror navigate.path / navigate.siblings)
@@ -82,3 +83,93 @@
                           (assoc acc axis-name (mapv project-edge edges)))
                         {}
                         raw-axes)}))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; type-tree — class-hierarchy nested rendering (Stage 5.B-pre #3)
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defn- subtree
+  "Recursively build a nested-map of class subtree rooted at `class-ident`.
+   Returns `{:class <ident> :children [<subtree>...]}`.  Cycles are
+   prevented via the `visited` set."
+  [class-ident visited]
+  (if (contains? visited class-ident)
+    {:class class-ident :cycle? true :children []}
+    (let [direct-children (sort (dt/direct-subclasses-of class-ident))
+          visited'        (conj visited class-ident)]
+      {:class    class-ident
+       :children (mapv #(subtree % visited') direct-children)})))
+
+(defn type-tree
+  "Return the class-hierarchy subtree rooted at `:root` (default
+  `:dt/Resource` — the metamodel root).  Recursive walk via
+  `dt/direct-subclasses-of`; produces a nested-map tree with `:class` +
+  `:children` per node.
+
+  Required opts: none — `:root` defaults to `:dt/Resource`.
+
+  Optional opts:
+    :root — root class ident (default `:dt/Resource`)
+
+  Returns:
+    {:root <ident> :tree {<nested-tree>}}
+
+  Per Stage 5.B-pre #3 of decisions/stage_5_mcp_verb_authoring_sub_arc_2026_05_21.md."
+  [{:keys [root] :or {root :dt/Resource}}]
+  {:pre [(keyword? root)]}
+  {:root root
+   :tree (subtree root #{})})
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; tree — corpus rel-path directory tree (Stage 5.B-pre #3)
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defn- group-by-dir
+  "Group entity-maps by their `:path-slot` value's directory prefix
+   (one level deep).  Returns `{dir-string [entity-map ...]}`."
+  [entities path-slot]
+  (reduce
+    (fn [acc e]
+      (let [path (get e path-slot)
+            dir  (if (and path (clojure.string/includes? path "/"))
+                   (subs path 0 (clojure.string/index-of path "/"))
+                   "")]
+        (update acc dir (fnil conj []) e)))
+    {}
+    entities))
+
+(defn tree
+  "Return a top-level directory grouping of entities by their `:path-slot`
+  value.  Output shape: `{:dirs {<dir-name> {:count N :sample [<entity-map>...]}}
+                          :total N}`.
+
+  Required opts:
+    :class     — class ident whose instances to group (e.g. `:mm/Memory`)
+    :path-slot — slot ident carrying the filesystem-style path
+                 (e.g. `:mm.memory/rel-path`)
+
+  Optional opts:
+    :sample-size — entities sampled per directory (default 0 = none)
+
+  Per Stage 5.B-pre #3."
+  [{:keys [class path-slot sample-size]
+    :or   {sample-size 0}}]
+  {:pre [(keyword? class)
+         (keyword? path-slot)]}
+  (let [instances (dt/all-named-instances-of class)
+        entities  (mapv (fn [ident]
+                          (let [e (db/entity ident)]
+                            (cond-> {:db/ident ident}
+                              (get e path-slot)
+                              (assoc path-slot (get e path-slot)))))
+                        instances)
+        by-dir    (group-by-dir entities path-slot)]
+    {:dirs (reduce-kv
+             (fn [acc dir es]
+               (assoc acc dir
+                      (cond-> {:count (count es)}
+                        (pos? sample-size)
+                        (assoc :sample (vec (take sample-size es))))))
+             {}
+             by-dir)
+     :total (count entities)}))
