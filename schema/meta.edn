@@ -224,7 +224,46 @@
    :dt/range :dt/Property
    :db/valueType :db.type/ref
    :db/cardinality :db.cardinality/many
-   :db/doc "Defines parent attributes."}
+   :db/doc "RDFS-style sub-property declaration — `(p :dt/subproperty-of q)` iff `IEXT(p) ⊆ IEXT(q)`.  Reflexive + transitive per Hayes & Patel-Schneider 2014 §5.2.  Operational consequence (RDFS rule rdfs7): `(p :dt/subproperty-of q) ∧ (x p y) → (x q y)` is entailed.  Used to declare predicate hierarchy: e.g., `(:mm.memory/evidences :dt/subproperty-of :mm.memory/cites)` means every evidences-edge is also a cites-edge.  Per `observations/predicate_hierarchy_lattice_analysis_and_substrate_memorial_layered_duplication_2026_05_21.md`."}
+
+  ;; ==========================================================================
+  ;; Abstract super-properties — RDFS-formal layering of substrate-level
+  ;; (`:dt/*`) vs memorial-level (`:mm.memory/*`) facts.  Per
+  ;; observations/predicate_hierarchy_lattice_analysis_and_substrate_memorial_layered_duplication_2026_05_21.md
+  ;; §4.5 Path B — declare both layered slots as sub-properties of an
+  ;; abstract super-property to make the relationship machine-introspectable.
+
+  {:db/ident :dt/structural-derivation
+   :dt/type  :dt/Property
+   :dt/domain :dt/Resource
+   :dt/range :dt/Resource
+   :db/valueType :db.type/ref
+   :db/cardinality :db.cardinality/many
+   :db/doc "Abstract super-property covering 'X is structurally derived from / is a kind of Y' relations across substrate + memorial layers.  Sub-properties: :dt/subclass-of (substrate metamodel) + :mm.memory/inherits-from (corpus memorial-level)."}
+
+  {:db/ident :dt/instantiation
+   :dt/type  :dt/Property
+   :dt/domain :dt/Resource
+   :dt/range :dt/Resource
+   :db/valueType :db.type/ref
+   :db/cardinality :db.cardinality/many
+   :db/doc "Abstract super-property covering 'X is an instance of class Y' relations across substrate + memorial layers.  Sub-properties: :dt/type (substrate metamodel) + :mm.memory/instance-of (corpus memorial-level)."}
+
+  {:db/ident :dt/property-domain-relation
+   :dt/type  :dt/Property
+   :dt/domain :dt/Resource
+   :dt/range :dt/Resource
+   :db/valueType :db.type/ref
+   :db/cardinality :db.cardinality/many
+   :db/doc "Abstract super-property covering 'predicate P has domain class C' relations.  Sub-properties: :dt/domain (substrate metamodel) + :mm.memory/has-domain (corpus predicate-memorial frontmatter)."}
+
+  {:db/ident :dt/property-range-relation
+   :dt/type  :dt/Property
+   :dt/domain :dt/Resource
+   :dt/range :dt/Resource
+   :db/valueType :db.type/ref
+   :db/cardinality :db.cardinality/many
+   :db/doc "Abstract super-property covering 'predicate P has range class C' relations.  Sub-properties: :dt/range (substrate metamodel) + :mm.memory/has-range (corpus predicate-memorial frontmatter)."}
 
   {:db/ident :dt/abstract?
    :dt/type  :dt/Property
@@ -527,5 +566,20 @@
    :dt/component #db/id[:db.part/user -1]
    :dt/_list #db/id[:db.part/user -1]
    :dt/slots []}]
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Substrate-side sub-property assertions (2026-05-21) — declare the
+;; substrate metamodel slots (:dt/subclass-of, :dt/type, :dt/domain, :dt/range)
+;; as sub-properties of the abstract super-properties declared earlier.  Per
+;; observations/predicate_hierarchy_lattice_analysis_and_substrate_memorial_layered_duplication_2026_05_21.md
+;; §4.5 Path B — the corresponding memorial-level slots (:mm.memory/inherits-from,
+;; :mm.memory/instance-of, :mm.memory/has-domain, :mm.memory/has-range) are
+;; declared as sub-properties at the equivalent points in mm.edn.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident :dt/subclass-of  :dt/subproperty-of :dt/structural-derivation}
+  {:db/ident :dt/type          :dt/subproperty-of :dt/instantiation}
+  {:db/ident :dt/domain        :dt/subproperty-of :dt/property-domain-relation}
+  {:db/ident :dt/range         :dt/subproperty-of :dt/property-range-relation}]
 
 ]

@@ -1532,4 +1532,45 @@
    :dt/abstract?     false
    :db/doc "A first-class discipline rule entity.  Routes `type: rule`.  Per decisions/actor_as_first_class_metamodel_class_with_mm_actor_slots_2026_05_20.md + decisions/firewall_procedure_as_first_class_type_2026_05_11.md."}]
 
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Sub-property hierarchy assertions (2026-05-21) — SEPARATE transaction
+;; because :dt/subproperty-of values must resolve to existing :db/ident
+;; entities (the referenced slots must be already-installed before they
+;; can be the value of a ref-typed assertion).
+;;
+;; Per observations/predicate_hierarchy_lattice_analysis_and_substrate_memorial_layered_duplication_2026_05_21.md
+;; §5.1 — declares the RDFS-style sub-property hierarchy for typed-edge
+;; predicates so RDFS rule rdfs7 (`(p subPropertyOf q) ∧ (x p y) → (x q y)`)
+;; can propagate.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [;; Topical-reference chain: mentions ← touches ← cites ← evidences
+  {:db/ident :mm.memory/evidences      :dt/subproperty-of :mm.memory/cites}
+  {:db/ident :mm.memory/cites          :dt/subproperty-of :mm.memory/touches}
+  {:db/ident :mm.memory/touches        :dt/subproperty-of :mm.memory/mentions}
+
+  ;; Refinement chain: supersedes ← refines ← cites
+  {:db/ident :mm.memory/refines        :dt/subproperty-of :mm.memory/cites}
+  {:db/ident :mm.memory/supersedes     :dt/subproperty-of :mm.memory/refines}
+
+  ;; Implementation / conformance: implements ← conforms-to ← cites
+  {:db/ident :mm.memory/implements     :dt/subproperty-of :mm.memory/conforms-to}
+  {:db/ident :mm.memory/conforms-to    :dt/subproperty-of :mm.memory/cites}
+
+  ;; Motivation / information chain: triggered-by ← motivated-by ← informed-by
+  {:db/ident :mm.memory/motivated-by   :dt/subproperty-of :mm.memory/informed-by}
+  {:db/ident :mm.memory/triggered-by   :dt/subproperty-of :mm.memory/motivated-by}
+
+  ;; Documentation + lineage: cite the documented / ancestor
+  {:db/ident :mm.memory/documents      :dt/subproperty-of :mm.memory/cites}
+  {:db/ident :mm.memory/descends-from  :dt/subproperty-of :mm.memory/cites}
+
+  ;; Cross-layer abstract super-properties (substrate-side ones declared
+  ;; at the tail of meta.edn).  Both layered slots are sub-properties of
+  ;; the corresponding abstract super-property per §4.5 Path B.
+  {:db/ident :mm.memory/inherits-from  :dt/subproperty-of :dt/structural-derivation}
+  {:db/ident :mm.memory/instance-of    :dt/subproperty-of :dt/instantiation}
+  {:db/ident :mm.memory/has-domain     :dt/subproperty-of :dt/property-domain-relation}
+  {:db/ident :mm.memory/has-range      :dt/subproperty-of :dt/property-range-relation}]
+
 ]
