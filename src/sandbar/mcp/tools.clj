@@ -595,6 +595,45 @@
                  (some? temporal-slot) (assoc :temporal-slot temporal-slot))]
       (aggregate/rank-by opts))))
 
+;; ---------- Search operations (Stage 5.B-pre — 0.1.1 co-evolution arc) ----------
+;;
+;; Per decisions/stage_5_mcp_verb_authoring_sub_arc_2026_05_21.md — MCP
+;; boundary wrapper around `sandbar.search/search-bm25f`.  The Clojure
+;; function has lived in `sandbar.search` since the fulltext arc Stage 4c;
+;; this verb exposes it as an MCP tool so memory-model client slash
+;; commands like `/memory-search` can dispatch via the MCP server.
+
+(defn- search-bm25f-handler [args]
+  (let [query           (or (get args "query") (get args :query))
+        class-ident     (class-arg args)
+        limit-arg       (or (get args "limit") (get args :limit))
+        where-raw       (or (get args "where") (get args :where))
+        facet-by-raw    (or (get args "facet-by") (get args :facet-by))
+        include-raw     (or (get args "include") (get args :include))
+        field-wts-raw   (or (get args "field-weights") (get args :field-weights))]
+    (when (nil? query)
+      (throw (ex-info "Missing required argument: query" {:args args})))
+    (let [where     (when where-raw
+                      (cond
+                        (string? where-raw)     (read-string where-raw)
+                        (sequential? where-raw) (vec where-raw)))
+          facet-by  (when facet-by-raw
+                      (mapv eref/resolve-ident
+                            (if (sequential? facet-by-raw) facet-by-raw [facet-by-raw])))
+          include   (when include-raw
+                      (mapv keyword
+                            (if (sequential? include-raw) include-raw [include-raw])))
+          field-wts (when (map? field-wts-raw)
+                      (into {} (for [[k v] field-wts-raw]
+                                 [(eref/resolve-ident k) (double v)])))
+          opts (cond-> {:query query :class class-ident}
+                 (some? limit-arg) (assoc :limit limit-arg)
+                 where             (assoc :where where)
+                 facet-by          (assoc :facet-by facet-by)
+                 (seq include)     (assoc :include include)
+                 field-wts         (assoc :field-weights field-wts))]
+      (search/search-bm25f opts))))
+
 ;; ---------- Navigation operations (Stage P-6 — fulltext arc Phase N) ----------
 ;;
 ;; Per fulltext arc Stage P-6 of
@@ -1492,6 +1531,30 @@
                                     :description "REQUIRED for :recency / :freshness — temporal-axis slot ident (e.g. ':mm.memory/last-touched')"}}
                    [:class :rank-by])
     :handler aggregate-rank-by-handler}
+
+   ;; Search — BM25F multi-field fulltext (Stage 5.B-pre — 0.1.1 co-evolution arc)
+   {:name "sandbar.search.bm25f"
+    :title "Multi-field BM25F fulltext search over a class's instances"
+    :description "WHICH: returns the top-K instances of `:class` ranked by Robertson-Zaragoza canonical BM25F over multi-field length-normalized scoring.  Field weights are introspected from the class's `:dt/bm25f-weights` declaration unless overridden via `:field-weights` opt.\n\nWHEN: use for content-relevance ranking — 'which memorials mention this concept'.  When NOT to use: (a) structural ranking by degree / backlink-density / recency / freshness — use `sandbar.aggregate.rank-by`; (b) exact-string lookup — use `sandbar.entity.find` (by ident); (c) Lucene query-language operators (AND / OR / NOT / phrase / wildcard / fuzzy / field-prefix) — these are NOT recognized; bag-of-words only.  Use `search-attribute` (single-slot via :db.fn/fulltext-search) for Lucene syntax over one fulltext-indexed slot.\n\nHOW: `:query` is a bag-of-words string (tokenized via Porter stemmer + lowercase + word-boundary split).  `:class` is the class ident.  Optional: `:limit` caps hits (default 20; 0 = no cap).  `:where` is a Datalog clause vec (or EDN string) restricting hits to entities matching the predicate; clauses must reference `?e` as the entity variable.  `:facet-by` is a vec of slot-idents to facet over the FULL match-set (before limit).  `:include` is a vec of projection options — `:field-scores` (per-slot scores) and `:snippets` (per-slot ~240-char window with **term** highlighting).  `:field-weights` overrides the class's declared weights.\n\nORDER: prerequisite — the target class must declare `:dt/bm25f-weights` (or supply `:field-weights` opt).  Discover via `sandbar.class.describe` if uncertain.\n\nCOMBINATION: composes with `sandbar.aggregate.rank-by` (re-rank search hits by structural axis), `sandbar.aggregate.group-by` (faceted counts via `:facet-by` opt is the in-one-call alternative), `sandbar.navigate.path-via` (cross-axis: search restricted to a graph-walk neighborhood — Stage 29 composition).  Pre-step: `sandbar.schema.classes` to discover candidate classes.\n\nResult: `{:hits [{:entity <entity-map> :eid <id> :score <double> :field-scores {<slot> <double>}? :snippets {<slot> <string>}?} ...] :total <int> :returned <int> :timing {:total-ms <int>} :facets {<slot> {<value> <count>}}?}`.  Per fulltext arc Stage 4c."
+    :inputSchema (one-required
+                   {:query         {:type "string"
+                                    :description "Query string (bag-of-words; no Lucene query-language operators)"}
+                    :class         {:type "string"
+                                    :description "Class ident whose `:dt/bm25f-weights` drives field selection"}
+                    :limit         {:type "integer"
+                                    :description "Max hits (default 20; 0 = no cap)"}
+                    :where         {:type "string"
+                                    :description "Optional EDN-string of Datalog clauses; entity variable is `?e`"}
+                    :facet-by      {:type "array"
+                                    :items {:type "string"}
+                                    :description "Slot-idents to facet over the full match-set"}
+                    :include       {:type "array"
+                                    :items {:type "string"}
+                                    :description "Projection options: 'field-scores' / 'snippets'"}
+                    :field-weights {:type "object"
+                                    :description "Optional {slot-ident weight} map overriding class declaration"}}
+                   [:query :class])
+    :handler search-bm25f-handler}
 
    ;; Orientation — library-card (Phase O — fulltext arc; substrate-quality scope per
    ;; corpus decisions/sandbar_phase_o_substrate_quality_scope_library_card_only_2026_05_14.md)

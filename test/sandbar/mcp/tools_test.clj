@@ -35,8 +35,10 @@
     ;; Stage 7.D introduced sandbar.ground (2 segments) as an intentional
     ;; sandbar-level entry point — per ADR §2.5, the grounding workflow is
     ;; load-bearing and NOT in a sub-namespace.  Regex accepts both forms.
+    ;; Verb segments may contain digits (e.g., bm25f algorithm-name) — Stage
+    ;; 5.B-pre 0.1.1 co-evolution arc adds sandbar.search.bm25f.
     (doseq [entry tools/verb-catalog]
-      (is (re-matches #"sandbar\.[a-z]+(\.[a-z][a-z\-]*)?"
+      (is (re-matches #"sandbar\.[a-z]+(\.[a-z][a-z0-9\-]*)?"
                       (:name entry))
           (str ":name doesn't match convention: " (:name entry))))))
 
