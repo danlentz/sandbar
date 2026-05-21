@@ -283,11 +283,24 @@
       (is (nil? (:mm.section/next-sibling sub)))
       (is (nil? (:mm.section/previous-sibling sub))))))
 
-(deftest parse-sections-collision-raises
-  ;; Two sections at same level under same parent with same slug
-  (let [body "## Context\n\n## Context\n"]
-    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"collision"
-          (md/parse-sections body :decisions/foo)))))
+(deftest parse-sections-collision-auto-disambiguates
+  ;; Two sections at same level under same parent with same slug now
+  ;; auto-disambiguate via `-2` / `-3` / ... ident suffix.  Heading
+  ;; text is preserved verbatim on emit; only the ident carries the
+  ;; suffix.  Round-trip-stable because disambiguation is
+  ;; deterministic.  Per
+  ;; decisions/round_trip_stable_normalization_acceptance_criterion_2026_05_20.md
+  ;; (previously raised "Section ident collision" exception).
+  (let [body "## Context\n\n## Context\n"
+        [s1 s2] (md/parse-sections body :decisions/foo)]
+    (is (= "Context" (:mm.section/heading s1))
+        "first section keeps heading text")
+    (is (= "Context" (:mm.section/heading s2))
+        "second section also keeps heading text")
+    (is (not= (:db/ident s1) (:db/ident s2))
+        "but their idents must differ")
+    (is (str/ends-with? (name (:db/ident s2)) "-2")
+        (str "second ident gets `-2` suffix; got " (:db/ident s2)))))
 
 (deftest parse-sections-bidirectional-consistency
   (let [body "## A\n\n## B\n\n## C\n"
@@ -692,6 +705,32 @@
   (let [src "---\nname: Test\ntype: task\nrelated:\n  - types/task.md\n---\n# Body\n"]
     (is (round-trip-stable? src "memory/tasks/test.md")
         "single-element block-list must not collapse to scalar on parse")))
+
+(deftest round-trip-stable-code-fence-hash-content
+  ;; Regression: source body contains a code fence whose contents
+  ;; include lines starting with `## ` (e.g., banner ASCII art).
+  ;; Without code-fence tracking, parse-sections treated those as
+  ;; markdown headings and chopped one `#` per round-trip
+  ;; (`## ##` → `## #` → `## ` → empty).
+  (let [src (str "---\nname: Test\ntype: library\n---\n"
+                 "# Body heading\n\n"
+                 "Code-fence example:\n\n"
+                 "```\n"
+                 " ##  ##  #####\n"
+                 " ##  ##    ###\n"
+                 " ######    ###\n"
+                 "```\n\n"
+                 "After the fence.\n")]
+    (is (round-trip-stable? src "memory/libraries/test.md")
+        "code-fence contents must NOT be heading-parsed")))
+
+(deftest round-trip-stable-section-slug-collision
+  ;; Regression: two H2 sections with the same heading text — previously
+  ;; raised a "collision" exception; now auto-disambiguates with `-2`
+  ;; ident suffix.  Heading text preserved verbatim on emit.
+  (let [src "---\nname: Test\ntype: predicate\n---\n## Self-referential note\n\nA.\n\n## Self-referential note\n\nB.\n"]
+    (is (round-trip-stable? src "memory/predicates/test.md")
+        "duplicate heading idents must auto-disambiguate stably")))
 
 (deftest round-trip-stable-combined-bug-classes
   ;; All three bug classes in one realistic actor-shaped fixture.

@@ -935,6 +935,17 @@
         sibling-tracker   (atom {})           ; {[parent-ident level] → last-sibling-ident}
         body-buf          (atom (StringBuilder.))
         ident->index      (atom {})           ; for O(1) sibling pointer rewrite
+        ;; Code-fence tracking — lines inside ``` ... ``` blocks must
+        ;; NOT be heading-parsed.  Round-trip stability requirement:
+        ;; banner ASCII art, shell session captures, and other code-
+        ;; fenced content can contain lines that LOOK like headings
+        ;; (e.g., ` ## ##` from banner output) but are literal content.
+        in-fence?         (atom false)
+        fence-line?       (fn [line]
+                            ;; Per CommonMark §4.5: code fence is 3+
+                            ;; backticks (or 3+ tildes) at line start
+                            ;; with optional leading 0-3 spaces.
+                            (boolean (re-find #"^[ ]{0,3}(```|~~~)" line)))
 
         flush-body!
         (fn []
@@ -951,7 +962,14 @@
             (swap! sections assoc-in [idx :mm.section/next-sibling] new-ident)))]
 
     (doseq [line lines]
-      (if-let [{:keys [level title]} (parse-heading-line line)]
+      ;; Toggle fence state on fence-delimiter lines.  The fence line
+      ;; ITSELF is content, not a heading.  Lines INSIDE a fence are
+      ;; literal content (banner ASCII art, code samples, etc.) and
+      ;; MUST NOT be heading-parsed.
+      (when (fence-line? line)
+        (swap! in-fence? not))
+      (if-let [{:keys [level title]} (and (not @in-fence?)
+                                          (parse-heading-line line))]
         (do
           ;; Flush body buffer to the CURRENT-LAST section before opening
           ;; a new one (this section's body is the text between its
@@ -964,15 +982,25 @@
                    (vec (take-while #(< (:level %) level) stk))))
           (let [parent        (or (some-> @path-stack last :ident) memory-ident)
                 heading-chain (conj (mapv :title @path-stack) title)
-                ident         (section-ident memory-ident heading-chain)
+                base-ident    (section-ident memory-ident heading-chain)
+                ;; Auto-disambiguate slug collisions by appending -2 / -3 /
+                ;; ... per round-trip-stability requirement.  The HEADING
+                ;; TEXT is preserved verbatim on emit; only the IDENT
+                ;; carries the suffix.  Round-trip-stable because slug
+                ;; derivation is deterministic — same source produces same
+                ;; disambiguated idents every time.  Per
+                ;; decisions/round_trip_stable_normalization_acceptance_criterion_2026_05_20.md
+                ;; (previously raised "Section ident collision" exception
+                ;; rejecting the parse).
+                ident         (loop [candidate base-ident
+                                     n         1]
+                                (if (contains? @ident->index candidate)
+                                  (recur (keyword (namespace base-ident)
+                                                  (str (name base-ident) "-" (inc n)))
+                                         (inc n))
+                                  candidate))
                 tracker-key   [parent level]
                 prev-sibling  (get @sibling-tracker tracker-key)]
-            ;; Collision check per B.0 ADR §2.3
-            (when (contains? @ident->index ident)
-              (throw (ex-info "Section ident collision under same parent — slug conflict"
-                              {:memory-ident memory-ident
-                               :colliding-ident ident
-                               :heading-chain heading-chain})))
             (let [section (cond-> {:dt/type           :mm/Section
                                    :db/ident          ident
                                    :mm.section/heading       title

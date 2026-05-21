@@ -65,10 +65,16 @@
 
 (defn- full-corpus-check
   [corpus-root]
-  (let [root-file (io/file corpus-root)
-        all-files (->> (file-seq root-file)
-                       (filter #(.isFile ^java.io.File %))
-                       (filter #(str/ends-with? (.getName ^java.io.File %) ".md")))
+  (let [root-file  (io/file corpus-root)
+        ;; Stability is checked over the CORPUS scope (memory/ subtree)
+        ;; only.  Root-level files (CLAUDE.md, README.md) + .claude/
+        ;; commands + etc. are not corpus memorials per
+        ;; decisions/markdown_as_canonical_sandbar_export_format_2026_05_12.md;
+        ;; they're project-root documentation.
+        memory-dir (io/file root-file "memory")
+        all-files  (->> (file-seq memory-dir)
+                        (filter #(.isFile ^java.io.File %))
+                        (filter #(str/ends-with? (.getName ^java.io.File %) ".md")))
         total    (count all-files)]
     (println (str "Stability-checking " total " files from " corpus-root "..."))
     (let [t0 (System/currentTimeMillis)
@@ -104,8 +110,8 @@
       (doseq [p (take 10 unstable-samples)]
         (println "  " p))
       (println)
-      (println "First 5 error samples:")
-      (doseq [[p msg] (take 5 error-samples)]
+      (println "All error samples:")
+      (doseq [[p msg] error-samples]
         (println "  " p ": " msg)))))
 
 (defn -main
