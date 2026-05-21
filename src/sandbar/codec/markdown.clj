@@ -74,6 +74,36 @@
             [sandbar.codec.protocol :as proto]
             [sandbar.db.datatype    :as dt]))
 
+;; Extend clj-yaml's YAMLCodec protocol to `java.util.LinkedHashMap` —
+;; SnakeYAML handles java.util.Map natively, but clj-yaml's dispatch
+;; protocol only ships with Clojure-map types.  Without this extension
+;; passing a LinkedHashMap to `yaml/generate-string` throws.
+;;
+;; We need LinkedHashMap (rather than Clojure array-map) because array-map
+;; promotes to PHM at 16+ entries — losing insertion-order which the codec
+;; needs for source-frontmatter key-order round-trip per Stage 4.B per
+;; `decisions/markdown_as_canonical_sandbar_export_format_2026_05_12.md` M.3.
+;;
+;; The encode impl just walks entries + recursively encodes values; the
+;; map itself passes through to SnakeYAML's emitter which iterates in
+;; insertion order.
+;;
+;; FUTURE — migrate to dco-dev/ordered-collections once it ships an
+;; `insertion-ordered-map` type.  Per Dan-directive 2026-05-20 (see
+;; ~/claude/memory/ideas/ordered_collections_insertion_ordered_map_addition_2026_05_20.md):
+;; *"keep linkedhashmap for now.  but not for future improvement that we
+;; should implement an insertion-order map in ordered-collections and
+;; the consume that."*  When the new type ships, replace LinkedHashMap
+;; usage below + drop this protocol extension (insertion-ordered-map
+;; will be an IPersistentMap; clj-yaml dispatches natively).
+(extend-protocol yaml/YAMLCodec
+  java.util.LinkedHashMap
+  (encode [data]
+    (let [out (java.util.LinkedHashMap.)]
+      (doseq [[k v] data]
+        (.put out (yaml/encode k) (yaml/encode v)))
+      out)))
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Frontmatter / body split + whitespace normalization
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -525,32 +555,92 @@
 
       :else v)))
 
+(defn- midnight-utc?
+  "True iff `^java.util.Date d` represents 00:00:00.000 UTC — i.e., the
+   parse-side coerced a date-only ISO string (`YYYY-MM-DD`) without a
+   time portion.  Used by `emit-frontmatter` to detect when a Date value
+   should serialize back as date-only (preserving source byte-form per
+   the canonical-export ADR's round-trip-clean goal)."
+  [^java.util.Date d]
+  (let [cal (doto (java.util.Calendar/getInstance (java.util.TimeZone/getTimeZone "UTC"))
+              (.setTime d))]
+    (and (zero? (.get cal java.util.Calendar/HOUR_OF_DAY))
+         (zero? (.get cal java.util.Calendar/MINUTE))
+         (zero? (.get cal java.util.Calendar/SECOND))
+         (zero? (.get cal java.util.Calendar/MILLISECOND)))))
+
+(defn- coerce-instant->string
+  "Inverse of `coerce-string->instant` — emit Date values as ISO strings.
+   Date-only (midnight-UTC) → `YYYY-MM-DD`; full datetime → ISO-8601 with
+   `T...Z`.  Preserves the corpus's predominant date-only convention for
+   `created:` / `last-touched:` / `last-reviewed:` slots while still
+   supporting timestamped values when present.
+
+   Per `decisions/markdown_as_canonical_sandbar_export_format_2026_05_12.md`
+   M.3 (per-entity markdown shape mirrors corpus memorial shape) +
+   Dan-directive (cleanly round-trippable across meta-types)."
+  [v]
+  (cond
+    (instance? java.util.Date v)
+    (if (midnight-utc? v)
+      (let [fmt (java.text.SimpleDateFormat. "yyyy-MM-dd")]
+        (.setTimeZone fmt (java.util.TimeZone/getTimeZone "UTC"))
+        (.format fmt ^java.util.Date v))
+      (let [fmt (java.text.SimpleDateFormat. "yyyy-MM-dd'T'HH:mm:ss'Z'")]
+        (.setTimeZone fmt (java.util.TimeZone/getTimeZone "UTC"))
+        (.format fmt ^java.util.Date v)))
+
+    (sequential? v) (mapv coerce-instant->string v)
+    :else v))
+
 (defn- emit-frontmatter
   "Emit a slot map as YAML frontmatter text (without the `---` fences).
    Uses block-style YAML for readability.  Empty map → empty string.
 
-   Value transformations applied:
-   - Keyword-typed slot values (detected via `dt/range-of` →
-     `:db.type/keyword`) are coerced keyword → bare-name string so YAML
-     emits idiomatic bare names (e.g., `type: decision` instead of
-     `type: :decision`).
-   - Ref-slot values shaped as F#18 upsert-maps (`{:mm.tag/value \"x\"}`
-     or vec-of-those) are unwrapped back to plain strings — reverses
-     the parse-side `coerce-string->upsert-map` transformation.
-     Without this, emitted YAML would show `tags: [{mm.tag/value: x}]`
-     instead of the canonical `tags: [x]` shape the corpus uses."
+   Value transformations applied (in order):
+   - Ref-slot upsert-maps unwrapped back to plain strings (reverses
+     parse-side `coerce-string->upsert-map`).  Without this, emitted YAML
+     would show `tags: [{mm.tag/value: x}]` instead of `tags: [x]`.
+   - Instant-typed slots' Date values serialized via `coerce-instant->string`
+     — date-only ISO (`YYYY-MM-DD`) when the time-portion is midnight UTC,
+     full ISO-8601 otherwise.  Mirrors the corpus's predominant convention
+     where `created:` / `last-touched:` / `last-reviewed:` use date-only.
+   - Keyword-typed slot values coerced keyword → bare-name string so YAML
+     emits idiomatic bare names (e.g., `type: decision` instead of `type:
+     :decision`).
+
+   Per `decisions/markdown_as_canonical_sandbar_export_format_2026_05_12.md`
+   M.3 — per-entity markdown shape mirrors corpus memorial shape."
   [slot-map class-ident]
   (if (empty? slot-map)
     ""
-    (let [yaml-map (into {}
-                         (for [[slot v] slot-map
-                               :let [yaml-key (slot->frontmatter-key class-ident slot)
-                                     yaml-val (cond->> v
-                                                true             unwrap-upsert-map
-                                                (keyword-typed-slot? slot)
-                                                coerce-keyword->string)]]
-                           [yaml-key yaml-val]))]
-      (yaml/generate-string yaml-map :dumper-options {:flow-style :block}))))
+    (let [;; java.util.LinkedHashMap preserves insertion order at any size
+          ;; (Clojure array-map promotes to unordered PHM at 16+ entries).
+          ;; clj-yaml's flatten-coll treats LinkedHashMap as an ordered map
+          ;; + SnakeYAML's emitter respects iteration order.  This preserves
+          ;; source frontmatter key order through parse → entity-spec →
+          ;; emit per `decisions/markdown_as_canonical_sandbar_export_format_2026_05_12.md`
+          ;; M.3 (emit shape mirrors corpus memorial shape).
+          yaml-map (reduce (fn [^java.util.LinkedHashMap m [slot v]]
+                             (let [yaml-key (slot->frontmatter-key class-ident slot)
+                                   yaml-val (cond->> v
+                                              true                         unwrap-upsert-map
+                                              (instant-typed-slot? slot)   coerce-instant->string
+                                              (keyword-typed-slot? slot)   coerce-keyword->string)]
+                               (.put m yaml-key yaml-val)
+                               m))
+                           (java.util.LinkedHashMap.)
+                           slot-map)
+          raw      (yaml/generate-string yaml-map :dumper-options {:flow-style :block})]
+      ;; clj-yaml conservatively single-quotes date-shaped strings (YAML 1.1
+      ;; ambiguity with the implicit date type).  The corpus convention is
+      ;; UNQUOTED dates (`created: 2026-05-11`); the lenient parser handles
+      ;; either.  Post-process to strip surrounding quotes from date-shaped
+      ;; values so the wire form matches the corpus's canonical convention.
+      ;; Matches: 'YYYY-MM-DD' + 'YYYY-MM-DDTHH:MM:SSZ' + 'YYYY-MM-DDTHH:MM:SS.sssZ'.
+      (str/replace raw
+                   #"'(\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z?)?)'"
+                   "$1"))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; MarkdownCodec record — implements proto/Codec
@@ -584,7 +674,7 @@
           ;; :mm.memory/rel-path into wire format.  Phase U Stage U-2
           ;; UR-6 + UR-7 fix per
           ;; observations/sandbar_codec_emit_leaks_db_internal_attrs_wire_format_2026_05_14.md
-          fm-slots      (into {}
+          fm-slots      (into (array-map)
                               (remove (fn [[k _]]
                                         (or (= :dt/type k)
                                             (= body-slot k)
