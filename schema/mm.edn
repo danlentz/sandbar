@@ -1005,6 +1005,54 @@
    :dt/bm25f-weights [[:mm.memory/name        12.0]
                       [:mm.memory/description  8.0]
                       [:mm.memory/body-raw     1.0]]
+   ;; Canonical frontmatter emit order — slots not listed here are appended
+   ;; at the end in entity-key iteration order.  Body / structural slots
+   ;; (:mm.memory/body-raw, :mm.memory/first-section, :mm.memory/links) are
+   ;; INTENTIONALLY OMITTED — they don't surface in frontmatter.
+   ;; Per decisions/slot_order_declared_by_class_introspectable_2026_05_20.md.
+   :dt/codec-slot-order
+   [;; Identity tier
+    [:mm.memory/name             0]
+    [:mm.memory/description      1]
+    [:mm.memory/memory-type      2]
+    [:mm.memory/scope            3]
+    [:mm.memory/priority         4]
+    [:mm.memory/status           5]
+    ;; Provenance tier
+    [:mm.memory/created          6]
+    [:mm.memory/last-touched     7]
+    [:mm.memory/last-reviewed    8]
+    [:mm.memory/created-by       9]
+    [:mm.memory/importance      10]
+    ;; Typed-edge tier (relations to other memories)
+    [:mm.memory/parent          11]
+    [:mm.memory/part-of         12]
+    [:mm.memory/has-part        13]
+    [:mm.memory/descends-from   14]
+    [:mm.memory/cites           15]
+    [:mm.memory/evidenced-by    16]
+    [:mm.memory/evidences       17]
+    [:mm.memory/documented-by   18]
+    [:mm.memory/documents       19]
+    [:mm.memory/triggered-by    20]
+    [:mm.memory/touches         21]
+    [:mm.memory/motivated-by    22]
+    [:mm.memory/motivates       23]
+    [:mm.memory/composes-with   24]
+    [:mm.memory/refines         25]
+    [:mm.memory/supersedes      26]
+    [:mm.memory/superseded-by   27]
+    [:mm.memory/conforms-to     28]
+    [:mm.memory/informs         29]
+    [:mm.memory/informed-by     30]
+    [:mm.memory/implements      31]
+    [:mm.memory/introduced-in   32]
+    [:mm.memory/related         33]
+    ;; Classification tier
+    [:mm.memory/themes          34]
+    [:mm.memory/tags            35]
+    ;; Long-tail
+    [:mm.memory/frontmatter     36]]
    :dt/slots         [:mm.memory/identity :mm.memory/rel-path :mm.memory/name
                       :mm.memory/description :mm.memory/memory-type
                       :mm.memory/scope :mm.memory/status

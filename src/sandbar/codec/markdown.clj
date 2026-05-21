@@ -68,34 +68,33 @@
    Per
    interaction/export_format_must_be_neutral_and_database_agnostic_2026_05_12.md
    the wire format is portable across model-equivalent backends."
-  (:require [clj-yaml.core          :as yaml]
-            [clojure.string         :as str]
-            [clojure.tools.logging  :as log]
-            [sandbar.codec.protocol :as proto]
-            [sandbar.db.datatype    :as dt]))
+  (:require [clj-yaml.core           :as yaml]
+            [clojure.string          :as str]
+            [clojure.tools.logging   :as log]
+            [sandbar.codec.ordered-map :as om]
+            [sandbar.codec.protocol  :as proto]
+            [sandbar.db.datatype     :as dt]))
 
-;; Extend clj-yaml's YAMLCodec protocol to `java.util.LinkedHashMap` —
-;; SnakeYAML handles java.util.Map natively, but clj-yaml's dispatch
-;; protocol only ships with Clojure-map types.  Without this extension
-;; passing a LinkedHashMap to `yaml/generate-string` throws.
+;; Extend clj-yaml's YAMLCodec protocol to handle the codec's ordered-map
+;; backend (currently `java.util.LinkedHashMap` per
+;; `sandbar.codec.ordered-map`).  SnakeYAML handles java.util.Map natively
+;; but clj-yaml's dispatch protocol only ships with Clojure-map types.
+;; Without this extension, passing an ordered-map to `yaml/generate-string`
+;; throws.
 ;;
-;; We need LinkedHashMap (rather than Clojure array-map) because array-map
-;; promotes to PHM at 16+ entries — losing insertion-order which the codec
-;; needs for source-frontmatter key-order round-trip per Stage 4.B per
-;; `decisions/markdown_as_canonical_sandbar_export_format_2026_05_12.md` M.3.
+;; The codec needs an insertion-order-preserving map at emit-time so the
+;; YAML dumper writes slots in the order built by `emit-frontmatter` per
+;; the class-declared `:dt/codec-slot-order` (per
+;; `decisions/slot_order_declared_by_class_introspectable_2026_05_20.md`).
+;; Without this, clj-yaml falls back to whatever map shape Clojure provides,
+;; losing the introspected canonical order.
 ;;
-;; The encode impl just walks entries + recursively encodes values; the
-;; map itself passes through to SnakeYAML's emitter which iterates in
-;; insertion order.
-;;
-;; FUTURE — migrate to dco-dev/ordered-collections once it ships an
-;; `insertion-ordered-map` type.  Per Dan-directive 2026-05-20 (see
-;; ~/claude/memory/ideas/ordered_collections_insertion_ordered_map_addition_2026_05_20.md):
-;; *"keep linkedhashmap for now.  but not for future improvement that we
-;; should implement an insertion-order map in ordered-collections and
-;; the consume that."*  When the new type ships, replace LinkedHashMap
-;; usage below + drop this protocol extension (insertion-ordered-map
-;; will be an IPersistentMap; clj-yaml dispatches natively).
+;; FUTURE — when dco-dev/ordered-collections ships an `insertion-ordered-map`
+;; type (per `~/claude/memory/ideas/ordered_collections_insertion_ordered_map_addition_2026_05_20.md`),
+;; the backend swap happens in `sandbar.codec.ordered-map` alone.  At that
+;; point this protocol extension can be retargeted to the new type OR
+;; removed (the new type will be a Clojure IPersistentMap; clj-yaml
+;; dispatches natively).
 (extend-protocol yaml/YAMLCodec
   java.util.LinkedHashMap
   (encode [data]
@@ -202,58 +201,61 @@
    Public so tests + tooling can call directly.  See ns-block comment
    above for rationale + the corpus-convention compatibility story."
   [fm-text]
-  (let [lines (str/split-lines (str/trim fm-text))]
+  ;; Accumulator is an ordered-map (insertion-order-preserving) so emit
+  ;; can reproduce source frontmatter key order.  See sandbar.codec.ordered-map
+  ;; for backend details.
+  (let [lines (str/split-lines (str/trim fm-text))
+        acc   (om/create)
+        flush-buf!
+        (fn [cur-key cur-buf]
+          (when cur-key
+            (om/put! acc cur-key
+                     (if (= 1 (count cur-buf))
+                       (first cur-buf)
+                       cur-buf))))]
     (loop [[line & rest] lines
            cur-key nil
-           cur-buf []
-           acc     {}]
+           cur-buf []]
       (cond
         (nil? line)
-        (cond-> acc
-          cur-key (assoc cur-key
-                         (if (= 1 (count cur-buf))
-                           (first cur-buf)
-                           cur-buf)))
+        (do (flush-buf! cur-key cur-buf)
+            acc)
 
         ;; List item continuation
         (str/starts-with? (str/triml line) "-")
         (recur rest cur-key
-               (conj cur-buf (-> line str/triml (subs 1) str/triml))
-               acc)
+               (conj cur-buf (-> line str/triml (subs 1) str/triml)))
 
         ;; New key — line doesn't start with whitespace + contains `:`
         (and (not (str/starts-with? line " "))
              (str/includes? line ":"))
         (let [[k v] (str/split line #":" 2)
               k     (keyword (str/trim k))
-              v     (str/trim v)
-              acc*  (cond-> acc
-                      cur-key (assoc cur-key
-                                     (if (= 1 (count cur-buf))
-                                       (first cur-buf)
-                                       cur-buf)))]
+              v     (str/trim v)]
+          (flush-buf! cur-key cur-buf)
           (cond
             ;; Inline-array: tags: [a, b, c]
             (and (str/starts-with? v "[") (str/ends-with? v "]"))
-            (recur rest nil []
-                   (assoc acc* k
-                          (->> (subs v 1 (dec (count v)))
-                               (#(str/split % #","))
-                               (map str/trim)
-                               (remove str/blank?)
-                               vec)))
+            (do (om/put! acc k
+                         (->> (subs v 1 (dec (count v)))
+                              (#(str/split % #","))
+                              (map str/trim)
+                              (remove str/blank?)
+                              vec))
+                (recur rest nil []))
 
             ;; Inline scalar
             (seq v)
-            (recur rest nil [] (assoc acc* k (coerce-scalar v)))
+            (do (om/put! acc k (coerce-scalar v))
+                (recur rest nil []))
 
             ;; List follows (YAML block under this key)
             :else
-            (recur rest k [] acc*)))
+            (recur rest k [])))
 
         ;; Unrecognized line — skip
         :else
-        (recur rest cur-key cur-buf acc)))))
+        (recur rest cur-key cur-buf)))))
 
 (defn- strip-trailing-non-hardbreak-whitespace
   "Strip trailing whitespace from each line UNLESS it's a markdown
@@ -458,30 +460,35 @@
 
    Unknown slots (no `dt/range-of`) are DROPPED with a debug-log; this
    prevents the codec from emitting non-existent-attribute idents that
-   would fail at transact."
+   would fail at transact.
+
+   Returns an ordered-map (per `sandbar.codec.ordered-map`) preserving
+   the frontmatter-map's insertion order — emit-side uses this to
+   round-trip source frontmatter key ordering."
   [class-ident frontmatter-map]
-  (into {}
-        (for [[k v] frontmatter-map
-              :let [slot (frontmatter-key->slot class-ident k)]
-              :when (slot-declared? slot)
-              :let [target-class (ref-slot-target-class slot)
-                    unique-attr  (when target-class (dt/unique-identity-slot-of target-class))
-                    v' (cond
-                         (keyword-typed-slot? slot)
-                         (coerce-string->keyword v)
+  (let [out (om/create)]
+    (doseq [[k v] frontmatter-map
+            :let [slot (frontmatter-key->slot class-ident k)]
+            :when (slot-declared? slot)
+            :let [target-class (ref-slot-target-class slot)
+                  unique-attr  (when target-class (dt/unique-identity-slot-of target-class))
+                  v' (cond
+                       (keyword-typed-slot? slot)
+                       (coerce-string->keyword v)
 
-                         (instant-typed-slot? slot)
-                         (coerce-string->instant v)
+                       (instant-typed-slot? slot)
+                       (coerce-string->instant v)
 
-                         ;; Ref-slot with string values + known unique attr:
-                         ;; wrap as upsert map.  Per F#18.
-                         (and unique-attr
-                              (or (string? v)
-                                  (and (sequential? v) (every? string? v))))
-                         (coerce-string->upsert-map v unique-attr)
+                       ;; Ref-slot with string values + known unique attr:
+                       ;; wrap as upsert map.  Per F#18.
+                       (and unique-attr
+                            (or (string? v)
+                                (and (sequential? v) (every? string? v))))
+                       (coerce-string->upsert-map v unique-attr)
 
-                         :else v)]]
-          [slot v'])))
+                       :else v)]]
+      (om/put! out slot v'))
+    out))
 
 (defn- coerce-keyword->string
   "Coerce a keyword value to its full-form string for YAML emission
@@ -609,28 +616,45 @@
      emits idiomatic bare names (e.g., `type: decision` instead of `type:
      :decision`).
 
+   Slot ordering is INTROSPECTED from the class's `:dt/codec-slot-order`
+   schema attribute (via `dt/codec-slot-order-of`).  Slots present in
+   the entity but absent from the class declaration are appended at the
+   end in entity-key iteration order — they still emit, just after the
+   declared canonical slots.
+
    Per `decisions/markdown_as_canonical_sandbar_export_format_2026_05_12.md`
-   M.3 — per-entity markdown shape mirrors corpus memorial shape."
+   M.3 + `decisions/slot_order_declared_by_class_introspectable_2026_05_20.md`
+   (Dan-directive 2026-05-20: 'slot order should be declared by the class
+   and introspectable').  Replaces the prior `:codec/key-order` metadata
+   threading pattern."
   [slot-map class-ident]
   (if (empty? slot-map)
     ""
-    (let [;; java.util.LinkedHashMap preserves insertion order at any size
-          ;; (Clojure array-map promotes to unordered PHM at 16+ entries).
-          ;; clj-yaml's flatten-coll treats LinkedHashMap as an ordered map
-          ;; + SnakeYAML's emitter respects iteration order.  This preserves
-          ;; source frontmatter key order through parse → entity-spec →
-          ;; emit per `decisions/markdown_as_canonical_sandbar_export_format_2026_05_12.md`
-          ;; M.3 (emit shape mirrors corpus memorial shape).
-          yaml-map (reduce (fn [^java.util.LinkedHashMap m [slot v]]
-                             (let [yaml-key (slot->frontmatter-key class-ident slot)
-                                   yaml-val (cond->> v
-                                              true                         unwrap-upsert-map
-                                              (instant-typed-slot? slot)   coerce-instant->string
-                                              (keyword-typed-slot? slot)   coerce-keyword->string)]
-                               (.put m yaml-key yaml-val)
-                               m))
-                           (java.util.LinkedHashMap.)
-                           slot-map)
+    (let [;; Introspect the class-declared canonical slot order.  Filter
+          ;; to slots present in this entity (the class may declare more
+          ;; slots than any individual entity carries).  Then append any
+          ;; entity slots not in the class declaration so unknown / extra
+          ;; slots still emit.
+          class-order     (dt/codec-slot-order-of class-ident)
+          declared-here   (filterv (fn [k] (contains? slot-map k)) class-order)
+          declared-set    (set declared-here)
+          extras          (filterv (fn [k] (not (contains? declared-set k)))
+                                   (keys slot-map))
+          effective-order (into declared-here extras)
+          ;; Build ordered yaml-map via the sandbar.codec.ordered-map
+          ;; abstraction (preserves order at any size; backend swap to
+          ;; ordered-collections insertion-ordered-map per Dan-directive
+          ;; 2026-05-20).
+          yaml-map (om/create)
+          _        (doseq [slot effective-order
+                           :when (contains? slot-map slot)]
+                     (let [v        (get slot-map slot)
+                           yaml-key (slot->frontmatter-key class-ident slot)
+                           yaml-val (cond->> v
+                                      true                         unwrap-upsert-map
+                                      (instant-typed-slot? slot)   coerce-instant->string
+                                      (keyword-typed-slot? slot)   coerce-keyword->string)]
+                       (om/put! yaml-map yaml-key yaml-val)))
           raw      (yaml/generate-string yaml-map :dumper-options {:flow-style :block})]
       ;; clj-yaml conservatively single-quotes date-shaped strings (YAML 1.1
       ;; ambiguity with the implicit date type).  The corpus convention is
@@ -656,8 +680,12 @@
           [fm-text body-text] (split-frontmatter input)
           fm-map      (when (and fm-text (not (str/blank? fm-text)))
                         (parse-frontmatter-text fm-text))
-          slot-map    (frontmatter->slots class-ident fm-map)
+          slot-map-ordered (frontmatter->slots class-ident fm-map)
+          slot-map    (om/->clojure-map slot-map-ordered)
           normalized  (normalize-body body-text)]
+      ;; Slot-order is NOT carried on the entity.  Emit introspects the
+      ;; class-declared canonical order via `:dt/codec-slot-order` per
+      ;; decisions/slot_order_declared_by_class_introspectable_2026_05_20.md.
       (merge {:dt/type class-ident
               (body-slot-for class-ident) (or normalized "")}
              slot-map)))
@@ -674,7 +702,7 @@
           ;; :mm.memory/rel-path into wire format.  Phase U Stage U-2
           ;; UR-6 + UR-7 fix per
           ;; observations/sandbar_codec_emit_leaks_db_internal_attrs_wire_format_2026_05_14.md
-          fm-slots      (into (array-map)
+          fm-slots      (into {}
                               (remove (fn [[k _]]
                                         (or (= :dt/type k)
                                             (= body-slot k)

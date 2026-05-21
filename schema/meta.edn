@@ -320,6 +320,46 @@
             interaction/no_hardcoded_consumer_class_knowledge_in_substrate_2026_05_13.md
             + decisions/sandbar_dt_star_explicit_ident_entity_helper_split_2026_05_13.md."}
 
+  {:db/ident :dt/codec-slot-order
+   :dt/type  :dt/Property
+   :dt/domain :dt/Class
+   :dt/range :db.type/tuple
+   :db/valueType :db.type/tuple
+   :db/tupleTypes [:db.type/keyword :db.type/long]
+   :db/cardinality :db.cardinality/many
+   :db/doc "Per-class CANONICAL slot ordering for codec emit.  Each
+            entry is `[slot-ident position]` — a heterogeneous tuple
+            pairing the canonical namespaced slot ident with its
+            sort position (smaller = earlier).  Codecs read this via
+            `sandbar.db.datatype/codec-slot-order-of` to introspect
+            the class-declared emit order.
+
+            Distinct from `:dt/slots` — `:dt/slots` is the cardinality-
+            many SET of slots belonging to a class (membership, order
+            lost at transact); `:dt/codec-slot-order` is the ORDERED
+            sequence specifically governing wire-form emit.  The two
+            CAN diverge: slots that exist on a class but never surface
+            in the wire form (e.g., :mm.memory/body-raw, structural-
+            graph slots) MAY be omitted from `:dt/codec-slot-order`.
+
+            Codec semantics:
+              - On emit, the codec introspects this attribute and
+                writes slots in the declared order.  Slots present in
+                the entity but absent from the ordering are appended
+                at the end (in entity-key iteration order).
+              - On parse, this attribute has NO effect — parse just
+                accumulates whatever the source provides.  Round-trip
+                fidelity for slot-ordering comes from emit producing
+                CANONICAL class-declared order, not from preserving
+                source-text accident.
+
+            Per decisions/slot_order_declared_by_class_introspectable_2026_05_20.md
+            (Dan-directive 2026-05-20: 'slot order should be declared
+            by the class and introspectable').  Replaces the prior
+            `:codec/key-order` metadata threading pattern that carried
+            source-text order through parse → entity → emit (brittle:
+            metadata dropped on any new map construction)."}
+
   {:db/ident :dt/bm25f-weights
    :dt/type  :dt/Property
    :dt/domain :dt/Class

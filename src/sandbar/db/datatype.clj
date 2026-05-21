@@ -513,6 +513,34 @@
   [class-ident]
   (into {} (or (:dt/codec-aliases (db/entity class-ident)) [])))
 
+(defn codec-slot-order-of
+  "Returns the canonical slot ordering declared on the class via the
+  `:dt/codec-slot-order` schema attribute, as a vec of slot-idents in
+  emit order; or `[]` if none declared.
+
+  Schema shape: `:dt/codec-slot-order` is cardinality-many; each entry
+  is a `[slot-ident position]` heterogeneous tuple (declared via
+  `:db/tupleTypes [:db.type/keyword :db.type/long]`).  This function
+  sorts by position and projects to slot-idents.
+
+  Used by codecs (e.g., `sandbar.codec.markdown/emit-frontmatter`) for
+  class-declared canonical ordering — replaces the prior `:codec/key-order`
+  metadata threading pattern that carried source-text order through
+  parse → entity → emit.  The class declaration is the introspectable
+  source of truth; source-text accident is not preserved.
+
+  Sister to `codec-aliases-of` / `codec-type-keyword-of` — same
+  introspection-via-schema pattern, different attribute.
+
+  Per decisions/slot_order_declared_by_class_introspectable_2026_05_20.md
+  (Dan-directive 2026-05-20: 'slot order should be declared by the class
+  and introspectable')."
+  [class-ident]
+  (->> (db/entity class-ident)
+       :dt/codec-slot-order
+       (sort-by second)
+       (mapv first)))
+
 (defn codec-type-keyword-of
   "Returns the `:dt/codec-type-keyword` value declared on the class, or
   nil if none.
