@@ -173,9 +173,16 @@
 (defn- coerce-scalar
   "Minimal YAML scalar coercion for the lenient parser:
    - bare `true` / `false` → real booleans
-   - double-quoted `\"...\"` → unquoted string contents
-   - single-quoted `'...'`   → unquoted string contents
-   Everything else passes through as the original trimmed string."
+   - double-quoted `\"...\"` → unquoted string contents (with `\\\"` → `\"`)
+   - single-quoted `'...'`   → unquoted string contents (with `''` → `'`)
+   Everything else passes through as the original trimmed string.
+
+   Per YAML 1.1/1.2 escape rules + round-trip-stability requirement
+   (decisions/round_trip_stable_normalization_acceptance_criterion_2026_05_20.md):
+   the parser MUST unescape single-quote escapes so emitted form
+   `'Anthropic''s'` parses back to the literal string `Anthropic's`,
+   not `Anthropic''s` (which would re-escape to `Anthropic''''s` on the
+   next emit and grow without bound)."
   [v]
   (cond
     (= v "true")  true
@@ -183,12 +190,14 @@
     (and (>= (count v) 2)
          (str/starts-with? v "\"")
          (str/ends-with?   v "\""))
-    (subs v 1 (dec (count v)))
+    (-> (subs v 1 (dec (count v)))
+        (str/replace "\\\"" "\""))
 
     (and (>= (count v) 2)
          (str/starts-with? v "'")
          (str/ends-with?   v "'"))
-    (subs v 1 (dec (count v)))
+    (-> (subs v 1 (dec (count v)))
+        (str/replace "''" "'"))
 
     :else v))
 
@@ -208,11 +217,13 @@
         acc   (om/create)
         flush-buf!
         (fn [cur-key cur-buf]
+          ;; Preserve vec shape — DO NOT collapse single-element block-list
+          ;; to scalar.  YAML semantics distinguish `key: [foo]` / `key:\n- foo`
+          ;; (a one-element list) from `key: foo` (a scalar), and round-trip
+          ;; stability requires we preserve this per
+          ;; decisions/round_trip_stable_normalization_acceptance_criterion_2026_05_20.md.
           (when cur-key
-            (om/put! acc cur-key
-                     (if (= 1 (count cur-buf))
-                       (first cur-buf)
-                       cur-buf))))]
+            (om/put! acc cur-key cur-buf)))]
     (loop [[line & rest] lines
            cur-key nil
            cur-buf []]
@@ -221,10 +232,12 @@
         (do (flush-buf! cur-key cur-buf)
             acc)
 
-        ;; List item continuation
+        ;; List item continuation — apply coerce-scalar so YAML escape
+        ;; sequences (`''` → `'`; `\"` → `"`) + outer quotes are normalized
+        ;; per round-trip-stability requirement.
         (str/starts-with? (str/triml line) "-")
         (recur rest cur-key
-               (conj cur-buf (-> line str/triml (subs 1) str/triml)))
+               (conj cur-buf (-> line str/triml (subs 1) str/triml coerce-scalar)))
 
         ;; New key — line doesn't start with whitespace + contains `:`
         (and (not (str/starts-with? line " "))
@@ -234,14 +247,17 @@
               v     (str/trim v)]
           (flush-buf! cur-key cur-buf)
           (cond
-            ;; Inline-array: tags: [a, b, c]
+            ;; Inline-array: tags: [a, b, c]; tags: ["a", "b"] — apply
+            ;; coerce-scalar per element so quoted elements unquote
+            ;; (round-trip stability per
+            ;; decisions/round_trip_stable_normalization_acceptance_criterion_2026_05_20.md).
             (and (str/starts-with? v "[") (str/ends-with? v "]"))
             (do (om/put! acc k
                          (->> (subs v 1 (dec (count v)))
                               (#(str/split % #","))
                               (map str/trim)
                               (remove str/blank?)
-                              vec))
+                              (mapv coerce-scalar)))
                 (recur rest nil []))
 
             ;; Inline scalar
