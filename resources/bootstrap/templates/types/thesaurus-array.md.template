@@ -1,0 +1,34 @@
+## What a `type: thesaurus-array` instance is
+
+A first-class SIBLING-LIST entity — analog of `iso-thes:ThesaurusArray` from ISO 25964.  A thesaurus-array is an ORDERED collection of sibling tags under a common parent — the sequential analog of the cross-cutting concept-group.  Where concept-groups are unordered facet memberships, thesaurus-arrays carry explicit sequence (sort-key) for cases where ordering matters semantically.
+
+## When to materialize a thesaurus-array
+
+- A parent tag has siblings whose ORDER is semantically meaningful (chronological / size-ranked / authority-ranked)
+- The order should round-trip stably across serialization
+- Queries against the array need to preserve sequence
+
+Most tag siblings don't need arrays — they're unordered narrower-of-parent.  Arrays are for the cases where sequence carries meaning.
+
+## Substrate identity
+
+- **Class ident**: `{{class-ident}}`
+- **Parent class(es)**: {{parent-classes}}
+
+## Slot vocabulary
+
+The class declares **{{slot-count}}** slots:
+
+{{slot-table}}
+
+## Composition with other classes
+
+- **`:mm/Tag`** — tags reference their containing array; `:mm.tag/sort-key` provides the ordering value
+- **`:mm/ConceptScheme`** — arrays are typically scoped within a parent scheme
+- **`:mm/ConceptGroup`** — orthogonal pattern for unordered facet membership
+
+## See also
+
+- [`types/tag.md`](tag.md) — tag entities the array sequences
+- [`types/concept-scheme.md`](concept-scheme.md) — scheme containing arrays
+- [`types/concept-group.md`](concept-group.md) — unordered orthogonal grouping (sibling pattern)

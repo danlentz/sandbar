@@ -259,14 +259,18 @@
   "Render ALL bootstrap-managed memorials per Q1 scope (types/ + predicates/).
    Returns a seq of {:rel-path :content} pairs.
 
-   Excludes metamodel-internal classes (`:dt/*`); includes only user-domain
-   classes (those with `:dt/context` other than 'meta')."
+   Excludes metamodel-internal `:dt/*` classes; includes only user-domain
+   classes (those in the `:mm` namespace).  Aggregates like `:dt/Resource*`,
+   `:dt/Class**` are metamodel machinery and produce ugly file names
+   (`any*.md`); explicit namespace filter prevents this."
   []
-  (let [;; All user-domain classes (excluding :dt/* metamodel root + leaves)
+  (let [;; Only `:mm/*` classes — user-domain.  Excludes:
+        ;; - `:dt/*` metamodel machinery
+        ;; - `:dt/Resource*` / `:dt/Class**` aggregate forms (would emit `any*.md`)
         classes (->> (dt/all-classes)
                      (filter (fn [c]
-                               (when-let [e (db/entity c)]
-                                 (not= "meta" (:dt/context e))))))
+                               (and (keyword? c)
+                                    (= "mm" (namespace c))))))
         ;; All :mm.memory/* typed-edge predicates (excluding structural)
         predicates (->> (dt/all-properties)
                         (filter (fn [p]
