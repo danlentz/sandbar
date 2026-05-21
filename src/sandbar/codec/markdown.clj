@@ -351,12 +351,20 @@
 
 (defn- body-slot-for
   "The body slot ident for a class.  Convention: `<class-prop-ns>/body-raw`
-   for memory-level classes (which preserve raw body); `<class-prop-ns>/body`
-   for section-level classes."
+   for memory-level classes (which preserve the raw whole-document body);
+   `<class-prop-ns>/body` for section-level classes.
+
+   Memory-level classes use `body-raw` so the slot name signals 'preserved
+   verbatim, before section decomposition'.  Section-level classes use
+   `body` (no `-raw` suffix) because section content has already been
+   decomposed into the heading-bounded slice."
   [class-ident]
   (let [prop-ns (class-slot-namespace class-ident)]
     (case class-ident
       :mm/Memory  :mm.memory/body-raw
+      :mm/Actor   :mm.actor/body-raw
+      :mm/Context :mm.context/body-raw
+      :mm/Rule    :mm.rule/body-raw
       :mm/Section :mm.section/body
       (keyword prop-ns "body"))))
 
