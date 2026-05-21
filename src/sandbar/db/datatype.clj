@@ -541,20 +541,23 @@
        (sort-by second)
        (mapv first)))
 
-(defn codec-type-keyword-of
-  "Returns the `:dt/codec-type-keyword` value declared on the class, or
-  nil if none.
+(defn codec-type-keywords-of
+  "Returns the SET of `:dt/codec-type-keyword` values declared on the
+  class, or #{} if none.
 
-  Per-class CLASS-ROUTING keyword: when a markdown document's
+  Per-class CLASS-ROUTING keyword set: when a markdown document's
   frontmatter carries `type: <kw>`, the codec routes to the class
-  whose `:dt/codec-type-keyword` matches `<kw>`.  Example: :mm/Tag
-  declares `:dt/codec-type-keyword :tag` so files with `type: tag`
-  parse as :mm/Tag entities.
+  whose `:dt/codec-type-keyword` set CONTAINS `<kw>`.  Cardinality-
+  many so one class can claim multiple routing keywords (e.g.,
+  :mm/Actor claims both :ai-actor and :human-actor).  Example:
+  :mm/Tag declares `:dt/codec-type-keyword :tag` so files with
+  `type: tag` parse as :mm/Tag entities.
 
   Per decisions/tag_as_first_class_introspectable_type_in_metamodel_2026_05_20.md
-  Stage 7.C codec class-routing."
+  Stage 7.C codec class-routing + decisions/actor_as_first_class_metamodel_class_with_mm_actor_slots_2026_05_20.md
+  (cardinality bumped to :many for multi-keyword class routing)."
   [class-ident]
-  (:dt/codec-type-keyword (db/entity class-ident)))
+  (or (:dt/codec-type-keyword (db/entity class-ident)) #{}))
 
 (defn class-for-codec-type-keyword
   "Returns the class-ident whose `:dt/codec-type-keyword` matches

@@ -46,6 +46,9 @@
   {:db/ident :mm/Section         :db/doc "An addressable markdown section within a memorial"}
   {:db/ident :mm/Frontmatter     :db/doc "Long-tail / per-type frontmatter keys"}
   {:db/ident :mm/Memory          :db/doc "A corpus memorial markdown document"}
+  {:db/ident :mm/Actor           :db/doc "A first-class agent/actor entity (ai-actor, human-actor); per decisions/actor_as_first_class_metamodel_class_with_mm_actor_slots_2026_05_20.md"}
+  {:db/ident :mm/Context         :db/doc "A runtime context entity — the unit firewall + authorization rules attach to; per decisions/actor_as_first_class_metamodel_class_with_mm_actor_slots_2026_05_20.md + decisions/actor_as_first_class_type_2026_05_11.md §D4"}
+  {:db/ident :mm/Rule            :db/doc "A first-class discipline rule entity with event + enforcement + dispatch semantics; per decisions/actor_as_first_class_metamodel_class_with_mm_actor_slots_2026_05_20.md + decisions/firewall_procedure_as_first_class_type_2026_05_11.md"}
   ;; New classes per decisions/tag_as_first_class_introspectable_type_in_metamodel_2026_05_20.md ADR §2.2
   {:db/ident :mm/ConceptScheme   :db/doc "Tag-vocabulary scheme (analog of skos:ConceptScheme); see ADR §2.2"}
   {:db/ident :mm/Dataset         :db/doc "Named dataset with declared vocabulary uses (analog of void:Dataset); see ADR §2.2"}
@@ -1079,5 +1082,224 @@
                       :mm.memory/introduced-in]
    :dt/abstract?     false
    :db/doc "A corpus memorial — a markdown document under memory/ with YAML frontmatter and a markdown body.  Decomposed at multiple granularities: well-known frontmatter as direct properties; long-tail frontmatter via mm/Frontmatter; tags via mm/Tag refs; body as a sibling chain of mm/Section entities reachable via :mm.memory/first-section + :mm.section/next-sibling walk; markdown links via mm/Link refs."}]
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Actor + Context + Rule triad — first-class metamodel classes per
+;; decisions/actor_as_first_class_metamodel_class_with_mm_actor_slots_2026_05_20.md
+;; (Dan-directives 2026-05-20: 'schema extension' + 'add context and rule too')
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;;; ===========================================================================
+;;; :mm.actor/* slot attributes
+;;; ===========================================================================
+
+ [{:db/ident :mm.actor/identity      :dt/type :dt/Property :dt/domain :mm/Actor :dt/range :db.type/string  :db/valueType :db.type/string  :db/cardinality :db.cardinality/one :db/unique :db.unique/identity :db/doc "Codec-derived lookup key (rel-path-based)."}
+  {:db/ident :mm.actor/rel-path      :dt/type :dt/Property :dt/domain :mm/Actor :dt/range :db.type/string  :db/valueType :db.type/string  :db/cardinality :db.cardinality/one :db/doc "Filesystem rel-path of the actor memorial source."}
+  {:db/ident :mm.actor/name          :dt/type :dt/Property :dt/domain :mm/Actor :dt/range :db.type/string  :db/valueType :db.type/string  :db/cardinality :db.cardinality/one :db/fulltext true :db/doc "Actor name."}
+  {:db/ident :mm.actor/description   :dt/type :dt/Property :dt/domain :mm/Actor :dt/range :db.type/string  :db/valueType :db.type/string  :db/cardinality :db.cardinality/one :db/fulltext true :db/doc "Actor description."}
+  {:db/ident :mm.actor/scope         :dt/type :dt/Property :dt/domain :mm/Actor :dt/range :db.type/keyword :db/valueType :db.type/keyword :db/cardinality :db.cardinality/one :db/doc "Scope keyword (:global / :scoped)."}
+  {:db/ident :mm.actor/role          :dt/type :dt/Property :dt/domain :mm/Actor :dt/range :db.type/keyword :db/valueType :db.type/keyword :db/cardinality :db.cardinality/one :db/doc "Actor's role within this corpus (e.g., :director, :reviewer)."}
+  {:db/ident :mm.actor/actor-type    :dt/type :dt/Property :dt/domain :mm/Actor :dt/range :db.type/keyword :db/valueType :db.type/keyword :db/cardinality :db.cardinality/one :db/doc "Actor kind keyword (:ai-actor / :human-actor) — codec-aliased from frontmatter `type:` so the value round-trips."}
+  {:db/ident :mm.actor/model-family  :dt/type :dt/Property :dt/domain :mm/Actor :dt/range :db.type/keyword :db/valueType :db.type/keyword :db/cardinality :db.cardinality/one :db/doc "AI-actor model family (:claude / :codex / :gpt / etc.).  Nil for human actors."}
+  {:db/ident :mm.actor/version       :dt/type :dt/Property :dt/domain :mm/Actor :dt/range :db.type/string  :db/valueType :db.type/string  :db/cardinality :db.cardinality/one :db/doc "AI-actor version string (e.g., 'opus-4-7-1m', 'cli-0-130-0')."}
+  {:db/ident :mm.actor/context-window :dt/type :dt/Property :dt/domain :mm/Actor :dt/range :db.type/long   :db/valueType :db.type/long    :db/cardinality :db.cardinality/one :db/doc "AI-actor context window size in tokens."}
+  {:db/ident :mm.actor/capabilities  :dt/type :dt/Property :dt/domain :mm/Actor :dt/range :db.type/keyword :db/valueType :db.type/keyword :db/cardinality :db.cardinality/many :db/doc "Actor capabilities (:code-review, :tool-use, :extended-thinking, etc.)."}
+  {:db/ident :mm.actor/runs-in-context :dt/type :dt/Property :dt/domain :mm/Actor :dt/range :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/many :db/doc "Rel-paths of context memorials this actor runs in.  Per corpus typed-edge convention (string rel-path; ref migration is future arc per questions/mm_memory_typed_edge_ref_migration_string_to_db_type_ref_2026_05_20.md)."}
+  {:db/ident :mm.actor/belongs-to    :dt/type :dt/Property :dt/domain :mm/Actor :dt/range :db.type/string  :db/valueType :db.type/string  :db/cardinality :db.cardinality/many :db/doc "Rel-paths of organizations this actor belongs to.  String-typed per corpus convention."}
+  {:db/ident :mm.actor/created       :dt/type :dt/Property :dt/domain :mm/Actor :dt/range :db.type/instant :db/valueType :db.type/instant :db/cardinality :db.cardinality/one :db/doc "Memorial creation date."}
+  {:db/ident :mm.actor/last-touched  :dt/type :dt/Property :dt/domain :mm/Actor :dt/range :db.type/instant :db/valueType :db.type/instant :db/cardinality :db.cardinality/one :db/doc "Memorial last-touched date."}
+  {:db/ident :mm.actor/last-reviewed :dt/type :dt/Property :dt/domain :mm/Actor :dt/range :db.type/instant :db/valueType :db.type/instant :db/cardinality :db.cardinality/one :db/doc "Memorial last-reviewed date."}
+  {:db/ident :mm.actor/created-by    :dt/type :dt/Property :dt/domain :mm/Actor :dt/range :db.type/string  :db/valueType :db.type/string  :db/cardinality :db.cardinality/many :db/doc "Rel-paths of actor memorials that created this entity."}
+  {:db/ident :mm.actor/tags          :dt/type :dt/Property :dt/domain :mm/Actor :dt/range :mm/Tag          :db/valueType :db.type/ref     :db/cardinality :db.cardinality/many :db/doc "Tag refs (canonical first-class tag entities)."}
+  {:db/ident :mm.actor/cites         :dt/type :dt/Property :dt/domain :mm/Actor :dt/range :db.type/string  :db/valueType :db.type/string  :db/cardinality :db.cardinality/many :db/doc "Rel-paths of memorials this actor cites."}
+  {:db/ident :mm.actor/related       :dt/type :dt/Property :dt/domain :mm/Actor :dt/range :db.type/string  :db/valueType :db.type/string  :db/cardinality :db.cardinality/many :db/doc "Rel-paths of related memorials."}
+  {:db/ident :mm.actor/body-raw      :dt/type :dt/Property :dt/domain :mm/Actor :dt/range :db.type/string  :db/valueType :db.type/string  :db/cardinality :db.cardinality/one :db/fulltext true :db/doc "Verbatim markdown body."}
+  {:db/ident :mm.actor/first-section :dt/type :dt/Property :dt/domain :mm/Actor :dt/range :mm/Section      :db/valueType :db.type/ref     :db/cardinality :db.cardinality/one :db/doc "First section in the sibling chain."}
+  {:db/ident :mm.actor/links         :dt/type :dt/Property :dt/domain :mm/Actor :dt/range :mm/Link         :db/valueType :db.type/ref     :db/cardinality :db.cardinality/many :db/doc "Markdown links extracted from body."}
+  {:db/ident :mm.actor/frontmatter   :dt/type :dt/Property :dt/domain :mm/Actor :dt/range :mm/Frontmatter  :db/valueType :db.type/ref     :db/cardinality :db.cardinality/one :db/doc "Long-tail frontmatter ref (currently unused; reserved)."}]
+
+;;; ===========================================================================
+;;; :mm.context/* slot attributes
+;;; ===========================================================================
+
+ [{:db/ident :mm.context/identity      :dt/type :dt/Property :dt/domain :mm/Context :dt/range :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/one :db/unique :db.unique/identity :db/doc "Codec-derived lookup key."}
+  {:db/ident :mm.context/rel-path      :dt/type :dt/Property :dt/domain :mm/Context :dt/range :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/one :db/doc "Filesystem rel-path."}
+  {:db/ident :mm.context/name          :dt/type :dt/Property :dt/domain :mm/Context :dt/range :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/one :db/fulltext true :db/doc "Context name."}
+  {:db/ident :mm.context/description   :dt/type :dt/Property :dt/domain :mm/Context :dt/range :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/one :db/fulltext true :db/doc "Context description."}
+  {:db/ident :mm.context/scope         :dt/type :dt/Property :dt/domain :mm/Context :dt/range :db.type/keyword :db/valueType :db.type/keyword :db/cardinality :db.cardinality/one :db/doc "Scope keyword."}
+  {:db/ident :mm.context/context-type  :dt/type :dt/Property :dt/domain :mm/Context :dt/range :db.type/keyword :db/valueType :db.type/keyword :db/cardinality :db.cardinality/one :db/doc "Context kind keyword (currently always :context) — codec-aliased from frontmatter `type:` for round-trip."}
+  {:db/ident :mm.context/sandboxed     :dt/type :dt/Property :dt/domain :mm/Context :dt/range :db.type/boolean :db/valueType :db.type/boolean :db/cardinality :db.cardinality/one :db/doc "Whether this context applies a sandbox firewall."}
+  {:db/ident :mm.context/host          :dt/type :dt/Property :dt/domain :mm/Context :dt/range :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/one :db/doc "Hostname or host-class (home-laptop, etc.)."}
+  {:db/ident :mm.context/firewall-class :dt/type :dt/Property :dt/domain :mm/Context :dt/range :db.type/keyword :db/valueType :db.type/keyword :db/cardinality :db.cardinality/one :db/doc "Firewall regime class (:none, :proprietary-tokens-advisory, :project-isolated, ...)."}
+  {:db/ident :mm.context/authorization-scope :dt/type :dt/Property :dt/domain :mm/Context :dt/range :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/one :db/doc "Natural-language description of authorization scope in this context."}
+  {:db/ident :mm.context/created       :dt/type :dt/Property :dt/domain :mm/Context :dt/range :db.type/instant :db/valueType :db.type/instant :db/cardinality :db.cardinality/one :db/doc "Memorial creation date."}
+  {:db/ident :mm.context/last-reviewed :dt/type :dt/Property :dt/domain :mm/Context :dt/range :db.type/instant :db/valueType :db.type/instant :db/cardinality :db.cardinality/one :db/doc "Memorial last-reviewed date."}
+  {:db/ident :mm.context/tags          :dt/type :dt/Property :dt/domain :mm/Context :dt/range :mm/Tag :db/valueType :db.type/ref :db/cardinality :db.cardinality/many :db/doc "Tag refs."}
+  {:db/ident :mm.context/cites         :dt/type :dt/Property :dt/domain :mm/Context :dt/range :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/many :db/doc "Rel-paths cited."}
+  {:db/ident :mm.context/related       :dt/type :dt/Property :dt/domain :mm/Context :dt/range :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/many :db/doc "Rel-paths of related memorials."}
+  {:db/ident :mm.context/body-raw      :dt/type :dt/Property :dt/domain :mm/Context :dt/range :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/one :db/fulltext true :db/doc "Verbatim markdown body."}
+  {:db/ident :mm.context/first-section :dt/type :dt/Property :dt/domain :mm/Context :dt/range :mm/Section :db/valueType :db.type/ref :db/cardinality :db.cardinality/one :db/doc "First section in chain."}
+  {:db/ident :mm.context/links         :dt/type :dt/Property :dt/domain :mm/Context :dt/range :mm/Link :db/valueType :db.type/ref :db/cardinality :db.cardinality/many :db/doc "Markdown links from body."}
+  {:db/ident :mm.context/frontmatter   :dt/type :dt/Property :dt/domain :mm/Context :dt/range :mm/Frontmatter :db/valueType :db.type/ref :db/cardinality :db.cardinality/one :db/doc "Long-tail frontmatter ref (reserved)."}]
+
+;;; ===========================================================================
+;;; :mm.rule/* slot attributes
+;;; ===========================================================================
+
+ [{:db/ident :mm.rule/identity      :dt/type :dt/Property :dt/domain :mm/Rule :dt/range :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/one :db/unique :db.unique/identity :db/doc "Codec-derived lookup key."}
+  {:db/ident :mm.rule/rel-path      :dt/type :dt/Property :dt/domain :mm/Rule :dt/range :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/one :db/doc "Filesystem rel-path."}
+  {:db/ident :mm.rule/name          :dt/type :dt/Property :dt/domain :mm/Rule :dt/range :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/one :db/fulltext true :db/doc "Rule name."}
+  {:db/ident :mm.rule/description   :dt/type :dt/Property :dt/domain :mm/Rule :dt/range :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/one :db/fulltext true :db/doc "Rule description."}
+  {:db/ident :mm.rule/scope         :dt/type :dt/Property :dt/domain :mm/Rule :dt/range :db.type/keyword :db/valueType :db.type/keyword :db/cardinality :db.cardinality/one :db/doc "Scope keyword."}
+  {:db/ident :mm.rule/rule-type     :dt/type :dt/Property :dt/domain :mm/Rule :dt/range :db.type/keyword :db/valueType :db.type/keyword :db/cardinality :db.cardinality/one :db/doc "Rule kind keyword (currently always :rule) — codec-aliased from frontmatter `type:` for round-trip."}
+  {:db/ident :mm.rule/event         :dt/type :dt/Property :dt/domain :mm/Rule :dt/range :db.type/keyword :db/valueType :db.type/keyword :db/cardinality :db.cardinality/one :db/doc "Lifecycle event the rule fires on (:post-commit, :pre-tool-use, :session-start, :pre-grounding, :corpus-audit)."}
+  {:db/ident :mm.rule/enforcement   :dt/type :dt/Property :dt/domain :mm/Rule :dt/range :db.type/keyword :db/valueType :db.type/keyword :db/cardinality :db.cardinality/one :db/doc "Enforcement disposition (:warn / :block)."}
+  {:db/ident :mm.rule/actor         :dt/type :dt/Property :dt/domain :mm/Rule :dt/range :db.type/keyword :db/valueType :db.type/keyword :db/cardinality :db.cardinality/one :db/doc "Subject actor — :any sentinel for cross-actor rules, otherwise a specific actor-ident keyword."}
+  {:db/ident :mm.rule/context       :dt/type :dt/Property :dt/domain :mm/Rule :dt/range :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/one :db/doc "Subject context — string glob (e.g., 'memory/**') OR a context-memorial rel-path."}
+  {:db/ident :mm.rule/priority      :dt/type :dt/Property :dt/domain :mm/Rule :dt/range :db.type/long :db/valueType :db.type/long :db/cardinality :db.cardinality/one :db/doc "Dispatch priority — higher fires first."}
+  {:db/ident :mm.rule/engine        :dt/type :dt/Property :dt/domain :mm/Rule :dt/range :db.type/keyword :db/valueType :db.type/keyword :db/cardinality :db.cardinality/one :db/doc "Engine class (:plain-pattern / :graph-query / :script-hook)."}
+  {:db/ident :mm.rule/dispatch-strategy :dt/type :dt/Property :dt/domain :mm/Rule :dt/range :db.type/keyword :db/valueType :db.type/keyword :db/cardinality :db.cardinality/one :db/doc "Dispatch strategy (:graph-query / :pre-load / etc.)."}
+  {:db/ident :mm.rule/lifecycle     :dt/type :dt/Property :dt/domain :mm/Rule :dt/range :db.type/keyword :db/valueType :db.type/keyword :db/cardinality :db.cardinality/one :db/doc "Lifecycle status (:active / :retired)."}
+  {:db/ident :mm.rule/created       :dt/type :dt/Property :dt/domain :mm/Rule :dt/range :db.type/instant :db/valueType :db.type/instant :db/cardinality :db.cardinality/one :db/doc "Memorial creation date."}
+  {:db/ident :mm.rule/last-reviewed :dt/type :dt/Property :dt/domain :mm/Rule :dt/range :db.type/instant :db/valueType :db.type/instant :db/cardinality :db.cardinality/one :db/doc "Memorial last-reviewed date."}
+  {:db/ident :mm.rule/created-by    :dt/type :dt/Property :dt/domain :mm/Rule :dt/range :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/many :db/doc "Rel-paths of creating actors."}
+  {:db/ident :mm.rule/tags          :dt/type :dt/Property :dt/domain :mm/Rule :dt/range :mm/Tag :db/valueType :db.type/ref :db/cardinality :db.cardinality/many :db/doc "Tag refs."}
+  {:db/ident :mm.rule/cites         :dt/type :dt/Property :dt/domain :mm/Rule :dt/range :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/many :db/doc "Rel-paths cited."}
+  {:db/ident :mm.rule/related       :dt/type :dt/Property :dt/domain :mm/Rule :dt/range :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/many :db/doc "Rel-paths of related memorials."}
+  {:db/ident :mm.rule/governed-by   :dt/type :dt/Property :dt/domain :mm/Rule :dt/range :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/many :db/doc "Rel-paths of protocol / governing memorials."}
+  {:db/ident :mm.rule/triggered-by  :dt/type :dt/Property :dt/domain :mm/Rule :dt/range :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/many :db/doc "Rel-paths of trigger memorials (event meta-memos)."}
+  {:db/ident :mm.rule/applies-in    :dt/type :dt/Property :dt/domain :mm/Rule :dt/range :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/many :db/doc "Rel-paths of memorial types/scopes this rule applies in."}
+  {:db/ident :mm.rule/derives-from  :dt/type :dt/Property :dt/domain :mm/Rule :dt/range :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/many :db/doc "Rel-paths of memorials this rule derives from."}
+  {:db/ident :mm.rule/body-raw      :dt/type :dt/Property :dt/domain :mm/Rule :dt/range :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/one :db/fulltext true :db/doc "Verbatim markdown body."}
+  {:db/ident :mm.rule/first-section :dt/type :dt/Property :dt/domain :mm/Rule :dt/range :mm/Section :db/valueType :db.type/ref :db/cardinality :db.cardinality/one :db/doc "First section in chain."}
+  {:db/ident :mm.rule/links         :dt/type :dt/Property :dt/domain :mm/Rule :dt/range :mm/Link :db/valueType :db.type/ref :db/cardinality :db.cardinality/many :db/doc "Markdown links from body."}
+  {:db/ident :mm.rule/frontmatter   :dt/type :dt/Property :dt/domain :mm/Rule :dt/range :mm/Frontmatter :db/valueType :db.type/ref :db/cardinality :db.cardinality/one :db/doc "Long-tail frontmatter ref (reserved)."}]
+
+;;; ===========================================================================
+;;; :mm/Actor, :mm/Context, :mm/Rule class declarations
+;;; ===========================================================================
+
+ [{:db/ident         :mm/Actor
+   :dt/type          :dt/Class
+   :dt/subclass-of   :dt/Resource
+   :dt/context       "mm"
+   :dt/label         "Actor"
+   :dt/native-codec  :markdown
+   :dt/codec-type-keyword [:ai-actor :human-actor]
+   :dt/codec-aliases [[:type :mm.actor/actor-type]]
+   :dt/bm25f-weights [[:mm.actor/name        12.0]
+                      [:mm.actor/description  8.0]
+                      [:mm.actor/body-raw     1.0]]
+   :dt/codec-slot-order
+   [[:mm.actor/name              0]
+    [:mm.actor/description       1]
+    [:mm.actor/actor-type        2]
+    [:mm.actor/scope             3]
+    [:mm.actor/role              4]
+    [:mm.actor/model-family      5]
+    [:mm.actor/version           6]
+    [:mm.actor/context-window    7]
+    [:mm.actor/runs-in-context   8]
+    [:mm.actor/belongs-to        9]
+    [:mm.actor/capabilities     10]
+    [:mm.actor/created          11]
+    [:mm.actor/last-touched     12]
+    [:mm.actor/last-reviewed    13]
+    [:mm.actor/created-by       14]
+    [:mm.actor/cites            15]
+    [:mm.actor/related          16]
+    [:mm.actor/tags             17]]
+   :dt/slots         [:mm.actor/identity :mm.actor/rel-path :mm.actor/name
+                      :mm.actor/description :mm.actor/actor-type :mm.actor/scope :mm.actor/role
+                      :mm.actor/model-family :mm.actor/version :mm.actor/context-window
+                      :mm.actor/capabilities :mm.actor/runs-in-context :mm.actor/belongs-to
+                      :mm.actor/created :mm.actor/last-touched :mm.actor/last-reviewed
+                      :mm.actor/created-by :mm.actor/tags :mm.actor/cites :mm.actor/related
+                      :mm.actor/body-raw :mm.actor/first-section :mm.actor/links
+                      :mm.actor/frontmatter]
+   :dt/abstract?     false
+   :db/doc "A first-class agent/actor entity.  Routes both `type: ai-actor` and `type: human-actor` from the corpus via the cardinality-many :dt/codec-type-keyword.  Per decisions/actor_as_first_class_metamodel_class_with_mm_actor_slots_2026_05_20.md."}
+
+  {:db/ident         :mm/Context
+   :dt/type          :dt/Class
+   :dt/subclass-of   :dt/Resource
+   :dt/context       "mm"
+   :dt/label         "Context"
+   :dt/native-codec  :markdown
+   :dt/codec-type-keyword :context
+   :dt/codec-aliases [[:type :mm.context/context-type]]
+   :dt/bm25f-weights [[:mm.context/name        12.0]
+                      [:mm.context/description  8.0]
+                      [:mm.context/body-raw     1.0]]
+   :dt/codec-slot-order
+   [[:mm.context/name                0]
+    [:mm.context/description         1]
+    [:mm.context/context-type        2]
+    [:mm.context/scope               3]
+    [:mm.context/sandboxed           4]
+    [:mm.context/host                5]
+    [:mm.context/firewall-class      6]
+    [:mm.context/authorization-scope 7]
+    [:mm.context/created             8]
+    [:mm.context/last-reviewed       9]
+    [:mm.context/cites              10]
+    [:mm.context/related            11]
+    [:mm.context/tags               12]]
+   :dt/slots         [:mm.context/identity :mm.context/rel-path :mm.context/name
+                      :mm.context/description :mm.context/context-type :mm.context/scope :mm.context/sandboxed
+                      :mm.context/host :mm.context/firewall-class :mm.context/authorization-scope
+                      :mm.context/created :mm.context/last-reviewed :mm.context/tags
+                      :mm.context/cites :mm.context/related
+                      :mm.context/body-raw :mm.context/first-section :mm.context/links
+                      :mm.context/frontmatter]
+   :dt/abstract?     false
+   :db/doc "A runtime context entity — the unit firewall + authorization rules attach to.  Routes `type: context`.  Per decisions/actor_as_first_class_metamodel_class_with_mm_actor_slots_2026_05_20.md."}
+
+  {:db/ident         :mm/Rule
+   :dt/type          :dt/Class
+   :dt/subclass-of   :dt/Resource
+   :dt/context       "mm"
+   :dt/label         "Rule"
+   :dt/native-codec  :markdown
+   :dt/codec-type-keyword :rule
+   :dt/codec-aliases [[:type :mm.rule/rule-type]]
+   :dt/bm25f-weights [[:mm.rule/name        12.0]
+                      [:mm.rule/description  8.0]
+                      [:mm.rule/body-raw     1.0]]
+   :dt/codec-slot-order
+   [[:mm.rule/name               0]
+    [:mm.rule/description        1]
+    [:mm.rule/rule-type          2]
+    [:mm.rule/scope              3]
+    [:mm.rule/event              4]
+    [:mm.rule/enforcement        5]
+    [:mm.rule/actor              6]
+    [:mm.rule/context            7]
+    [:mm.rule/priority           8]
+    [:mm.rule/engine             9]
+    [:mm.rule/dispatch-strategy 10]
+    [:mm.rule/lifecycle         11]
+    [:mm.rule/created           12]
+    [:mm.rule/last-reviewed     13]
+    [:mm.rule/created-by        14]
+    [:mm.rule/cites             15]
+    [:mm.rule/related           16]
+    [:mm.rule/governed-by       17]
+    [:mm.rule/triggered-by      18]
+    [:mm.rule/applies-in        19]
+    [:mm.rule/derives-from      20]
+    [:mm.rule/tags              21]]
+   :dt/slots         [:mm.rule/identity :mm.rule/rel-path :mm.rule/name
+                      :mm.rule/description :mm.rule/rule-type :mm.rule/scope :mm.rule/event
+                      :mm.rule/enforcement :mm.rule/actor :mm.rule/context
+                      :mm.rule/priority :mm.rule/engine :mm.rule/dispatch-strategy
+                      :mm.rule/lifecycle :mm.rule/created :mm.rule/last-reviewed
+                      :mm.rule/created-by :mm.rule/tags :mm.rule/cites :mm.rule/related
+                      :mm.rule/governed-by :mm.rule/triggered-by :mm.rule/applies-in
+                      :mm.rule/derives-from
+                      :mm.rule/body-raw :mm.rule/first-section :mm.rule/links
+                      :mm.rule/frontmatter]
+   :dt/abstract?     false
+   :db/doc "A first-class discipline rule entity.  Routes `type: rule`.  Per decisions/actor_as_first_class_metamodel_class_with_mm_actor_slots_2026_05_20.md + decisions/firewall_procedure_as_first_class_type_2026_05_11.md."}]
 
 ]

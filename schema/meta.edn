@@ -266,23 +266,31 @@
    :dt/domain :dt/Class
    :dt/range :db.type/keyword
    :db/valueType :db.type/keyword
-   :db/cardinality :db.cardinality/one
+   :db/cardinality :db.cardinality/many
    :db/unique :db.unique/identity
-   :db/doc "Per-class CLASS-ROUTING keyword for frontmatter-driven codec
+   :db/doc "Per-class CLASS-ROUTING keywords for frontmatter-driven codec
             class resolution.  When a markdown document's frontmatter
             carries `type: <kw>`, the codec routes to the class whose
-            `:dt/codec-type-keyword` matches `<kw>`.  Example: :mm/Tag
-            declares `:dt/codec-type-keyword :tag` so files with
-            `type: tag` parse as :mm/Tag entities (not :mm/Memory with
-            memory-type :tag).  Default routing target (when no class
-            claims the type-keyword) is :mm/Memory.  Per
-            decisions/tag_as_first_class_introspectable_type_in_metamodel_2026_05_20.md
+            `:dt/codec-type-keyword` SET contains `<kw>`.  Cardinality-
+            many so a single class can claim MULTIPLE routing keywords
+            (e.g., :mm/Actor claims both :ai-actor and :human-actor —
+            the corpus's `type:` vocabulary preserves the kind-
+            distinction while the substrate routes both to one class).
+            Example: :mm/Tag declares `:dt/codec-type-keyword :tag` so
+            files with `type: tag` parse as :mm/Tag entities (not
+            :mm/Memory with memory-type :tag).  Default routing target
+            (when no class claims the type-keyword) is :mm/Memory.
+            Per decisions/tag_as_first_class_introspectable_type_in_metamodel_2026_05_20.md
             Stage 7.C codec class-routing — replaces hardcoded :mm/Memory
             in sandbar.codec.markdown/parse-document with metamodel-
-            driven dispatch.  Sister attribute to :dt/native-codec
-            (which selects the codec FORMAT) — :dt/codec-type-keyword
-            selects the CLASS within a chosen codec.  Unique-identity
-            so only one class can claim a given type-keyword."}
+            driven dispatch.  Bumped to cardinality-many 2026-05-20 per
+            decisions/actor_as_first_class_metamodel_class_with_mm_actor_slots_2026_05_20.md
+            so :mm/Actor can claim both :ai-actor and :human-actor.
+            Sister attribute to :dt/native-codec (which selects the
+            codec FORMAT) — :dt/codec-type-keyword selects the CLASS
+            within a chosen codec.  Unique-identity per VALUE so each
+            keyword in the set is independently a unique-identity lookup
+            for its class."}
 
   {:db/ident :dt/codec-aliases
    :dt/type  :dt/Property

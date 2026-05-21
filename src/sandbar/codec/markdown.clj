@@ -406,6 +406,39 @@
   [slot-ident]
   (= :db.type/instant (dt/range-of slot-ident)))
 
+(defn- long-typed-slot?
+  "Returns true if `slot-ident`'s declared `:dt/range` is
+   `:db.type/long`.  Reads the slot's range via `dt/range-of`."
+  [slot-ident]
+  (= :db.type/long (dt/range-of slot-ident)))
+
+(defn- boolean-typed-slot?
+  "Returns true if `slot-ident`'s declared `:dt/range` is
+   `:db.type/boolean`."
+  [slot-ident]
+  (= :db.type/boolean (dt/range-of slot-ident)))
+
+(defn- coerce-string->long
+  "Parse a string to a Long.  Pass-through for non-string values
+   (clj-yaml may already return native longs from numeric YAML
+   literals; this only coerces if the value arrived as a string)."
+  [v]
+  (cond
+    (integer? v) (long v)
+    (string? v)  (Long/parseLong (str/trim v))
+    :else v))
+
+(defn- coerce-string->boolean
+  "Parse a string to a Boolean.  Pass-through for non-string values."
+  [v]
+  (cond
+    (boolean? v) v
+    (string? v)  (case (str/lower-case (str/trim v))
+                   ("true" "yes" "y" "on")  true
+                   ("false" "no" "n" "off") false
+                   v)
+    :else v))
+
 (defn- slot-declared?
   "Returns true when `slot-ident` is a declared attribute on the
    metamodel (i.e., `dt/range-of` returns a non-nil range).  Used by
@@ -478,6 +511,12 @@
 
                        (instant-typed-slot? slot)
                        (coerce-string->instant v)
+
+                       (long-typed-slot? slot)
+                       (coerce-string->long v)
+
+                       (boolean-typed-slot? slot)
+                       (coerce-string->boolean v)
 
                        ;; Ref-slot with string values + known unique attr:
                        ;; wrap as upsert map.  Per F#18.
