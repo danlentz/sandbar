@@ -655,7 +655,9 @@
                                       (instant-typed-slot? slot)   coerce-instant->string
                                       (keyword-typed-slot? slot)   coerce-keyword->string)]
                        (om/put! yaml-map yaml-key yaml-val)))
-          raw      (yaml/generate-string yaml-map :dumper-options {:flow-style :block})]
+          raw      (yaml/generate-string yaml-map
+                                          :dumper-options {:flow-style :block
+                                                           :default-scalar-style :plain})]
       ;; clj-yaml conservatively single-quotes date-shaped strings (YAML 1.1
       ;; ambiguity with the implicit date type).  The corpus convention is
       ;; UNQUOTED dates (`created: 2026-05-11`); the lenient parser handles
