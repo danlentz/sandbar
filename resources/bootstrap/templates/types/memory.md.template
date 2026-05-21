@@ -1,0 +1,82 @@
+## What a `type: memory` instance is
+
+An entry of the canonical "memorial" type — a markdown document under a corpus tree carrying both YAML frontmatter (structured facts) and a markdown body (narrative content).  Memorials are the foundational unit of a sandbar-backed corpus: they're the persistent representation of a single semantically-coherent unit — a decision, a plan, an observation, a library study, etc.  The `memory-type:` frontmatter field discriminates the kind; the rest of the substrate emerges from per-instance slots.
+
+## When to author a memorial
+
+A corpus memorial is the right unit when:
+
+- The content represents a coherent semantic unit (one decision, one plan, one observation, one library)
+- The content benefits from being SEARCHABLE — BM25F across name / description / tags / body
+- The content participates in the typed-edge graph — citing other memorials, being cited by others, motivated-by, refines, etc.
+- The content has a STABLE IDENTITY that other memorials can reference
+
+Memorials are NOT the right unit when:
+- The content is transient or session-scoped (use `memory/inbox/` capture instead)
+- The content is a structural component of another memorial (use the body, not a separate file)
+- The content fits cleanly into a sub-namespace of an existing memorial (use sections via headings)
+
+## Substrate identity
+
+- **Class ident**: `{{class-ident}}`
+- **Parent class(es)**: {{parent-classes}}
+- **Native codec**: `{{native-codec}}`
+
+## Slot vocabulary
+
+The class declares **{{slot-count}}** slots covering:
+
+- **Identity** — name, description, scope, memory-type
+- **Provenance** — created, last-touched, last-reviewed, created-by, importance
+- **Typed edges** — the full predicate vocabulary (cites, related, refines, evidences, etc.) — see the predicate memorials for per-predicate semantics
+- **Structural** — body-raw, first-section (entry point of the section chain), links, frontmatter (long-tail extra keys)
+- **Classification** — tags, themes
+- **Origin tracking** — bootstrap-source, bootstrap-override (substrate-managed flags)
+
+{{slot-table}}
+
+## Canonical structure
+
+A memorial markdown file:
+
+```
+---
+<YAML frontmatter — slot values per the schema>
+---
+
+# Optional H1 heading (typically duplicates the `name:` field)
+
+Body content as markdown — paragraphs, code blocks, headings (H2/H3
+become substrate `:mm/Section` entities via the codec's section-tree
+decomposition).
+
+## Section heading
+
+Section body content...
+
+## See also
+
+- Cross-reference links to other memorials
+```
+
+The codec at `sandbar.codec.markdown` handles the bidirectional translation between this filesystem form and substrate Datomic entities.  Round-trip stability is a substrate invariant — the normalized form is a fixed point under further round-trips.
+
+## Composition with other classes
+
+- **`:mm/Section`** — body decomposition.  Each H2+ heading becomes an addressable section entity with bidirectional sibling-chain navigation.
+- **`:mm/Tag`** — classification.  Tags can be free-text (informal) or canonical (controlled-vocabulary via `:mm/ConceptScheme`).
+- **`:mm/Link`** — markdown-link extraction.  Body content `[text](rel-path)` becomes a `:mm/Link` entity for backlink queries.
+- **`:mm/Frontmatter`** — long-tail extra frontmatter keys.  Slots not declared on `:mm/Memory` can persist via `:mm.frontmatter/extra`.
+
+## Codec slot-order
+
+Emit follows the class-declared canonical order:
+
+{{slot-order-list}}
+
+## See also
+
+- [`types/section.md`](section.md) — body-decomposition class
+- [`types/tag.md`](tag.md) — classification class
+- [`types/link.md`](link.md) — body-link extraction class
+- [`types/predicate.md`](predicate.md) — typed-edge vocabulary

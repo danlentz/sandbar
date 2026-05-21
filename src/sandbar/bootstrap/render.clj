@@ -54,6 +54,29 @@
                                           (java.util.Date.))))]
     (str "sandbar:" version)))
 
+(defn- load-template
+  "Load a per-class or per-predicate narrative template from
+   resources/bootstrap/templates/.  Returns the template content
+   (string with {{placeholder}} tokens) OR nil if no template exists.
+
+   Per interaction/bootstrap_rendering_must_preserve_narrative_human_readable_content_2026_05_21.md
+   — templates carry the generic pedagogical narrative; substrate
+   introspection fills the placeholders."
+  [kind name-str]
+  (let [resource-path (str "bootstrap/templates/" kind "/" name-str ".md.template")
+        url (clojure.java.io/resource resource-path)]
+    (when url (slurp url))))
+
+(defn- substitute-placeholders
+  "Substitute {{placeholder}} tokens in a template with values from
+   a context map.  Missing placeholders are left as-is so they're
+   visible during development."
+  [template-str context]
+  (reduce-kv (fn [s k v]
+               (str/replace s (str "{{" (name k) "}}") (str v)))
+             template-str
+             context))
+
 (defn- format-slot-row
   "Render one slot as a markdown table row."
   [slot-ident]
@@ -71,40 +94,71 @@
 ;; Class memorial rendering
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
+(defn- introspection-context
+  "Build the placeholder-substitution context for a class memorial."
+  [class-ident]
+  (let [entity     (db/entity class-ident)
+        parents    (sort (mapv :db/ident (or (:dt/subclass-of entity) [])))
+        slots      (sort (or (dt/slots-of class-ident) []))
+        codec-keys (dt/codec-type-keywords-of class-ident)
+        slot-order (dt/codec-slot-order-of class-ident)
+        slot-tbl   (str "| Slot | Range | Cardinality | Doc |\n|---|---|---|---|\n"
+                        (str/join "\n" (mapv format-slot-row slots)))
+        slot-list  (if (seq slot-order)
+                     (str/join "\n" (map-indexed (fn [i s] (str (inc i) ". `" s "`")) slot-order))
+                     "(no canonical order declared)")]
+    {:class-ident class-ident
+     :class-name (or (:dt/label entity) (name class-ident))
+     :class-doc (or (:db/doc entity) "")
+     :parent-classes (if (seq parents)
+                       (str/join ", " (map #(str "`" % "`") parents))
+                       "(none — root class)")
+     :native-codec (or (some-> entity :dt/native-codec) "(none)")
+     :codec-type-keywords (if (seq codec-keys)
+                            (str/join ", " (map #(str "`" % "`") codec-keys))
+                            "(none — default routing)")
+     :slot-count (count slots)
+     :slot-table slot-tbl
+     :slot-order-list slot-list}))
+
 (defn render-class-body
   "Render the markdown body for a class documentation memorial.
-   Introspection-driven; no narrative templates yet."
+   Uses per-class narrative template from
+   resources/bootstrap/templates/types/<class-name>.md.template when
+   present; falls back to introspection-only output when no template
+   exists.
+
+   Per interaction/bootstrap_rendering_must_preserve_narrative_human_readable_content_2026_05_21.md
+   — templates carry the generic pedagogical narrative; introspection
+   fills the placeholders."
   [class-ident]
-  (let [entity        (db/entity class-ident)
-        label         (or (:dt/label entity) (name class-ident))
-        doc           (or (:db/doc entity) "")
-        parents       (sort (mapv :db/ident (or (:dt/subclass-of entity) [])))
-        slots         (sort (or (dt/slots-of class-ident) []))
-        codec-keys    (dt/codec-type-keywords-of class-ident)
-        slot-order    (dt/codec-slot-order-of class-ident)]
-    (str
-      "## What this class is\n\n"
-      doc "\n\n"
-      "## Substrate identity\n\n"
-      "- **Class ident**: `" class-ident "`\n"
-      (when (seq parents)
-        (str "- **Parent class(es)**: " (str/join ", " (map #(str "`" % "`") parents)) "\n"))
-      (when (seq codec-keys)
-        (str "- **Codec type-keyword(s)**: " (str/join ", " (map #(str "`" % "`") codec-keys)) "\n"))
-      (let [native (some-> entity :dt/native-codec)]
-        (when native (str "- **Native codec**: `" native "`\n")))
-      "\n## Slot vocabulary (" (count slots) " slots)\n\n"
-      "| Slot | Range | Cardinality | Doc |\n"
-      "|---|---|---|---|\n"
-      (str/join "\n" (mapv format-slot-row slots))
-      "\n\n"
-      (when (seq slot-order)
-        (str "## Canonical slot-order for codec emit\n\n"
-             (str/join "\n" (map-indexed (fn [i s] (str (inc i) ". `" s "`")) slot-order))
-             "\n\n"))
-      "## See also\n\n"
-      "- [`types/meta.md`](meta.md) — type-system root\n"
-      "- Sandbar substrate: `sandbar/schema/mm.edn`\n")))
+  (let [class-nm (class-name-lc class-ident)
+        template (load-template "types" class-nm)
+        context  (introspection-context class-ident)]
+    (if template
+      ;; Template path — narrative + introspection-substituted placeholders
+      (substitute-placeholders template context)
+      ;; Fallback — introspection-only (clearly marked as such so humans
+      ;; know it's not the canonical narrative)
+      (str
+        "*This memorial is rendered from substrate introspection only — "
+        "no narrative template ships for this class yet.  Per "
+        "`interaction/bootstrap_rendering_must_preserve_narrative_human_readable_content_2026_05_21.md`, "
+        "a template should be authored to provide pedagogical context.*\n\n"
+        "## What this class is\n\n"
+        (:class-doc context) "\n\n"
+        "## Substrate identity\n\n"
+        "- **Class ident**: `" (:class-ident context) "`\n"
+        "- **Parent class(es)**: " (:parent-classes context) "\n"
+        "- **Native codec**: `" (:native-codec context) "`\n"
+        "- **Codec type-keyword(s)**: " (:codec-type-keywords context) "\n\n"
+        "## Slot vocabulary (" (:slot-count context) " slots)\n\n"
+        (:slot-table context) "\n\n"
+        "## Canonical slot-order for codec emit\n\n"
+        (:slot-order-list context) "\n\n"
+        "## See also\n\n"
+        "- [`types/meta.md`](meta.md) — type-system root\n"
+        "- Sandbar substrate: `sandbar/schema/mm.edn`\n"))))
 
 (defn render-class
   "Render a class memorial.  Returns {:rel-path <path> :content <markdown>}."
