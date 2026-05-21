@@ -648,3 +648,60 @@
         "non-internal frontmatter keys should still emit")
     (is (str/includes? emitted "# Body")
         "body should still emit")))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Round-trip stability — emit must be a FIXED POINT under further
+;; parse+emit, per
+;; decisions/round_trip_stable_normalization_acceptance_criterion_2026_05_20.md
+;; (Dan-directive 2026-05-20).  These cover the three nondeterminism
+;; bug classes fixed in the same commit:
+;;   1. Single-quote escape ('' → ') missing from lenient parser
+;;   2. coerce-scalar not applied to list-items / inline-array elements
+;;   3. flush-buf! collapsed single-element block-list to scalar
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defn- round-trip-stable?
+  "Returns true if emit(parse(src)) == emit(parse(emit(parse(src))))."
+  [src rel-path]
+  (let [emit1 (md/emit-document (md/parse-document src rel-path))
+        emit2 (md/emit-document (md/parse-document emit1 rel-path))]
+    (= emit1 emit2)))
+
+(deftest round-trip-stable-apostrophe-in-description
+  ;; Regression: source `description: Anthropic's foo` — YAML emits as
+  ;; single-quoted `'Anthropic''s foo'`.  Without `''` → `'` unescape on
+  ;; re-parse, the apostrophe escapes double on each round-trip without
+  ;; bound (`''s` → `''''s` → `''''''''s`).
+  (let [src "---\nname: Test\ndescription: Anthropic's foo with Model-family: claude.\ntype: decision\n---\n# Body\n"]
+    (is (round-trip-stable? src "memory/decisions/test.md")
+        "single-quote escapes must unescape so apostrophes don't double on round-trip")))
+
+(deftest round-trip-stable-inline-array-quoted-elements
+  ;; Regression: source `tags: ["task", "codex"]` — lenient parser
+  ;; didn't strip the inner quotes; emit then wrapped each in single
+  ;; quotes; on re-parse it kept growing.
+  (let [src "---\nname: Test\ntype: task\ntags: [\"task\", \"codex\", \"audit\"]\n---\n# Body\n"]
+    (is (round-trip-stable? src "memory/tasks/test.md")
+        "inline-array elements with inner quotes must unquote via coerce-scalar")))
+
+(deftest round-trip-stable-single-element-block-list
+  ;; Regression: source `parent:\n- foo` (cardinality-many block list
+  ;; with one element).  Lenient parser's flush-buf! collapsed to scalar,
+  ;; so emit1 was block-list but emit2 was scalar.  Removed the collapse;
+  ;; both round-trips now produce block-list.
+  (let [src "---\nname: Test\ntype: task\nrelated:\n  - types/task.md\n---\n# Body\n"]
+    (is (round-trip-stable? src "memory/tasks/test.md")
+        "single-element block-list must not collapse to scalar on parse")))
+
+(deftest round-trip-stable-combined-bug-classes
+  ;; All three bug classes in one realistic actor-shaped fixture.
+  (let [src (str "---\n"
+                 "name: Test Actor\n"
+                 "description: Anthropic's actor with `runs-in-context:` and Model-family: claude.\n"
+                 "type: ai-actor\n"
+                 "runs-in-context:\n"
+                 "  - contexts/unsandboxed-home-laptop.md\n"
+                 "tags: [\"actor\", \"ai-actor\", \"claude\"]\n"
+                 "---\n# Body\n")]
+    (is (round-trip-stable? src "memory/actors/test-actor.md")
+        "combined-bug-class fixture must round-trip stably")))
