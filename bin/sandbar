@@ -59,18 +59,67 @@ case "$cmd" in
     echo "starting sandbar (PID $new_pid) — log: $SANDBAR_LOG_FILE"
     # Wait for ready — server answers ANY HTTP code on /mcp once Pedestal
     # is up.  Polling at 1s for up to 90s (lein cold-start typical ~30s).
+    ready=0
     for i in $(seq 1 90); do
       code=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:$SANDBAR_PORT/mcp" 2>/dev/null || true)
       if [ -n "$code" ] && [ "$code" != "000" ]; then
         echo "sandbar ready after ${i}s (HTTP $code)"
-        exit 0
+        ready=1
+        break
       fi
       sleep 1
     done
-    echo "sandbar failed to become ready within 90s" >&2
-    echo "last 10 lines of $SANDBAR_LOG_FILE:" >&2
-    tail -10 "$SANDBAR_LOG_FILE" >&2
-    exit 1
+    if [ "$ready" != "1" ]; then
+      echo "sandbar failed to become ready within 90s" >&2
+      echo "last 10 lines of $SANDBAR_LOG_FILE:" >&2
+      tail -10 "$SANDBAR_LOG_FILE" >&2
+      exit 1
+    fi
+    # X.1.B fresh-DB auto-init — per plans/sandbar_operational_lifecycle_-
+    # and_full_mcp_cutover_arc_2026_05_21.md + decisions/restore_sandbar_-
+    # from_durable_git_export_at_memory_open_never_rely_on_db_durability_-
+    # 2026_05_12.md.  Datomic is transient; filesystem (git-tracked) is
+    # canonical.  At each start, if the DB is empty, project memory/ into
+    # it via sandbar.project.import.  Idempotent — never re-imports a
+    # populated DB.
+    # Need a token to make MCP calls.  If we have one (env or cached
+    # file), use it.  Otherwise SKIP fresh-init + warn — the user can
+    # issue a token via `sandbar rotate-token` then re-run start (or
+    # invoke `sandbar init` separately).  Auto-issuing the token here
+    # would require a second lein cold-start (~30s) which makes the
+    # common-case start path slow.
+    token=$(resolve_token)
+    if [ -z "$token" ]; then
+      echo "no MCP token present — skipping fresh-init check"
+      echo "to enable auto-import: 'sandbar rotate-token corpus <key>' then 'sandbar init'"
+      exit 0
+    fi
+    # Check entity count
+    body='{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"sandbar.aggregate.count","arguments":{"class":":mm/Memory"}}}'
+    cnt=$(curl -s -X POST "http://localhost:$SANDBAR_PORT/mcp" \
+          -H "Authorization: Bearer $token" \
+          -H "Content-Type: application/json" \
+          -d "$body" 2>/dev/null | grep -oE 'count[\\"]+ *: *[0-9]+' | head -1 | grep -oE '[0-9]+' || echo 0)
+    if [ "${cnt:-0}" = "0" ]; then
+      corpus_root="${SANDBAR_CORPUS_ROOT:-$HOME/claude}"
+      echo "DB is empty — auto-importing ${corpus_root}/memory/ ..."
+      import_body=$(cat <<EOF
+{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"sandbar.project.import","arguments":{"from":"${corpus_root}","filter":{"tree-filter":"memory/"},"persist?":true}}}
+EOF
+)
+      result=$(curl -s -X POST "http://localhost:$SANDBAR_PORT/mcp" \
+               --max-time 600 \
+               -H "Authorization: Bearer $token" \
+               -H "Content-Type: application/json" \
+               -d "$import_body" 2>/dev/null)
+      imported=$(echo "$result" | grep -oE 'imported[\\"]+ *: *[0-9]+' | head -1 | grep -oE '[0-9]+' || echo 0)
+      groups=$(echo "$result" | grep -oE 'groups[\\"]+ *: *[0-9]+' | head -1 | grep -oE '[0-9]+' || echo 0)
+      failed=$(echo "$result" | grep -oE 'failed-count[\\"]+ *: *[0-9]+' | head -1 | grep -oE '[0-9]+' || echo 0)
+      echo "auto-import complete: $imported entities across $groups memorials ($failed failed)"
+    else
+      echo "DB has $cnt :mm/Memory entities — skipping auto-import"
+    fi
+    exit 0
     ;;
 
   stop)
@@ -148,6 +197,46 @@ case "$cmd" in
     fi
     ;;
 
+  init)
+    # X.1.B fresh-DB auto-init.  Idempotent — invokes sandbar.project.import
+    # ONLY if the DB has zero :mm/Memory entities.  Requires sandbar to be
+    # running + a token resolvable (env OR cached file).
+    pid=$(running_pid || true)
+    if [ -z "$pid" ]; then
+      echo "sandbar not running — start it first ('sandbar start')" >&2
+      exit 1
+    fi
+    token=$(resolve_token)
+    if [ -z "$token" ]; then
+      echo "no MCP token resolvable — set SANDBAR_TOKEN env OR run 'sandbar rotate-token corpus <key>'" >&2
+      exit 1
+    fi
+    body='{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"sandbar.aggregate.count","arguments":{"class":":mm/Memory"}}}'
+    cnt=$(curl -s -X POST "http://localhost:$SANDBAR_PORT/mcp" \
+          -H "Authorization: Bearer $token" \
+          -H "Content-Type: application/json" \
+          -d "$body" 2>/dev/null | grep -oE 'count[\\"]+ *: *[0-9]+' | head -1 | grep -oE '[0-9]+' || echo 0)
+    if [ "${cnt:-0}" = "0" ]; then
+      corpus_root="${SANDBAR_CORPUS_ROOT:-$HOME/claude}"
+      echo "DB is empty — auto-importing ${corpus_root}/memory/ ..."
+      import_body=$(cat <<EOF
+{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"sandbar.project.import","arguments":{"from":"${corpus_root}","filter":{"tree-filter":"memory/"},"persist?":true}}}
+EOF
+)
+      result=$(curl -s -X POST "http://localhost:$SANDBAR_PORT/mcp" \
+               --max-time 600 \
+               -H "Authorization: Bearer $token" \
+               -H "Content-Type: application/json" \
+               -d "$import_body" 2>/dev/null)
+      imported=$(echo "$result" | grep -oE 'imported[\\"]+ *: *[0-9]+' | head -1 | grep -oE '[0-9]+' || echo 0)
+      groups=$(echo "$result" | grep -oE 'groups[\\"]+ *: *[0-9]+' | head -1 | grep -oE '[0-9]+' || echo 0)
+      failed=$(echo "$result" | grep -oE 'failed-count[\\"]+ *: *[0-9]+' | head -1 | grep -oE '[0-9]+' || echo 0)
+      echo "auto-import complete: $imported entities across $groups memorials ($failed failed)"
+    else
+      echo "DB has $cnt :mm/Memory entities — skipping auto-import"
+    fi
+    ;;
+
   log)
     tail -f "$SANDBAR_LOG_FILE"
     ;;
@@ -157,9 +246,10 @@ case "$cmd" in
 Usage: sandbar <command>
 
 Commands:
-  start                          — start sandbar (idempotent)
+  start                          — start sandbar (idempotent); auto-init if DB empty + token present
   stop                           — stop sandbar (idempotent)
   restart                        — stop + start
+  init                           — fresh-DB auto-import (idempotent; requires running + token)
   status                         — show running state + token + memory-count
   rotate-token <service> <key>   — issue a fresh MCP token + persist
   log                            — tail the server log
