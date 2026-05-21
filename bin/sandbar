@@ -282,6 +282,21 @@ EOF
     fi
     ;;
 
+  reproject-bootstrap)
+    # Stage 3 of plans/sandbar_bootstrap_authority_arc_2026_05_21.md.
+    # Renders sandbar's substrate state to corpus markdown memorials.
+    # SAFE-DEFAULT: writes to a scratch dir (no canonical overwrite).
+    # Pass --canonical to write to client-project memory/.
+    # Pass --dry-run to report without writing.
+    #
+    # CAVEAT per interaction/bootstrap_rendering_must_preserve_narrative_human_readable_content_2026_05_21.md
+    # — current render output is INTROSPECTION-ONLY (no narrative);
+    # --canonical is BLOCKED until Stage 2.D narrative templates land.
+    shift
+    cd "$SANDBAR_HOME"
+    lein reproject-bootstrap "$@"
+    ;;
+
   log)
     tail -f "$SANDBAR_LOG_FILE"
     ;;
@@ -298,6 +313,9 @@ Commands:
   export [dir | --canonical]     — DB → fs projection.  Default: /tmp/sandbar-export-<ts>.
                                    Pass a dir arg to use that path.  `--canonical` overwrites
                                    the client-project memory/ (only on explicit opt-in).
+  reproject-bootstrap [opts]     — Re-render bootstrap memorials (types/ + predicates/) from
+                                   substrate state.  Default: scratch dir.  Opts: --dry-run,
+                                   --canonical (BLOCKED until templates land), --class :mm/X.
   status                         — show running state + token + memory-count
   rotate-token <service> <key>   — issue a fresh MCP token + persist
   log                            — tail the server log

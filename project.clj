@@ -70,8 +70,9 @@
 
   :aliases {"bench" ["with-profile" "+bench"
                      "run" "-m" "sandbar.bench.run"]
-            "issue-mcp-token" ["run" "-m" "sandbar.scripts.issue-mcp-token"]
-            "reset-db"        ["run" "-m" "sandbar.scripts.reset-db"]}
+            "issue-mcp-token"     ["run" "-m" "sandbar.scripts.issue-mcp-token"]
+            "reset-db"            ["run" "-m" "sandbar.scripts.reset-db"]
+            "reproject-bootstrap" ["run" "-m" "sandbar.scripts.reproject-bootstrap"]}
 
 
   :asciidoc {:sources ["doc/*.adoc"]
