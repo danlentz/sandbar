@@ -198,6 +198,50 @@ EOF
     fi
     ;;
 
+  export)
+    # X.1.C explicit DB → filesystem projection.  Invokes
+    # sandbar.project.export MCP verb.  DEFAULTS to a scratch dir
+    # (/tmp/sandbar-export-<timestamp>) for SAFETY — overwriting the
+    # canonical memory/ requires explicit `sandbar export --canonical`
+    # to avoid accidental normalization-commits.  Round-trip stability
+    # (per decisions/round_trip_stable_normalization_acceptance_criterion_2026_05_20.md)
+    # guarantees fixed-point output once the first normalization commit
+    # lands, but the FIRST projection rewrites every file with formatting
+    # changes — that's an editorial choice, not a cadence default.
+    pid=$(running_pid || true)
+    if [ -z "$pid" ]; then
+      echo "sandbar not running — start it first ('sandbar start')" >&2
+      exit 1
+    fi
+    token=$(resolve_token)
+    if [ -z "$token" ]; then
+      echo "no MCP token resolvable — set SANDBAR_TOKEN or 'sandbar rotate-token corpus <key>'" >&2
+      exit 1
+    fi
+    if [ "${2:-}" = "--canonical" ]; then
+      out_dir="${SANDBAR_CLIENT_DIR:-$HOME/claude}"
+      echo "WARNING: exporting to CANONICAL ${out_dir}/memory/ (overwrites canonical files)"
+    else
+      out_dir="${2:-/tmp/sandbar-export-$(date +%Y%m%d-%H%M%S)}"
+      mkdir -p "$out_dir"
+    fi
+    echo "exporting DB → ${out_dir}/memory/ ..."
+    export_body=$(cat <<EOF
+{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"sandbar.project.export","arguments":{"to":"${out_dir}"}}}
+EOF
+)
+    result=$(curl -s -X POST "http://localhost:$SANDBAR_PORT/mcp" \
+             --max-time 600 \
+             -H "Authorization: Bearer $token" \
+             -H "Content-Type: application/json" \
+             -d "$export_body" 2>/dev/null)
+    exported=$(echo "$result" | grep -oE 'exported[\\"]+ *: *[0-9]+' | head -1 | grep -oE '[0-9]+' || echo 0)
+    echo "export complete: $exported entities written"
+    if [ "${exported:-0}" = "0" ]; then
+      echo "DEBUG response: $result" >&2
+    fi
+    ;;
+
   init)
     # X.1.B fresh-DB auto-init.  Idempotent — invokes sandbar.project.import
     # ONLY if the DB has zero :mm/Memory entities.  Requires sandbar to be
@@ -251,6 +295,9 @@ Commands:
   stop                           — stop sandbar (idempotent)
   restart                        — stop + start
   init                           — fresh-DB auto-import (idempotent; requires running + token)
+  export [dir | --canonical]     — DB → fs projection.  Default: /tmp/sandbar-export-<ts>.
+                                   Pass a dir arg to use that path.  `--canonical` overwrites
+                                   the client-project memory/ (only on explicit opt-in).
   status                         — show running state + token + memory-count
   rotate-token <service> <key>   — issue a fresh MCP token + persist
   log                            — tail the server log
