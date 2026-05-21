@@ -1,0 +1,54 @@
+## What a `type: tag` instance is
+
+A canonical first-class tag entity — the substrate's reflective representation of a classification keyword.  Tags exist as their own memorial entities (not just strings on other memorials), allowing them to carry definition, scope-notes, hierarchy (broader/narrower), alternate labels, and provenance.  The first-class-tag pattern transforms tagging from informal annotation into structured controlled-vocabulary that's introspectable, auditable, and consolidatable.
+
+## When to use a canonical tag (vs free-text)
+
+The corpus supports both free-text tagging AND canonical tags — the DCAT two-tier pattern.  Use a canonical `:mm/Tag` when:
+
+- The tag is reused across multiple memorials (≥3 occurrences)
+- The tag carries meaning beyond its surface form (definition, scope, hierarchy)
+- The tag participates in audit invariants (e.g., closure-consistency)
+- The tag could be confused with similar-shaped tags (synonyms, plurals, abbreviations) — promote to canonical with alt-labels
+
+Stay informal (free-text on `:mm.memory/tags`) when:
+- The tag is one-off ("2026-01-04-phase-3" style)
+- The tag is intentionally lossy (a temporary marker)
+- The tag's meaning is fully captured by its surface form
+
+## Substrate identity
+
+- **Class ident**: `{{class-ident}}`
+- **Parent class(es)**: {{parent-classes}}
+- **Native codec**: `{{native-codec}}`
+- **Codec type-keyword(s)**: {{codec-type-keywords}}
+
+## Five tiers of slot vocabulary
+
+Per the tag-modeling-first-class ADR, the slot vocabulary forms five tiers:
+
+- **Tier A — Identity**: value (canonical form), alt-labels (synonyms), hidden-labels (search-only)
+- **Tier B — Documentation**: definition, scope-note, example, editorial-note, change-note, history-note
+- **Tier C — Concept relations**: broader-generic, broader-instantial, broader-partitive, related, in-scheme
+- **Tier D — Lifecycle**: vocabulary-level (free / canonical), lifecycle-status, superseded-by, category-type, canonical?
+- **Tier E — Federation + provenance + validation**: introduced-in, constraints, sort-key, exact-match, close-match, broader-match, narrower-match, related-match
+
+The full slot table:
+
+{{slot-table}}
+
+## Composition with other classes
+
+- **`:mm/Memory`** — memorials reference tags via `:mm.memory/tags` (free-text mix) or `:mm.memory/themes` (controlled-vocabulary canonical refs)
+- **`:mm/ConceptScheme`** — tags can be members of named vocabulary schemes (`:mm.tag/in-scheme`)
+- **`:mm/Shape`** — validation shapes for SHACL-style tag-shape checks
+
+## Codec slot-order
+
+{{slot-order-list}}
+
+## See also
+
+- [`types/concept-scheme.md`](concept-scheme.md) — vocabulary scheme class
+- [`types/memory.md`](memory.md) — memorials that carry tag refs
+- [`types/predicate.md`](predicate.md) — predicates for tag-to-tag relations

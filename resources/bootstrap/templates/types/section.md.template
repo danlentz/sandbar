@@ -1,0 +1,54 @@
+## What a `type: section` instance is
+
+An addressable subdivision of a memorial's body — each H2+ heading and its content become a `:mm/Section` entity with its own ident, parent ref, sibling chain, and body slot.  Sections enable fine-grained addressability: cross-references can target a specific section of a memorial, not just the whole memorial.  The section graph mirrors the markdown structure: nested headings produce nested sections via `:mm.section/parent`; sibling headings at the same level form a doubly-linked sibling chain via `:mm.section/next-sibling` / `:mm.section/previous-sibling` (SIOC pairwise pattern).
+
+## When sections are created
+
+Sections are not authored directly — they're produced by the codec's section-tree decomposition when parsing a memorial's body.  Each `## Heading` (or deeper) becomes a section entity.  The H1 (if present) is treated as the memorial title, not a section.
+
+Sections coexist with `:mm.memory/body-raw` which preserves the entire body verbatim — sections are an ADDRESSABLE OVERLAY, not the canonical content.  On emit, the section chain reconstructs the body markdown.
+
+## Substrate identity
+
+- **Class ident**: `{{class-ident}}`
+- **Parent class(es)**: {{parent-classes}}
+- **Native codec**: `{{native-codec}}`
+
+## Slot vocabulary
+
+The class declares **{{slot-count}}** slots:
+
+{{slot-table}}
+
+## Section identity derivation
+
+Section idents are PATH-DERIVED — composed from the parent memorial's ident plus the heading-chain slug:
+
+```
+memory/decisions/foo.md
+├── ## Context              → :memory.decisions/foo__context
+├── ## Decision             → :memory.decisions/foo__decision
+│   ├── ### Alternatives    → :memory.decisions/foo__decision__alternatives
+│   └── ### Acceptance      → :memory.decisions/foo__decision__acceptance
+└── ## See also             → :memory.decisions/foo__see-also
+```
+
+When two headings would produce the same slug, the codec auto-disambiguates with `-2` / `-3` suffix.
+
+## Sibling chain navigation
+
+Sections form a doubly-linked chain via `:mm.section/next-sibling` + `:mm.section/previous-sibling` — pairwise (each pair declares both directions), allowing O(1) walk in either direction.  Per the SIOC sibling-chain pattern from the section-schema ADR.
+
+## Composition with other classes
+
+- **`:mm/Memory`** — memorial's `:mm.memory/first-section` entry-point begins the section chain
+- **`:mm/Link`** — markdown links extracted from section body content reference back to the containing section via `:mm.link/in-section`
+
+## Codec slot-order
+
+{{slot-order-list}}
+
+## See also
+
+- [`types/memory.md`](memory.md) — the parent memorial class
+- [`types/link.md`](link.md) — body-link extraction

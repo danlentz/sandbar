@@ -1,0 +1,48 @@
+## What a `type: actor` instance is
+
+A first-class representation of an agent — AI model, human collaborator, organization, or service account — that authors, reviews, or interacts with corpus content.  Actors carry identity-level facts (name, version, capabilities) plus contextual membership (which contexts they run in, what organizations they belong to).  The actor type enables typed-edge provenance — memorials cite their `created-by:` actor; rules apply to specific actors; reviews are attributed to actor instances.
+
+## When an actor entity is warranted
+
+- An AI model version interacts substantively with the corpus (Claude Opus 4.7, GPT-5.4, etc.)
+- A human collaborator authors or directs the corpus
+- An external service / system contributes substantively (reviewers, broker processes)
+
+Actors are NOT created for transient interactions — a model invoked once for a specific task doesn't need an actor entity.  Actors are for stable identities that recur across sessions.
+
+## Identity-and-context orthogonality
+
+A single actor identity can run in multiple contexts (sandboxed vs unsandboxed; different host environments; different organizational contexts).  Per the actor-context-rules deep-dive ADR, identity is independent of context — runtime context attaches via `runs-in-context:` multi-arity field rather than creating per-context actor instances.
+
+## Substrate identity
+
+- **Class ident**: `{{class-ident}}`
+- **Parent class(es)**: {{parent-classes}}
+- **Native codec**: `{{native-codec}}`
+- **Codec type-keyword(s)**: {{codec-type-keywords}}
+
+## Slot vocabulary
+
+The class declares **{{slot-count}}** slots covering Identity / Capability / Membership / Provenance / Classification / Typed-edge / Body tiers:
+
+{{slot-table}}
+
+## Two sub-kinds via routing-keyword
+
+Sandbar's `:mm/Actor` class is single-class with TWO codec routing keywords (`type: ai-actor` and `type: human-actor`).  The class is shared; the routing keyword distinguishes the kind at parse time + lands on the entity via the `:mm.actor/actor-type` slot.
+
+## Composition with other classes
+
+- **`:mm/Context`** — actors `runs-in-context:` context memorials; rules apply to (actor, context) tuples
+- **`:mm/Rule`** — rules can subject an actor (`:mm.rule/actor`) — apply only to that actor's actions
+- **`:mm/Memory`** — memorials cite their author via `:mm.memory/created-by`
+
+## Codec slot-order
+
+{{slot-order-list}}
+
+## See also
+
+- [`types/context.md`](context.md) — runtime context class
+- [`types/rule.md`](rule.md) — discipline rule class
+- [`types/memory.md`](memory.md) — memorials that cite actors

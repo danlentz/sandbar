@@ -1,0 +1,36 @@
+## What a `type: context` instance is
+
+A first-class representation of a RUNTIME CONTEXT — the environment in which an actor operates.  Contexts capture facts like sandboxing, host class, firewall regime, and authorization scope.  Per the actor-context-rules deep-dive frame, runtime context is the UNIT to which firewall and authorization rules attach — distinct from actor identity (per identity-and-context orthogonality).
+
+## When a context entity is warranted
+
+- A distinguishable runtime environment exists (sandboxed work vs unsandboxed corpus authoring vs CI runner vs federated peer)
+- Discipline rules differ across environments (the same actor behaves differently depending on context)
+- Authorization scope varies (full corpus authority in one context; project-isolated firewall in another)
+
+## Substrate identity
+
+- **Class ident**: `{{class-ident}}`
+- **Parent class(es)**: {{parent-classes}}
+- **Native codec**: `{{native-codec}}`
+- **Codec type-keyword(s)**: {{codec-type-keywords}}
+
+## Slot vocabulary
+
+The class declares **{{slot-count}}** slots covering Identity / Runtime / Firewall / Authorization tiers:
+
+{{slot-table}}
+
+## Composition with other classes
+
+- **`:mm/Actor`** — actors `runs-in-context:` context memorials; the (actor, context) tuple is the rule-dispatch domain
+- **`:mm/Rule`** — rules subject specific contexts via `:mm.rule/context` (matching string glob or context-memorial ref)
+
+## Codec slot-order
+
+{{slot-order-list}}
+
+## See also
+
+- [`types/actor.md`](actor.md) — actors that run in contexts
+- [`types/rule.md`](rule.md) — rules that dispatch on (actor, context)

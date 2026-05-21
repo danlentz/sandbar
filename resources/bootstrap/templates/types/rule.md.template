@@ -1,0 +1,49 @@
+## What a `type: rule` instance is
+
+A first-class representation of a DISCIPLINE RULE — a substrate-machinable assertion that some event triggers some enforcement against some subject (actor, context, or memorial pattern).  Rules name the WHAT (event class), the WHO (actor / class scope), the WHERE (context or path glob), and the HOW (enforcement type: warn / block).  They sit at the intersection of policy, hook automation, and the corpus's editorial discipline.
+
+## When a rule entity is warranted
+
+- A repeating editorial concern can be captured as a triggerable assertion (post-commit validation, pre-tool-use guard, session-start orientation reminder)
+- Compliance with the rule benefits from substrate enforcement rather than ad-hoc reminders
+- The rule will be referenced by multiple memorials (audit invariants, hooks, protocol docs)
+
+## Rule lifecycle dimensions
+
+Each rule declares:
+
+- **Event** — when the rule fires (`:post-commit`, `:pre-tool-use`, `:session-start`, `:pre-grounding`, `:corpus-audit`)
+- **Enforcement** — disposition (`:warn` informational, `:block` halting)
+- **Subject** — actor (specific or `:any`), context (path glob or context ref)
+- **Engine** — dispatch mechanism (`:plain-pattern`, `:graph-query`, `:script-hook`)
+- **Priority** — dispatch ordering (higher fires first)
+- **Lifecycle** — `:active` or `:retired`
+
+## Substrate identity
+
+- **Class ident**: `{{class-ident}}`
+- **Parent class(es)**: {{parent-classes}}
+- **Native codec**: `{{native-codec}}`
+- **Codec type-keyword(s)**: {{codec-type-keywords}}
+
+## Slot vocabulary
+
+The class declares **{{slot-count}}** slots covering Identity / Event / Enforcement / Subject / Dispatch / Lifecycle / Provenance / Typed-edge tiers:
+
+{{slot-table}}
+
+## Composition with other classes
+
+- **`:mm/Actor`** — rules subject specific actors via `:mm.rule/actor`
+- **`:mm/Context`** — rules subject specific contexts via `:mm.rule/context`
+- **`:mm/Memory`** — rules can reference protocol memorials (`:mm.rule/governed-by`), trigger memorials (`:mm.rule/triggered-by`), and applicability scopes (`:mm.rule/applies-in`)
+
+## Codec slot-order
+
+{{slot-order-list}}
+
+## See also
+
+- [`types/actor.md`](actor.md) — actors that rules subject
+- [`types/context.md`](context.md) — contexts that rules subject
+- [`types/memory.md`](memory.md) — memorials that rules reference
