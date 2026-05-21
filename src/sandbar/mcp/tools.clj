@@ -43,6 +43,7 @@
             [sandbar.codec              :as codec]
             [sandbar.codec.markdown     :as codec-md]
             [sandbar.entity-ref         :as eref]
+            [sandbar.navigate.edges     :as nav-edges]
             [sandbar.navigate.path      :as nav-path]
             [sandbar.navigate.siblings  :as nav-siblings]
             [sandbar.orient             :as orient]
@@ -633,6 +634,47 @@
                  (seq include)     (assoc :include include)
                  field-wts         (assoc :field-weights field-wts))]
       (search/search-bm25f opts))))
+
+;; ---------- Navigate edges (Stage 5.B-pre #2 — 0.1.1 co-evolution arc) ----------
+;;
+;; Per decisions/stage_5_mcp_verb_authoring_sub_arc_2026_05_21.md.  Thin
+;; MCP boundary wrappers around sandbar.navigate.edges/{inbound,outbound}-
+;; edges.  Underpin /memory-xref + /memory-show slash commands.
+
+(defn- parse-predicate-arg
+  "Predicate arg may be a single keyword-string or a vec of keyword-strings.
+   Resolve each to an ident via eref/resolve-ident."
+  [raw]
+  (when (some? raw)
+    (if (sequential? raw)
+      (mapv eref/resolve-ident raw)
+      (eref/resolve-ident raw))))
+
+(defn- navigate-outbound-edges-handler [args]
+  (let [entity-raw       (or (get args "entity") (get args :entity))
+        predicate-raw    (or (get args "predicate") (get args :predicate))
+        target-type-raw  (or (get args "target-type") (get args :target-type))
+        limit-arg        (or (get args "limit") (get args :limit))]
+    (when (nil? entity-raw)
+      (throw (ex-info "Missing required argument: entity" {:args args})))
+    (let [opts (cond-> {:entity (eref/resolve-ident entity-raw)}
+                 predicate-raw   (assoc :predicate (parse-predicate-arg predicate-raw))
+                 target-type-raw (assoc :target-type (eref/resolve-ident target-type-raw))
+                 (some? limit-arg) (assoc :limit limit-arg))]
+      (nav-edges/outbound-edges opts))))
+
+(defn- navigate-inbound-edges-handler [args]
+  (let [entity-raw       (or (get args "entity") (get args :entity))
+        predicate-raw    (or (get args "predicate") (get args :predicate))
+        source-type-raw  (or (get args "source-type") (get args :source-type))
+        limit-arg        (or (get args "limit") (get args :limit))]
+    (when (nil? entity-raw)
+      (throw (ex-info "Missing required argument: entity" {:args args})))
+    (let [opts (cond-> {:entity (eref/resolve-ident entity-raw)}
+                 predicate-raw   (assoc :predicate (parse-predicate-arg predicate-raw))
+                 source-type-raw (assoc :source-type (eref/resolve-ident source-type-raw))
+                 (some? limit-arg) (assoc :limit limit-arg))]
+      (nav-edges/inbound-edges opts))))
 
 ;; ---------- Navigation operations (Stage P-6 — fulltext arc Phase N) ----------
 ;;
@@ -1570,6 +1612,37 @@
                              :description "Vec of axis-spec objects; one labeled subset per axis"}}
                    [:entity :axes])
     :handler orient-library-card-handler}
+
+   ;; Navigation — outbound + inbound edges (Stage 5.B-pre #2 — 0.1.1 co-evolution arc)
+   {:name "sandbar.navigate.outbound-edges"
+    :title "Typed-edges originating FROM an entity"
+    :description "WHICH: returns typed-edges originating from `:entity` — what does this entity reference, via which predicate, to which target.  Foundational outbound traversal primitive.\n\nWHEN: use for one-hop forward navigation when you need the predicate-and-target shape (not just the targets).  Underpins /memory-xref + /memory-show.  When NOT to use: (a) targets-only (no predicate label) — use a Datalog query directly; (b) recursive / Kleene-closure traversal — use `sandbar.navigate.path-via`; (c) bounded-depth BFS — use `sandbar.navigate.walk`.\n\nHOW: `:entity` is the seed entity (ident or eid).  Optional `:predicate` is a single keyword-string or vec to restrict to specific edge-predicates.  Optional `:target-type` is a class-ident-string restricting targets to instances-of.  Optional `:limit` caps returned edges (default 0 = no cap).\n\nORDER: leaf-call shape.  Discover candidate predicates first via `sandbar.class.slots` on the entity's class if uncertain.\n\nCOMBINATION: pairs with `sandbar.navigate.inbound-edges` (the dual; who references this entity).  Composes with `sandbar.orient.library-card` (one-call multi-axis breakdown).  Pre-step for `sandbar.navigate.path-via` (discover predicate vocab before authoring path expressions).\n\nResult: `{:edges [{:predicate <pred-ident> :target <entity-map>} ...] :total <int> :returned <int>}`."
+    :inputSchema (one-required
+                   {:entity      {:type "string"
+                                  :description "Anchor entity ident or eid"}
+                    :predicate   {:type "string"
+                                  :description "Single predicate ident OR JSON array of idents (restricts to these edges)"}
+                    :target-type {:type "string"
+                                  :description "Class ident restricting target-instance-of"}
+                    :limit       {:type "integer"
+                                  :description "Max edges (default 0 = no cap)"}}
+                   [:entity])
+    :handler navigate-outbound-edges-handler}
+
+   {:name "sandbar.navigate.inbound-edges"
+    :title "Typed-edges pointing AT an entity (who references it)"
+    :description "WHICH: returns typed-edges pointing at `:entity` — who references this entity, via which predicate, from which source.  Foundational inbound traversal primitive (dual of `sandbar.navigate.outbound-edges`).\n\nWHEN: use for backlink discovery — 'which decisions cite this ADR?'.  Underpins /memory-xref + library-card inverse-axes.  When NOT to use: (a) sources-only without predicate label — use Datalog directly; (b) bounded-depth backlink walk — use `sandbar.navigate.walk` with `:inbound` flag; (c) Kleene closure — use `sandbar.navigate.path-via` with `:INV`.\n\nHOW: `:entity` is the target entity (ident or eid).  Optional `:predicate` is a single keyword-string or vec to restrict to specific edge-predicates.  Optional `:source-type` is a class-ident-string restricting sources to instances-of.  Optional `:limit` caps returned edges.\n\nORDER: leaf-call shape.\n\nCOMBINATION: pairs with `sandbar.navigate.outbound-edges` (the dual).  Composes with `sandbar.orient.library-card` (`:inverse` axes use the inbound shape).\n\nResult: `{:edges [{:predicate <pred-ident> :source <entity-map>} ...] :total <int> :returned <int>}`."
+    :inputSchema (one-required
+                   {:entity      {:type "string"
+                                  :description "Anchor entity ident or eid"}
+                    :predicate   {:type "string"
+                                  :description "Single predicate ident OR JSON array of idents"}
+                    :source-type {:type "string"
+                                  :description "Class ident restricting source-instance-of"}
+                    :limit       {:type "integer"
+                                  :description "Max edges (default 0 = no cap)"}}
+                   [:entity])
+    :handler navigate-inbound-edges-handler}
 
    ;; Navigation — siblings-of (Stage 22 — fulltext arc Phase N)
    {:name "sandbar.navigate.siblings-of"
