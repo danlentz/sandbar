@@ -604,6 +604,11 @@
 ;; this verb exposes it as an MCP tool so memory-model client slash
 ;; commands like `/memory-search` can dispatch via the MCP server.
 
+(defn- aggregate-tag-histogram-handler [args]
+  (let [limit-arg (or (get args "limit") (get args :limit))
+        opts      (cond-> {} (some? limit-arg) (assoc :limit limit-arg))]
+    (aggregate/tag-histogram opts)))
+
 (defn- search-bm25f-handler [args]
   (let [query           (or (get args "query") (get args :query))
         class-ident     (class-arg args)
@@ -1590,6 +1595,16 @@
                                     :description "REQUIRED for :recency / :freshness — temporal-axis slot ident (e.g. ':mm.memory/last-touched')"}}
                    [:class :rank-by])
     :handler aggregate-rank-by-handler}
+
+   ;; Aggregate — tag histogram (Stage 5.B-pre #4 — 0.1.1 co-evolution arc)
+   {:name "sandbar.aggregate.tag-histogram"
+    :title "Frequency histogram of :mm/Tag usage across the corpus"
+    :description "WHICH: returns a frequency histogram of `:mm/Tag` usage across the corpus.  Each bin is `{:tag <ident> :value <string> :count <int>}` — count is the number of entities (any class) that reference the tag via inbound edges.\n\nWHEN: use for tag-vocabulary observability — 'which tags are most-used?', 'which tags are orphans (used by ≤1 entity)?'.  Underpins /memory-tags (no-arg form).  When NOT to use: (a) you want one tag's full citing-set — use `sandbar.navigate.inbound-edges` with the tag as `:entity`; (b) you want tag schema-introspection (not usage) — use `sandbar.tag.lookup`; (c) you want audit-shaped tag concerns (undefined-used, orphans, drift) — use `sandbar.tag.audit`.\n\nHOW: optional `:limit` caps returned bins (default 0 = no cap); sorted descending by count then ascending by tag-ident as tie-breaker.\n\nORDER: leaf-call shape.\n\nCOMBINATION: pairs with `sandbar.tag.audit` (qualitative tag concerns) and `sandbar.tag.lookup` (single-tag detail).\n\nResult: `{:histogram [{:tag <ident> :value <string> :count <int>} ...] :total <int>}`."
+    :inputSchema {:type "object"
+                  :properties {:limit {:type "integer"
+                                       :description "Cap returned bins (default 0 = no cap)"}}
+                  :required []}
+    :handler aggregate-tag-histogram-handler}
 
    ;; Search — BM25F multi-field fulltext (Stage 5.B-pre — 0.1.1 co-evolution arc)
    {:name "sandbar.search.bm25f"

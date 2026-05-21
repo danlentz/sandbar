@@ -135,3 +135,37 @@
     {:hits     hits
      :total    total
      :returned (count hits)}))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; tag-histogram — frequency of :mm/Tag usage across the corpus
+;; (Stage 5.B-pre #4)
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defn tag-histogram
+  "Return a frequency histogram of :mm/Tag usage across the corpus.
+   Each bin = {tag-ident, tag-value, count}; count is the number of
+   entities (any class) that reference the tag via any cardinality-many
+   ref slot.
+
+   Optional opts:
+     :limit — cap returned bins (default 0 = no cap); sorted descending
+              by count, ascending by tag-ident as tie-breaker
+
+   Returns:
+     {:histogram [{:tag <ident> :value <string> :count <int>} ...]
+      :total <int>}
+
+   Per Stage 5.B-pre #4 of
+   decisions/stage_5_mcp_verb_authoring_sub_arc_2026_05_21.md."
+  [{:keys [limit] :or {limit 0}}]
+  {:pre [(integer? limit) (>= limit 0)]}
+  (let [tags    (dt/all-named-instances-of :mm/Tag)
+        bins    (for [tag-ident tags
+                      :let [e   (db/entity tag-ident)
+                            val (:mm.tag/value e)
+                            n   (count (dt/inbound-edges-of tag-ident {}))]]
+                  {:tag tag-ident :value val :count n})
+        sorted  (sort-by (juxt #(- (:count %)) :tag) bins)
+        limited (if (zero? limit) sorted (take limit sorted))]
+    {:histogram (vec limited)
+     :total     (count tags)}))
