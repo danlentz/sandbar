@@ -531,8 +531,13 @@
                          (let [memory     (first group)
                                ident      (:db/ident memory)
                                class-ident (:dt/type memory)
-                               tx-data    (-> (codec-md/entity-specs->tx-data group)
-                                               (->> (mapv #(dissoc % :dt/type))))]
+                               ;; Bug fix 2026-05-21: do NOT dissoc :dt/type
+                               ;; before transact.  Without :dt/type the entity
+                               ;; has no class, and class.instances / aggregate.count
+                               ;; can't find it.  The earlier dissoc was scope
+                               ;; creep at boundary code that prevented the ingest
+                               ;; from yielding queryable entities.
+                               tx-data    (codec-md/entity-specs->tx-data group)]
                            (try
                              (dt/make-all* tx-data)
                              (update acc :persisted conj
