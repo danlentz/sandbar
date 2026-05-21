@@ -988,6 +988,80 @@
    :db/cardinality :db.cardinality/many
    :db/doc "Contradiction typed-edge (frontmatter `contradicts:`).  Rel-paths to memorials whose claims THIS memorial contradicts.  Per memory/predicates/contradicts.md."}
 
+  ;; ==========================================================================
+  ;; Stage 5.B.gap-A.3 (2026-05-21) — metamodel-level predicates per
+  ;; observations/typed_edge_predicate_vocabulary_substrate_gaps_2026_05_21.md.
+  ;; These are memorial-to-memorial edges expressing METAMODEL relations
+  ;; (type extension, meta-type linking, class inheritance, etc.) — used
+  ;; HEAVILY in type-memorial + predicate-memorial frontmatter.  Corpus
+  ;; uses cardinality :many universally.  Slots live on :mm/Memory
+  ;; (memorial-level) rather than :dt/Class (substrate-level) because
+  ;; corpus convention is per-memorial frontmatter.
+
+  {:db/ident       :mm.memory/extends
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Memory
+   :dt/range       :dt/Resource
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/many
+   :db/doc "Type-extension typed-edge (frontmatter `extends:`).  Rel-paths to memorials this memorial extends — used in type-memorials (e.g., types/library.md extends types/meta.md) + meta-type-memorials.  Per memory/predicates/extends.md."}
+
+  {:db/ident       :mm.memory/has-meta-type
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Memory
+   :dt/range       :dt/Resource
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/many
+   :db/doc "Meta-type relation (frontmatter `has-meta-type:`).  Rel-paths to meta-type memorials describing THIS memorial's meta-class.  Per memory/predicates/has-meta-type.md."}
+
+  {:db/ident       :mm.memory/inherits-from
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Memory
+   :dt/range       :dt/Resource
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/many
+   :db/doc "Inheritance typed-edge (frontmatter `inherits-from:`).  Rel-paths to memorials THIS memorial inherits-from in a class-hierarchy sense.  Per memory/predicates/inherits-from.md.  Note: substrate-level inheritance lives on :dt/subclass-of for :dt/Class entities; this slot is for corpus memorial-level (type-memorial) frontmatter."}
+
+  {:db/ident       :mm.memory/instance-of
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Memory
+   :dt/range       :dt/Resource
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/many
+   :db/doc "Class-membership typed-edge (frontmatter `instance-of:`).  Rel-paths to type-memorials THIS memorial is an instance-of (corpus-level class membership).  Per memory/predicates/instance-of.md.  Substrate-level instance-of is :dt/type — this slot is for corpus memorial-level frontmatter."}
+
+  {:db/ident       :mm.memory/specializes
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Memory
+   :dt/range       :dt/Resource
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/many
+   :db/doc "Narrower-than typed-edge (frontmatter `specializes:`).  Rel-paths to memorials THIS memorial is a more-specific case of.  Per memory/predicates/specializes.md."}
+
+  {:db/ident       :mm.memory/generalizes
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Memory
+   :dt/range       :dt/Resource
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/many
+   :db/doc "Broader-than typed-edge (frontmatter `generalizes:`).  Inverse of :mm.memory/specializes.  Per memory/predicates/generalizes.md."}
+
+  {:db/ident       :mm.memory/has-domain
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Memory
+   :dt/range       :dt/Resource
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/many
+   :db/doc "Predicate domain typed-edge (frontmatter `has-domain:` on predicate-memorials).  Rel-paths to type-memorials specifying which classes the predicate applies to.  Per memory/predicates/has-domain.md."}
+
+  {:db/ident       :mm.memory/has-range
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Memory
+   :dt/range       :dt/Resource
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/many
+   :db/doc "Predicate range typed-edge (frontmatter `has-range:` on predicate-memorials).  Rel-paths to type-memorials specifying which classes the predicate's values target.  Per memory/predicates/has-range.md."}
+
   {:db/ident       :mm.memory/introduced-in
    :dt/type        :dt/Property
    :dt/domain      :mm/Memory
