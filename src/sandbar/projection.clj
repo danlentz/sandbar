@@ -316,17 +316,44 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; ingest-graph — filesystem → entities
 
+(def ^:const +default-skip-basenames+
+  "Default skip-set for ingest-graph file enumeration.  Subtree-index +
+  root-index filenames that conventionally are NOT memorials in markdown
+  memory-model corpora:
+
+  - README.md — subtree-index / human-readable directory pointer (any depth)
+  - MEMORY.md — root-index of active arcs / curated entries (top-level)
+
+  Per `etc/lib/memory.clj` corpus convention (`+skip-index-basenames+`
+  + `+skip-top-files+`).  Surfacing in BM25F search results would pollute
+  ranked output with non-memorial content (the corpus's parity probe at
+  observations/sandbar_bm25f_parity_probe_5_divergences_2026_05_22.md
+  D1+D2 surfaced README.md as top-ranked sandbar hit for `predicate
+  vocabulary` query because this filter was missing substrate-side).
+
+  Consumers can override via :skip-basenames opt to ingest-graph
+  (empty set #{} disables skipping; their-own-set replaces these
+  defaults)."
+  #{"README.md" "MEMORY.md"})
+
 (defn- walk-markdown-files
-  "Walk a directory recursively; return a seq of rel-paths to .md files."
-  [^java.io.File root]
-  (->> (file-seq root)
-       (filter #(and (.isFile ^java.io.File %)
-                     (str/ends-with? (.getName ^java.io.File %) ".md")))
-       (map (fn [^java.io.File f]
-              (let [root-path   (.getCanonicalPath root)
-                    file-path   (.getCanonicalPath f)
-                    rel         (subs file-path (inc (count root-path)))]
-                rel)))))
+  "Walk a directory recursively; return a seq of rel-paths to .md files.
+  Skips files whose basename is in `skip-basenames` (default:
+  `+default-skip-basenames+` — README.md + MEMORY.md, the conventional
+  subtree-index / root-index patterns)."
+  ([^java.io.File root]
+   (walk-markdown-files root +default-skip-basenames+))
+  ([^java.io.File root skip-basenames]
+   (->> (file-seq root)
+        (filter #(and (.isFile ^java.io.File %)
+                      (str/ends-with? (.getName ^java.io.File %) ".md")
+                      (not (contains? skip-basenames
+                                      (.getName ^java.io.File %)))))
+        (map (fn [^java.io.File f]
+               (let [root-path   (.getCanonicalPath root)
+                     file-path   (.getCanonicalPath f)
+                     rel         (subs file-path (inc (count root-path)))]
+                 rel))))))
 
 (defn ingest-graph
   "Walk a filesystem hierarchy + return a coll of entity-spec maps.
@@ -344,7 +371,9 @@
    Returns: flat vector of entity-spec maps; for each .md file, the
    memory entity + its section entities in chain order are appended."
   ([from-dir] (ingest-graph from-dir {}))
-  ([from-dir {filter-spec :filter}]
+  ([from-dir {filter-spec      :filter
+              skip-basenames   :skip-basenames
+              :or              {skip-basenames +default-skip-basenames+}}]
    (let [root (io/file from-dir)]
      (when-not (.isDirectory root)
        (throw (ex-info "ingest-graph requires a directory input"
@@ -371,7 +400,7 @@
                                        {:rel-path rel-path
                                         :error    (.getMessage ex)})
                              nil))))
-                     (walk-markdown-files root)))]
+                     (walk-markdown-files root skip-basenames)))]
        (if (or (nil? filter-spec) (empty? filter-spec))
          all-entities
          ;; Filter memories per the spec; sections of dropped memories drop too.
