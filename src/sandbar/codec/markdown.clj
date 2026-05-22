@@ -535,7 +535,7 @@
                           v)
     :else v))
 
-(defn- rel-path->memory-ident
+(defn rel-path->memory-ident
   "Convert a corpus rel-path string to an :mm/Memory :db/ident keyword.
    The corpus convention has frontmatter typed-edges write rel-paths
    relative to the memory/ subtree (e.g., `cites: decisions/foo.md`),
@@ -548,7 +548,12 @@
    'memory/decisions/foo.md'  → :memory.decisions/foo
    'patterns/x/y.md'          → :memory.patterns.x/y
 
-   Returns nil for unparseable input."
+   Returns nil for unparseable input.
+
+   Public per Gap 1 — consumers (MCP `sandbar.entity.find-by-rel-path`
+   verb + others) need the canonical rel-path→ident conversion to avoid
+   re-implementing it.  Per MCP cutover exercise 2026-05-22 (inbox
+   capture)."
   [rel-path]
   (let [no-ext     (str/replace rel-path #"\.md$" "")
         with-mem   (if (str/starts-with? no-ext "memory/")

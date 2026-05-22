@@ -100,6 +100,22 @@
       (cond-> base
         (:db/id entity) (assoc :db/id (:db/id entity))))))
 
+(defn- ->projection-mode
+  "Coerce a JSON-string :projection arg to the keyword form the
+  substrate wrappers expect.  Accepts 'metadata-only', 'full',
+  ':metadata-only', ':full', or already-coerced keywords.  Returns
+  nil when arg is nil (lets the wrapper apply its default).
+
+  Hoisted to early in the file so handlers further down (entity-find,
+  navigate, orient) can reference it without forward-reference errors."
+  [raw]
+  (cond
+    (nil? raw)     nil
+    (keyword? raw) raw
+    (string? raw)  (keyword (clojure.string/replace raw #"^:" ""))
+    :else          (throw (ex-info (str "Unparseable :projection arg `" raw "`")
+                                   {:projection raw}))))
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; JSON Schema type mapping (carried over from per-class implementation
 ;; because the property.range / class.slots / entity.create verbs still
@@ -419,6 +435,32 @@
                       {:class class-ident :entity-id (:db/id new-entity)})))
         {:entity (entity-projection new-entity)}))))
 
+(defn- entity-metadata-projection
+  "Metadata-only projection — substrate-universal fields:
+  `:db/id`, `:db/ident` (if interned), `:dt/type` (if set).
+  Per Gap 3 (#11 follow-up) — used when caller passes
+  `:projection :metadata-only` to entity-find for lightweight
+  enumeration / pre-check use cases."
+  [entity]
+  (when entity
+    (cond-> {}
+      (:db/id entity)    (assoc :db/id    (:db/id entity))
+      (:db/ident entity) (assoc :db/ident (:db/ident entity))
+      (:dt/type entity)  (assoc :dt/type  (:dt/type entity)))))
+
+(defn- apply-entity-projection
+  "Route to the appropriate projection per mode keyword.  Defaults to
+  full when mode is nil (entity-find's natural default is full —
+  single-entity lookup; caller has explicit intent)."
+  [entity projection-mode]
+  (case (or projection-mode :full)
+    :full          (entity-projection entity)
+    :metadata-only (entity-metadata-projection entity)
+    (throw (ex-info (str "Unknown :projection mode `" projection-mode
+                         "`.  Valid: :full, :metadata-only.")
+                    {:projection-mode projection-mode
+                     :valid-modes #{:full :metadata-only}}))))
+
 (defn- entity-find-handler [args]
   ;; Find-or-missing semantic — does NOT throw on not-found; returns a
   ;; structured `{:missing? true}` response.  Uses `eref/validate` (the
@@ -430,14 +472,46 @@
   ;; `(some? e)` branch was vacuously true and `:missing? true` never
   ;; fired (latent bug; reported entity maps for non-existent eids).
   ;; `eref/validate` correctly distinguishes existing vs missing.
-  (let [ident-or-id (or (get args "ident") (get args :ident)
-                        (get args "id")    (get args :id))]
+  (let [ident-or-id    (or (get args "ident") (get args :ident)
+                           (get args "id")    (get args :id))
+        projection-raw (or (get args "projection") (get args :projection))]
     (when (nil? ident-or-id)
       (throw (ex-info "Missing required argument: ident (or id)" {:args args})))
-    (let [{:keys [valid? entity reasons]} (eref/validate ident-or-id)]
+    (let [{:keys [valid? entity reasons]} (eref/validate ident-or-id)
+          projection (->projection-mode projection-raw)]
       (if valid?
-        {:entity (entity-projection entity)}
+        {:entity (apply-entity-projection entity projection)}
         {:entity nil :missing? true :lookup (str ident-or-id) :reasons reasons}))))
+
+(defn- entity-find-by-rel-path-handler [args]
+  ;; Look up an :mm/Memory entity by its corpus rel-path.  Resolves the
+  ;; rel-path → :memory.<dir>/<name> ident via the canonical codec
+  ;; conversion (sandbar.codec.markdown/rel-path->memory-ident), then
+  ;; delegates to eref/validate for the find-or-missing semantic.
+  ;;
+  ;; Eliminates the ident-guessing friction surfaced in the MCP cutover
+  ;; exercise 2026-05-22 (Gap 1).  Consumers can now look up entities
+  ;; by the filesystem path they actually have on hand (e.g.,
+  ;; "plans/sandbar_as_mcp_server_arc_2026-05-12.md") instead of
+  ;; reverse-engineering the substrate's ident form.
+  ;;
+  ;; Accepts rel-paths with or without the leading "memory/" prefix.
+  ;; Optional :projection per Gap 3 — default :full (single-entity).
+  (let [rel-path       (or (get args "rel-path") (get args :rel-path))
+        projection-raw (or (get args "projection") (get args :projection))]
+    (when (nil? rel-path)
+      (throw (ex-info "Missing required argument: rel-path" {:args args})))
+    (let [ident (codec-md/rel-path->memory-ident rel-path)
+          projection (->projection-mode projection-raw)]
+      (if (nil? ident)
+        {:entity nil :missing? true :lookup rel-path
+         :reasons #{:rel-path/unparseable}}
+        (let [{:keys [valid? entity reasons]} (eref/validate ident)]
+          (if valid?
+            {:entity (apply-entity-projection entity projection)
+             :resolved-ident (str ident)}
+            {:entity nil :missing? true :lookup rel-path
+             :resolved-ident (str ident) :reasons reasons}))))))
 
 ;; ---------- Codec + project-graph operations (Stage F.3b) ----------
 
@@ -655,6 +729,19 @@
         opts      (cond-> {} (some? limit-arg) (assoc :limit limit-arg))]
     (aggregate/tag-histogram opts)))
 
+(defn- search-attribute-handler [args]
+  (let [attribute-raw (or (get args "attribute") (get args :attribute))
+        query         (or (get args "query") (get args :query))
+        limit-arg     (or (get args "limit") (get args :limit))]
+    (when (nil? attribute-raw)
+      (throw (ex-info "Missing required argument: attribute" {:args args})))
+    (when (nil? query)
+      (throw (ex-info "Missing required argument: query" {:args args})))
+    (let [attribute (eref/resolve-ident attribute-raw)
+          opts (cond-> {:attribute attribute :query query}
+                 (some? limit-arg) (assoc :limit limit-arg))]
+      (search/search-attribute opts))))
+
 (defn- search-bm25f-handler [args]
   (let [query           (or (get args "query") (get args :query))
         class-ident     (class-arg args)
@@ -662,7 +749,11 @@
         where-raw       (or (get args "where") (get args :where))
         facet-by-raw    (or (get args "facet-by") (get args :facet-by))
         include-raw     (or (get args "include") (get args :include))
-        field-wts-raw   (or (get args "field-weights") (get args :field-weights))]
+        field-wts-raw   (or (get args "field-weights") (get args :field-weights))
+        from-raw        (or (get args "from") (get args :from))
+        via-raw         (or (get args "via") (get args :via))
+        rank-by-raw     (or (get args "rank-by") (get args :rank-by))
+        temporal-raw    (or (get args "temporal-slot") (get args :temporal-slot))]
     (when (nil? query)
       (throw (ex-info "Missing required argument: query" {:args args})))
     (let [where     (when where-raw
@@ -678,12 +769,21 @@
           field-wts (when (map? field-wts-raw)
                       (into {} (for [[k v] field-wts-raw]
                                  [(eref/resolve-ident k) (double v)])))
+          from      (when from-raw (eref/resolve-ident from-raw))
+          rank-by   (when rank-by-raw (keyword (clojure.string/replace (name (if (keyword? rank-by-raw)
+                                                                               rank-by-raw
+                                                                               (keyword rank-by-raw)))
+                                                                     #"^:" "")))
+          temporal  (when temporal-raw (eref/resolve-ident temporal-raw))
           opts (cond-> {:query query :class class-ident}
                  (some? limit-arg) (assoc :limit limit-arg)
                  where             (assoc :where where)
                  facet-by          (assoc :facet-by facet-by)
                  (seq include)     (assoc :include include)
-                 field-wts         (assoc :field-weights field-wts))]
+                 field-wts         (assoc :field-weights field-wts)
+                 (and from via-raw) (assoc :from from :via via-raw)
+                 rank-by           (assoc :rank-by rank-by)
+                 temporal          (assoc :temporal-slot temporal))]
       (search/search-bm25f opts))))
 
 ;; ---------- Navigate edges (Stage 5.B-pre #2 — 0.1.1 co-evolution arc) ----------
@@ -692,39 +792,68 @@
 ;; MCP boundary wrappers around sandbar.navigate.edges/{inbound,outbound}-
 ;; edges.  Underpin /memory-xref + /memory-show slash commands.
 
+(defn- ->predicate-keyword
+  "Coerce a string-or-keyword predicate arg to a keyword without
+  entity-existence validation.  Predicates are slot-idents (Datomic
+  attribute-idents); they need not exist as standalone entities — the
+  bare form `:cites` is valid as input even though there's no entity
+  at `:cites` (the slot-ident on :mm/Memory is `:mm.memory/cites`,
+  resolved downstream by `sandbar.navigate.edges/resolve-predicates`).
+
+  Distinct from `eref/resolve-ident` which validates entity-existence
+  and rejects bare predicate forms.  Per Gap 7 fix (MCP cutover
+  exercise 2026-05-22) — the navigate handlers must NOT pre-validate
+  predicate args as entities or they'd reject the bare forms the
+  resolver is designed to accept."
+  [raw]
+  (cond
+    (keyword? raw) raw
+    (string? raw)  (keyword (clojure.string/replace raw #"^:" ""))
+    :else          (throw (ex-info (str "Cannot coerce predicate arg to keyword: " raw)
+                                   {:value raw}))))
+
 (defn- parse-predicate-arg
   "Predicate arg may be a single keyword-string or a vec of keyword-strings.
-   Resolve each to an ident via eref/resolve-ident."
+   Coerce each to a keyword (no entity-existence validation — see
+   `->predicate-keyword`).  Both bare forms (`:cites`) and fully-qualified
+   forms (`:mm.memory/cites`) are accepted; bare forms are resolved to
+   slot-idents downstream by the navigate/library-card layer."
   [raw]
   (when (some? raw)
     (if (sequential? raw)
-      (mapv eref/resolve-ident raw)
-      (eref/resolve-ident raw))))
+      (mapv ->predicate-keyword raw)
+      (->predicate-keyword raw))))
 
 (defn- navigate-outbound-edges-handler [args]
   (let [entity-raw       (or (get args "entity") (get args :entity))
         predicate-raw    (or (get args "predicate") (get args :predicate))
         target-type-raw  (or (get args "target-type") (get args :target-type))
-        limit-arg        (or (get args "limit") (get args :limit))]
+        limit-arg        (or (get args "limit") (get args :limit))
+        projection-raw   (or (get args "projection") (get args :projection))]
     (when (nil? entity-raw)
       (throw (ex-info "Missing required argument: entity" {:args args})))
-    (let [opts (cond-> {:entity (eref/resolve-ident entity-raw)}
-                 predicate-raw   (assoc :predicate (parse-predicate-arg predicate-raw))
-                 target-type-raw (assoc :target-type (eref/resolve-ident target-type-raw))
-                 (some? limit-arg) (assoc :limit limit-arg))]
+    (let [projection (->projection-mode projection-raw)
+          opts (cond-> {:entity (eref/resolve-ident entity-raw)}
+                 predicate-raw    (assoc :predicate (parse-predicate-arg predicate-raw))
+                 target-type-raw  (assoc :target-type (eref/resolve-ident target-type-raw))
+                 (some? limit-arg) (assoc :limit limit-arg)
+                 projection       (assoc :projection projection))]
       (nav-edges/outbound-edges opts))))
 
 (defn- navigate-inbound-edges-handler [args]
   (let [entity-raw       (or (get args "entity") (get args :entity))
         predicate-raw    (or (get args "predicate") (get args :predicate))
         source-type-raw  (or (get args "source-type") (get args :source-type))
-        limit-arg        (or (get args "limit") (get args :limit))]
+        limit-arg        (or (get args "limit") (get args :limit))
+        projection-raw   (or (get args "projection") (get args :projection))]
     (when (nil? entity-raw)
       (throw (ex-info "Missing required argument: entity" {:args args})))
-    (let [opts (cond-> {:entity (eref/resolve-ident entity-raw)}
-                 predicate-raw   (assoc :predicate (parse-predicate-arg predicate-raw))
-                 source-type-raw (assoc :source-type (eref/resolve-ident source-type-raw))
-                 (some? limit-arg) (assoc :limit limit-arg))]
+    (let [projection (->projection-mode projection-raw)
+          opts (cond-> {:entity (eref/resolve-ident entity-raw)}
+                 predicate-raw    (assoc :predicate (parse-predicate-arg predicate-raw))
+                 source-type-raw  (assoc :source-type (eref/resolve-ident source-type-raw))
+                 (some? limit-arg) (assoc :limit limit-arg)
+                 projection       (assoc :projection projection))]
       (nav-edges/inbound-edges opts))))
 
 ;; ---------- Navigation operations (Stage P-6 — fulltext arc Phase N) ----------
@@ -784,16 +913,20 @@
       (orient/tree opts))))
 
 (defn- orient-library-card-handler [args]
-  (let [entity-arg (or (get args "entity") (get args :entity))
-        axes-arg   (or (get args "axes") (get args :axes))]
+  (let [entity-arg     (or (get args "entity") (get args :entity))
+        axes-arg       (or (get args "axes") (get args :axes))
+        projection-raw (or (get args "projection") (get args :projection))]
     (when (nil? entity-arg)
       (throw (ex-info "Missing required argument: entity" {:args args})))
     (when-not (sequential? axes-arg)
       (throw (ex-info "Missing or non-sequential argument: axes (must be array of axis-spec objects)"
                       {:args args})))
     (let [entity-ident (eref/resolve-ident entity-arg)
-          axes (mapv ->axis-spec axes-arg)]
-      (orient/library-card {:entity entity-ident :axes axes}))))
+          axes (mapv ->axis-spec axes-arg)
+          projection (->projection-mode projection-raw)
+          opts (cond-> {:entity entity-ident :axes axes}
+                 projection (assoc :projection projection))]
+      (orient/library-card opts))))
 
 (defn- navigate-siblings-of-handler [args]
   (let [entity-arg    (or (get args "entity") (get args :entity))
@@ -1479,12 +1612,21 @@
     :handler entity-create-handler}
    {:name "sandbar.entity.find"
     :title "Look up an entity by ident or eid"
-    :description "WHICH: looks up an entity by `:ident` (interned keyword) or `:id` (numeric eid).  Returns the entity-map projection (`:db/id`, `:db/ident` if interned, namespaced-keyword slots).\n\nWHEN: use to fetch the current state of a known entity.  Most common 'read one entity' verb.  When NOT to use: (a) you want all instances of a class — `sandbar.class.instances`; (b) you want fulltext search — `sandbar.search.bm25f`; (c) you don't know the ident — discover via `sandbar.class.instances` first.\n\nHOW: provide ONE of `:ident` (keyword-form string like `\":decisions/foo\"`) OR `:id` (numeric eid).  Returns `{:entity <entity-map>}` if found, or `{:entity nil :missing? true :lookup <provided>}` if not found.\n\nORDER: leaf-call; no prerequisites.\n\nCOMBINATION: pre-step before `sandbar.entity.update` (confirm the entity exists); after `sandbar.entity.create` (read back the created entity, though create returns the entity directly so this is rarely needed).  For RELATED entities, use `sandbar.navigate.{outbound,inbound,siblings-of}` or `sandbar.orient.library-card`."
+    :description "WHICH: looks up an entity by `:ident` (interned keyword) or `:id` (numeric eid).  Returns the entity-map projection (`:db/id`, `:db/ident` if interned, namespaced-keyword slots).\n\nWHEN: use to fetch the current state of a known entity.  Most common 'read one entity' verb.  When NOT to use: (a) you want all instances of a class — `sandbar.class.instances`; (b) you want fulltext search — `sandbar.search.bm25f`; (c) you don't know the ident — discover via `sandbar.class.instances` first; (d) you have a corpus rel-path (e.g. 'decisions/foo.md') but not the ident — use `sandbar.entity.find-by-rel-path` instead.\n\nHOW: provide ONE of `:ident` (keyword-form string) OR `:id` (numeric eid).  IDENT FORM: corpus :mm/Memory entities use the `memory.`-prefixed namespace convention — e.g. `\":memory.decisions/foo\"` (NOT `\":decisions/foo\"`); `\":memory.patterns.architectural.sandbar/X\"` for nested dirs.  Metamodel idents (`:dt/Class`, `:mm/Memory`, `:mm.tag/value`, etc.) use their own namespaces and don't have the memory. prefix.  Returns `{:entity <entity-map>}` if found, or `{:entity nil :missing? true :lookup <provided> :reasons #{}}` if not found.\n\nORDER: leaf-call; no prerequisites.\n\nCOMBINATION: pre-step before `sandbar.entity.update` (confirm the entity exists); after `sandbar.entity.create` (read back the created entity, though create returns the entity directly so this is rarely needed).  For RELATED entities, use `sandbar.navigate.{outbound,inbound,siblings-of}` or `sandbar.orient.library-card`.  When you have a filesystem rel-path instead of an ident, use `sandbar.entity.find-by-rel-path` to avoid ident-guessing."
     :inputSchema {:type "object"
-                  :properties {:ident {:type "string" :description "Entity ident (keyword string)"}
-                               :id    {:type "integer" :description "Entity eid (numeric)"}}
+                  :properties {:ident      {:type "string" :description "Entity ident (keyword string, e.g. ':memory.decisions/foo' for corpus memories or ':dt/Class' for metamodel)"}
+                               :id         {:type "integer" :description "Entity eid (numeric)"}
+                               :projection {:type "string" :description "Entity shape: 'full' (default; complete entity-map) or 'metadata-only' (just :db/id/:db/ident/:dt/type — for lightweight pre-check / enumeration use cases)"}}
                   :required []}
     :handler entity-find-handler}
+   {:name "sandbar.entity.find-by-rel-path"
+    :title "Look up an :mm/Memory entity by corpus rel-path"
+    :description "WHICH: looks up an :mm/Memory entity by its corpus rel-path (e.g. 'plans/sandbar_as_mcp_server_arc_2026-05-12.md').  Resolves the rel-path to the substrate's `:memory.<dir>/<name>` ident via the canonical codec convention, then returns the entity-map projection.\n\nWHEN: use when you have a corpus filesystem path on hand and need the entity — without reverse-engineering the substrate's ident form.  The most common 'I know the file path, give me the entity' use case.  When NOT to use: (a) you already have the ident — `sandbar.entity.find` (slightly faster — skips rel-path parsing); (b) the entity isn't an :mm/Memory (e.g., :mm/Tag, :dt/Class) — those don't use the `memory.X/Y` ident convention so `sandbar.entity.find` with the appropriate ident is the right call; (c) fulltext search — `sandbar.search.bm25f`.\n\nHOW: `:rel-path` is the corpus rel-path string.  Accepts forms with or without the leading 'memory/' prefix: 'decisions/foo.md' AND 'memory/decisions/foo.md' both resolve to `:memory.decisions/foo`.  The .md extension is optional but conventional.  Returns `{:entity <entity-map> :resolved-ident <ident-string>}` if found, or `{:entity nil :missing? true :lookup <rel-path> :resolved-ident <ident-or-nil> :reasons <set>}` if not found.  The `:resolved-ident` field is included on both success and miss so consumers see what ident the rel-path mapped to.\n\nORDER: leaf-call; no prerequisites.\n\nCOMBINATION: pairs with `sandbar.orient.library-card` / `sandbar.navigate.*` for typed-edge exploration once the entity is in hand.  Per Gap 1 of the MCP cutover exercise 2026-05-22 — eliminates the ident-guessing friction surfaced when verbs only accept the substrate's internal ident form."
+    :inputSchema (one-required
+                   {:rel-path   {:type "string" :description "Corpus rel-path (e.g. 'decisions/foo.md' or 'memory/decisions/foo.md'); leading 'memory/' and trailing '.md' optional"}
+                    :projection {:type "string" :description "Entity shape: 'full' (default; complete entity-map) or 'metadata-only' (just :db/id/:db/ident/:dt/type)"}}
+                   [:rel-path])
+    :handler entity-find-by-rel-path-handler}
    {:name "sandbar.entity.update"
     :title "Update slots on an existing entity"
     :description "WHICH: applies slot-value updates to an existing entity.  Validates the updated slot map against the entity's class constraints before transacting.\n\nWHEN: use to MUTATE an existing entity — change a slot value, set a previously-empty slot, etc.  When NOT to use: (a) creating a new entity — `sandbar.entity.create`; (b) you want to validate proposed updates WITHOUT committing — `sandbar.entity.validate` (against the class with the merged slot map); (c) you want to retract a slot value entirely — Datomic retraction is a separate concern not currently exposed via MCP.\n\nHOW: `:entity` is the target entity ident or eid (REQUIRED).  `:slots` is a slot-ident-string → new-value map (REQUIRED; non-map values rejected).  Substrate auto-coerces JSON-shaped values via `dt/range-of` (e.g., `:db.type/keyword` slots accept either keyword strings or already-coerced keywords).  Cardinality-many slots accept either a single value (wrapped to vec) or a vec / array.\n\nORDER: prerequisite — `sandbar.entity.find` to confirm the entity exists.  Optional pre-check: `sandbar.entity.validate` against the FULL merged slot map (current slots ∪ updates).\n\nCOMBINATION: pairs with `sandbar.entity.find` (pre-confirm + post-read-back).  For bulk class-wide updates, no single-call alternative; iterate `sandbar.class.instances` and apply per-entity.  Per Stage I of plans/sandbar_codex_review_remediation_arc_2026_05_13.md (`dt/update-entity!` substrate primitive)."
@@ -1660,10 +1802,21 @@
                   :required []}
     :handler aggregate-tag-histogram-handler}
 
+   ;; Search — Lucene-syntax single-attribute fulltext (Stage 3 + Phase B P2 polish)
+   {:name "sandbar.search.attribute"
+    :title "Single-attribute Lucene-syntax fulltext search (`:db.fn/fulltext-search`)"
+    :description "WHICH: returns entities whose `:attribute` value matches the Lucene query under Datomic's `:db.fn/fulltext-search`.  Single-slot search — unlike `sandbar.search.bm25f` which scores across multi-field weights, this verb hits ONE attribute (which must be `:db/fulltext true`) with full Lucene query-syntax support.\n\nWHEN: use when the query needs Lucene operators — phrase quoting (`\"exact phrase\"`), boolean (`foo AND bar`, `foo OR bar`, `NOT foo`), wildcards (`foo*`), fuzzy (`foo~`), field-prefixed (`field:value`).  Also: when you want single-attribute targeted retrieval without multi-field weighting (e.g., search ONLY the description slot).  When NOT to use: (a) multi-field weighted ranking across name + description + body + tags — use `sandbar.search.bm25f`; (b) bag-of-words across the entity surface — `sandbar.search.bm25f` (which lacks Lucene syntax but covers the full weighted-field set).\n\nHOW: `:attribute` is the slot ident (must be `:db/fulltext true`).  `:query` is a Lucene query string.  Optional `:limit` caps hits (default 50; 0 = no cap).\n\nORDER: prerequisite — discover fulltext-indexed attributes via `sandbar.class.slots` + check `:db/fulltext` flag (or by domain knowledge of which slots are indexed).\n\nCOMBINATION: pairs with `sandbar.search.bm25f` (BM25F handles the multi-field bag-of-words case; this verb handles the Lucene-syntax single-slot case).  Result entity-ids can feed downstream `sandbar.aggregate.rank-by` or `sandbar.navigate.*` for further composition.\n\nResult: `{:hits [{:entity <entity-map> :score <double>} ...] :total <int> :returned <int> :timing {:total-ms <int>}}`.  Per fulltext arc Stage 3 + Phase B P2."
+    :inputSchema (one-required
+                   {:attribute {:type "string" :description "Slot ident with :db/fulltext true (e.g. ':mm.memory/body-raw')"}
+                    :query     {:type "string" :description "Lucene query string"}
+                    :limit     {:type "integer" :description "Max hits (default 50; 0 = no cap)"}}
+                   [:attribute :query])
+    :handler search-attribute-handler}
+
    ;; Search — BM25F multi-field fulltext (Stage 5.B-pre — 0.1.1 co-evolution arc)
    {:name "sandbar.search.bm25f"
-    :title "Multi-field BM25F fulltext search over a class's instances"
-    :description "WHICH: returns the top-K instances of `:class` ranked by Robertson-Zaragoza canonical BM25F over multi-field length-normalized scoring.  Field weights are introspected from the class's `:dt/bm25f-weights` declaration unless overridden via `:field-weights` opt.\n\nWHEN: use for content-relevance ranking — 'which memorials mention this concept'.  When NOT to use: (a) structural ranking by degree / backlink-density / recency / freshness — use `sandbar.aggregate.rank-by`; (b) exact-string lookup — use `sandbar.entity.find` (by ident); (c) Lucene query-language operators (AND / OR / NOT / phrase / wildcard / fuzzy / field-prefix) — these are NOT recognized; bag-of-words only.  Use `search-attribute` (single-slot via :db.fn/fulltext-search) for Lucene syntax over one fulltext-indexed slot.\n\nHOW: `:query` is a bag-of-words string (tokenized via Porter stemmer + lowercase + word-boundary split).  `:class` is the class ident.  Optional: `:limit` caps hits (default 20; 0 = no cap).  `:where` is a Datalog clause vec (or EDN string) restricting hits to entities matching the predicate; clauses must reference `?e` as the entity variable.  `:facet-by` is a vec of slot-idents to facet over the FULL match-set (before limit).  `:include` is a vec of projection options — `:field-scores` (per-slot scores) and `:snippets` (per-slot ~240-char window with **term** highlighting).  `:field-weights` overrides the class's declared weights.\n\nORDER: prerequisite — the target class must declare `:dt/bm25f-weights` (or supply `:field-weights` opt).  Discover via `sandbar.class.describe` if uncertain.\n\nCOMBINATION: composes with `sandbar.aggregate.rank-by` (re-rank search hits by structural axis), `sandbar.aggregate.group-by` (faceted counts via `:facet-by` opt is the in-one-call alternative), `sandbar.navigate.path-via` (cross-axis: search restricted to a graph-walk neighborhood — Stage 29 composition).  Pre-step: `sandbar.schema.classes` to discover candidate classes.\n\nResult: `{:hits [{:entity <entity-map> :eid <id> :score <double> :field-scores {<slot> <double>}? :snippets {<slot> <string>}?} ...] :total <int> :returned <int> :timing {:total-ms <int>} :facets {<slot> {<value> <count>}}?}`.  Per fulltext arc Stage 4c."
+    :title "Multi-field BM25F fulltext search over a class's instances (Stage 29 cross-axis composition)"
+    :description "WHICH: returns the top-K instances of `:class` ranked by Robertson-Zaragoza canonical BM25F over multi-field length-normalized scoring.  Field weights are introspected from the class's `:dt/bm25f-weights` declaration unless overridden via `:field-weights` opt.  Ref-typed slots whose `:dt/range` is a class with its own `:dt/bm25f-weights` automatically resolve to the target's weighted text content (Phase B tag-content tokenizer) — e.g. on `:mm/Memory`, `:mm.memory/tags` + `:mm.memory/themes` tokenize via their referenced `:mm/Tag` content (value + alt-label + definition + scope-note + hidden-label + example).\n\nWHEN: use for content-relevance ranking — 'which memorials mention this concept'.  When NOT to use: (a) pure structural ranking with no content filter — use `sandbar.aggregate.rank-by`; (b) exact-string lookup — use `sandbar.entity.find` (by ident); (c) Lucene query-language operators (AND / OR / NOT / phrase / wildcard / fuzzy / field-prefix) — these are NOT recognized; bag-of-words only.\n\nHOW: `:query` is a bag-of-words string (tokenized via Porter stemmer + lowercase + word-boundary split).  `:class` is the class ident.  Optional: `:limit` caps hits (default 20; 0 = no cap).  `:where` is a Datalog clause vec (or EDN string) restricting hits to entities matching the predicate; clauses must reference `?e` as the entity variable.  `:facet-by` is a vec of slot-idents to facet over the FULL match-set (before limit).  `:include` is a vec of projection options — `:field-scores` (per-slot scores) and `:snippets` (per-slot ~240-char window with **term** highlighting).  `:field-weights` overrides the class's declared weights.\n\nSTAGE 29 cross-axis composition (Phase B):\n  `:from` + `:via` — graph-walk PRE-FILTER restricting candidate set to entities reachable from `:from` under path-grammar expression `:via` (same path-grammar dialect as `sandbar.navigate.path-via`; EDN-string form `\"[:REP+ :cites]\"`).  Composes with `:where` (intersection).\n  `:rank-by` — `:degree` / `:backlink-density` / `:recency` / `:freshness` re-rank top-K by structural axis instead of by BM25F score.  BM25F score is preserved on each hit as `:relevance-score`; the primary `:score` becomes the structural rank value.\n  `:temporal-slot` — REQUIRED when `:rank-by` is `:recency` or `:freshness`.\n\nORDER: prerequisite — the target class must declare `:dt/bm25f-weights` (or supply `:field-weights` opt).  Discover via `sandbar.class.describe` if uncertain.\n\nCOMBINATION: replaces N+1 round-trips of `bm25f` → `aggregate.rank-by` → `navigate.path-via` filtering with one substrate-side call.  For pure-structural ranking with no content, use `sandbar.aggregate.rank-by` (skips tokenization entirely).  For path-walk without scoring, use `sandbar.navigate.path-via`.\n\nResult: `{:hits [{:entity <entity-map> :eid <id> :score <double> :relevance-score <double>? :field-scores {<slot> <double>}? :snippets {<slot> <string>}?} ...] :total <int> :returned <int> :timing {:total-ms <int>} :facets {<slot> {<value> <count>}}?}`.  Per fulltext arc Stage 4c + Stage 29."
     :inputSchema (one-required
                    {:query         {:type "string"
                                     :description "Query string (bag-of-words; no Lucene query-language operators)"}
@@ -1680,7 +1833,15 @@
                                     :items {:type "string"}
                                     :description "Projection options: 'field-scores' / 'snippets'"}
                     :field-weights {:type "object"
-                                    :description "Optional {slot-ident weight} map overriding class declaration"}}
+                                    :description "Optional {slot-ident weight} map overriding class declaration"}
+                    :from          {:type "string"
+                                    :description "Stage 29: seed entity ident (e.g. ':decisions/foo') or eid for `:via` graph-walk pre-filter; require :via together"}
+                    :via           {:type "string"
+                                    :description "Stage 29: EDN-string path-grammar expression (same dialect as sandbar.navigate.path-via)"}
+                    :rank-by       {:type "string"
+                                    :description "Stage 29: re-rank axis — ':degree' / ':backlink-density' / ':recency' / ':freshness'"}
+                    :temporal-slot {:type "string"
+                                    :description "Stage 29: required for :rank-by :recency / :freshness — temporal-axis slot ident (e.g. ':mm.memory/last-touched')"}}
                    [:query :class])
     :handler search-bm25f-handler}
 
@@ -1711,45 +1872,51 @@
    ;; corpus decisions/sandbar_phase_o_substrate_quality_scope_library_card_only_2026_05_14.md)
    {:name "sandbar.orient.library-card"
     :title "Multi-axis typed-edge neighborhood view of an entity"
-    :description "WHICH: returns a labeled, multi-axis view of an entity's typed-edge neighborhood.  Each `:axis` is a labeled subset of inbound or outbound edges optionally filtered by predicate-set and target/source-type.  Substrate-correct shape of the corpus's 'library-card' pattern — Sandbar ships the composition primitive; the consumer supplies the semantics (which axes mean what).\n\nWHEN: use when an AI client / consumer needs a structured overview of an entity — 'show me everything connected to this seed, broken down by relationship type'.  Especially useful for AI-orientation flows (load an unfamiliar entity; see its typed-edge surface across 10 axes at once).  When NOT to use: (a) single-predicate edge enumeration — use `sandbar.navigate.outbound` or `.inbound` directly (one call, simpler); (b) reachability across multiple hops — use `sandbar.navigate.walk` or `.path-via` instead; (c) fulltext-relevance ranking of the neighborhood — combine search with this verb's output downstream.\n\nHOW: `:entity` is the anchor entity (ident or eid).  `:axes` is a JSON array of axis-spec objects; each:\n  - `name` (REQUIRED) — string or keyword label for the axis in the result (e.g. \"cited-by-decisions\")\n  - `direction` (REQUIRED) — \"forward\" (outbound from entity) or \"inverse\" (inbound to entity)\n  - `predicates` (optional) — array of predicate-ident strings to restrict to (e.g. [\":cites\", \":evidences\"]); omit for no restriction\n  - `target-type` (optional, for :forward axes) — class-ident string restricting target-instance-of\n  - `source-type` (optional, for :inverse axes) — class-ident string restricting source-instance-of\n  - `limit` (optional) — per-axis edge cap; default 0 = no cap\nThe substrate is CLASS-AGNOSTIC; predicate-vocabulary + axis-labels are caller-supplied.  No hardcoded knowledge of any domain class's predicate vocabulary.\n\nORDER: prerequisite — the caller must know the predicate vocabulary applicable to the entity's class.  Discover via `sandbar.navigate.outbound` (one-shot peek at outbound edges) or `sandbar.class.slots` (declared slots on the entity's class) FIRST.  No other ordering dependencies.\n\nCOMBINATION: composes with `sandbar.navigate.inbound` / `.outbound` (use them to DISCOVER predicate vocab first, then author library-card axis-specs covering them).  For ranked subsets within an axis, post-rank the results via `sandbar.aggregate.rank-by` (using the axis-result eids as the candidate set).  For path-shaped neighborhoods (recursive / Kleene), use `sandbar.navigate.path-via` instead — library-card is one-hop-per-axis by design.\n\nResult: `{:entity <entity-map> :axes {<axis-name> [{:predicate ... :target/source <entity-map>}...] ...}}`.  Per Phase O of plans/sandbar_fulltext_search_substrate_arc_2026_05_13.md."
+    :description "WHICH: returns a labeled, multi-axis view of an entity's typed-edge neighborhood.  Each `:axis` is a labeled subset of inbound or outbound edges optionally filtered by predicate-set and target/source-type.  Substrate-correct shape of the corpus's 'library-card' pattern — Sandbar ships the composition primitive; the consumer supplies the semantics (which axes mean what).\n\nWHEN: use when an AI client / consumer needs a structured overview of an entity — 'show me everything connected to this seed, broken down by relationship type'.  Especially useful for AI-orientation flows (load an unfamiliar entity; see its typed-edge surface across 10 axes at once).  When NOT to use: (a) single-predicate edge enumeration — use `sandbar.navigate.outbound` or `.inbound` directly (one call, simpler); (b) reachability across multiple hops — use `sandbar.navigate.walk` or `.path-via` instead; (c) fulltext-relevance ranking of the neighborhood — combine search with this verb's output downstream.\n\nHOW: `:entity` is the anchor entity (ident or eid).  `:axes` is a JSON array of axis-spec objects; each:\n  - `name` (REQUIRED) — string or keyword label for the axis in the result (e.g. \"cited-by-decisions\")\n  - `direction` (REQUIRED) — \"forward\" (outbound from entity) or \"inverse\" (inbound to entity)\n  - `predicates` (optional) — array of predicate-ident strings to restrict to.  IMPORTANT: use the SLOT-IDENT form (`:mm.memory/cites`), NOT the bare predicate form (`:cites`) — library-card does NOT yet auto-resolve bare predicates the way navigate does; bare forms silently return zero edges.  Per Gap 7 follow-up (library-card resolution is a future enhancement; navigate edges have it today)\n  - `target-type` (optional, for :forward axes) — class-ident string restricting target-instance-of\n  - `source-type` (optional, for :inverse axes) — class-ident string restricting source-instance-of\n  - `limit` (optional) — per-axis edge cap; default 0 = no cap\nThe substrate is CLASS-AGNOSTIC; predicate-vocabulary + axis-labels are caller-supplied.  No hardcoded knowledge of any domain class's predicate vocabulary.\n\nOptional `:projection` — controls entity + edge target/source shape: `:metadata-only` (DEFAULT) returns just `:db/id`/`:db/ident`/`:dt/type` for the seed entity AND every edge's target/source (10-300x smaller payload — addresses 364KB+ responses on multi-axis queries); `:full` returns complete entity-maps.\n\nORDER: prerequisite — the caller must know the predicate vocabulary applicable to the entity's class.  Discover via `sandbar.navigate.outbound` (one-shot peek at outbound edges) or `sandbar.class.slots` (declared slots on the entity's class) FIRST.  No other ordering dependencies.\n\nCOMBINATION: composes with `sandbar.navigate.inbound` / `.outbound` (use them to DISCOVER predicate vocab first, then author library-card axis-specs covering them).  For ranked subsets within an axis, post-rank the results via `sandbar.aggregate.rank-by` (using the axis-result eids as the candidate set).  For path-shaped neighborhoods (recursive / Kleene), use `sandbar.navigate.path-via` instead — library-card is one-hop-per-axis by design.\n\nResult: `{:entity <entity-map> :axes {<axis-name> [{:predicate ... :target/source <entity-map>}...] ...}}`.  Per Phase O of plans/sandbar_fulltext_search_substrate_arc_2026_05_13.md."
     :inputSchema (one-required
-                   {:entity {:type "string"
-                             :description "Anchor entity ident (e.g. ':decisions/foo') or eid"}
-                    :axes   {:type "array"
-                             :items {:type "object"
-                                     :description "Axis-spec: {name, direction:'forward'|'inverse', predicates?, target-type?, source-type?, limit?}"}
-                             :description "Vec of axis-spec objects; one labeled subset per axis"}}
+                   {:entity     {:type "string"
+                                 :description "Anchor entity ident (e.g. ':memory.decisions/foo') or eid"}
+                    :axes       {:type "array"
+                                 :items {:type "object"
+                                         :description "Axis-spec: {name, direction:'forward'|'inverse', predicates?, target-type?, source-type?, limit?}.  predicates use SLOT-IDENT form (':mm.memory/cites'), NOT bare form (':cites')."}
+                                 :description "Vec of axis-spec objects; one labeled subset per axis"}
+                    :projection {:type "string"
+                                 :description "Entity + edge target/source shape: 'metadata-only' (default; lightweight) or 'full' (complete entity-maps)"}}
                    [:entity :axes])
     :handler orient-library-card-handler}
 
    ;; Navigation — outbound + inbound edges (Stage 5.B-pre #2 — 0.1.1 co-evolution arc)
    {:name "sandbar.navigate.outbound-edges"
     :title "Typed-edges originating FROM an entity"
-    :description "WHICH: returns typed-edges originating from `:entity` — what does this entity reference, via which predicate, to which target.  Foundational outbound traversal primitive.\n\nWHEN: use for one-hop forward navigation when you need the predicate-and-target shape (not just the targets).  Underpins /memory-xref + /memory-show.  When NOT to use: (a) targets-only (no predicate label) — use a Datalog query directly; (b) recursive / Kleene-closure traversal — use `sandbar.navigate.path-via`; (c) bounded-depth BFS — use `sandbar.navigate.walk`.\n\nHOW: `:entity` is the seed entity (ident or eid).  Optional `:predicate` is a single keyword-string or vec to restrict to specific edge-predicates.  Optional `:target-type` is a class-ident-string restricting targets to instances-of.  Optional `:limit` caps returned edges (default 0 = no cap).\n\nORDER: leaf-call shape.  Discover candidate predicates first via `sandbar.class.slots` on the entity's class if uncertain.\n\nCOMBINATION: pairs with `sandbar.navigate.inbound-edges` (the dual; who references this entity).  Composes with `sandbar.orient.library-card` (one-call multi-axis breakdown).  Pre-step for `sandbar.navigate.path-via` (discover predicate vocab before authoring path expressions).\n\nResult: `{:edges [{:predicate <pred-ident> :target <entity-map>} ...] :total <int> :returned <int>}`."
+    :description "WHICH: returns typed-edges originating from `:entity` — what does this entity reference, via which predicate, to which target.  Foundational outbound traversal primitive.\n\nWHEN: use for one-hop forward navigation when you need the predicate-and-target shape (not just the targets).  Underpins /memory-xref + /memory-show.  When NOT to use: (a) targets-only (no predicate label) — use a Datalog query directly; (b) recursive / Kleene-closure traversal — use `sandbar.navigate.path-via`; (c) bounded-depth BFS — use `sandbar.navigate.walk`.\n\nHOW: `:entity` is the seed entity (ident or eid).  Optional `:predicate` is a single keyword-string OR vec to restrict to specific edge-predicates; BARE forms (no namespace) like `:cites` auto-resolve to the slot-ident `:mm.memory/cites` on the entity's class (Gap 7 fix — silent zero-hit on slot-form mismatch is replaced with loud error suggesting the canonical slot ident).  Optional `:target-type` is a class-ident-string restricting targets to instances-of.  Optional `:limit` caps returned edges (default 0 = no cap).  Optional `:projection` controls per-edge target shape — `:metadata-only` (DEFAULT) returns just `:db/id`/`:db/ident`/`:dt/type` per target (10-300x smaller payload than `:full`); `:full` returns the complete target entity-map.\n\nORDER: leaf-call shape.  Discover candidate predicates first via `sandbar.class.slots` on the entity's class if uncertain.\n\nCOMBINATION: pairs with `sandbar.navigate.inbound-edges` (the dual; who references this entity).  Composes with `sandbar.orient.library-card` (one-call multi-axis breakdown).  Pre-step for `sandbar.navigate.path-via` (discover predicate vocab before authoring path expressions).\n\nResult: `{:edges [{:predicate <pred-ident> :target <entity-map>} ...] :total <int> :returned <int>}`."
     :inputSchema (one-required
                    {:entity      {:type "string"
                                   :description "Anchor entity ident or eid"}
                     :predicate   {:type "string"
-                                  :description "Single predicate ident OR JSON array of idents (restricts to these edges)"}
+                                  :description "Single predicate ident OR JSON array of idents.  Bare forms (`:cites`) auto-resolve to slot-idents (`:mm.memory/cites`) on the entity's class."}
                     :target-type {:type "string"
                                   :description "Class ident restricting target-instance-of"}
                     :limit       {:type "integer"
-                                  :description "Max edges (default 0 = no cap)"}}
+                                  :description "Max edges (default 0 = no cap)"}
+                    :projection  {:type "string"
+                                  :description "Per-edge target projection: 'metadata-only' (default; lightweight) or 'full' (complete target entity-map)"}}
                    [:entity])
     :handler navigate-outbound-edges-handler}
 
    {:name "sandbar.navigate.inbound-edges"
     :title "Typed-edges pointing AT an entity (who references it)"
-    :description "WHICH: returns typed-edges pointing at `:entity` — who references this entity, via which predicate, from which source.  Foundational inbound traversal primitive (dual of `sandbar.navigate.outbound-edges`).\n\nWHEN: use for backlink discovery — 'which decisions cite this ADR?'.  Underpins /memory-xref + library-card inverse-axes.  When NOT to use: (a) sources-only without predicate label — use Datalog directly; (b) bounded-depth backlink walk — use `sandbar.navigate.walk` with `:inbound` flag; (c) Kleene closure — use `sandbar.navigate.path-via` with `:INV`.\n\nHOW: `:entity` is the target entity (ident or eid).  Optional `:predicate` is a single keyword-string or vec to restrict to specific edge-predicates.  Optional `:source-type` is a class-ident-string restricting sources to instances-of.  Optional `:limit` caps returned edges.\n\nORDER: leaf-call shape.\n\nCOMBINATION: pairs with `sandbar.navigate.outbound-edges` (the dual).  Composes with `sandbar.orient.library-card` (`:inverse` axes use the inbound shape).\n\nResult: `{:edges [{:predicate <pred-ident> :source <entity-map>} ...] :total <int> :returned <int>}`."
+    :description "WHICH: returns typed-edges pointing at `:entity` — who references this entity, via which predicate, from which source.  Foundational inbound traversal primitive (dual of `sandbar.navigate.outbound-edges`).\n\nWHEN: use for backlink discovery — 'which decisions cite this ADR?'.  Underpins /memory-xref + library-card inverse-axes.  When NOT to use: (a) sources-only without predicate label — use Datalog directly; (b) bounded-depth backlink walk — use `sandbar.navigate.walk` with `:inbound` flag; (c) Kleene closure — use `sandbar.navigate.path-via` with `:INV`.\n\nHOW: `:entity` is the target entity (ident or eid).  Optional `:predicate` is a single keyword-string OR vec to restrict to specific edge-predicates; BARE forms (no namespace) like `:cites` auto-resolve to the slot-ident `:mm.memory/cites` on the entity's class.  Optional `:source-type` is a class-ident-string restricting sources to instances-of.  Optional `:limit` caps returned edges.  Optional `:projection` controls per-edge source shape — `:metadata-only` (DEFAULT) returns just `:db/id`/`:db/ident`/`:dt/type` per source; `:full` returns the complete source entity-map.\n\nORDER: leaf-call shape.\n\nCOMBINATION: pairs with `sandbar.navigate.outbound-edges` (the dual).  Composes with `sandbar.orient.library-card` (`:inverse` axes use the inbound shape).\n\nResult: `{:edges [{:predicate <pred-ident> :source <entity-map>} ...] :total <int> :returned <int>}`."
     :inputSchema (one-required
                    {:entity      {:type "string"
                                   :description "Anchor entity ident or eid"}
                     :predicate   {:type "string"
-                                  :description "Single predicate ident OR JSON array of idents"}
+                                  :description "Single predicate ident OR JSON array of idents.  Bare forms auto-resolve to slot-idents on the entity's class."}
                     :source-type {:type "string"
                                   :description "Class ident restricting source-instance-of"}
                     :limit       {:type "integer"
-                                  :description "Max edges (default 0 = no cap)"}}
+                                  :description "Max edges (default 0 = no cap)"}
+                    :projection  {:type "string"
+                                  :description "Per-edge source projection: 'metadata-only' (default; lightweight) or 'full' (complete source entity-map)"}}
                    [:entity])
     :handler navigate-inbound-edges-handler}
 

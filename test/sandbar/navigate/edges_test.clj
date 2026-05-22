@@ -10,7 +10,8 @@
   :dt/Class has :dt/subclass-of + :dt/slots edges, every :dt/Property has
   :dt/domain + :dt/range edges) — guaranteed populated in the test
   fixture without additional scaffolding."
-  (:require [clojure.test :refer :all]
+  (:require [clojure.set :as set]
+            [clojure.test :refer :all]
             [sandbar.db.datatype :as dt]
             [sandbar.navigate.edges :as nav-edges]
             [sandbar.test-util :as tu]))
@@ -146,3 +147,146 @@
 (deftest outbound-edges-wrapper-requires-entity
   (testing ":entity is required (precondition)"
     (is (thrown? AssertionError (nav-edges/outbound-edges {})))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Gap 7 — bare predicate resolution (silent-zero-hit fix)
+;;
+;; The dt/* edge primitives compare against slot-idents (`:dt/subclass-of`).
+;; Bare predicate forms (`:subclass-of`) should resolve to the matching
+;; slot on the entity's class.  Namespaced keywords pass through.
+;; Unresolvable bare predicates throw ex-info with a helpful hint.
+;;
+;; Per MCP cutover exercise 2026-05-22 — inbox capture
+;; memory/inbox/2026-05-22_mcp_cutover_exercise_substrate_verb_authoring_queue_10_gaps_surfaced_via_orientation_of_sandbar_as_mcp_server_arc.md.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(deftest outbound-edges-wrapper-resolves-bare-predicate
+  (testing "bare predicate :subclass-of resolves to :dt/subclass-of on :dt/Class instances"
+    (let [result (nav-edges/outbound-edges
+                   {:entity :dt/Property :predicate :subclass-of})
+          preds  (set (map :predicate (:edges result)))]
+      (is (= #{:dt/subclass-of} preds)
+          "bare predicate resolved to slot-ident; filter applied correctly"))))
+
+(deftest inbound-edges-wrapper-resolves-bare-predicate
+  (testing "bare predicate :subclass-of resolves to :dt/subclass-of on :dt/Class instances"
+    (let [result (nav-edges/inbound-edges
+                   {:entity :dt/Resource :predicate :subclass-of})
+          preds  (set (map :predicate (:edges result)))]
+      (is (= #{:dt/subclass-of} preds)
+          "bare predicate resolved; inbound filter applied correctly"))))
+
+(deftest outbound-edges-wrapper-bare-predicate-vec
+  (testing "vec of bare predicates resolves each independently"
+    (let [result (nav-edges/outbound-edges
+                   {:entity :dt/Property :predicate [:subclass-of :slots]})
+          preds  (set (map :predicate (:edges result)))]
+      (is (every? #{:dt/subclass-of :dt/slots} preds)
+          "every returned predicate is in the resolved set")
+      (is (contains? preds :dt/subclass-of))
+      (is (contains? preds :dt/slots)))))
+
+(deftest outbound-edges-wrapper-namespaced-predicate-passes-through
+  (testing "namespaced predicates pass through resolution unchanged"
+    (let [bare   (nav-edges/outbound-edges
+                   {:entity :dt/Property :predicate :subclass-of})
+          quali  (nav-edges/outbound-edges
+                   {:entity :dt/Property :predicate :dt/subclass-of})]
+      (is (= (set (map :predicate (:edges bare)))
+             (set (map :predicate (:edges quali))))
+          "bare-form and qualified-form produce equivalent edge sets")
+      (is (= (:total bare) (:total quali))
+          "totals match"))))
+
+(deftest outbound-edges-wrapper-unresolvable-bare-throws
+  (testing "bare predicate with no matching slot throws ex-info with hint"
+    (let [thrown (try
+                   (nav-edges/outbound-edges
+                     {:entity :dt/Property :predicate :no-such-predicate})
+                   nil
+                   (catch clojure.lang.ExceptionInfo e e))
+          data   (ex-data thrown)]
+      (is (some? thrown) "throws on unresolvable bare predicate")
+      (is (= :no-match (:resolution data)))
+      (is (= :no-such-predicate (:bare-predicate data)))
+      (is (vector? (:available-slots data))
+          "error data includes available slots for hint")
+      (is (clojure.string/includes?
+            (.getMessage ^Exception thrown)
+            ":no-such-predicate")
+          "error message names the offending predicate"))))
+
+(deftest inbound-edges-wrapper-unresolvable-bare-throws
+  (testing "inbound-edges also rejects unresolvable bare predicates"
+    (let [thrown (try
+                   (nav-edges/inbound-edges
+                     {:entity :dt/Resource :predicate :no-such-predicate})
+                   nil
+                   (catch clojure.lang.ExceptionInfo e e))]
+      (is (some? thrown))
+      (is (= :no-match (:resolution (ex-data thrown)))))))
+
+(deftest outbound-edges-wrapper-no-predicate-still-works
+  (testing "nil predicate (no filter) still works — resolution is opt-in"
+    (let [result (nav-edges/outbound-edges {:entity :dt/Property})]
+      (is (pos? (:total result))
+          "no-predicate path returns the full edge set unchanged"))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Gap 3 — :projection opt (metadata-only vs full)
+;;
+;; Default is :metadata-only — restricts target/source to substrate-universal
+;; metadata (:db/id, :db/ident, :dt/type).  :full returns the complete
+;; entity-map.  Addresses the 10-300x response-size friction surfaced in
+;; the MCP cutover exercise.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(deftest outbound-edges-projection-metadata-only-default
+  (testing "default projection :metadata-only restricts target to db/id+ident+dt/type"
+    (let [result (nav-edges/outbound-edges {:entity :dt/Property :limit 1})
+          edge   (first (:edges result))
+          target (:target edge)]
+      (is (some? target) "edge still has a :target")
+      (is (set/subset? (set (keys target)) #{:db/id :db/ident :dt/type})
+          "target keys restricted to substrate-universal metadata only")
+      (is (contains? target :db/id) "metadata-only includes :db/id"))))
+
+(deftest outbound-edges-projection-full-returns-complete-target
+  (testing ":projection :full returns the complete target entity-map"
+    (let [metadata (nav-edges/outbound-edges
+                     {:entity :dt/Property :limit 1 :projection :metadata-only})
+          full     (nav-edges/outbound-edges
+                     {:entity :dt/Property :limit 1 :projection :full})
+          mt-keys  (set (keys (:target (first (:edges metadata)))))
+          ft-keys  (set (keys (:target (first (:edges full)))))]
+      (is (set/subset? mt-keys ft-keys)
+          "metadata-only keys are a subset of full keys")
+      (is (> (count ft-keys) (count mt-keys))
+          "full target carries more slots than metadata-only"))))
+
+(deftest inbound-edges-projection-metadata-only-default
+  (testing "default :metadata-only restricts source on inbound edges too"
+    (let [result (nav-edges/inbound-edges {:entity :dt/Resource :limit 1})
+          edge   (first (:edges result))
+          source (:source edge)]
+      (is (some? source))
+      (is (set/subset? (set (keys source)) #{:db/id :db/ident :dt/type})))))
+
+(deftest projection-unknown-mode-throws
+  (testing "unknown :projection mode fails loud rather than silently misshaping result"
+    (is (thrown-with-msg?
+          clojure.lang.ExceptionInfo #":projection"
+          (nav-edges/outbound-edges
+            {:entity :dt/Property :projection :bogus-mode})))))
+
+(deftest projection-preserves-predicate-and-counts
+  (testing ":projection only affects target/source shape; :predicate + counts unchanged"
+    (let [metadata (nav-edges/outbound-edges {:entity :dt/Property})
+          full     (nav-edges/outbound-edges {:entity :dt/Property :projection :full})]
+      (is (= (:total metadata) (:total full))
+          ":total is projection-independent")
+      (is (= (:returned metadata) (:returned full))
+          ":returned is projection-independent")
+      (is (= (map :predicate (:edges metadata))
+             (map :predicate (:edges full)))
+          ":predicate sequence is projection-independent"))))

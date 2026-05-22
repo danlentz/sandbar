@@ -77,6 +77,8 @@
     (let [names (set (map :name tools/verb-catalog))]
       (is (contains? names "sandbar.entity.create"))
       (is (contains? names "sandbar.entity.find"))
+      (is (contains? names "sandbar.entity.find-by-rel-path")
+          "Gap 1 — rel-path lookup avoids ident-guessing")
       (is (contains? names "sandbar.entity.update"))
       (is (contains? names "sandbar.entity.validate"))))
 

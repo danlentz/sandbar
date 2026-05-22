@@ -1426,6 +1426,8 @@
    :dt/codec-aliases [[:type :mm.memory/memory-type]]
    :dt/bm25f-weights [[:mm.memory/name        12.0]
                       [:mm.memory/description  8.0]
+                      [:mm.memory/themes       6.0]    ;; canonical-tag DCAT-tier ref → :mm/Tag (resolved via ref-target-text tokenizer; Phase B)
+                      [:mm.memory/tags         4.0]    ;; free-text-mixed-tag ref → :mm/Tag (same tokenizer; lower weight per DCAT two-tier convention)
                       [:mm.memory/rel-path     3.0]
                       [:mm.memory/body-raw     1.0]]
    ;; Canonical frontmatter emit order — slots not listed here are appended

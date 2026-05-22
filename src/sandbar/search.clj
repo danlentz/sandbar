@@ -17,12 +17,14 @@
 
   Per fulltext arc plan §1.1, §1.6, §6.5 of
   plans/sandbar_fulltext_search_substrate_arc_2026_05_13.md."
-  (:require [sandbar.db.datatype     :as dt]
+  (:require [clojure.set]
+            [sandbar.db.datatype     :as dt]
             [sandbar.db.datomic      :as db]
             [sandbar.db.rules        :refer [all-rules]]
             [datomic.api             :as d]
             [sandbar.search.analysis :as analysis]
-            [sandbar.search.bm25f    :as bm25f]))
+            [sandbar.search.bm25f    :as bm25f]
+            [sandbar.navigate.path   :as path]))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Result-shape projection
@@ -373,6 +375,44 @@
    (swap! bm25f-entry-cache dissoc class)
    (swap! bm25f-stats-cache dissoc class)))
 
+(defn- dependent-classes-on
+  "Returns the set of class-idents whose `:dt/bm25f-weights` includes a
+  ref-slot whose `:dt/range` is `target-class`.  Used for transitive
+  cache invalidation: when an entity of `target-class` changes, every
+  dependent class's entries that REFERENCE the changed entity have
+  stale analyzed-text (since the tag-content tokenizer in
+  `sandbar.search.bm25f/ref-target-text` resolved the ref at analyze
+  time) and must re-tokenize.
+
+  Substrate-quality: metamodel-driven enumeration via
+  `dt/all-classes` + `dt/bm25f-weights-of` + `dt/range-of`.  No
+  hardcoded consumer-class knowledge."
+  [target-class]
+  (into #{}
+        (filter (fn [class-ident]
+                  (some (fn [[slot _w]]
+                          (= target-class (dt/range-of slot)))
+                        (dt/bm25f-weights-of class-ident))))
+        (dt/all-classes)))
+
+(defn- referencing-eids
+  "Returns the set of `dependent-class` eids whose entries reference
+  `target-eid` via any ref-slot in `dependent-class`'s bm25f-weights
+  whose range is `target-class`.  Pure metamodel-driven Datalog walk."
+  [dependent-class target-class target-eid]
+  (let [db        (db/db)
+        ref-slots (->> (dt/bm25f-weights-of dependent-class)
+                       (filter (fn [[slot _w]]
+                                 (= target-class (dt/range-of slot))))
+                       (mapv first))]
+    (into #{}
+          (mapcat (fn [slot]
+                    (d/q '[:find [?e ...]
+                           :in $ ?slot ?target
+                           :where [?e ?slot ?target]]
+                         db slot target-eid)))
+          ref-slots)))
+
 (defn entity-changed!
   "Cache hook for post-mutation invalidation/refresh.  Called by mutators
   of `:mm/*` class instances (sandbar.entity.create + .update via the MCP
@@ -380,22 +420,42 @@
   update) entity-map; `class` is its class ident.
 
   Behavior:
-   - Re-tokenizes the entity (single bm25f/analyze-entity call; ~4ms)
-   - Stores the new analyzed-entry under [class eid]
-   - Drops the cached corpus-stats for `class` so the next query
-     rebuilds them from the updated entry set
+   - Direct: Re-tokenizes the entity (single bm25f/analyze-entity call;
+     ~4ms), stores the new analyzed-entry under [class eid], drops the
+     cached corpus-stats for `class`.
+   - Transitive (Phase B tag-content tokenizer support): For every
+     dependent class whose bm25f-weights reference this entity's class
+     via a ref-slot, finds entries that reference this entity's eid and
+     re-tokenizes them in place (since their analyzed-text included
+     this entity's resolved content at analyze time and is now stale).
 
-  Skipped (no-op) when the class has no `:dt/bm25f-weights` declaration
-  — the class isn't BM25F-searchable, so cache work is irrelevant.
+  Skipped (no-op for direct path) when the class has no
+  `:dt/bm25f-weights` declaration.  Transitive path still runs — a
+  class without bm25f-weights of its own may still be referenced by
+  bm25f-weighted classes via the tag-content tokenizer.
 
   Idempotent: safe to call multiple times for the same entity."
   [class entity-map]
-  (when (seq (dt/bm25f-weights-of class))
-    (let [eid (:db/id entity-map)]
-      (when eid
-        (let [analyzed (bm25f/analyze-entity class entity-map)]
-          (swap! bm25f-entry-cache assoc-in [class eid] analyzed)
-          (swap! bm25f-stats-cache dissoc class))))))
+  (let [eid (:db/id entity-map)]
+    ;; Direct cache update (only if the changed class itself is bm25f-weighted)
+    (when (and eid (seq (dt/bm25f-weights-of class)))
+      (let [analyzed (bm25f/analyze-entity class entity-map)]
+        (swap! bm25f-entry-cache assoc-in [class eid] analyzed)
+        (swap! bm25f-stats-cache dissoc class)))
+    ;; Transitive invalidation — dependent classes that resolve this entity
+    ;; via ref-target-text in their tokenization.
+    (when eid
+      (doseq [dep-class (dependent-classes-on class)]
+        (let [stale-eids (referencing-eids dep-class class eid)]
+          (when (seq stale-eids)
+            (doseq [dep-eid stale-eids]
+              (let [dep-entity (db/entity dep-eid)
+                    dep-map    (when dep-entity
+                                 (into {:db/id dep-eid} dep-entity))]
+                (when dep-map
+                  (let [analyzed (bm25f/analyze-entity dep-class dep-map)]
+                    (swap! bm25f-entry-cache assoc-in [dep-class dep-eid] analyzed)))))
+            (swap! bm25f-stats-cache dissoc dep-class)))))))
 
 (defn entity-removed!
   "Cache hook for post-delete invalidation.  Called by mutators when an
@@ -519,16 +579,35 @@
   if no `:dt/bm25f-weights` declared on the class AND no `:field-weights`
   supplied (substrate has no default weights per substrate-quality rule).
 
-  Per fulltext arc Stage 4c of
+  Stage 29 cross-axis composition (Phase B):
+    :from + :via   — graph-walk pre-filter; restricts candidate set to
+                     entities REACHABLE from `:from` under path-grammar
+                     expression `:via`.  Reuses `sandbar.navigate.path/
+                     path-via` for the walk.  Composes with `:where` —
+                     both filters apply (intersection).
+    :rank-by       — :degree / :backlink-density / :recency / :freshness
+                     — re-rank top-K hits by structural axis instead of
+                     by BM25F score.  BM25F score is preserved on each
+                     hit as `:relevance-score`; the primary `:score`
+                     becomes the structural rank value.
+    :temporal-slot — REQUIRED for :rank-by :recency / :freshness.
+
+  Per fulltext arc Stage 4c + Stage 29 of
   plans/sandbar_fulltext_search_substrate_arc_2026_05_13.md."
-  [{:keys [query class field-weights limit where facet-by include]
+  [{:keys [query class field-weights limit where facet-by include
+           from via rank-by temporal-slot]
     :or   {limit 20 include []}}]
   {:pre [(string? query)
          (keyword? class)
          (integer? limit)
          (>= limit 0)
          (or (nil? where) (sequential? where))
-         (or (nil? facet-by) (sequential? facet-by))]}
+         (or (nil? facet-by) (sequential? facet-by))
+         (or (nil? rank-by) (#{:degree :backlink-density :recency :freshness} rank-by))
+         (or (not (#{:recency :freshness} rank-by))
+             (keyword? temporal-slot))
+         (or (and (nil? from) (nil? via))
+             (and (some? from) (some? via)))]}
   (let [t-start         (System/currentTimeMillis)
         weights         (or field-weights (dt/bm25f-weights-of class))
         _               (when (empty? weights)
@@ -547,8 +626,21 @@
         ;; restricts which entities are scored + returned.
         where-eids      (when (seq where)
                           (where-matching-eids class where))
-        scoring-corpus  (if where-eids
-                          (filter #(contains? where-eids (:eid %)) analyzed-corpus)
+        ;; Stage 29 cross-axis composition — :from + :via graph-walk pre-filter.
+        ;; Compute reachable eids; intersect with :where-eids if both supplied.
+        from-via-eids   (when (and from via)
+                          (let [walk-result (path/path-via {:from from :via via :limit 0})]
+                            (into #{}
+                                  (keep (fn [e] (or (:db/id e) (:db/id (:entity e)))))
+                                  (:reachable walk-result))))
+        candidate-eids  (cond
+                          (and where-eids from-via-eids)
+                          (clojure.set/intersection where-eids from-via-eids)
+                          where-eids     where-eids
+                          from-via-eids  from-via-eids
+                          :else          nil)
+        scoring-corpus  (if candidate-eids
+                          (filter #(contains? candidate-eids (:eid %)) analyzed-corpus)
                           analyzed-corpus)
         scored          (for [ae    scoring-corpus
                               :let  [s (bm25f/score q-tokens ae stats weights)]
@@ -557,15 +649,39 @@
                            :eid    (:eid ae)
                            :score  s
                            :analyzed ae})
-        sorted          (sort-by :score > scored)
+        ;; Stage 29 — :rank-by re-rank composition.  After BM25F filter,
+        ;; re-order surviving hits by structural axis (degree / backlink-
+        ;; density / recency / freshness).  BM25F score preserved as
+        ;; :relevance-score; structural value becomes :score.
+        sorted          (if rank-by
+                          (let [scored-with-rank
+                                (mapv (fn [{:keys [entity score] :as h}]
+                                        (let [eid-or-ident (or (:db/ident entity)
+                                                               (:db/id entity))
+                                              rank-val (case rank-by
+                                                         :degree           (dt/degree-of eid-or-ident)
+                                                         :backlink-density (dt/backlink-density-of eid-or-ident)
+                                                         :recency          (get entity temporal-slot)
+                                                         :freshness        (get entity temporal-slot))]
+                                          (assoc h
+                                                 :relevance-score score
+                                                 :rank-score      rank-val)))
+                                      scored)
+                                cmp (if (= rank-by :freshness)
+                                      compare
+                                      #(compare %2 %1))]
+                            (sort-by :rank-score cmp scored-with-rank))
+                          (sort-by :score > scored))
         total           (count sorted)
         limited         (if (zero? limit) sorted (take limit sorted))
         include-set     (set include)
         q-raw-words     (when (include-set :snippets) (raw-query-words query))
-        hits            (mapv (fn [{:keys [entity eid score analyzed]}]
+        hits            (mapv (fn [{:keys [entity eid score analyzed relevance-score rank-score]}]
                                 (cond-> {:entity entity
                                          :eid    eid
-                                         :score  score}
+                                         :score  (if rank-by (or rank-score score) score)}
+                                  rank-by
+                                  (assoc :relevance-score (or relevance-score score))
                                   (include-set :field-scores)
                                   (assoc :field-scores
                                          (per-slot-field-scores

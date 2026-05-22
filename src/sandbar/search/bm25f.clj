@@ -72,23 +72,92 @@
 ;; Field extraction — metamodel-driven (no hardcoded class knowledge)
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
+(declare ref-target-text)
+
 (defn- raw-field
   "Extract the raw text of `slot-ident` from `entity-map`.  Generic over
   Sandbar entity-map shape — no class-specific knowledge.  Returns nil
-  if the slot is absent or holds a non-string value.
+  if the slot is absent or holds no surfacing-eligible content.
 
   Cardinality-many string-valued slots collapse to a space-joined
   string before tokenization (analogous to corpus's `:tags` handling).
-  Non-string slot values (refs, keywords, instants, etc.) return nil —
-  BM25F operates on string fields only."
+
+  Ref-typed slot resolution — TAG-CONTENT TOKENIZER (Phase B):
+
+      When `slot-ident` has `:dt/range :<class>` (i.e., it's a ref slot
+      pointing at a metamodel class) AND that target class declares its
+      own `:dt/bm25f-weights`, this fn resolves the ref to the target
+      entity-map and extracts the TARGET'S full BM25F-weighted text
+      content as a single concatenated string.  This generalizes the
+      `:mm.memory/tags` + `:mm.memory/themes` → `:mm/Tag` participation
+      pattern but is class-agnostic — any class with a ref slot to a
+      bm25f-weighted target gets its target's content folded into the
+      tokenization stream.
+
+  Per `decisions/sandbar_substrate_absorbs_full_search_complexity_client_is_thin_layer_2026_05_22.md`
+  + Dan-emphasis 2026-05-22 on rich tag participation in BM25F."
   [entity-map slot-ident]
   (let [v (get entity-map slot-ident)]
     (cond
       (string? v)     v
-      (sequential? v) (let [strs (filter string? v)]
-                        (when (seq strs)
-                          (clojure.string/join " " strs)))
+      ;; Card-many slots — Datomic returns them as sets (for refs) or
+      ;; sequences (for primitives); cover both via `coll?` excluding maps.
+      (and (coll? v) (not (map? v)))
+                      (or (let [strs (filter string? v)]
+                            (when (seq strs)
+                              (clojure.string/join " " strs)))
+                          (ref-target-text slot-ident v))
+      ;; Card-one refs — either a numeric eid or a datomic Entity (associative).
+      (or (number? v)
+          (and (associative? v) (:db/id v)))
+                      (ref-target-text slot-ident v)
       :else           nil)))
+
+(defn- ref-target-text
+  "If `slot-ident` is a ref slot pointing at a class with `:dt/bm25f-weights`,
+  resolve the value(s) to target entity-maps and return the concatenated
+  BM25F-weighted text from each target.  Returns nil for non-ref slots,
+  refs to classes without weights, or unresolvable refs.
+
+  This is the substrate-quality primitive for typed-edge participation
+  in BM25F: ANY class can declare a ref slot in its `:dt/bm25f-weights`
+  and the target class's own weighted content folds in transparently —
+  no hardcoded consumer-class knowledge.  Two-deep traversal would
+  require an explicit recursion-depth parameter; current implementation
+  is one level (target's primitive slots only)."
+  [slot-ident value]
+  (let [target-class (dt/range-of slot-ident)]
+    (when (and (keyword? target-class)
+               (not= "db.type" (namespace target-class)))
+      (when-let [target-weights (dt/bm25f-weights-of target-class)]
+        (let [refs        (cond
+                            (nil? value)                  nil
+                            (and (coll? value)
+                                 (not (associative? value))) (seq value)  ; set/seq of refs
+                            :else                          [value])
+              target-maps (keep (fn [r]
+                                  (cond
+                                    (associative? r) r
+                                    (number? r)      (try
+                                                       (db/entity r)
+                                                       (catch Throwable _ nil))
+                                    :else            nil))
+                                refs)
+              target-texts (for [tm        target-maps
+                                 [slot _w] target-weights
+                                 :let      [v   (get tm slot)
+                                            txt (cond
+                                                  (string? v) v
+                                                  ;; Card-many strings (Datomic returns as sets)
+                                                  (and (coll? v) (not (associative? v)))
+                                                  (let [strs (filter string? v)]
+                                                    (when (seq strs)
+                                                      (clojure.string/join " " strs)))
+                                                  :else nil)]
+                                 :when     txt]
+                             txt)]
+          (when (seq target-texts)
+            (clojure.string/join " " target-texts)))))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Per-entity analysis
