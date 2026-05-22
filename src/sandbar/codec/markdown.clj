@@ -605,6 +605,18 @@
     (doseq [[k v] frontmatter-map
             :let [slot (frontmatter-key->slot class-ident k)]
             :when (slot-declared? slot)
+            ;; Stage 5 Phase A.6 — drop frontmatter string values destined
+            ;; for :uuid-typed slots (e.g., the corpus's legacy
+            ;; `identity: memory/types/concept-group.md` strings in type
+            ;; memorials).  Schema declares the slot as :db.type/uuid;
+            ;; passing a path-string crashes Datomic.  Architectural
+            ;; identity scheme (deterministic v5 UUIDs per
+            ;; `questions/identity_provenance_contexts_partition_firewall_for_uuid_scheme_2026_05_22.md`)
+            ;; is the proper resolution; this guard stops the ingest
+            ;; crash while that arc is designed.  :db/ident sufficies
+            ;; for upsert in the meantime.
+            :when (not (and (string? v)
+                            (= :db.type/uuid (dt/range-of slot))))
             :let [target-class (ref-slot-target-class slot)
                   unique-attr  (when target-class (dt/unique-identity-slot-of target-class))
                   v' (cond
@@ -622,12 +634,30 @@
 
                        ;; Ref-slot with string values + CLASS-SPECIFIC unique
                        ;; attr (e.g., :mm/Tag → :mm.tag/value): wrap as upsert
-                       ;; map.  Per F#18.  Skip when unique-attr resolves to
-                       ;; :db/ident — that case wants ident-upsert (next
-                       ;; branch), not string-upsert (would produce
-                       ;; {:db/ident <string>} which Datomic rejects).
+                       ;; map.  Per F#18.  Skip when:
+                       ;;  (a) unique-attr resolves to :db/ident — that case
+                       ;;      wants ident-upsert (next branch), not string-
+                       ;;      upsert (would produce {:db/ident <string>}
+                       ;;      which Datomic rejects).
+                       ;;  (b) unique-attr is :db.type/uuid-typed (e.g.,
+                       ;;      :mm.memory/identity on :mm/Memory subclasses) —
+                       ;;      string values can't go directly into a uuid
+                       ;;      slot.  Fall through to the :db/ident-based
+                       ;;      upsert (next branch) which produces
+                       ;;      {:db/ident :memory.predicates/consumes} —
+                       ;;      already-proven path for :mm/Memory subclass
+                       ;;      refs per
+                       ;;      `decisions/mm_memory_typed_edge_migration_string_to_ref_2026_05_21.md`.
+                       ;;      Per Dan-directive 2026-05-22 the v5-UUID
+                       ;;      derivation (per
+                       ;;      `decisions/clj_uuid_based_urn_scheme_for_memory_model_2026_05_12.md`)
+                       ;;      will land as a separate enhancement that
+                       ;;      sets :mm.memory/identity ON every entity at
+                       ;;      parse-time; this branch just stops the
+                       ;;      string-into-uuid-slot crash.
                        (and unique-attr
                             (not= :db/ident unique-attr)
+                            (not= :db.type/uuid (dt/range-of unique-attr))
                             (or (string? v)
                                 (and (sequential? v) (every? string? v))))
                        (coerce-string->upsert-map v unique-attr)
