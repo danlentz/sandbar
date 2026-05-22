@@ -617,6 +617,34 @@
             ;; for upsert in the meantime.
             :when (not (and (string? v)
                             (= :db.type/uuid (dt/range-of slot))))
+            ;; Stage 5 Phase A.6 — drop empty values (empty string or empty
+            ;; vec).  Corpus convention uses `parent: []` or
+            ;; `primary-parent: ""` to express "no parent set"; the codec
+            ;; would otherwise coerce `""` to an empty tempid (`{:db/ident :}`)
+            ;; which Datomic rejects ("tempid '' used only as value").
+            ;; Dropping the slot at parse-time = same semantic as "not set".
+            :when (not (or (and (string? v) (clojure.string/blank? v))
+                           (and (sequential? v) (empty? v))))
+            ;; Stage 5 Phase A.6 — drop vec value into cardinality-one slot
+            ;; (corpus has YAML lists for slots the schema declares scalar;
+            ;; e.g., `affects:\n  - etc/lib/memory.clj:144-220` into
+            ;; :mm.bug/affects which is :db.cardinality/one :db.type/string).
+            ;; Until the schema is reconciled OR the corpus normalized,
+            ;; drop these at the codec level to prevent the crash.
+            :when (not (and (sequential? v)
+                            (not (string? v))
+                            (dt/cardinality-one? slot)))
+            ;; Stage 5 Phase A.6 — drop non-date string into :instant slot.
+            ;; Corpus convention sometimes uses natural-language session
+            ;; labels (e.g., `applies-in-session-from:
+            ;; 2026-05-07-session-after-this-authorization-was-granted`)
+            ;; in :inst-typed slots.  coerce-string->instant fails-loud by
+            ;; passing through unchanged; transact then crashes.  Skip the
+            ;; slot when the string can't be parsed as an ISO date.
+            :when (not (and (string? v)
+                            (= :db.type/instant (dt/range-of slot))
+                            (try (clojure.instant/read-instant-date v) false
+                                 (catch Exception _ true))))
             :let [target-class (ref-slot-target-class slot)
                   unique-attr  (when target-class (dt/unique-identity-slot-of target-class))
                   v' (cond
