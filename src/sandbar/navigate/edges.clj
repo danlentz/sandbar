@@ -63,7 +63,7 @@
                 :matching-slots matches
                 :resolution     :ambiguous})))))
 
-(defn- resolve-predicates
+(defn resolve-predicates
   "Resolve a predicate spec (single keyword OR collection) to a vec of
   slot-idents suitable for dt/*-edges-of comparison.  Bare keywords
   (no namespace) are resolved against the entity's class slots;
@@ -73,7 +73,12 @@
   usual empty result and the missing-entity surfaces there.
 
   Returns nil when `predicate` is nil (preserves dt/*'s no-filter
-  semantic)."
+  semantic).
+
+  Public so consumer-wrapper namespaces (e.g., `sandbar.orient` for
+  library-card per-axis resolution) can apply the same Gap 7 fix.
+  Per inbox capture
+  memory/inbox/2026-05-22_mcp_cutover_exercise_substrate_verb_authoring_queue_10_gaps_surfaced_via_orientation_of_sandbar_as_mcp_server_arc.md."
   [entity-ident predicate]
   (when (some? predicate)
     (let [preds   (if (sequential? predicate) predicate [predicate])

@@ -17,8 +17,9 @@
 
   Substrate-quality discipline preserved: class-agnostic; axis-specs are
   caller-supplied."
-  (:require [sandbar.db.datatype :as dt]
-            [sandbar.db.datomic  :as db]))
+  (:require [sandbar.db.datatype     :as dt]
+            [sandbar.db.datomic      :as db]
+            [sandbar.navigate.edges  :as nav-edges]))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Entity projection helpers (mirror navigate.edges projection shape)
@@ -114,8 +115,20 @@
   ;; validation for ref shape + existence.  Non-ref `:pre` invariant on
   ;; `axes` (sequential? shape) stays.
   {:pre [(sequential? axes)]}
-  (let [{raw-entity :entity raw-axes :axes}
-        (dt/library-card-of entity axes)
+  ;; Resolve bare predicate keywords (`:cites`) per-axis to slot-idents
+  ;; (`:mm.memory/cites`) against the entity's class.  Same Gap 7 fix as
+  ;; navigate edges; library-card was the last predicate-accepting verb
+  ;; still on the silent-zero-hit footing for bare predicate forms.
+  ;; Per inbox capture
+  ;; memory/inbox/2026-05-22_mcp_cutover_exercise_substrate_verb_authoring_queue_10_gaps_surfaced_via_orientation_of_sandbar_as_mcp_server_arc.md.
+  (let [resolved-axes
+        (mapv (fn [{:keys [predicates] :as axis-spec}]
+                (cond-> axis-spec
+                  predicates
+                  (assoc :predicates (nav-edges/resolve-predicates entity predicates))))
+              axes)
+        {raw-entity :entity raw-axes :axes}
+        (dt/library-card-of entity resolved-axes)
         project-fn (projection-fn-for projection)]
     {:entity (project-fn raw-entity)
      :axes   (reduce-kv (fn [acc axis-name edges]
