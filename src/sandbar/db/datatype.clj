@@ -1224,10 +1224,77 @@
                (subclass-of ?dt ?c)]
              (db/db) (all-rules) dt)))
 
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Type-relation cache (Stage 5 Phase A.5 — Dan-directive 2026-05-22)
+;;
+;; Memoizes type-relation queries so substrate operations that iterate
+;; type-isa? in tight loops (projection filter, audit invariants, codec
+;; routing, BM25F :where filter resolution) don't re-run Datalog queries
+;; per entity.
+;;
+;; Bounded memory: stores ~50 class-idents × sets of ~10-50 idents each
+;; (a few KB total).  Independent of corpus size.  Type relations are
+;; STRUCTURE, not CONTENT.
+;;
+;; Invalidation: cleared by `sandbar.db.datomic/load-all-schema!` after
+;; each schema reload (schema additions can change subclass closures).
+;; Future class-creating MCP verbs invalidate similarly via
+;; `clear-type-relation-cache!`.
+;;
+;; Per `decisions/dt_layer_exposes_memoized_type_relation_ops_with_schema_invalidation_2026_05_22.md`.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defonce ^:private type-relation-cache
+  ;; {class-ident #{direct-and-transitive-subclass-idents}}  — subclasses, NOT including the class itself
+  (atom {}))
+
+(defn clear-type-relation-cache!
+  "Clear the memoized type-relation cache.  Called by
+  `sandbar.db.datomic/load-all-schema!` after each schema reload (via
+  the post-schema-reload-handlers registry), since schema additions can
+  change the subclass closure.  Also callable from tests + ad-hoc to
+  force a rebuild.  Returns the prior cache value."
+  []
+  (let [prior @type-relation-cache]
+    (reset! type-relation-cache {})
+    prior))
+
+;; Register the cache-clear with datomic's post-schema-reload registry
+;; at namespace load time.  Set-valued registry dedupes on REPL reload.
+;; Per `interaction/dont_use_requiring_resolve_for_namespace_dep_avoidance_2026_05_22.md`.
+(db/register-post-schema-reload-handler! clear-type-relation-cache!)
+
+(defn subclasses-of-cached
+  "Returns the cached set of all transitive subclasses of class-ident
+  (NOT including class-ident itself).  Populates cache on miss via
+  `subclasses-of` (which runs the recursive Datalog query).
+
+  Per `decisions/dt_layer_exposes_memoized_type_relation_ops_with_schema_invalidation_2026_05_22.md`."
+  [class-ident]
+  (or (get @type-relation-cache class-ident)
+      (let [computed (set (subclasses-of class-ident))]
+        (swap! type-relation-cache assoc class-ident computed)
+        computed)))
+
+(defn descendants-of
+  "Returns the set of all class-idents that are `class-ident` OR a
+  transitive subclass.  Substrate primitive for entity-filtering by
+  is-instance-of-class-or-descendant.
+
+  Use this when iterating a collection asking 'is this entity an X
+  descendant?' — `(contains? (descendants-of X) (:dt/type entity))` is
+  O(1) per call.  Compared to per-call `type-isa?` which (before this
+  cache) ran a recursive Datalog query per invocation.
+
+  Per `decisions/dt_layer_exposes_memoized_type_relation_ops_with_schema_invalidation_2026_05_22.md`."
+  [class-ident]
+  (conj (subclasses-of-cached class-ident) class-ident))
+
 (defn subclass-of?
-  "Returns true if c is a subclass of dt (direct or transitive)."
+  "Returns true if c is a subclass of dt (direct or transitive).
+  Uses the cached `subclasses-of-cached` set; O(1) lookup once warm."
   [dt c]
-  (some? ((set (subclasses-of dt)) c)))
+  (contains? (subclasses-of-cached dt) c))
 
 (defn type-isa?
   "Map-friendly type-membership predicate: returns true if `entity-type`

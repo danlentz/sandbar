@@ -61,18 +61,59 @@
 ;(schema-value :literal)
 ;(schema-value :resource)
 
+;; Stage 5 Phase A.5 — post-schema-reload callback registry.
+;;
+;; Higher-level namespaces (e.g., sandbar.db.datatype) hold caches that
+;; depend on schema state.  When `load-all-schema!` runs, those caches
+;; need to invalidate.  Direct deps would create a cycle (datatype already
+;; requires datomic for `db/db` etc.), so the higher-level ns REGISTERS
+;; a clear-fn at namespace-load time + this ns invokes the registered
+;; handlers after each schema reload.  Set-valued for idempotent
+;; registration across REPL reloads.
+;;
+;; Per `interaction/dont_use_requiring_resolve_for_namespace_dep_avoidance_2026_05_22.md`
+;; + `decisions/dt_layer_exposes_memoized_type_relation_ops_with_schema_invalidation_2026_05_22.md`.
+
+(defonce post-schema-reload-handlers
+  (atom #{}))
+
+(defn register-post-schema-reload-handler!
+  "Register a no-arg function to run after each `load-all-schema!`.
+  Set-valued: re-registration is idempotent.  Typical usage: clear a
+  cache whose validity depends on schema state."
+  [f]
+  (swap! post-schema-reload-handlers conj f))
+
 (defn load-all-schema! [uri]
   (doseq [sd (required-schema)]
-    (load-schema uri sd)))
+    (load-schema uri sd))
+  ;; Fire post-schema-reload handlers (e.g., type-relation cache clear).
+  (doseq [handler @post-schema-reload-handlers]
+    (try (handler)
+         (catch Throwable t
+           (log/warn t :DB/POST-SCHEMA-RELOAD-HANDLER-FAILED
+                     {:handler (str handler)})))))
 
 ; (load-all-schema! (db-uri))
 
 
 (defn initialize-db! [uri & schema]
-  (when (ensure-db! uri)
+  ;; Stage 5 Phase B (2026-05-22): always reload schema + dbfns at start,
+  ;; regardless of whether the DB needed to be created.  Datomic's
+  ;; :db/ident upsert makes load-all-schema! idempotent — re-running
+  ;; against an existing DB is safe + applies any schema edits made
+  ;; since last start.  Without this, editing schema/mm.edn requires
+  ;; full DB wipe + re-init to take effect, which is hostile to
+  ;; substrate evolution.  Per Dan-directive 2026-05-22:
+  ;;   "sandbar start always retransacting schema seems convenient for now."
+  ;; Composes with `ideas/sandbar_reflective_schema_from_type_memorials_-
+  ;; for_dynamic_client_type_evolution_2026_05_22.md` as the substrate-
+  ;; evolution discipline.
+  (let [created? (ensure-db! uri)]
     (apply load-all-schema! uri schema)
-    (fn/load-all-dbfn  uri)
-    (log/info :DB/INIT :uri uri)))
+    (fn/load-all-dbfn uri)
+    (when created?
+      (log/info :DB/INIT :uri uri))))
 
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;

@@ -378,14 +378,27 @@
      (when-not (.isDirectory root)
        (throw (ex-info "ingest-graph requires a directory input"
                        {:from-dir (str from-dir)})))
-     (let [all-entities
+     (let [t-files-start (System/currentTimeMillis)
+           files (vec (walk-markdown-files root skip-basenames))
+           t-files-end (System/currentTimeMillis)
+           _ (log/info :INGEST/FILES-WALKED
+                       {:from-dir (str from-dir)
+                        :file-count (count files)
+                        :ms (- t-files-end t-files-start)})
+           tree-filter (:tree-filter filter-spec)
+           processed-counter (atom 0)
+           all-entities
            (vec
              (mapcat (fn [rel-path]
+                       (let [n (swap! processed-counter inc)]
+                         (when (zero? (mod n 100))
+                           (log/info :INGEST/PARSE-PROGRESS
+                                     {:processed n :total (count files)
+                                      :ms (- (System/currentTimeMillis) t-files-end)})))
                        ;; Tree-filter optimization — skip parse if rel-path
                        ;; can't pass the :tree-filter prefix anyway.
-                       (when (or (nil? (:tree-filter filter-spec))
-                                 (str/starts-with? rel-path
-                                                   (:tree-filter filter-spec)))
+                       (when (or (nil? tree-filter)
+                                 (str/starts-with? rel-path tree-filter))
                          (try
                            (let [source (slurp (io/file root rel-path))]
                              (md/parse-document source rel-path))
@@ -400,21 +413,38 @@
                                        {:rel-path rel-path
                                         :error    (.getMessage ex)})
                              nil))))
-                     (walk-markdown-files root skip-basenames)))]
+                     files))
+           t-parse-end (System/currentTimeMillis)
+           _ (log/info :INGEST/PARSE-COMPLETE
+                       {:files-walked (count files)
+                        :entities-produced (count all-entities)
+                        :ms (- t-parse-end t-files-end)})
+           filter-active? (and filter-spec (seq filter-spec))
+           _ (log/info :INGEST/FILTER-DECISION
+                       {:filter-active? filter-active?
+                        :filter-spec filter-spec})]
        (if (or (nil? filter-spec) (empty? filter-spec))
          all-entities
          ;; Filter memories per the spec; sections of dropped memories drop too.
-         ;; Walk the in-order all-entities preserving per-file interleaving
-         ;; (memory followed by its sections in document order — the documented
-         ;; contract of `ingest-graph`'s return value).  Prior implementation
-         ;; via `(into pass-memories pass-sections)` reordered into
-         ;; [all-memories then all-sections], violating the contract +
-         ;; breaking downstream per-file grouping in callers like
-         ;; `sandbar.mcp.tools/project-import-handler`.  Surfaced as
-         ;; Friction #17 of memory/plans/sandbar_0_1_1_coevolution_arc_-
-         ;; 2026_05_20.md / bootstrap-memory-substrate sub-arc Stage 2.A.
-         (let [memories        (clojure.core/filter #(dt/type-isa? :mm/Memory (:dt/type %)) all-entities)
-               pass-mem-idents (set (map :db/ident (apply-filter memories filter-spec)))]
+         (let [t-filter-start (System/currentTimeMillis)
+               _ (log/info :INGEST/FILTER-START {:entities (count all-entities)})
+               ;; Stage 5 Phase A.5 — use cached set-membership lookup
+               ;; instead of per-entity dt/type-isa? Datalog query.
+               ;; Per `decisions/dt_layer_exposes_memoized_type_relation_ops_with_schema_invalidation_2026_05_22.md`.
+               memory-descendants (dt/descendants-of :mm/Memory)
+               memories        (vec (clojure.core/filter
+                                      #(contains? memory-descendants (:dt/type %))
+                                      all-entities))
+               t-isa-done (System/currentTimeMillis)
+               _ (log/info :INGEST/FILTER-TYPE-ISA-DONE
+                           {:memories (count memories)
+                            :memory-descendant-count (count memory-descendants)
+                            :ms (- t-isa-done t-filter-start)})
+               pass-mem-idents (set (map :db/ident (apply-filter memories filter-spec)))
+               t-apply-done (System/currentTimeMillis)
+               _ (log/info :INGEST/FILTER-APPLY-DONE
+                           {:pass-idents (count pass-mem-idents)
+                            :ms (- t-apply-done t-isa-done)})]
            (loop [out [] include? false [e & rst] all-entities]
              (cond
                (nil? e)

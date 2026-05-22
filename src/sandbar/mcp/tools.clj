@@ -510,7 +510,8 @@
 ;; Callers below delegate to the codec helpers.
 
 (defn- project-import-handler [args]
-  (let [from        (or (get args "from") (get args :from))
+  (let [t-start     (System/currentTimeMillis)
+        from        (or (get args "from") (get args :from))
         filter-spec (->filter-spec (or (get args "filter") (get args :filter)))
         persist?    (boolean (or (get args "persist?")
                                   (get args "persist")
@@ -519,25 +520,46 @@
     (when-not from
       (throw (ex-info "project.import requires :from (input directory path)"
                       {:args args})))
-    (let [entities (pg/ingest-graph from (cond-> {}
-                                            filter-spec (assoc :filter filter-spec)))]
+    (log/info :IMPORT/START {:from from :filter filter-spec :persist? persist?})
+    (let [t-walk-start (System/currentTimeMillis)
+          _ (log/info :IMPORT/WALK-START {:from from})
+          entities (pg/ingest-graph from (cond-> {}
+                                            filter-spec (assoc :filter filter-spec)))
+          t-walk-end (System/currentTimeMillis)
+          _ (log/info :IMPORT/WALK-DONE {:entities (count entities)
+                                          :ms (- t-walk-end t-walk-start)})]
       (if-not persist?
         ;; Dry-run: return summaries only
-        {:from     from
-         :filter   filter-spec
-         :persist? false
-         :imported (count entities)
-         :entities (mapv (fn [e]
-                           {:dt/type (:dt/type e)
-                            :ident   (:db/ident e)})
-                         entities)}
+        (do (log/info :IMPORT/DRY-RUN-COMPLETE {:entities (count entities)
+                                                 :ms (- (System/currentTimeMillis) t-start)})
+            {:from     from
+             :filter   filter-spec
+             :persist? false
+             :imported (count entities)
+             :entities (mapv (fn [e]
+                               {:dt/type (:dt/type e)
+                                :ident   (:db/ident e)})
+                             entities)})
         ;; Persist: group by source file; one atomic transact per group.
         ;; Cross-entity refs (Memory ↔ Section) resolve via :db/ident
         ;; upsert within the single tx.  Per-group failures isolated;
         ;; one bad file does NOT abort the whole import.
-        (let [groups  (codec-md/group-by-source entities)
+        (let [t-group-start (System/currentTimeMillis)
+              _ (log/info :IMPORT/GROUP-START {:entities (count entities)})
+              groups  (codec-md/group-by-source entities)
+              total   (count groups)
+              _ (log/info :IMPORT/GROUP-DONE {:groups total
+                                               :ms (- (System/currentTimeMillis) t-group-start)})
+              t-transact-start (System/currentTimeMillis)
+              _ (log/info :IMPORT/TRANSACT-START {:groups total})
               results (reduce
-                       (fn [acc group]
+                       (fn [acc [idx group]]
+                         (when (zero? (mod idx 100))
+                           (log/info :IMPORT/TRANSACT-PROGRESS
+                                     {:idx idx :total total
+                                      :persisted (count (:persisted acc))
+                                      :failed (count (:failed acc))
+                                      :ms (- (System/currentTimeMillis) t-transact-start)}))
                          (let [memory     (first group)
                                ident      (:db/ident memory)
                                class-ident (:dt/type memory)
@@ -555,18 +577,27 @@
                                       :ident       ident
                                       :tx-entities (count group)})
                              (catch Throwable ex
+                               (log/warn ex :IMPORT/GROUP-FAILED
+                                         {:idx idx :ident ident :class class-ident})
                                (update acc :failed conj
                                        {:dt/type     class-ident
                                         :ident       ident
                                         :tx-entities (count group)
                                         :error       (.getMessage ex)})))))
                        {:persisted [] :failed []}
-                       groups)]
+                       (map-indexed vector groups))
+              t-end (System/currentTimeMillis)]
+          (log/info :IMPORT/COMPLETE {:imported (count entities)
+                                       :groups total
+                                       :persisted-count (count (:persisted results))
+                                       :failed-count (count (:failed results))
+                                       :total-ms (- t-end t-start)
+                                       :transact-ms (- t-end t-transact-start)})
           {:from           from
            :filter         filter-spec
            :persist?       true
            :imported       (count entities)
-           :groups         (count groups)
+           :groups         total
            :persisted-count (count (:persisted results))
            :failed-count   (count (:failed results))
            :failed         (:failed results)})))))
