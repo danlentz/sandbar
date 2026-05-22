@@ -1,0 +1,46 @@
+## What this predicate means
+
+**A `consumed-by` B** — B depends on A as input; B requires A for its operation (inverse of `consumes`).  The downstream-consumer pointer.
+
+Common shapes:
+- A library consumed-by another library that depends on it
+- A resource consumed-by skills / workflows that read it
+- A tool consumed-by patterns that use it
+
+## Substrate identity
+
+- **Slot ident**: `{{predicate-ident}}`
+- **Domain**: `{{domain}}`
+- **Range**: `{{range}}`
+- **Cardinality**: `{{cardinality}}`
+- **Inverse of**: `:mm.memory/consumes`
+
+## Formal signature
+
+`{{predicate-name}} : {{domain}} × {{range}} → Bool`
+
+## When to use
+
+Declare `consumed-by:` on A when:
+- A wants to enumerate downstream consumers explicitly
+- A's impact-blast-radius is a useful piece of metadata
+- B is a notable consumer worth advertising
+
+For exhaustive enumeration, reverse-attribute lookup (`:_mm.memory/consumes`) is usually cheaper.
+
+## Formal ontology mappings
+
+Aligned predicates from established formal vocabularies:
+
+- **PROV-O** — no direct flat inverse (PROV uses `prov:used` and reverse-attribute traversal for consumer enumeration; alternatively `prov:hadUsage` for qualified-pattern access)
+- **DC Terms** `dcterms:isRequiredBy` — close analogue
+- **OWL** `owl:inverseOf` — sandbar declares `:mm.memory/consumed-by` as `inverse-of :mm.memory/consumes`
+- **CiTO** — no direct equivalent
+- **SKOS** — no direct equivalent
+
+Grounding references in the corpus:
+- [`references/rdfs_reference.md`](../references/rdfs_reference.md) — PROV-O substrate
+
+## See also
+
+- [`predicates/consumes.md`](consumes.md) — forward direction

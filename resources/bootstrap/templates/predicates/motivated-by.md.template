@@ -1,0 +1,50 @@
+## What this predicate means
+
+**A `motivated-by` B** — A exists BECAUSE of B; B is the reason A came into being (inverse of `motivates`).  The author-side admission: "this memorial would not exist without B."
+
+Common shapes:
+- A fix-plan is motivated-by a bug report
+- An ADR is motivated-by a question memorial
+- A refactor decision is motivated-by a pattern memorial
+
+## Substrate identity
+
+- **Slot ident**: `{{predicate-ident}}`
+- **Domain**: `{{domain}}`
+- **Range**: `{{range}}`
+- **Cardinality**: `{{cardinality}}`
+- **Inverse of**: `:mm.memory/motivates`
+- **Sub-property of**: `:mm.memory/informed-by`
+
+## Formal signature
+
+`{{predicate-name}} : {{domain}} × {{range}} → Bool`
+
+## When to use
+
+Use `motivated-by:` when:
+- A's reason-for-existing traces back to B
+- The relation is causal-but-not-physically-generative (PROV's `prov:wasGeneratedBy` would be too strong)
+- The author wants to record the justification chain
+
+Per the sub-property hierarchy, declaring `motivated-by:` entails `informed-by:` (RDFS rdfs7 entailment).
+
+## Formal ontology mappings
+
+Aligned predicates from established formal vocabularies:
+
+- **PROV-O** — no direct flat equivalent (PROV-O reifies motivation via qualified `prov:Influence` patterns; some PROV profiles add `prov:wasMotivatedBy` as derived predicate but it is not in core PROV-O)
+- **CiTO** `cito:respondsTo` — close analogue (when A is a response motivated by B's existence)
+- **DC Terms** — no direct equivalent
+- **OWL** — no direct equivalent (provides `owl:inverseOf` meta-relation only)
+- **SKOS** — no direct equivalent
+
+Grounding references in the corpus:
+- [`references/rdfs_reference.md`](../references/rdfs_reference.md) — PROV-O integration
+- [`references/pav_cito_bibo_reference.md`](../references/pav_cito_bibo_reference.md) — CiTO `cito:respondsTo` semantics
+
+## See also
+
+- [`predicates/motivates.md`](motivates.md) — forward direction
+- [`predicates/informed-by.md`](informed-by.md) — broader parent (sub-property hierarchy)
+- [`predicates/triggered-by.md`](triggered-by.md) — stronger (direct causation)

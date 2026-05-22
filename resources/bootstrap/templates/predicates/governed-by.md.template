@@ -1,0 +1,60 @@
+## What this predicate means
+
+**Artifact A `governed-by` Rule B** — typed-edge predicate from an artifact memory to a rule memory indicating that the artifact's frontmatter, body, or interpretation is governed by the named rule.  Enables bidirectional querying: given a rule, "what artifacts does this rule govern?" (inbound walk via governed-by); given an artifact, "what rules govern this?" (outbound walk).  Introduced for the rules-as-first-class memory type per `decisions/rules_as_first_class_type_2026_05_11.md` D10 (typed-edge introspection graph).
+
+## Substrate identity
+
+- **Slot ident**: `{{predicate-ident}}`
+- **Domain**: `{{domain}}`
+- **Range**: `{{range}}`
+- **Cardinality**: `{{cardinality}}`
+- **`:dt/type`**: `:dt/DirectedBinaryRelationProperty` (asymmetric + irreflexive)
+
+## Formal signature
+
+`{{predicate-name}} : {{domain}} × {{range}} → Bool`
+
+## Characteristics
+
+- **Asymmetric** — artifact governed by rule doesn't imply rule governed by artifact (OWL 2 RL `prp-asyp`)
+- **Irreflexive** — no memorial governs itself (OWL 2 RL `prp-irp`)
+- **NOT transitive**
+
+## When to use governed-by
+
+Use on artifact memorials when one or more rules constrain the artifact's authoring or interpretation:
+
+```yaml
+type: decision
+name: Foo Decision 2026-05-22
+governed-by:
+  - rules/decisions-require-alternatives-section.md
+  - rules/decisions-cite-prior-thinking.md
+```
+
+The substrate's rule engine queries `governed-by:` at validation time to know which rules apply to the artifact.
+
+## Adjacent predicates
+
+| Direction | Predicate |
+|---|---|
+| Artifact-side | **`governed-by`** — canonical (artifact → rule) |
+| Rule-side | `governs` (planned) — inverse (rule → artifact); typically derived |
+| Companion | `derives-from` — rule + premise provenance (different axis: produced-by-rule, not governed-by-rule) |
+| Exemption | `bypasses` — actor exempt from rule |
+
+## Formal ontology mappings
+
+- **OWL 2** — no direct equivalent (governance is metalogical)
+- **DC Terms** `dcterms:conformsTo` — close analogue (artifact conforms to spec)
+- **SHACL** target-shape pattern — adjacent operational shape
+- **ODRL** policy `prohibition` / `permission` — distant regulatory analogue
+
+Grounding references in the corpus:
+- [`decisions/rules_as_first_class_type_2026_05_11.md`](../decisions/rules_as_first_class_type_2026_05_11.md) §D10 typed-edge introspection graph
+
+## See also
+
+- [`predicates/derives-from.md`](derives-from.md) — rule-derivation provenance (different axis)
+- [`predicates/bypasses.md`](bypasses.md) — actor-side exemption
+- [`predicates/applies-in.md`](applies-in.md) — rule scoping

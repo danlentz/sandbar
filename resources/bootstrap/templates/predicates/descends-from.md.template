@@ -1,0 +1,57 @@
+## What this predicate means
+
+**A `descends-from` B** — A is historically descended from B; A's lineage includes B as an ancestor.  Used for evolutionary / version / inheritance lineages.
+
+Common shapes:
+- A library descends-from an earlier library it forked
+- A pattern descends-from an older pattern it refines
+- A decision descends-from prior decisions in the same arc
+
+Distinguish from `refines` (which is a static companion-relation) and `supersedes` (which is replacement).  `descends-from:` is the LINEAGE-TRAVERSAL predicate: walking the history backwards.
+
+## Substrate identity
+
+- **Slot ident**: `{{predicate-ident}}`
+- **Domain**: `{{domain}}`
+- **Range**: `{{range}}`
+- **Cardinality**: `{{cardinality}}`
+- **Inverse of**: `:mm.memory/ancestor-of`
+
+## Formal signature
+
+`{{predicate-name}} : {{domain}} × {{range}} → Bool`
+
+## Characteristics
+
+- **Asymmetric** — A descends-from B does not imply B descends-from A
+- **Irreflexive** — a memorial doesn't descend from itself
+- **Transitive** — A descends-from B, B descends-from C entails A descends-from C
+
+## When to use
+
+Use `descends-from:` when:
+- A's existence traces through B in a lineage chain (parent / version / fork)
+- The relation is historical (not just stylistic / topical)
+- A could in principle have been derived from B through a sequence of refinements / forks
+
+## Formal ontology mappings
+
+Aligned predicates from established formal vocabularies:
+
+- **PROV-O** `prov:wasDerivedFrom` — close analogue (PROV's canonical derivation relation; supports lineage traversal)
+- **PAV** `pav:derivedFrom` — exact semantic match
+- **DC Terms** — no direct equivalent (`dcterms:source` is distant)
+- **OWL** — no direct equivalent (provides `owl:TransitiveProperty` characteristic only)
+- **SKOS** — no direct equivalent
+- **CiTO** — no direct equivalent
+
+Grounding references in the corpus:
+- [`references/pav_cito_bibo_reference.md`](../references/pav_cito_bibo_reference.md) — PAV `pav:derivedFrom` semantics
+- [`references/rdfs_reference.md`](../references/rdfs_reference.md) — PROV-O substrate
+
+## See also
+
+- [`predicates/ancestor-of.md`](ancestor-of.md) — inverse partner
+- [`predicates/refines.md`](refines.md) — companion relation (not lineage)
+- [`predicates/supersedes.md`](supersedes.md) — replacement (different lifecycle)
+- [`predicates/parent.md`](parent.md) — immediate-hop variant (not transitive)

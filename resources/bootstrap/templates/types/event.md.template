@@ -1,0 +1,121 @@
+## What a `type: event` instance is
+
+**An event memorial describes a first-class lifecycle / dispatch event** that the corpus's hook layer fires + rules trigger from.  Events are typed-edge graph citizens — declarative + queryable + introspectable — not just `event:` field discriminator values.
+
+Rules reference events via `triggered-by:` typed-edge:
+
+```yaml
+type: rule
+triggered-by:
+  - events/pre-grounding.md
+```
+
+Event is a subtype of [`meta`](meta.md) — memorials about the memory system itself.
+
+## Lifecycle positions
+
+Events fire at well-known lifecycle positions:
+
+- **`session-start`** — beginning of agent session
+- **`session-end`** — end of agent session
+- **`user-prompt-submit`** — user submits prompt
+- **`pre-grounding`** — agent about to ground its decision; before tool selection
+- **`pre-tool-use`** — agent about to invoke a tool
+- **`post-tool-use`** — after tool returns
+- **`post-commit`** — after memory write (commit / edit)
+- **`pre-response`** — before agent generates response
+- **`post-response`** — after agent generates response
+- **`corpus-audit`** — corpus-level integrity check
+- **`state-change`** — memory state transitions
+- **`retrieval`** — memory retrieved by search
+- **`navigation`** — typed-edge graph walked
+
+The `lifecycle-position` field is **controlled vocabulary** at the substrate level.  Adding new positions = substrate evolution.
+
+## Substrate identity
+
+- **Class ident**: `{{class-ident}}`
+- **Parent class(es)**: {{parent-classes}}
+- **Ancestor chain**: {{ancestor-chain}}
+- **Native codec**: `{{native-codec}}`
+- **Codec type-keyword(s)**: {{codec-type-keywords}}
+
+## Slot vocabulary ({{slot-count}} slots inherited or declared)
+
+Event memorials inherit `:mm/Memory` plus type-specific required slots:
+
+- **`lifecycle-position`** (required) — when in the lifecycle this event fires
+- **`default-severity`** — `audit` / `warn` / `block` — what severity rules inherit when triggered by this event
+- **`applicable-actor-classes`** — which actor types can trigger this event
+- **`triggered-by-hook`** — hook script path or sentinel keyword
+- **`substrate-correctness-criticality`** — `tier-0` / `tier-1` / `tier-2` / `tier-3`
+
+{{slot-table}}
+
+## Severity gradient
+
+Default-severity governs what severity rules inherit when triggered by this event:
+
+- **`audit`** — observe but don't act
+- **`warn`** — surface as soft block
+- **`block`** — refuse + interrupt
+
+Individual rules can OVERRIDE the default per their own `enforcement:` declaration.
+
+## Applicable actor classes
+
+Some events apply only to specific actor types:
+
+- All actors (`:any`)
+- AI actors
+- Human actors
+- System actors
+
+The field declares which actor types CAN trigger this event.
+
+## Criticality tiers
+
+- **`tier-0`** — substrate-correctness depends on firing (e.g., `session-start` surfaces active disciplines; `pre-tool-use` bypasses substrate-correctness rules if not fired)
+- **`tier-1`** — high-frequency but not substrate-correctness (e.g., `post-commit` validation can be deferred)
+- **`tier-2` / `tier-3`** — lower-priority observation events
+
+## Canonical body structure
+
+```markdown
+## What this event signals
+
+<When the event fires, what conditions warrant it.>
+
+## Data payload
+
+<What context information accompanies the event (tool name, file
+path, prompt text, etc.).>
+
+## Hook integration
+
+<Which hook scripts in etc/hooks/ trigger this event; the
+substrate machinery binding.>
+
+## Rules that fire on this event
+
+<Catalog of rule memorials that consume this event via
+triggered-by: edges.  Or note "none yet" if pre-population.>
+
+## See also
+
+<Adjacent events, related rules, governing decisions.>
+```
+
+## What an event memorial is NOT
+
+- **Not a hook script** — the hook layer FIRES the event; the event memorial is the CONTENT
+- **Not a rule** — events trigger rules; events themselves don't fire actions
+- **Not a notification** — events are SUBSTRATE-LEVEL lifecycle markers; notifications are UI-layer constructs
+
+## See also
+
+- [`types/meta.md`](meta.md) — parent abstract supertype
+- [`types/rule.md`](rule.md) — rules reference events via `triggered-by:`
+- [`types/engine.md`](engine.md) — engines evaluate rule bodies that fire on events
+- [`predicates/triggered-by.md`](../predicates/triggered-by.md) — the typed-edge linking rules to events
+- Sandbar substrate: `sandbar/schema/mm-meta.edn`

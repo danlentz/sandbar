@@ -22,7 +22,8 @@
   (:require [clojure.string         :as str]
             [sandbar.codec.markdown :as codec-md]
             [sandbar.db.datatype    :as dt]
-            [sandbar.db.datomic     :as db]))
+            [sandbar.db.datomic     :as db]
+            [sandbar.entity-ref     :as eref]))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Helpers
@@ -30,11 +31,16 @@
 
 (defn- class-name-lc
   "Lowercase the local-name part of a class ident.
-   `:mm/Memory` → 'memory'  `:mm/BootstrapSource` → 'bootstrap-source'"
+   `:mm/Memory` → 'memory'  `:mm/BootstrapSource` → 'bootstrap-source'
+   `:mm/AIActor` → 'ai-actor'  (acronym-prefix handled)"
   [class-ident]
   (let [n (name class-ident)
-        ;; Camel/Pascal → kebab-case
+        ;; Camel/Pascal → kebab-case.  Two passes:
+        ;;   1. Acronym-followed-by-Word boundary (`AIActor` → `AI-Actor`)
+        ;;   2. Standard lower-to-upper boundary (`camelCase` → `camel-Case`)
+        ;; Pass 1 must precede pass 2 so the acronym group is preserved.
         kebab (-> n
+                  (str/replace #"([A-Z]+)([A-Z][a-z])" "$1-$2")
                   (str/replace #"([a-z])([A-Z])" "$1-$2")
                   str/lower-case)]
     kebab))
@@ -77,12 +83,31 @@
              template-str
              context))
 
+(defn- safe-resolve-ident
+  "Like `entity-ref/resolve-ident` but swallows the ex-info raised on
+   unresolvable / malformed input, returning nil instead.  Useful inside
+   introspection contexts where a missing attribute is normal."
+  [ref]
+  (when ref
+    (try (eref/resolve-ident ref)
+         (catch clojure.lang.ExceptionInfo _ nil))))
+
+(defn- ref-attr-ident
+  "Read a ref-valued schema attribute as its canonical :db/ident keyword.
+   Datomic returns refs as entity-maps OR direct keywords depending on
+   version / wrapper layer; this normalizes via entity-ref/resolve-ident.
+   Returns nil if the attribute is absent or unresolvable."
+  [entity attr]
+  (safe-resolve-ident (get entity attr)))
+
 (defn- format-slot-row
   "Render one slot as a markdown table row."
   [slot-ident]
   (let [entity (db/entity slot-ident)
-        rng    (or (:dt/range entity) "?")
-        card   (or (some-> entity :db/cardinality :db/ident name) "?")
+        rng    (or (ref-attr-ident entity :dt/range)
+                   (ref-attr-ident entity :db/valueType)
+                   "?")
+        card   (or (some-> (ref-attr-ident entity :db/cardinality) name) "?")
         doc    (or (:db/doc entity) "")
         ;; Truncate doc to one line for the table
         doc-1  (if (> (count doc) 80)
@@ -94,11 +119,33 @@
 ;; Class memorial rendering
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
+(defn- direct-parent-idents-of
+  "Return the sorted vec of direct parent class idents for `class-ident`,
+   normalizing through `entity-ref/resolve-ident` so the result is
+   canonical regardless of whether `:dt/subclass-of` returned an entity-map,
+   a keyword ident, or an eid."
+  [class-ident]
+  (->> (dt/parents-of class-ident)
+       (keep safe-resolve-ident)
+       sort
+       vec))
+
+(defn- ancestor-idents-of
+  "Return the sorted vec of all ancestor class idents (transitive parents),
+   normalized through `entity-ref/resolve-ident`."
+  [class-ident]
+  (->> (dt/ancestors-of class-ident)
+       (keep safe-resolve-ident)
+       distinct
+       sort
+       vec))
+
 (defn- introspection-context
   "Build the placeholder-substitution context for a class memorial."
   [class-ident]
   (let [entity     (db/entity class-ident)
-        parents    (sort (mapv :db/ident (or (:dt/subclass-of entity) [])))
+        parents    (direct-parent-idents-of class-ident)
+        ancestors  (ancestor-idents-of class-ident)
         slots      (sort (or (dt/slots-of class-ident) []))
         codec-keys (dt/codec-type-keywords-of class-ident)
         slot-order (dt/codec-slot-order-of class-ident)
@@ -112,6 +159,9 @@
      :class-doc (or (:db/doc entity) "")
      :parent-classes (if (seq parents)
                        (str/join ", " (map #(str "`" % "`") parents))
+                       "(none — root class)")
+     :ancestor-chain (if (seq ancestors)
+                       (str/join " → " (map #(str "`" % "`") ancestors))
                        "(none — root class)")
      :native-codec (or (some-> entity :dt/native-codec) "(none)")
      :codec-type-keywords (if (seq codec-keys)
@@ -174,7 +224,10 @@
                   :db/ident (keyword "memory.types" class-nm)
                   :mm.memory/identity rel-path
                   :mm.memory/rel-path rel-path
-                  :mm.memory/name (str label " — " (or doc "") )
+                  ;; Use `:dt/label` (compact human-readable name) alone for
+                  ;; the `name:` field rather than concatenating the full
+                  ;; docstring — the docstring is preserved in `description:`.
+                  :mm.memory/name label
                   :mm.memory/description (or doc "")
                   :mm.memory/memory-type :type
                   :mm.memory/scope :global
@@ -197,37 +250,60 @@
     (when-let [m (re-find #"Inverse of (:mm\.memory/[a-z][a-z\-]*)" doc)]
       (keyword (subs (second m) 1)))))
 
-(defn render-predicate-body
-  "Render the markdown body for a predicate documentation memorial."
+(defn- predicate-introspection-context
+  "Build the placeholder-substitution context for a predicate memorial."
   [slot-ident]
   (let [entity   (db/entity slot-ident)
-        doc      (or (:db/doc entity) "")
-        domain   (or (:dt/domain entity) "?")
-        domain-i (some-> domain :db/ident)
-        rng      (or (:dt/range entity) "?")
-        rng-i    (some-> rng :db/ident)
-        card     (or (some-> entity :db/cardinality :db/ident name) "?")
-        super    (when (some-> entity :dt/subproperty-of seq)
-                   (mapv :db/ident (:dt/subproperty-of entity)))
+        domain   (ref-attr-ident entity :dt/domain)
+        rng      (or (ref-attr-ident entity :dt/range)
+                     (ref-attr-ident entity :db/valueType))
+        card     (or (some-> (ref-attr-ident entity :db/cardinality) name) "?")
+        super    (->> (:dt/subproperty-of entity)
+                      (keep safe-resolve-ident)
+                      sort
+                      vec)
         inv      (inverse-of-slot slot-ident)]
-    (str
-      "## What this predicate means\n\n"
-      doc "\n\n"
-      "## Substrate identity\n\n"
-      "- **Slot ident**: `" slot-ident "`\n"
-      "- **Domain**: `" (or domain-i domain) "`\n"
-      "- **Range**: `" (or rng-i rng) "`\n"
-      "- **Cardinality**: `:" card "`\n"
-      (when (seq super)
-        (str "- **Sub-property of**: " (str/join ", " (map #(str "`" % "`") super)) "\n"))
-      (when inv
-        (str "- **Inverse of**: `" inv "`\n"))
-      "\n## Formal signature\n\n"
-      "`" (predicate-name slot-ident) " : " (or domain-i "?") " × "
-      (or rng-i "?") " → Bool`\n\n"
-      "## See also\n\n"
-      "- [`types/predicate.md`](../types/predicate.md) — predicate-type root\n"
-      "- Sandbar substrate: `sandbar/schema/mm.edn`\n")))
+    {:predicate-ident slot-ident
+     :predicate-name (predicate-name slot-ident)
+     :predicate-doc (or (:db/doc entity) "")
+     :domain (or domain "?")
+     :range (or rng "?")
+     :cardinality (str ":" card)
+     :super-property (if (seq super)
+                       (str/join ", " (map #(str "`" % "`") super))
+                       "(none — top of hierarchy)")
+     :inverse-of (if inv (str "`" inv "`") "(none declared)")}))
+
+(defn render-predicate-body
+  "Render the markdown body for a predicate documentation memorial.
+   Uses per-predicate narrative template when present at
+   resources/bootstrap/templates/predicates/<name>.md.template; falls
+   back to introspection-only output with a clear marker when no
+   template exists."
+  [slot-ident]
+  (let [pred-nm  (predicate-name slot-ident)
+        template (load-template "predicates" pred-nm)
+        context  (predicate-introspection-context slot-ident)]
+    (if template
+      (substitute-placeholders template context)
+      (str
+        "*This memorial is rendered from substrate introspection only — "
+        "no narrative template ships for this predicate yet.*\n\n"
+        "## What this predicate means\n\n"
+        (:predicate-doc context) "\n\n"
+        "## Substrate identity\n\n"
+        "- **Slot ident**: `" (:predicate-ident context) "`\n"
+        "- **Domain**: `" (:domain context) "`\n"
+        "- **Range**: `" (:range context) "`\n"
+        "- **Cardinality**: `" (:cardinality context) "`\n"
+        "- **Sub-property of**: " (:super-property context) "\n"
+        "- **Inverse of**: " (:inverse-of context) "\n\n"
+        "## Formal signature\n\n"
+        "`" (:predicate-name context) " : " (:domain context) " × "
+        (:range context) " → Bool`\n\n"
+        "## See also\n\n"
+        "- [`types/predicate.md`](../types/predicate.md) — predicate-type root\n"
+        "- Sandbar substrate: `sandbar/schema/mm.edn`\n"))))
 
 (defn render-predicate
   "Render a predicate memorial.  Returns {:rel-path <path> :content <markdown>}."

@@ -1,0 +1,56 @@
+## What this predicate means
+
+**A `has-participant` B** — occurrent A (a session log, memoir, or other event-shaped memory) had memory B as a participant in the event.  B can be an actor, an artifact engaged with during the occurrent, or any memorial that "took part."  Replaces or augments the legacy `touches:` frontmatter field with a typed, queryable equivalent that flows through the typed-edge graph.
+
+## Substrate identity
+
+- **Slot ident**: `{{predicate-ident}}`
+- **Domain**: `{{domain}}`
+- **Range**: `{{range}}`
+- **Cardinality**: `{{cardinality}}`
+- **`:dt/type`**: `:dt/DirectedBinaryRelationProperty` (asymmetric + irreflexive)
+
+## Formal signature
+
+`{{predicate-name}} : {{domain}} × {{range}} → Bool`
+
+## Characteristics
+
+- **Asymmetric** — A has-participant B doesn't imply B has-participant A (OWL 2 RL `prp-asyp`)
+- **Irreflexive** — an occurrent doesn't have itself as participant (OWL 2 RL `prp-irp`)
+- **NOT transitive** — participation in one occurrent doesn't propagate through chains
+
+## When to use has-participant
+
+Use `has-participant` for occurrent memorials (logs, memoirs, plan transitions, authorization events) to record who or what participated:
+
+- A session log has-participant the actor who ran the session
+- A memoir has-participant the memorials examined during the recounted period
+- An authorization event has-participant the granting + receiving actors
+- A plan transition has-participant the actor who triggered it
+
+For purely structural memorials (decisions, patterns) that don't represent events, has-participant doesn't typically apply — use `mentions` / `cites` / `evidences` for topical engagement instead.
+
+## Adjacent predicates
+
+| Aspect | Predicate |
+|---|---|
+| Event participants | **`has-participant`** — who/what took part |
+| Temporal boundaries | `has-beginning` / `has-end` |
+| Authoring agent | `created-by` (single canonical author) |
+| Topical references | `mentions` / `touches` / `cites` |
+
+## Formal ontology mappings
+
+- **BFO** `bfo:has-participant` — exact semantic match (the canonical "an occurrent had this continuant as a participant" relation)
+- **PROV-O** `prov:wasAssociatedWith` — close analogue (PROV-O is more agent-specific)
+- **DC Terms** `dcterms:contributor` — partial analogue (one slot of the contribution axis)
+
+Grounding references in the corpus:
+- [`references/bfo_reference.md`](../references/bfo_reference.md) — BFO occurrent/continuant pattern source
+
+## See also
+
+- [`predicates/has-beginning.md`](has-beginning.md) — temporal-boundary axis
+- [`predicates/created-by.md`](created-by.md) — authoring agent (single canonical)
+- [`predicates/mentions.md`](mentions.md) — topical reference (no participation claim)

@@ -1,0 +1,90 @@
+## What a `type: codebase` instance is
+
+**One memorial per registered code repository**, declaring frontmatter that connects the repo to the corpus's introspection substrate.  The memorial itself is light-weight; the detail-level structure (which function lives where, who calls what, namespace requires, dispatch tables) lives ONLY in a per-repo xref index built by code-introspection tooling (e.g., `clj-xref` for Clojure repos).
+
+There is **no parallel hierarchy of namespace / function / var memorials** — a codebase is reified at a single granularity (the repo), and finer-grained navigation goes through the introspection substrate.
+
+Codebase is a subtype of [`artifact`](artifact.md), and uses [`code-meta-type`](code-meta-type.md) composition (instead of the default markdown-meta-type) for detail-level navigation.
+
+## Substrate identity
+
+- **Class ident**: `{{class-ident}}`
+- **Parent class(es)**: {{parent-classes}}
+- **Ancestor chain**: {{ancestor-chain}}
+- **Native codec**: `{{native-codec}}`
+- **Codec type-keyword(s)**: {{codec-type-keywords}}
+
+## Slot vocabulary ({{slot-count}} slots inherited or declared)
+
+Codebase memorials inherit `:mm/Memory` plus type-specific required slots:
+
+- **`has-meta-type`** (required) — typed-edge to `:mm/CodeMetaType` (connects this codebase to the code substrate machinery)
+- **`repo-root`** (required) — absolute filesystem path to the repo
+- **`canonical-reference`** (required) — authoritative upstream URL (typically GitHub or another hosted git origin); preserved even when the repo is local-only
+- **`language`** (required) — primary language (clojure / python / typescript / etc.)
+- **`exploration-verbs`** — list of canonical commands the agent should reach for when exploring this repo's code
+
+{{slot-table}}
+
+## Discoverability
+
+Agents find registered codebase instances via:
+
+- `mem xref repos` — enumerates all registered codebase memorials
+- `/memory-tree memory/code` — directory tree
+- `/memory-search "<query>" --types codebase` — BM25F restricted to this type
+
+## Query verbs
+
+Per the [`code-meta-type`](code-meta-type.md) reflective surface, codebase instances support symmetric edge queries through the introspection substrate:
+
+- **Call graph** — calls / callers
+- **Reference graph** — references / referenced-by
+- **Macro expansion** — macroexpands / expanded-by
+- **Dispatch** — dispatches / dispatched-by
+- **Realization** — implements / implemented-by
+- **Dependencies** — deps / dependents
+
+These are answered from the per-repo xref index, not by walking memorial graph alone.
+
+## Canonical body structure
+
+The body is typically light — most navigation goes through the xref index, not through prose.  Minimal sections:
+
+```markdown
+## What this codebase is
+
+<One paragraph — the repo's purpose, current state, primary
+language and stack.>
+
+## Exploration verbs
+
+<Canonical commands for navigating this codebase.  Mirrors the
+frontmatter list but adds context.>
+
+## Adjacent corpus memorials
+
+<Links to library studies, bugs, observations, decisions about
+this codebase.>
+```
+
+## Pitfalls
+
+- **Replicating the xref index in markdown** — detail-level structure (functions, namespaces, vars) lives in the xref index, NOT in the codebase memorial.  If the memorial is growing namespace-by-namespace lists, it's drifted from its role
+- **Missing `repo-root`** — without it, introspection tooling can't locate the source
+- **Stale `canonical-reference`** — when a repo moves (forks, gets re-homed), update the canonical reference; the upstream URL is the durable identity
+
+## Composition with adjacent classes
+
+- **`code-meta-type`** — the meta-type composition; codebase instances declare `has-meta-type: <code-meta-type entity>` rather than subclassing
+- **`library`** — when a codebase is also a deep study target, the library memorial is the narrative; the codebase memorial is the substrate hook
+- **`bug`** — bugs about a codebase typically cite the codebase memorial in `affects:`
+
+## See also
+
+- [`types/artifact.md`](artifact.md) — parent abstract supertype
+- [`types/code-meta-type.md`](code-meta-type.md) — the meta-type substrate this type's instances use
+- [`types/library.md`](library.md) — narrative-study counterpart
+- [`types/bug.md`](bug.md) — bug memorials cite codebase instances
+- [`predicates/has-meta-type.md`](../predicates/has-meta-type.md) — the typed edge connecting codebase to its meta-type
+- Sandbar substrate: `sandbar/schema/mm-artifact.edn`

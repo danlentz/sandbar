@@ -1,0 +1,48 @@
+## What this predicate means
+
+**A `disagrees-with` B** — A's claims dispute B's claims; the author of A holds that B is incorrect or misframed in some material way.  The dispute predicate.
+
+Distinct from:
+- `contradicts:` — stronger; logical contradiction (the two CANNOT both be true)
+- `supersedes:` — different shape; lifecycle replacement (B is being phased out)
+- `refines:` — A narrows B's claims without disputing them
+
+## Substrate identity
+
+- **Slot ident**: `{{predicate-ident}}`
+- **Domain**: `{{domain}}`
+- **Range**: `{{range}}`
+- **Cardinality**: `{{cardinality}}`
+- **Inverse of**: `:mm.memory/is-disagreed-with-by`
+
+## Formal signature
+
+`{{predicate-name}} : {{domain}} × {{range}} → Bool`
+
+## When to use disagrees-with
+
+Use `disagrees-with:` when:
+- A's claims dispute B's claims (intellectual disagreement)
+- A's author wants to make the disagreement explicit
+- The author doesn't necessarily claim B is logically impossible
+
+Use `contradicts:` (stronger) when A and B cannot both be true.
+
+## Formal ontology mappings
+
+Aligned predicates from established formal vocabularies:
+
+- **CiTO** `cito:disagreesWith` — exact semantic match (CiTO's canonical disagreement relation)
+- **OWL** — no direct equivalent (`owl:differentFrom` is identity-level, not claim-level)
+- **PROV-O** — no direct equivalent
+- **DC Terms** — no direct equivalent
+- **SKOS** — no direct equivalent
+
+Grounding references in the corpus:
+- [`references/pav_cito_bibo_reference.md`](../references/pav_cito_bibo_reference.md) — CiTO `cito:disagreesWith` semantics
+
+## See also
+
+- [`predicates/is-disagreed-with-by.md`](is-disagreed-with-by.md) — inverse partner
+- [`predicates/contradicts.md`](contradicts.md) — stronger (logical contradiction)
+- [`predicates/refines.md`](refines.md) — adjacent (narrows without disputing)

@@ -1,0 +1,57 @@
+## What this predicate means
+
+**A `created-with` B** — memorial A was authored *with* tool / model / software / mechanism B.  The tool-axis of the PAV (Provenance, Authoring, Versioning) creation triple — the distinctive PAV contribution that no FOAF / DC / PROV-O cognate cleanly supplies.  For AI-collaborative corpora, the tool axis is **load-bearing**: "created by Dan with Claude Opus 4.7" is structurally different from "created by Dan with Emacs" even when the human author is identical.  Closes the AI-collaboration tool-axis gap in conventional authoring vocabularies.
+
+## Substrate identity
+
+- **Slot ident**: `{{predicate-ident}}`
+- **Domain**: `{{domain}}`
+- **Range**: `{{range}}`
+- **Cardinality**: `{{cardinality}}`
+- **`:dt/type`**: `:dt/AsymmetricFunctionalIrreflexiveProperty` (asymmetric + functional + irreflexive)
+
+## Formal signature
+
+`{{predicate-name}} : {{domain}} × {{range}} → Bool`
+
+## Characteristics
+
+- **Functional** — one canonical tool per memorial (OWL 2 RL `prp-fp` surfaces conflicts as queryable)
+- **Asymmetric** — A created-with B doesn't imply B created-with A (OWL 2 RL `prp-asyp`)
+- **Irreflexive** — a memorial isn't created with itself (OWL 2 RL `prp-irp`)
+
+## When to use created-with
+
+Use `created-with` on every memorial that wants AI-collaboration tool-axis attribution:
+
+- A pair-programmed memoir with both human + LLM tool axes
+- An auto-rendered substrate memorial — `created-with sandbar.bootstrap.render`
+- A code-generated artifact — `created-with` the generator + the human reviewer
+- A migration script's output — `created-with` the migration tool
+
+The substrate carries cardinality-many for flexibility (some memorials are multi-tool), but OWL functional characteristic surfaces conflicts when ambiguity matters.
+
+## Adjacent predicates
+
+| Axis | Predicate |
+|---|---|
+| Author | `created-by` — human / agent author |
+| Tool | **`created-with`** — software / model / mechanism |
+| Source | `descends-from` — lineage / aesthetic ancestry |
+| Method | `uses-method-in` — what methodology was applied |
+
+## Formal ontology mappings
+
+- **PAV** `pav:createdWith` — exact semantic match (the source standard)
+- **PROV-O** `prov:wasGeneratedBy` (with `prov:Plan`-style tool) — adjacent formulation
+- **DC Terms** — no direct equivalent (DC's `creator` doesn't distinguish tool from author)
+- **FOAF** — no direct equivalent (FOAF is agent-centric)
+
+Grounding references in the corpus:
+- [`references/pav_cito_bibo_reference.md`](../references/pav_cito_bibo_reference.md) — PAV provenance vocabulary
+
+## See also
+
+- [`predicates/created-by.md`](created-by.md) — author axis (companion)
+- [`predicates/made.md`](made.md) — agent-side inverse of created-by
+- [`predicates/descends-from.md`](descends-from.md) — lineage axis

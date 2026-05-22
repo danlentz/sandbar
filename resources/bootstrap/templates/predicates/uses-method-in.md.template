@@ -1,0 +1,61 @@
+## What this predicate means
+
+**A `uses-method-in` B** — artifact A (memoir / library / decision / synthesis / etc.) employs a method, technique, or framework specified by B (pattern / protocol).  The methodology-citation typed-edge.  Distinguishes from `evidences` (witness/example), from `cites` (weak external pointer), and from `implements` (full spec realization) — `uses-method-in` is "this artifact employed that methodology as part of its construction."
+
+## Substrate identity
+
+- **Slot ident**: `{{predicate-ident}}`
+- **Domain**: `{{domain}}`
+- **Range**: `{{range}}`
+- **Cardinality**: `{{cardinality}}`
+- **`:dt/type`**: `:dt/DirectedBinaryRelationProperty` (asymmetric + irreflexive)
+
+## Formal signature
+
+`{{predicate-name}} : {{domain}} × {{range}} → Bool`
+
+## Characteristics
+
+- **Asymmetric** — A uses-method-in B doesn't imply B uses-method-in A (OWL 2 RL `prp-asyp`)
+- **Irreflexive** — a memorial doesn't use its own method (OWL 2 RL `prp-irp`)
+- **NOT transitive** — using method in B doesn't propagate to methods B itself used
+
+## When to use uses-method-in
+
+Default to `uses-method-in` ONLY after checking:
+
+1. Is the artifact a full implementation of the spec? → `implements` (stronger)
+2. Is the artifact citing the pattern as evidence? → `evidences` (witness)
+3. Is the artifact loosely referring to the pattern? → `cites` (weaker)
+4. Did the artifact actually EMPLOY the methodology in its construction? → `uses-method-in`
+
+The classic shape: a memoir says "I used the Library-Card pattern for this study" — that's `uses-method-in: patterns/architectural/library_card.md`.
+
+## Adjacent predicates
+
+| Strength | Predicate |
+|---|---|
+| Strongest | `implements` — full spec realization |
+| Methodology | **`uses-method-in`** — employed in construction |
+| Witness | `evidences` — example/case-study |
+| Lighter | `cites` — source-pointer |
+
+## Formal ontology mappings
+
+- **CiTO** `cito:usesMethodIn` — exact semantic match (the source standard)
+- **PROV-O** `prov:wasInformedBy` (with `prov:Plan`) — adjacent formulation
+- **DC Terms** `dcterms:conformsTo` — close analogue but DC's is stronger (full conformance)
+
+Grounding references in the corpus:
+- [`references/pav_cito_bibo_reference.md`](../references/pav_cito_bibo_reference.md) — CiTO methodology-citation vocabulary
+
+## Dagger pair with provides-method-for
+
+`uses-method-in` is the CANONICAL ASSERTED DIRECTION per `protocol/predicate_lifecycle.md` §"Edge assertion is one-sided".  Its inverse `provides-method-for` is derivable via OWL 2 RL prp-inv1/inv2 entailment when `:dt/inverse-of :mm.memory/provides-method-for` is declared in the substrate.
+
+## See also
+
+- [`predicates/provides-method-for.md`](provides-method-for.md) — inverse (methodology-side)
+- [`predicates/implements.md`](implements.md) — stronger conformance
+- [`predicates/evidences.md`](evidences.md) — witness-strength citation
+- [`predicates/cites.md`](cites.md) — weaker source-pointer

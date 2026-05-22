@@ -1,0 +1,115 @@
+## What a `type: bug` instance is
+
+A **structured defect observation** — something that looked wrong during consumption of library X while the session was busy with project Y.  The point is to *capture context without derailing the current work*: instead of fixing the bug mid-session, drop a bug memorial and keep moving.  When someone later works on the affected library, the memorial is waiting with everything they need.
+
+Bug memorials are deliberately **context-local to the affected library**: they live under a per-library subtree (e.g., `bugs/<library>/`) rather than in the main index.  Sessions working on unrelated projects never see them.  Sessions working on the affected library do — via symlinking or project-local memory extension.
+
+Bug is a subtype of [`signal`](signal.md) — memorials that capture state about the world (here, observed defects).
+
+## When to create a bug memorial
+
+- A defect is noticed in a library during its use (not while working on it).  The fix belongs in the library's repo, not in the current project
+- A non-obvious DSL error, silent wrong-answer, or semantic mismatch between docs and behavior surfaces
+- A workaround is discovered that a future maintainer should know about
+- An edge case that isn't tested comes up organically
+
+## When NOT to create one
+
+- The defect is *in the current project's own code* — fix it and reference it in the commit.  Bug memorials are for *consuming* other libraries
+- The issue is actually user error — save a `feedback` memorial instead so the mistake isn't repeated
+- The issue is already in the library's tracker — add a pointer, don't duplicate
+
+## Location and scope rules
+
+**Public libraries** → global; bugs live in `memory/bugs/<library>/`.  Cross-session and cross-project reach is the point.
+
+**Proprietary libraries or engagement-specific code** → project-local; bugs live in the consuming project's `memory-local/bugs/<library>/` and never touch global memory.
+
+The scope rule is enforced socially, not mechanically — don't write a bug memorial naming a proprietary library into global memory.  If unsure, ask.
+
+## Substrate identity
+
+- **Class ident**: `{{class-ident}}`
+- **Parent class(es)**: {{parent-classes}}
+- **Ancestor chain**: {{ancestor-chain}}
+- **Native codec**: `{{native-codec}}`
+- **Codec type-keyword(s)**: {{codec-type-keywords}}
+
+## Slot vocabulary ({{slot-count}} slots inherited or declared)
+
+Bug memorials inherit `:mm/Memory` plus type-specific required slots:
+
+- **`severity`** (required) — `low` / `medium` / `high` / `critical`
+- **`status`** (required) — `open` / `confirmed` / `fixed` / `wontfix` / `stale`
+- **`affects`** (required) — `{library: <name>, version: <sha/version>}` (or `project:` for project-local bugs)
+- **`observed`** — `{date, environment, context}` structured field
+- **`reported-by`** — typically `dan` / `claude` / `both`
+
+{{slot-table}}
+
+## Severity rubric
+
+- **critical** — corrupts data, crashes silently, or makes the library unusable for its headline use-case
+- **high** — common case broken or gives wrong answer with no clear warning
+- **medium** — workaroundable but surprising; error message is unhelpful, edge case wrong
+- **low** — minor inconsistency, docs/behavior mismatch, slight paper cut
+
+## Status lifecycle
+
+- **open** — observed, not yet confirmed or triaged
+- **confirmed** — reproduced and understood as a real defect
+- **fixed** — a commit or version that resolves it is known; leave the memorial, update status, add `fixed-in: <sha/version>`
+- **wontfix** — deliberate non-fix; document the reason
+- **stale** — couldn't reproduce on re-check; kept as history
+
+## Canonical body structure
+
+```markdown
+## Symptom
+
+What the user / caller sees.  One paragraph.
+
+## Repro
+
+Smallest reproduction — raw code, not prose.
+
+## Expected vs actual
+
+- Expected: <one line>
+- Actual:   <one line>
+
+## Root cause (if known)
+
+Leave blank if just observed, not diagnosed.
+
+## Workaround
+
+What the caller should do today.  If none, say so.
+
+## Notes / context
+
+When it was noticed, suspected mechanism, links, anything else.
+```
+
+## Pitfalls
+
+- **Writing bugs as prose essays** — the body should fit on a screen; enough to reproduce, not more
+- **Putting proprietary repro code in a global bug** — the scope rule exists for this reason; check before saving
+- **Stale bugs cluttering the index** — when fixed, update status and `fixed-in` rather than deleting; keeps the forensic trail
+- **Treating every error as a bug** — user error belongs in `feedback`; architectural disagreement belongs in `decision`; a general *"don't do X"* belongs in `anti-pattern`.  Bug is for *defects in someone else's code*
+
+## Composition with adjacent classes
+
+- **`library`** — bugs complement library studies; the study describes what the library does well, the bugs describe what still needs work in the same library
+- **`decision`** — when a bug leads to a reversible architectural choice (adopt workaround vs fork library vs drop dep), record the choice as a decision and link back to the bug
+- **`anti-pattern`** — don't-do-this rules that emerged from understanding a bug's root cause live as anti-patterns, not in the bug memorial
+- **`feedback`** — when the "bug" was really library misuse, the lesson goes into feedback instead
+
+## See also
+
+- [`types/signal.md`](signal.md) — parent abstract supertype
+- [`types/library.md`](library.md) — complement (what works well vs what doesn't)
+- [`types/decision.md`](decision.md) — when a bug leads to an architectural choice
+- [`types/anti-pattern.md`](anti-pattern.md) — when bug root-cause generalizes
+- [`types/feedback.md`](feedback.md) — when "bug" was really misuse
+- Sandbar substrate: `sandbar/schema/mm-signal.edn`

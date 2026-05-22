@@ -1,0 +1,105 @@
+## What a `type: reference` instance is
+
+A **pointer to an external facility, convention, or tool** — the corpus's version of a directory entry.  Reference memorials don't re-implement the facility; they describe it, explain when to reach for it, and cite the authoritative source.
+
+References are typically light-weight.  The authoritative documentation lives elsewhere (in a library's README, in the project's `CLAUDE.md`, in a Grafana dashboard URL).  The memorial captures *when* to reach for the facility and *how* it fits into workflow.
+
+Reference is a subtype of [`artifact`](artifact.md) — a durable, self-contained output with memorial value beyond its immediate trigger.
+
+## When to create a reference memorial
+
+- A tool, facility, or convention crosses project boundaries and future collaborators need to know it exists
+- A decision about which tool to use for which job deserves a named landing page (*"wiring questions → xref; behavior questions → scoped logging; value questions → scope-capture"*)
+- A project-local convention is worth generalizing (scoped logging, dependency tree layout, diagnostic rhythm)
+- An external concept (RFC, paper, ontology) needs a corpus-side landing page
+
+## When NOT to create one
+
+- The reference is a library you've studied deeply — use `library` type with a full study
+- The facility is a one-off tool used once — direct link in the relevant memorial is enough
+- The reference is a meta-rule about the memory system — use `protocol`
+- The reference is a concrete external artifact (URL, file, primary source) — consider the `resource` subtype
+
+## Substrate identity
+
+- **Class ident**: `{{class-ident}}`
+- **Parent class(es)**: {{parent-classes}}
+- **Ancestor chain**: {{ancestor-chain}}
+- **Native codec**: `{{native-codec}}`
+- **Codec type-keyword(s)**: {{codec-type-keywords}}
+
+## Slot vocabulary ({{slot-count}} slots inherited or declared)
+
+Reference memorials inherit `:mm/Memory` plus the **Library Card** typed-edge axes (when the subject is a library or non-trivial external concept):
+
+- **Documentation** — `documents` / `documented-by` (reference ↔ library)
+- **Mereology** — `has-part` / `part-of` (umbrella ↔ topic)
+- **Formal realization** — `implements` / `implemented-by` (realizes a spec / paper / RFC)
+- **Lineage** — `descends-from` / `ancestor-of` (genetic relationship in design history)
+- **Dependencies** — `consumes` / `consumed-by` (library uses another library)
+- **Provenance** — `created-by` (author / maker)
+- **Research substrate** — `cites` (papers / talks / docs grounding the design)
+- **Methodology attribution** — `provides-method-for` / `uses-method-in`
+- **Domain tagging** — `domain-tags` (free-form string field for project-scoped retrieval)
+- **Design-space positioning** — `disagrees-with` / `is-disagreed-with-by`
+- **Empirical grounding** — `evidences` / `evidenced-by`
+
+Each axis is OPTIONAL; populate where applicable.
+
+{{slot-table}}
+
+## Sub-subtypes
+
+The Reference type has two sub-subtypes refining it:
+
+- **`resource`** — concrete external artifact (URL, file, document, primary source)
+- **`content-type`** — content-typed external artifact (carries content-type metadata for proper rendering / dispatch)
+
+## Canonical body structure
+
+```markdown
+## What the facility is
+
+<One paragraph.  Cite the source.>
+
+## When to reach for it
+
+<The trigger conditions.>
+
+## How to use it
+
+<Minimal usage example or shape summary.>
+
+## Project-specific variations
+
+<When different projects vary the convention, note them.>
+
+## See also
+
+<Related references, patterns, anti-patterns.>
+```
+
+## Pitfalls
+
+- **Re-implementing the source** — a reference that duplicates the authoritative documentation rots when the source changes; keep references thin and link out
+- **Stale URLs** — especially for project-local dashboards or internal wiki pages.  Flag for periodic validation
+- **Over-abstraction** — references should name concrete tools, not generic categories.  *"Diagnostic tools"* is not a reference; *"xref + scoped-logging + scope-capture"* is
+
+## Composition with adjacent classes
+
+- **`library`** — when a reference grows into a full study with file:line citations
+- **`resource`** — sub-subtype for concrete external artifacts (URLs, primary sources)
+- **`content-type`** — sub-subtype for content-typed artifacts
+- **`pattern`** — patterns may cite references to ground themselves in external facilities
+- **`protocol`** — protocols often cite references for the tools they govern
+- **`briefing`** — references are retrieval-oriented; briefings are audience-oriented
+
+## See also
+
+- [`types/artifact.md`](artifact.md) — parent abstract supertype
+- [`types/library.md`](library.md) — when references grow into full studies
+- [`types/resource.md`](resource.md) — sub-subtype for primary sources
+- [`types/content-type.md`](content-type.md) — sub-subtype for content-typed artifacts
+- [`types/synthesis.md`](synthesis.md) — derived-claim sibling
+- [`types/briefing.md`](briefing.md) — audience-oriented sibling
+- Sandbar substrate: `sandbar/schema/mm-artifact.edn`

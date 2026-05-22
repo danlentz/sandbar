@@ -1,0 +1,147 @@
+## What a `type: log` instance is
+
+A **dated, chronological note memorializing what happened during a specific working episode**, rich with interlinks to the artifacts that episode produced, touched, or depended on.
+
+Logs are the **temporal axis** of the corpus.  Most memorials are organized by topic — patterns, references, types, libraries — answering *"what do I know about X?"*.  Logs answer *"what happened on day D?"* or *"when did feature F first land?"* or *"which session produced this pattern?"*
+
+A log entry is not the work — it's the **record of the work**.  It cites what was done, what changed, what was learned, what remains.  It's the journal entry; the patterns + memoirs + decisions + observations the log interlinks are the durable outputs.
+
+Log is a subtype of [`artifact`](artifact.md) — a durable, self-contained output with memorial value beyond its immediate trigger.
+
+## Distinguishing features
+
+- **Chronological** — indexed by date / timestamp, not topic.  Log entries sort temporally in the `logs/` subtree
+- **Interlinked** — every log entry cites (rich `related:`) the memorials it produced, updated, or depended on.  A log without cross-links is a diary; a log WITH cross-links is a navigation surface over the temporal slice
+- **Context-bearing** — captures the session-level "why now" that individual topical memorials lose
+- **Write-once, semi-archival** — logs age into historical record.  Not reviewed like live memorials; re-read for forensics / arc-reconstruction
+
+## When to create a log memorial
+
+- **Arc-landing sessions** — at the close of a substantive arc (Stage-N complete, library study landed, extraction finished), write a log citing everything produced
+- **Significant methodological episodes** — when applying a protocol to a real situation, the log records the episode alongside the patterns produced
+- **Decision landings + their context** — when a decision memorial is written, optionally accompany with a log recording the session that produced it
+- **End-of-session summaries** — when the session crossed ~5+ memorial touches, log it
+
+## When NOT to create one
+
+- **Single-observation session** — that's an `observation` entry, not a log
+- **Ephemeral session state** — mid-session working notes belong in `inbox/`, not logs
+- **Commit messages suffice** — if `git log --oneline -5` answers "what happened," no log memorial needed
+- **Daily journaling** — logs are event-triggered, not calendar-triggered.  Don't write log-per-day; write logs-per-meaningful-episode
+
+## Substrate identity
+
+- **Class ident**: `{{class-ident}}`
+- **Parent class(es)**: {{parent-classes}}
+- **Ancestor chain**: {{ancestor-chain}}
+- **Native codec**: `{{native-codec}}`
+- **Codec type-keyword(s)**: {{codec-type-keywords}}
+
+## Slot vocabulary ({{slot-count}} slots inherited or declared)
+
+Log memorials inherit `:mm/Memory` plus type-specific extensions:
+
+- **`date`** — ISO-8601 calendar date when the episode occurred (mandatory)
+- **`session`** — identifier (commit range, session ID, arc name)
+- **`duration`** — rough wall-clock estimate
+- **`touches`** — structured list of what the log memorializes (`created` / `updated` / `committed` sub-lists)
+- **`handoff-schema-version`** — schema version for the handoff role (logs serve as session-orientation artifacts)
+
+{{slot-table}}
+
+## Canonical body structure
+
+```markdown
+## What happened
+
+<One paragraph — the episode at a glance.>
+
+## Context / trigger
+
+<What was happening before that made this episode occur.
+Principal-directive quote if applicable.>
+
+## Flow
+
+<Chronological (numbered) account of phases / decisions / pivots.
+Not code-level; arc-level.  Each phase links out to any memorial
+it produced or touched.>
+
+## Artifacts produced
+
+<Explicit list of created / updated memorials with one-line
+summaries.  Duplicates `touches:` frontmatter for narrative
+readability.>
+
+## Surprises / blockers / pivots
+
+<Non-happy-path material — discipline catches, sandbox blocks,
+mid-phase direction changes.  This is the stuff commit messages
+don't capture.>
+
+## Lessons / rules surfaced
+
+<If the episode produced any new feedback, preferences, protocols,
+observations — name them here with links.>
+
+## Open ends
+
+<What remains.  Explicitly.  A future session re-reading this log
+should know what's still unfinished.>
+
+## See also
+
+<Cross-links; primary memorials + adjacent logs.>
+```
+
+## Interlinking discipline
+
+**Logs are value-dense only when interlinked.**  Every memorial the log cites should link back:
+
+- Created memorials should cite the log as their landing context: `related: [logs/<date>_<slug>.md]`
+- Updated memorials may cite the log in See-also if the update is substantive
+- Subsequent logs building on earlier logs should cite ancestor logs
+
+This reciprocity turns the log subtree into a **navigation surface** over the topical memory corpus — answering "what happened, in what order, producing what?"
+
+## Lifecycle
+
+Logs are **semi-archival**:
+
+- Created at end-of-episode
+- Rarely re-reviewed (no `last-reviewed` churn)
+- Superseded only if the log itself turned out to misremember the episode
+- Referenced from plan memorials (§8 retrospective), from future logs, from arc-reconstruction work
+- **Never deleted** — the forensic value grows with time
+
+## Dual role: handoff artifact
+
+Logs serve a second role beyond chronological diary: **they are handoff artifacts** read by session-orientation tooling to bootstrap the next session.  This dual role brings extra discipline:
+
+- **Versioned shape** — logs carry a `handoff-schema-version` frontmatter field naming which structural shape they were written under
+- **Reified coordinates** — explicit `closed-at:` (ISO-8601 with offset), `host:`, and `environment:` in frontmatter, plus an HHMM time component in the filename (`<YYYY-MM-DD>T<HHMM>_<slug>.md`)
+
+The picker targets the current version; legacy support is best-effort for a transition window then dropped.
+
+## Pitfalls
+
+- **Logs as diary** — writing a log after every session erodes signal; logs are event-triggered
+- **Log without interlinks** — a log that doesn't cite its artifacts is a reminiscence, not a memorial.  Aim for heavy `related:` + body-level links
+- **Log as replacement for patterns / observations** — if you found a pattern, write the pattern.  The log cites the pattern; it doesn't replace the pattern
+- **Stale touches** — if `touches:` names memorials that have been deleted/renamed, refresh on re-read
+
+## Composition with adjacent classes
+
+- **`memoir`** — methodological sibling; memoir is process-record, log is session-record
+- **`plan`** — a plan's `## Retrospective` section may cite logs documenting the arc's execution
+- **`decision`** — the log that produced a decision records when + under what context it landed
+- **`observation`** — observations surfaced during a logged episode should cite the log in their `## How it was noticed` section
+
+## See also
+
+- [`types/artifact.md`](artifact.md) — parent abstract supertype
+- [`types/memoir.md`](memoir.md) — methodological sibling
+- [`types/plan.md`](plan.md) — forward-design sibling; plans design, logs record
+- [`types/observation.md`](observation.md) — topical sibling; an observation may be produced by a logged session
+- [`types/decision.md`](decision.md) — decisions landed during a session are cited from its log
+- Sandbar substrate: `sandbar/schema/mm-artifact.edn`

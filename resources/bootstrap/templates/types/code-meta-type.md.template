@@ -1,0 +1,64 @@
+## What a `type: code-meta-type` instance is
+
+A **concrete meta-type for memorials representing source-code repositories**.  Each INSTANCE of code-meta-type is a markdown memorial under `memory/code/` that reifies a code-repository entry point.  The memorial itself is markdown; what it **represents** is a source-code repository as a first-class queryable substrate alongside markdown memorials.
+
+The detailed code structure — namespaces, functions, vars, typed-edge references (calls, macroexpands, dispatches, implements), call graph — lives in a per-repo symbol index **outside** the markdown corpus.  The index is built by a code-introspection tool (e.g., `clj-xref` for Clojure repos) and queried via dedicated CLI verbs.
+
+This separation honors the **anti-recapitulation discipline**: ONE markdown memorial per repo serves as the entry point; detailed code structure stays in the indexer + query surface, not in parallel-recapitulated memorials.  The markdown corpus stays tractable while preserving authoritative code-substrate access.
+
+Code-Meta-Type is a subtype of [`meta-type`](meta-type.md) → [`meta`](meta.md).
+
+## Substrate
+
+- **Storage**: source-code files in a code repository
+- **Format**: native source format (Clojure / Python / TypeScript / etc.)
+- **Index location**: `etc/code-xref/<slug>.edn` (or analogous derived index)
+- **Schema authority**: the source code is its own authority; the xref index reflects what's actually in the source
+- **Versioning**: the repo's own git history (independent of the markdown corpus's commits)
+
+## Access surface
+
+| Concern | Tool / surface |
+|---|---|
+| Symbol search | `mem search --scope code` |
+| Call graph | `mem xref calls/callers` |
+| References | `mem xref references/referenced-by` |
+| Macro expansion | `mem xref macroexpands/expanded-by` |
+| Dispatch | `mem xref dispatches/dispatched-by` |
+| Realization | `mem xref implements/implemented-by` |
+| Dependencies | `mem xref deps/dependents` |
+| Repo enumeration | `mem xref repos` |
+
+## Substrate identity
+
+- **Class ident**: `{{class-ident}}`
+- **Parent class(es)**: {{parent-classes}}
+- **Ancestor chain**: {{ancestor-chain}}
+- **Native codec**: `{{native-codec}}`
+- **Codec type-keyword(s)**: {{codec-type-keywords}}
+
+## Slot vocabulary ({{slot-count}} slots inherited or declared)
+
+Code-Meta-Type memorials inherit `:mm/Memory` (and `meta-type`) with no class-specific slots — concrete instances are codebase memorials that reference this meta-type via `has-meta-type:`.
+
+{{slot-table}}
+
+## Opt-in default behavior
+
+Per the opt-in discipline: code-meta-type instances are NOT included in default `mem search` results unless `--scope code` is passed.  Markdown-corpus search remains unchanged; consumers explicitly opt into code-substrate queries when needed.
+
+This preserves portability — when the xref index is unavailable (no Clojure runtime, lint failure, fresh checkout), the markdown corpus still works.  Code-substrate queries fail gracefully.
+
+## Composition with adjacent classes
+
+- **`codebase`** — concrete codebase memorials declare `has-meta-type: <this code-meta-type entity>`
+- **`library`** — library studies often cite their target's codebase memorial
+- **`bug`** — bugs in registered codebases cite the codebase memorial via `affects:`
+
+## See also
+
+- [`types/meta-type.md`](meta-type.md) — parent abstract supertype
+- [`types/markdown-meta-type.md`](markdown-meta-type.md) — sibling concrete meta-type (default substrate)
+- [`types/codebase.md`](codebase.md) — type that uses this meta-type
+- [`predicates/has-meta-type.md`](../predicates/has-meta-type.md) — typed-edge linking codebase to meta-type
+- Sandbar substrate: `sandbar/schema/mm-meta.edn`

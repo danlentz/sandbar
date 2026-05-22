@@ -1,0 +1,61 @@
+## What this predicate means
+
+**Rule A `uses-engine` Engine B** — typed-edge predicate declaring which `type: engine` memorial implements a rule's body evaluation.  Used by `type: rule` memorials to reference `engines/<name>.md` first-class engine memorials per `decisions/engine_as_first_class_type_2026_05_11.md`.  Replaces (or supplements) the legacy `engine:` keyword-discriminator field-value with full typed-edge graph integration — the engine becomes a first-class memorial that other rules can discover, audit, and depend on.
+
+## Substrate identity
+
+- **Slot ident**: `{{predicate-ident}}`
+- **Domain**: `{{domain}}`
+- **Range**: `{{range}}`
+- **Cardinality**: `{{cardinality}}`
+- **`:dt/type`**: `:dt/DirectedBinaryRelationProperty` (asymmetric + irreflexive)
+
+## Formal signature
+
+`{{predicate-name}} : {{domain}} × {{range}} → Bool`
+
+## Characteristics
+
+- **Asymmetric** — rule uses engine doesn't imply engine uses rule (OWL 2 RL `prp-asyp`)
+- **Irreflexive** — no memorial uses itself as engine (OWL 2 RL `prp-irp`)
+- **NOT transitive**
+
+## When to use uses-engine
+
+Use on rule memorials to bind the rule's body evaluation to a specific engine:
+
+```yaml
+type: rule
+name: Foo Discipline Rule
+uses-engine:
+  - engines/plain-pattern.md     # matched at rule-firing time
+  - engines/datomic-datalog.md   # alternative
+```
+
+Multi-engine declarations allow the rule-engine machinery to dispatch based on body shape — `data-directed-dispatch-for-engine-pluggability` per the substrate-design pattern.
+
+## Adjacent predicates
+
+| Aspect | Predicate |
+|---|---|
+| Engine binding | **`uses-engine`** — rule's evaluation engine |
+| Actor scope | `actor` — rule's actor scope |
+| Context scope | `applies-in` — rule's context scope |
+| Exemption | `bypasses` — actor-side exemption |
+
+## Formal ontology mappings
+
+- **OPA / Rego** rule `target` + evaluation strategy — adjacent operational pattern
+- **OWL 2** — no direct equivalent (engine-binding is metamodel)
+- **PROV-O** `prov:Plan` (with engine-as-plan) — distant analogue
+
+Grounding references in the corpus:
+- [`decisions/engine_as_first_class_type_2026_05_11.md`](../decisions/engine_as_first_class_type_2026_05_11.md) — engine as first-class memory type
+- [`decisions/rules_as_first_class_type_2026_05_11.md`](../decisions/rules_as_first_class_type_2026_05_11.md) §D6 — engine-of-choice per rule discipline
+- [`patterns/architectural/metamodel/data_directed_dispatch_for_engine_pluggability.md`](../patterns/architectural/metamodel/data_directed_dispatch_for_engine_pluggability.md) — dispatch substrate-design pattern
+
+## See also
+
+- [`predicates/actor.md`](actor.md) — rule's actor-scope axis
+- [`predicates/applies-in.md`](applies-in.md) — rule's context-scope axis
+- [`predicates/governed-by.md`](governed-by.md) — artifact-side rule-governance edge

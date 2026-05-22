@@ -1,0 +1,49 @@
+## What this predicate means
+
+**A `conforms-to` B** — A matches B's shape, vocabulary, or surface — without necessarily being a working realization.  Lighter than `implements` (which claims A IS a working instance of B's contract); heavier than `cites` (which is just a pointer).
+
+The shape-compliance predicate: A LOOKS like B requires, regardless of whether A's intent is to be an instance of B.
+
+## Substrate identity
+
+- **Slot ident**: `{{predicate-ident}}`
+- **Domain**: `{{domain}}`
+- **Range**: `{{range}}`
+- **Cardinality**: `{{cardinality}}`
+- **Sub-property of**: `:mm.memory/cites`
+
+## Formal signature
+
+`{{predicate-name}} : {{domain}} × {{range}} → Bool`
+
+## When to use conforms-to
+
+Use `conforms-to:` when:
+- A matches B's surface (schema, vocabulary, naming convention) without intent to be a working realization
+- A is shape-compliant but B is descriptive rather than prescriptive
+- A SHACL-like shape-validation relation applies
+
+Examples:
+- A memorial conforms to a frontmatter shape
+- A class conforms to an interface signature without consciously implementing it
+- A document conforms to a style guide
+
+Use `implements:` (stronger) when A IS a concrete realization of B's contract.
+
+## Formal ontology mappings
+
+Aligned predicates from established formal vocabularies:
+
+- **DC Terms** `dcterms:conformsTo` — exact semantic match (the canonical shape-conformance predicate)
+- **SHACL** `sh:conforms` — close analogue (shape-validation result, slightly different semantics — `sh:conforms` is a boolean validation result, while `dcterms:conformsTo` is the relation between entity and shape)
+- **OWL** — no direct equivalent (closest: `owl:equivalentClass` for class-equivalence)
+- **PROV-O** — no direct equivalent
+- **SKOS / CiTO** — no direct equivalent
+
+Grounding references in the corpus:
+- [`references/rdfs_reference.md`](../references/rdfs_reference.md) — RDFS / OWL / DC Terms substrate
+
+## See also
+
+- [`predicates/implements.md`](implements.md) — stronger (working realization)
+- [`predicates/cites.md`](cites.md) — weaker (source-pointer only)

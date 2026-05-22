@@ -1,0 +1,54 @@
+## What this predicate means
+
+**Agent A `made` memory B** — FOAF agent-creation typed-edge.  The dagger inverse of `created-by` — where `created-by` is the memorial-side assertion ("this memorial was created by Agent X"), `made` is the agent-side assertion ("Agent A made these memorials").  Per `protocol/predicate_lifecycle.md` §"Edge assertion is one-sided", the canonical asserted direction is the memorial side (`created-by:`); `made:` is derivable via inverse-of entailment on the agent side and exists for vocabulary completeness + reverse-direction retrieval.
+
+## Substrate identity
+
+- **Slot ident**: `{{predicate-ident}}`
+- **Domain**: `{{domain}}`
+- **Range**: `{{range}}`
+- **Cardinality**: `{{cardinality}}`
+- **`:dt/type`**: `:dt/DirectedBinaryRelationProperty` (asymmetric + irreflexive)
+
+## Formal signature
+
+`{{predicate-name}} : {{domain}} × {{range}} → Bool`
+
+## Characteristics
+
+- **Asymmetric** — Agent A made memory B doesn't imply memory B made Agent A (OWL 2 RL `prp-asyp`)
+- **Irreflexive** — agents don't "make" themselves (OWL 2 RL `prp-irp`)
+- **NOT transitive**
+
+## When to use made
+
+In typical authoring posture, you DON'T write `made:` on actor memorials.  You write `created-by:` on the artifact memorial (pointing to the actor); the substrate derives `made:` on the actor side via OWL 2 RL `prp-inv1`/`prp-inv2` once `:dt/inverse-of` is declared between the pair.
+
+Use `made:` directly only when authoring an actor-centric retrieval ("show every memorial Dan made via Claude Opus 4.7") — and even then, prefer the inverse query (`/memory-search --inbound-predicate created-by --from actors/dan-lentz.md`).
+
+## Adjacent predicates
+
+| Direction | Predicate |
+|---|---|
+| Memorial-side | `created-by` — canonical (memorial → actor) |
+| Agent-side | **`made`** — inverse (actor → memorial); derivable |
+| Tool axis | `created-with` — what tool was used |
+
+## Formal ontology mappings
+
+- **FOAF** `foaf:made` — exact semantic match (the source standard)
+- **PAV** `pav:authoredBy` — close analogue (more provenance-specific)
+- **DC Terms** `dcterms:creator` — alternative formulation (memorial-side, like created-by)
+
+Grounding references in the corpus:
+- [`references/foaf_reference.md`](../references/foaf_reference.md) — FOAF authoring vocabulary
+
+## Inverse-of relation
+
+`made` is the canonical inverse of `created-by`.  When `:dt/inverse-of :mm.memory/created-by` is declared, the substrate's entailment derives `made:` from each `created-by:` assertion (and vice versa) — single-sided authoring; double-sided queryability.
+
+## See also
+
+- [`predicates/created-by.md`](created-by.md) — canonical (memorial-side)
+- [`predicates/created-with.md`](created-with.md) — tool axis
+- [`predicates/has-participant.md`](has-participant.md) — broader participation

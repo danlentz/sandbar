@@ -1,0 +1,57 @@
+## What this predicate means
+
+**Derived memory A `derives-from` triggering rule + premise memories** — captures the dependency-directed-retraction provenance chain for rule-derived memorials.  When a rule fires producing a derived memory M, M's frontmatter declares `derives-from: [rules/X.md, premise-1.md, premise-2.md]` — the rule that produced it + the input memories the rule's LHS matched.  On premise retraction, dependency-directed backtracking walks `derives-from:` to identify dependents requiring invalidation.
+
+## Substrate identity
+
+- **Slot ident**: `{{predicate-ident}}`
+- **Domain**: `{{domain}}`
+- **Range**: `{{range}}`
+- **Cardinality**: `{{cardinality}}`
+- **`:dt/type`**: `:dt/DirectedBinaryRelationProperty` (asymmetric + irreflexive)
+
+## Formal signature
+
+`{{predicate-name}} : {{domain}} × {{range}} → Bool`
+
+## Characteristics
+
+- **Asymmetric** — derived memory derives-from premise; premise doesn't derive-from derived (OWL 2 RL `prp-asyp`)
+- **Irreflexive** — no memory derives from itself (OWL 2 RL `prp-irp`)
+- **NOT transitive** — derives-from carries premise dependency, not transitive lineage (use `descends-from` for transitive aesthetic ancestry)
+
+## When to use derives-from
+
+Use `derives-from:` on memorials that were RULE-PRODUCED:
+
+- Auto-generated observation memorials from rule-fire events
+- Derived assertions in a truth-maintenance system
+- Rule-rendered substrate memorials (e.g., from a forward-chaining inference)
+
+The substrate's dependency-directed-retraction machinery walks `derives-from:` to identify what to invalidate when a premise is retracted.
+
+## Adjacent predicates
+
+| Aspect | Predicate |
+|---|---|
+| Derivation | **`derives-from`** — rule + premises that produced this memory |
+| Aesthetic lineage | `descends-from` — transitive ancestry (DIFFERENT axis; not provenance) |
+| Source citation | `cites` — non-derivational reference |
+| Conformance | `conforms-to` — declarative shape match |
+
+## Formal ontology mappings
+
+- **PROV-O** `prov:wasDerivedFrom` — exact semantic match (the source standard)
+- **Sussman/Steele propagator pattern** — operational origin (cells + premise lists + contradiction-driven retraction)
+- **Garnet** dependency-directed backtracking — adjacent constraint-system pattern
+- **OWL 2** — no direct equivalent (provenance is meta to base relations)
+
+Grounding references in the corpus:
+- [`decisions/rules_as_first_class_type_2026_05_11.md`](../decisions/rules_as_first_class_type_2026_05_11.md) §D9 Garnet + Sussman propagator pattern
+- [`references/prov_o_reference.md`](../references/prov_o_reference.md) — W3C PROV-O provenance vocabulary
+
+## See also
+
+- [`predicates/descends-from.md`](descends-from.md) — aesthetic/architectural lineage (different axis)
+- [`predicates/cites.md`](cites.md) — non-derivational source citation
+- [`predicates/governed-by.md`](governed-by.md) — rule-artifact governance edge

@@ -1,0 +1,128 @@
+## What a `type: pattern` instance is
+
+A named, reusable **architectural or process convention** — something with a rule, a rationale, and a canonical example.  The memorial answers: *"When you face X, do Y because Z."*
+
+Patterns are the **do-these** of the corpus.  [Anti-patterns](anti-pattern.md) are the **don't-do-these**.  Together they form a bidirectional guidance layer above library studies and preferences.
+
+Pattern is a subtype of [`guidance`](guidance.md) — memorials that prescribe action.
+
+## When to create a pattern memorial
+
+- A convention recurs across 2+ libraries or 2+ projects and deserves naming so future work can cite it
+- A library study surfaces a technique that generalizes beyond the one library
+- A principal collaborator names a convention explicitly (*"let's call this X"*)
+- Multiple observations begin sharing a shape — a pattern can extract the shared structure
+
+## When NOT to create one
+
+- The convention applies to exactly one library and nowhere else — document it in the library study, not as a standalone pattern
+- The convention is ephemeral or tied to one in-flight arc — keep it inline in the plan
+- The convention is a negative rule — use `anti-pattern` instead
+
+## Substrate identity
+
+- **Class ident**: `{{class-ident}}`
+- **Parent class(es)**: {{parent-classes}}
+- **Ancestor chain**: {{ancestor-chain}}
+- **Native codec**: `{{native-codec}}`
+- **Codec type-keyword(s)**: {{codec-type-keywords}}
+
+## Slot vocabulary ({{slot-count}} slots inherited or declared)
+
+Pattern memorials inherit `:mm/Memory` plus guidance-specific extensions:
+
+- **`at-startup`** / **`one-line`** — opt-in to the at-startup-visibility surface (TIER-0 / TIER-1 / standard)
+- **`demonstrates`** — typed edge to canonical example(s)
+
+Audit invariant: `pattern-cites-at-least-one-library-canonical-example` (warning).  A pattern with no canonical example is an abstract principle, not a pattern.
+
+{{slot-table}}
+
+## Canonical body structure
+
+The 7 sections most pattern memorials carry:
+
+```markdown
+## The pattern
+
+<One paragraph stating the rule concretely.  Lead with the what,
+not the why.>
+
+## Why it works
+
+<The mechanism.  What property makes the pattern earn its keep.>
+
+## When to apply
+
+<Trigger conditions.  Specific enough that a reader can recognize
+when the pattern fits.>
+
+## When NOT to apply
+
+<Counter-conditions.  Essential for judgment; a pattern that
+applies everywhere is noise.>
+
+## The implementation shape
+
+<Code sketch, diagram, or step list.  Make the pattern
+instantiable — a reader should know how to follow it.>
+
+## Canonical example
+
+<A library / file / commit that demonstrates the pattern.  Cite
+file:line where useful.>
+
+## Pitfalls
+
+<The easy-to-miss mistakes when applying the pattern.>
+
+## See also
+
+<Related patterns, anti-patterns, library studies, and the
+guidance abstract supertype.>
+```
+
+Not every section is required on every pattern, but all seven should appear across the corpus.
+
+## Composition with adjacent classes
+
+- **`anti-pattern`** — every anti-pattern must cite at least one positive pattern as its alternative; patterns are the positive complements
+- **`library`** — canonical examples typically live in library studies; the pattern cites the library
+- **`example`** — concrete demonstrations of the pattern in action
+- **`preference`** — preferences are softer than patterns (aesthetic vs. structural); a preference may compose with a pattern
+
+## At-startup visibility
+
+A pattern that's high-leverage for daily collaboration may opt into the at-startup-visibility surface via:
+
+```yaml
+at-startup: keystone   # surfaced TIER-0 (most-broken disciplines)
+                       # or 'high' (TIER-1) or 'standard' (default)
+one-line: <≤80 char short-form>
+```
+
+Tier calibration is reviewed at retrospective time; thresholds are soft ceilings.
+
+## Pitfalls
+
+- **Under-specification** — a pattern named "Good Code" saying "write good code" is noise; patterns must have trigger conditions and failure modes
+- **Premature extraction** — extracting a pattern from a single observation is fragile; the second observation may reveal the pattern was actually situational
+- **Library-example missing** — a pattern with no canonical example is an abstract principle, not a pattern.  Audit flags these
+- **Duplicating an anti-pattern's opposite** — if `anti-patterns/foo.md` says "don't do X, do Y instead", don't write a pattern "Do Y" — let the anti-pattern cite Y via `related:`
+
+## State-change-detection (captureability)
+
+This class is mid-conversation-captureable.  Inject-triggers:
+- *"same shape as..."*
+- *"this keeps happening"*
+
+When these signals fire, the appropriate capture may be a pattern (the recurring shape), a synthesis (cross-cutting claim), or an observation (single noticed instance) per scope.
+
+## See also
+
+- [`types/guidance.md`](guidance.md) — parent abstract supertype
+- [`types/anti-pattern.md`](anti-pattern.md) — the negative complement
+- [`types/library.md`](library.md) — where canonical examples typically live
+- [`types/example.md`](example.md) — concrete demonstrations
+- [`types/preference.md`](preference.md) — softer aesthetic conventions
+- Sandbar substrate: `sandbar/schema/mm-guidance.edn`

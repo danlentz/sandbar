@@ -1,0 +1,46 @@
+## What this predicate means
+
+**A `previous-by-date` B** — A and B are occurrents where B's temporal position precedes A's; the assertion points backward in time.  Inverse of `next-by-date` — they form a dagger pair giving bidirectional navigation through append-only chronological sequences.  Preserves all characteristics of `next-by-date` (asymmetric + irreflexive + NOT transitive) — the pairwise-cons-list invariant runs in both directions.
+
+## Substrate identity
+
+- **Slot ident**: `{{predicate-ident}}`
+- **Domain**: `{{domain}}`
+- **Range**: `{{range}}`
+- **Cardinality**: `{{cardinality}}`
+- **`:dt/type`**: `:dt/DirectedBinaryRelationProperty`
+
+## Formal signature
+
+`{{predicate-name}} : {{domain}} × {{range}} → Bool`
+
+## Characteristics
+
+- **Asymmetric** — A previous-by-date B doesn't imply B previous-by-date A (OWL 2 RL `prp-asyp`)
+- **Irreflexive** — an occurrent doesn't precede itself (OWL 2 RL `prp-irp`)
+- **NOT transitive** — chains walk explicitly (pairwise-cons-list invariant)
+
+## When to use previous-by-date
+
+Use `previous-by-date` whenever the AUTHORING POSTURE is backward-looking — adding a new occurrent that references its predecessor (rather than the predecessor knowing about its successor).  Per `protocol/predicate_lifecycle.md` §"Edge assertion is one-sided", typically EITHER `next-by-date` is asserted at the predecessor side OR `previous-by-date` is asserted at the successor side — not both — and the other direction is derived via `:dt/inverse-of` entailment.
+
+## Adjacent predicates
+
+| Direction | Predicate |
+|---|---|
+| Forward | `next-by-date` — A precedes B |
+| Backward | **`previous-by-date`** — A follows B |
+
+## Formal ontology mappings
+
+- **SIOC 2007** `sioc:previous_by_date` — exact semantic match
+- Companion of `sioc:next_by_date` in SIOC's pairwise-navigation convention
+
+## Inverse-of relation
+
+`previous-by-date` is the canonical inverse of `next-by-date`.  When `:dt/inverse-of :mm.memory/next-by-date` is declared, `sandbar.db.entailment.core/prp-inv1` and `prp-inv2` derive each direction from the other — substrate declares one side; queries see both.
+
+## See also
+
+- [`predicates/next-by-date.md`](next-by-date.md) — inverse (forward navigation)
+- [`predicates/has-beginning.md`](has-beginning.md) — temporal-boundary axis

@@ -1,0 +1,48 @@
+## What this predicate means
+
+**A `informed-by` B** — A's design / content / framing was shaped by B (inverse of `informs`).  The author-side acknowledgment of intellectual influence without claiming B caused A.
+
+Common shapes:
+- A pattern memorial informed-by a reference study
+- A decision informed-by prior thinking captured in observation memorials
+- A plan informed-by a research synthesis
+
+## Substrate identity
+
+- **Slot ident**: `{{predicate-ident}}`
+- **Domain**: `{{domain}}`
+- **Range**: `{{range}}`
+- **Cardinality**: `{{cardinality}}`
+- **Inverse of**: `:mm.memory/informs`
+
+## Formal signature
+
+`{{predicate-name}} : {{domain}} × {{range}} → Bool`
+
+## When to use
+
+Use `informed-by:` when:
+- A's content was shaped by B
+- B's influence on A is real but not causal-of-existence
+- The author wants to record the intellectual-influence chain
+
+This is the SUB-PROPERTY ROOT for the influence-motivation chain: `motivated-by ⊆ informed-by ⊆ cites` per the predicate-hierarchy lattice.
+
+## Formal ontology mappings
+
+Aligned predicates from established formal vocabularies:
+
+- **PROV-O** `prov:wasInformedBy` — exact semantic match (PROV's canonical informed-by relation)
+- **CiTO** `cito:obtainsBackgroundFrom` — close analogue
+- **DC Terms** — no direct equivalent
+- **OWL** — no direct equivalent (provides `owl:inverseOf` meta-relation only)
+- **SKOS** — no direct equivalent
+
+Grounding references in the corpus:
+- [`references/rdfs_reference.md`](../references/rdfs_reference.md) — PROV-O integration
+- [`references/pav_cito_bibo_reference.md`](../references/pav_cito_bibo_reference.md) — CiTO background-from semantics
+
+## See also
+
+- [`predicates/informs.md`](informs.md) — forward direction
+- [`predicates/motivated-by.md`](motivated-by.md) — sub-property (stronger causal weight)

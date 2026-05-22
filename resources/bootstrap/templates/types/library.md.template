@@ -1,0 +1,138 @@
+## What a `type: library` instance is
+
+A **deep, sourced study of a reusable library** — a concrete reference future collaborators consult instead of re-reading the library's source.  Library memorials are where architectural patterns acquire *canonical examples* — a pattern memorial cites a library study, and the library study grounds the pattern in real code with file:line citations.
+
+The library study is the corpus's research product.  Every pattern memorial eventually needs a library study to ground it; every library study surfaces new patterns worth extracting.
+
+Library is a subtype of [`artifact`](artifact.md) — a durable, self-contained output with memorial value beyond its immediate trigger.
+
+## When to create a library memorial
+
+- A library is used across 2+ projects
+- The library has a distinctive architectural thesis worth understanding before relying on it
+- The library has conventions (naming, structure, dogfooding choices) that inform how related work is written
+- A library is newly released or newly adopted and future collaborators will need to reach for it
+
+## When NOT to create one
+
+- The library is used once and not likely to recur
+- The library has nothing distinctive worth studying — reading the README suffices
+- The "library" is actually a project (use `codebase` instead)
+
+## Substrate identity
+
+- **Class ident**: `{{class-ident}}`
+- **Parent class(es)**: {{parent-classes}}
+- **Ancestor chain**: {{ancestor-chain}}
+- **Native codec**: `{{native-codec}}`
+- **Codec type-keyword(s)**: {{codec-type-keywords}}
+
+## Slot vocabulary ({{slot-count}} slots inherited or declared)
+
+Library memorials inherit `:mm/Memory` plus the **Library Card** typed-edge axes:
+
+| Axis | Predicate(s) | What it captures |
+|---|---|---|
+| Documentation | `documents` / `documented-by` | Reference→library + inverse |
+| Mereology | `has-part` / `part-of` | Umbrella↔topic, library↔subpages |
+| Formal realization | `implements` / `implemented-by` | Library realizes a spec / paper / RFC |
+| Lineage | `descends-from` / `ancestor-of` | Genetic relationship in design history |
+| Dependencies | `consumes` / `consumed-by` | Library uses another library |
+| Provenance | `created-by` | Author / maker |
+| Research substrate | `cites` | Papers / talks / docs grounding the design |
+| Methodology attribution | `provides-method-for` / `uses-method-in` | Method-graph |
+| Domain tagging | `domain-tags` (free-form string) | Project-scoped retrieval |
+| Design-space positioning | `disagrees-with` / `is-disagreed-with-by` | Controversial stances |
+| Empirical grounding | `evidences` / `evidenced-by` | Performance / correctness evidence |
+
+The audit invariants `library-card-empty` (warning) flags library memorials with body > 100 lines AND ≤2 typed-edge axes declared (excluding `documents` / `documented-by` / `related`); `library-without-resources` (info) flags libraries with no `cites:` to any `type: resource`.
+
+{{slot-table}}
+
+## Canonical structure — facade + subpages
+
+Most library studies exceed 200 lines if written as a single file.  The established pattern is **facade + subpages**:
+
+```
+libraries/
+├── <lib>.md                    (facade: pitch, architecture,
+│                                when-to-reach, cross-library
+│                                relationships, deep-dive links)
+└── <lib>/
+    ├── kernel.md                  (one subpage per concern)
+    ├── architecture_evidence.md   (16-point audit)
+    ├── ropes.md / api.md / …      (subsystem deep-reads)
+    └── testing.md / patterns.md / …
+```
+
+Small libraries can stay single-file.  Larger libraries use the facade + subpages shape; mereology is captured via `has-part` / `part-of` typed edges between facade and subpages.
+
+## Canonical body structure (facade)
+
+```markdown
+## Pitch
+
+<One sentence + one paragraph.  The elevator thesis.>
+
+## What makes it distinctive
+
+<The specific architectural move that differentiates this library
+from its ecosystem.>
+
+## Niche vs. adjacent tools
+
+<Competitive comparison grounded in the README's own claims.>
+
+## Top-level layout
+
+<`src/` tree with LOC counts.>
+
+## Public API
+
+<Primary namespace + canonical functions.>
+
+## When to reach for it
+
+<2–3 concrete scenarios.>
+
+## Cross-library relationships
+
+<What it depends on, what depends on it.>
+
+## Deep-dive memorials
+
+<Links to subpages.>
+
+## See also
+
+<Other memorials.>
+```
+
+## Aesthetic audit (when applicable)
+
+Library studies that share an authoring lineage with an established aesthetic preference should include a verdict against that preference's claimed conventions.  Each verdict: ✅ confirmed / ⚠️ with nuance / ❌ not present / ⚪ not applicable, with file:line citation.  These audits feed back into the aesthetic preference memorial.
+
+## Pitfalls
+
+- **README paraphrase, not source study** — the point is to go to the code; if the study reads like a rewrite of the README, delete and redo
+- **Missing cross-library-graph context** — what consumes this library?  What does it consume?  Load-bearing
+- **No canonical examples for extracted patterns** — if the study finds 3 new patterns but doesn't cite file:line for each, the extraction is soft
+- **Skipping the aesthetic audit** — each library study should contribute at least one nuance to the aesthetic preference memorial
+
+## Composition with adjacent classes
+
+- **`reference`** — references point at facilities; libraries study them deeply.  References may grow into libraries
+- **`resource`** — library studies cite resources (primary sources, papers, READMEs)
+- **`pattern`** — patterns ground themselves in library studies via canonical examples
+- **`preference`** — library studies feed back into aesthetic preferences via the audit
+- **`bug`** — library studies describe what works well; bug memorials describe what still needs work in the same library
+
+## See also
+
+- [`types/artifact.md`](artifact.md) — parent abstract supertype
+- [`types/reference.md`](reference.md) — references may grow into libraries
+- [`types/resource.md`](resource.md) — primary sources cited by library studies
+- [`types/pattern.md`](pattern.md) — patterns cite library studies for canonical examples
+- [`types/bug.md`](bug.md) — complement to this type (what doesn't work)
+- [`types/preference.md`](preference.md) — aesthetic preferences feed back from library studies
+- Sandbar substrate: `sandbar/schema/mm-artifact.edn`

@@ -1,0 +1,52 @@
+## What this predicate means
+
+**A `consumes` B** — A depends on B as input; A's operation requires B.  The dependency-on-something relation.
+
+Common shapes:
+- A library consumes another library (transitive dependency)
+- A skill consumes a tool (the tool is required for the skill)
+- A workflow consumes a resource (URL, file, dataset)
+- A pattern consumes a library when implemented
+
+## Substrate identity
+
+- **Slot ident**: `{{predicate-ident}}`
+- **Domain**: `{{domain}}`
+- **Range**: `{{range}}`
+- **Cardinality**: `{{cardinality}}`
+- **Inverse of**: `:mm.memory/consumed-by`
+
+## Formal signature
+
+`{{predicate-name}} : {{domain}} × {{range}} → Bool`
+
+## When to use consumes
+
+Use `consumes:` when:
+- A's operation requires B (B is INPUT to A)
+- Removing B would break A's behavior
+- The relation is upstream-to-downstream dependency
+
+Distinguish from:
+- `cites:` — A merely points at B (weaker; no operational requirement)
+- `implements:` — A IS B's realization (different relation; A doesn't need B in addition)
+- `requires:` — A general requirement predicate (broader scope; `consumes:` is operational consumption specifically)
+
+## Formal ontology mappings
+
+Aligned predicates from established formal vocabularies:
+
+- **PROV-O** `prov:used` — exact semantic match (PROV's canonical dependency relation between activity and entity)
+- **DC Terms** `dcterms:requires` — close analogue
+- **OWL** — no direct equivalent (RDF-foundational vocabularies don't carve out dependency relations)
+- **CiTO** — no direct equivalent
+- **SKOS** — no direct equivalent
+
+Grounding references in the corpus:
+- [`references/rdfs_reference.md`](../references/rdfs_reference.md) — PROV-O substrate
+
+## See also
+
+- [`predicates/consumed-by.md`](consumed-by.md) — inverse partner
+- [`predicates/cites.md`](cites.md) — weaker (source-pointer)
+- [`predicates/implements.md`](implements.md) — adjacent (realization)

@@ -1,0 +1,108 @@
+## What a `type: briefing` instance is
+
+**A concise explanatory document prepared for a specific external audience.**  Briefings are deliberate communication artifacts, not internal retrieval-shaped notes.  They:
+
+- Target a named audience (team, customer, interviewer, collaborator, stakeholder)
+- Operate at the audience's appropriate depth (neither over-simplified nor over-jargonized)
+- Are authored to be read end-to-end by readers who aren't in the corpus's editorial loop
+- Are bounded in scope — typically 1–2 pages, though longer is fine when warranted
+- Name their occasion (onboarding, design review, quarterly update, interview preview)
+
+Briefings are **audience-oriented**, where most memorials are **retrieval-oriented**.  The difference matters: retrieval-oriented memorials optimize for *"when future session searches X, can this be found?"*; briefings optimize for *"when this specific audience reads this, do they understand the thing?"*
+
+Briefing is a subtype of [`artifact`](artifact.md) — a durable, self-contained output with memorial value beyond its immediate trigger.
+
+## When to create a briefing memorial
+
+- A team member (internal or external) needs an overview of an area they're new to
+- A customer / stakeholder needs a deliverable-shaped explanation of state
+- An interview panel expects a concise walkthrough of work
+- A collaborator needs context to contribute meaningfully
+
+## When NOT to create one
+
+- For internal retrieval — use `reference`, `synthesis`, or prose in plan / pattern
+- For codebase documentation — use in-code docstrings or `docs/` markdown
+- For session-level notes — use `log` or `observation`
+- When the audience is just future-self — any retrieval-oriented type is better
+
+## Substrate identity
+
+- **Class ident**: `{{class-ident}}`
+- **Parent class(es)**: {{parent-classes}}
+- **Ancestor chain**: {{ancestor-chain}}
+- **Native codec**: `{{native-codec}}`
+- **Codec type-keyword(s)**: {{codec-type-keywords}}
+
+## Slot vocabulary ({{slot-count}} slots inherited or declared)
+
+Briefing memorials inherit `:mm/Memory` plus type-specific frontmatter:
+
+- **`audience`** — name the readers specifically.  *"Team"* is too vague; *"CS graduates new to AI + KA + Claude"* is right
+- **`occasion`** — what's triggering the briefing (onboarding / quarterly demo / interview preview)
+- **`presented-on`** — ISO date the briefing was delivered.  Absence implies draft state
+
+{{slot-table}}
+
+## Canonical body structure
+
+```markdown
+## What this is
+
+<One paragraph — the thing being briefed on, stated plainly.>
+
+## Why it matters (value proposition)
+
+<2–4 sentences — why the audience should care, in their terms.>
+
+## Key ideas (bounded)
+
+<2–5 ideas that carry the bulk of the insight.  Each idea gets
+a short heading + 2–4 sentences.  No deep dives; follow-up
+reading pointers at the end.>
+
+## How it's built / how we work
+
+<Process + tooling angle, if the audience needs it.  Kept
+concrete — named tools, named conventions, named primitives.>
+
+## Where to go deeper
+
+<Pointers for the audience member who wants more.  2–5 named
+further-reading targets, each with a one-line "read this if you
+want to understand X.">
+
+## Who to ask
+
+<Names / roles of the people the audience should approach with
+follow-up questions.  Optional but usually warranted.>
+```
+
+## Lifecycle
+
+- **Drafted** — authored but not yet delivered; `presented-on:` absent
+- **Presented** — delivered to the audience; `presented-on:` set
+- **Archived** — the briefing's occasion has passed; kept as historical artifact
+
+## Pitfalls
+
+- **Audience drift** — briefings tend to drift toward the author's comfort level mid-paragraph; re-read from the audience's shoes
+- **Citation overload** — internal memorials have rich cross-links; briefings should point at 2–5 further-reading targets max
+- **Retrieval-shape contamination** — don't write a briefing that opens *"when investigating X, consult this briefing"*; that's retrieval-shape, wrong register
+- **Unstated audience** — a briefing that doesn't name its audience is an orphan; register can't be right without a target
+
+## Composition with adjacent classes
+
+- **`reference`** — retrieval-oriented sibling; references catalog primitives, briefings explain to a named reader
+- **`synthesis`** — synthesis derives claims; briefing explains state
+- **`example`** — reusable-illustration sibling; examples are audience-agnostic, briefings are occasion-bound.  Briefings often cite examples
+- **`library`** — library studies feed briefings on the library's behalf
+
+## See also
+
+- [`types/artifact.md`](artifact.md) — parent abstract supertype
+- [`types/reference.md`](reference.md) — retrieval-oriented sibling
+- [`types/synthesis.md`](synthesis.md) — derived-claim sibling
+- [`types/example.md`](example.md) — reusable-illustration sibling
+- [`types/library.md`](library.md) — library studies feed briefings
+- Sandbar substrate: `sandbar/schema/mm-artifact.edn`

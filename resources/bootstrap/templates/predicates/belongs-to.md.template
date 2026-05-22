@@ -1,0 +1,62 @@
+## What this predicate means
+
+**Actor A `belongs-to` Organization B** — typed-edge predicate for actor-organization membership.  B is an entity that groups actors: employer, community, project, research-partnership, formal organization.  Multi-arity — a single actor may belong to multiple organizations (employee + community contributor + project member).  Per `decisions/actor_as_first_class_type_2026_05_11.md` Dan-directive.
+
+## Substrate identity
+
+- **Slot ident**: `{{predicate-ident}}`
+- **Domain**: `{{domain}}`
+- **Range**: `{{range}}`
+- **Cardinality**: `{{cardinality}}`
+- **`:dt/type`**: `:dt/DirectedBinaryRelationProperty` (asymmetric + irreflexive)
+
+## Formal signature
+
+`{{predicate-name}} : {{domain}} × {{range}} → Bool`
+
+## Characteristics
+
+- **Asymmetric** — actor belongs to org doesn't imply org belongs to actor (OWL 2 RL `prp-asyp`)
+- **Irreflexive** — no entity belongs to itself (OWL 2 RL `prp-irp`)
+- **NOT transitive** — org-of-org chains aren't valid memberships
+
+## When to use belongs-to
+
+Use on actor memorials to record organizational memberships:
+
+```yaml
+type: human-actor
+name: Dan Lentz
+belongs-to:
+  - organizations/anthropic.md
+  - organizations/clojurians.md
+```
+
+The authoritative direction is the actor side; the organization side's `has-member` inverse is derivable via inverse-of entailment.
+
+## Adjacent predicates
+
+| Direction | Predicate |
+|---|---|
+| Actor-side | **`belongs-to`** — canonical (actor → organization) |
+| Organization-side | `has-member` — inverse (organization → actor); derivable |
+| Runtime | `runs-in-context` — actor's operating context (different axis) |
+
+## Formal ontology mappings
+
+- **FOAF** `foaf:member` (reversed direction) — semantic match
+- **ORG** (W3C Organization Ontology) `org:memberOf` — exact semantic match (the source standard)
+- **SIOC** `sioc:has_subscriber` (reversed) — sibling formulation for community-of-practice
+- **vCard** `vcard:org` (single org case) — distant analogue
+
+Grounding references in the corpus:
+- [`references/org_ontology_reference.md`](../references/org_ontology_reference.md) — W3C ORG vocabulary
+
+## Inverse-of relation
+
+`belongs-to` is the canonical inverse of `has-member`.  When `:dt/inverse-of :mm.organization/has-member` is declared, the substrate's prp-inv1/inv2 entailment derives both directions.
+
+## See also
+
+- [`predicates/runs-in-context.md`](runs-in-context.md) — actor's runtime context
+- [`predicates/actor.md`](actor.md) — actor-scope of rules

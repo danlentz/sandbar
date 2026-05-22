@@ -1,0 +1,43 @@
+## What this predicate means
+
+**A `mentions` B** — A makes a passing reference to B in prose, without depending on B for facts or claims.  The lightest weight in the topical-engagement chain: cites < touches < mentions in the sub-property hierarchy.
+
+Use `mentions` when:
+- A's body content names B (in text, link, or footnote)
+- The reference is incidental — A's argument doesn't depend on B
+- Stronger predicates (cites, touches, evidences) would overstate the relation
+
+## Substrate identity
+
+- **Slot ident**: `{{predicate-ident}}`
+- **Domain**: `{{domain}}`
+- **Range**: `{{range}}`
+- **Cardinality**: `{{cardinality}}`
+- **Inverse of**: `:mm.memory/is-mentioned-by`
+
+## Formal signature
+
+`{{predicate-name}} : {{domain}} × {{range}} → Bool`
+
+## Composition with body links
+
+When a memorial body contains a markdown link `[text](target.md)`, the codec extracts it as a `:mm/Link` entity.  Promoting that to a `mentions:` typed-edge in frontmatter makes the relation queryable + survives body refactoring.
+
+## Formal ontology mappings
+
+Aligned predicates from established formal vocabularies:
+
+- **CiTO** `cito:mentions` — exact semantic match (passing-reference predicate)
+- **PROV-O** `prov:wasInformedBy` — distant analogue (informational influence, broader scope)
+- **DC Terms** — no direct equivalent
+- **PAV** — no direct equivalent
+- **OWL / RDFS** — no direct equivalent
+
+Grounding references in the corpus:
+- [`references/pav_cito_bibo_reference.md`](../references/pav_cito_bibo_reference.md) — `cito:mentions` semantics (sandbar's `mentions:` is a direct alignment)
+
+## See also
+
+- [`predicates/cites.md`](cites.md) — stronger source-dependence
+- [`predicates/touches.md`](touches.md) — middle weight
+- [`predicates/is-mentioned-by.md`](is-mentioned-by.md) — inverse partner

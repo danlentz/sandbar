@@ -1,0 +1,51 @@
+## What this predicate means
+
+**A `triggered-by` B** — A came into existence as a DIRECT consequence of B.  Strongest in the causal-influence chain: more specific than `motivated-by` (which is justified-by) and `informed-by` (which is shaped-by).
+
+Common shapes:
+- A bug memorial triggered-by a failed test
+- A log memorial triggered-by a session-start event
+- A capture memorial triggered-by an alert or observation
+- An observation memorial triggered-by a tool failure
+
+## Substrate identity
+
+- **Slot ident**: `{{predicate-ident}}`
+- **Domain**: `{{domain}}`
+- **Range**: `{{range}}`
+- **Cardinality**: `{{cardinality}}`
+- **Sub-property of**: `:mm.memory/motivated-by`
+
+## Formal signature
+
+`{{predicate-name}} : {{domain}} × {{range}} → Bool`
+
+## When to use triggered-by
+
+Use `triggered-by:` when:
+- A's existence is a DIRECT consequence of B (not merely justified by B)
+- The causal arrow is mechanical / automated / event-driven
+- B's occurrence necessarily implies A's creation
+
+Use `motivated-by:` (weaker) when A's existence is justified by B but not directly caused.
+
+Per the sub-property hierarchy, declaring `triggered-by:` entails `motivated-by:` AND `informed-by:` (RDFS rdfs7 entailment up the chain).
+
+## Formal ontology mappings
+
+Aligned predicates from established formal vocabularies:
+
+- **PROV-O** `prov:wasStartedBy` — close analogue (start-trigger in agent/activity context; PROV-O reifies start-triggers as `prov:Start` entities)
+- **PROV-O** `prov:wasInvalidatedBy` — distant analogue (when the trigger is destructive rather than creative)
+- **OWL** — no direct equivalent (provides `owl:TransitiveProperty` characteristic only — `triggered-by` is NOT transitive)
+- **CiTO** — no direct equivalent
+- **DC Terms** — no direct equivalent
+- **SKOS** — no direct equivalent
+
+Grounding references in the corpus:
+- [`references/rdfs_reference.md`](../references/rdfs_reference.md) — PROV-O integration
+
+## See also
+
+- [`predicates/motivated-by.md`](motivated-by.md) — broader parent (weaker causal weight)
+- [`predicates/informed-by.md`](informed-by.md) — ancestor in hierarchy (intellectual influence)

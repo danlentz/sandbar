@@ -1,0 +1,46 @@
+## What this predicate means
+
+**A `informs` B** — A shaped B's design / content / framing without being the cause of B's existence.  Lighter than `motivates` (which carries causal weight); heavier than `mentions` (which is just textual reference).
+
+The intellectual-influence predicate: B benefits from A's framing or insight but B would have existed without A.
+
+## Substrate identity
+
+- **Slot ident**: `{{predicate-ident}}`
+- **Domain**: `{{domain}}`
+- **Range**: `{{range}}`
+- **Cardinality**: `{{cardinality}}`
+- **Inverse of**: `:mm.memory/informed-by`
+
+## Formal signature
+
+`{{predicate-name}} : {{domain}} × {{range}} → Bool`
+
+## When to use informs vs motivates
+
+Use `informs:` when:
+- A influenced B's design or content
+- B would have existed without A (the causal weight is missing)
+- The relation is intellectual / framing / lateral
+
+Use `motivates:` when B's existence traces to A's existence.
+
+## Formal ontology mappings
+
+Aligned predicates from established formal vocabularies:
+
+- **PROV-O** `prov:wasInformedBy` — close analogue (forward direction is computed via OWL inverseOf; PROV uses the inverse-form `prov:wasInformedBy` as canonical)
+- **OWL** `owl:inverseOf` — sandbar declares `:mm.memory/informs` as `inverse-of :mm.memory/informed-by`
+- **CiTO** `cito:givesBackgroundTo` — close analogue
+- **DC Terms** — no direct equivalent
+- **SKOS** — no direct equivalent
+
+Grounding references in the corpus:
+- [`references/rdfs_reference.md`](../references/rdfs_reference.md) — PROV-O substrate
+- [`references/pav_cito_bibo_reference.md`](../references/pav_cito_bibo_reference.md) — CiTO `cito:givesBackgroundTo` semantics
+
+## See also
+
+- [`predicates/informed-by.md`](informed-by.md) — inverse partner
+- [`predicates/motivates.md`](motivates.md) — stronger (causal motivation)
+- [`predicates/cites.md`](cites.md) — adjacent (source-pointer)

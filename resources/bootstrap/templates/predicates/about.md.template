@@ -1,0 +1,46 @@
+## What this predicate means
+
+**A `about` B** — A's primary topical concern IS B.  The strongest topical-statement predicate: "this memorial is fundamentally about X."
+
+Distinguish from `cites` (which is a pointer; A cites B as source) and `touches` (which is engagement; A engages B's topic without depending).  `about` declares the memorial's PRIMARY SUBJECT — its raison d'être.
+
+## Substrate identity
+
+- **Slot ident**: `{{predicate-ident}}`
+- **Domain**: `{{domain}}`
+- **Range**: `{{range}}`
+- **Cardinality**: `{{cardinality}}`
+- **Inverse of**: `:mm.memory/is-about-of`
+
+## Formal signature
+
+`{{predicate-name}} : {{domain}} × {{range}} → Bool`
+
+## When to use about
+
+`about:` declares the memorial's CENTRAL CONCERN.  Examples:
+- A pattern memorial is `about:` the design problem it addresses
+- A library study is `about:` the library
+- A bug memorial is `about:` the buggy artifact
+
+Most memorials don't need explicit `about:` — the memorial's name + description suffice.  Use `about:` when the central concern is a SPECIFIC OTHER MEMORIAL that's worth linking.
+
+## Formal ontology mappings
+
+Aligned predicates from established formal vocabularies:
+
+- **DC Terms** `dcterms:subject` — exact semantic match (primary-subject claim)
+- **FOAF** `foaf:topic` — exact semantic match
+- **IAO** `iao:is_about` — exact semantic match (Information Artifact Ontology)
+- **CiTO** `cito:discusses` — close analogue (discusses-as-primary-subject)
+- **SKOS** `skos:primarySubject` — close analogue (concept-scheme-scoped variant)
+- **PROV-O** — no direct equivalent
+
+Grounding references in the corpus:
+- [`references/pav_cito_bibo_reference.md`](../references/pav_cito_bibo_reference.md) — `cito:discusses` semantics
+
+## See also
+
+- [`predicates/cites.md`](cites.md) — source-pointer direction
+- [`predicates/touches.md`](touches.md) — engagement without primary-subject claim
+- [`predicates/is-about-of.md`](is-about-of.md) — inverse partner

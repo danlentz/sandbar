@@ -1,0 +1,93 @@
+## What a `type: engine` instance is
+
+**An engine memorial describes a first-class rule body evaluation engine** — the substrate that compiles and executes rule bodies.  Engines are typed-edge graph citizens — declarative, queryable, introspectable — not just `engine:` field discriminator values.
+
+Rules reference engines via `uses-engine:` typed-edge:
+
+```yaml
+type: rule
+uses-engine:
+  - engines/clara-rules.md
+```
+
+Engine is a subtype of [`meta`](meta.md) — memorials about the memory system itself.
+
+## Canonical engines
+
+Common engines that may be loaded as instances:
+
+- **`engines/plain-pattern.md`** — simple structural match (ELIZA-like)
+- **`engines/malli.md`** — schema-validated rule bodies (Malli library)
+- **`engines/clara-rules.md`** — production-rule forward-chaining (Rete + TMS)
+- **`engines/core-logic.md`** — relational / bidirectional inference (miniKanren substrate)
+- **`engines/meander-strategy.md`** — term-rewriting strategy composition (Stratego tradition)
+
+Each engine has its own memorial declaring rule-body-shape, dispatch-strategy-default, complexity-tier, performance-characteristics, and library-implementation.
+
+## Substrate identity
+
+- **Class ident**: `{{class-ident}}`
+- **Parent class(es)**: {{parent-classes}}
+- **Ancestor chain**: {{ancestor-chain}}
+- **Native codec**: `{{native-codec}}`
+- **Codec type-keyword(s)**: {{codec-type-keywords}}
+
+## Slot vocabulary ({{slot-count}} slots inherited or declared)
+
+Engine memorials inherit `:mm/Memory` plus type-specific required slots:
+
+- **`rule-body-shape`** (required) — `plain-pattern` / `malli-schema` / `clara-data-form` / `core-logic-goal` / `meander-strategy` / `datalog-query` / etc.
+- **`dispatch-strategy-default`** — `:graph-query` / `:match-compile`
+- **`complexity-tier`** — `simple` / `moderate` / `complex`
+- **`performance-characteristics`** — Big-O / lookup characteristics
+- **`library-implementation`** — typed-edge to underlying library
+- **`applicable-rule-body-classes`** — what kinds of rule bodies use this engine
+
+{{slot-table}}
+
+## Canonical body structure
+
+```markdown
+## What this engine evaluates
+
+<Semantic shape of the rule bodies this engine handles.>
+
+## When to use
+
+<Trigger conditions favoring this engine over alternatives.>
+
+## When NOT to use
+
+<Counter-conditions where another engine is a better fit.>
+
+## Performance characteristics
+
+<Complexity / scale envelope; hot-path suitability; memory profile.>
+
+## Library implementation
+
+<Cross-reference to the library memorial.  Pin version where it
+matters.>
+
+## Example rule bodies
+
+<2-3 illustrative rule memorials using this engine.>
+
+## See also
+
+<Adjacent engines, rules using this engine, library memorial.>
+```
+
+## What an engine memorial is NOT
+
+- **Not a library** — the engine reference's `library-implementation:` typed-edge points to the underlying library; the engine memorial is the SUBSTRATE-DESIGN summary
+- **Not a rule** — engines evaluate rule bodies; engines themselves don't fire
+- **Not a discriminator value** — engines are FIRST-CLASS memorials, not field values
+
+## See also
+
+- [`types/meta.md`](meta.md) — parent abstract supertype
+- [`types/rule.md`](rule.md) — rules reference engines via `uses-engine:`
+- [`types/event.md`](event.md) — parallel substrate-evolution (the WHEN axis of rule dispatch)
+- [`types/library.md`](library.md) — engines compose with underlying libraries
+- Sandbar substrate: `sandbar/schema/mm-meta.edn`

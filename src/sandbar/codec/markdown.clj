@@ -359,14 +359,27 @@
    `body` (no `-raw` suffix) because section content has already been
    decomposed into the heading-bounded slice."
   [class-ident]
-  (let [prop-ns (class-slot-namespace class-ident)]
-    (case class-ident
-      :mm/Memory  :mm.memory/body-raw
-      :mm/Actor   :mm.actor/body-raw
-      :mm/Context :mm.context/body-raw
-      :mm/Rule    :mm.rule/body-raw
-      :mm/Section :mm.section/body
-      (keyword prop-ns "body"))))
+  ;; Walk the class chain — Memory-subclasses (:mm/Decision, :mm/Plan, etc.)
+  ;; inherit :mm.memory/body-raw via :dt/subclass-of :mm/Memory.  Substrate-
+  ;; pure: NO hardcoded consumer-class knowledge per
+  ;; interaction/no_hardcoded_consumer_class_knowledge_in_substrate_2026_05_13.md.
+  ;; Resolution: walk ancestors, find first class that declares its own
+  ;; `<ns>/body-raw` slot; fall back to `<ns>/body` (Section convention).
+  ;; Per plans/codec_subclass_routing_follow_up_arc_2026_05_21.md Stage 1.5.
+  (let [chain           (cons class-ident (dt/ancestors-of class-ident))
+        effective-slots (dt/slots-of class-ident)]
+    (or
+      ;; Any ancestor that declares its own <ns>/body-raw slot (e.g.,
+      ;; :mm/Memory declares :mm.memory/body-raw; :mm/Actor declares
+      ;; :mm.actor/body-raw).  Walk leaf-to-root; first hit wins.
+      (some (fn [c]
+              (let [candidate (keyword (class-slot-namespace c) "body-raw")]
+                (when (contains? effective-slots candidate)
+                  candidate)))
+            chain)
+      ;; Else build <leaf-ns>/body (Section convention; sections
+      ;; carry decomposed content under :mm.section/body).
+      (keyword (class-slot-namespace class-ident) "body"))))
 
 (defn frontmatter-key->slot
   "Map a YAML frontmatter key (keyword) to the slot ident for the given
@@ -384,8 +397,26 @@
    `:mm.memory/memory-type` (avoiding the :dt/type system-attribute
    collision)."
   [class-ident yaml-key]
-  (or (get (dt/codec-aliases-of class-ident) yaml-key)
-      (keyword (class-slot-namespace class-ident) (name yaml-key))))
+  (or
+   ;; (1) Class-declared alias — walks the hierarchy so Memory-subclasses
+   ;;     (e.g. :mm/Decision) inherit :mm/Memory's `:type → :mm.memory/memory-type`.
+   (get (dt/effective-codec-aliases-of class-ident) yaml-key)
+   ;; (2) Walk ancestor chain; for each ancestor build :<ancestor-prop-ns>/<key>
+   ;;     and check if it's a declared (effective) slot.  Restricted to
+   ;;     mm-class-prefixed candidates (not system attributes like :dt/type
+   ;;     / :db/*) — the candidate is constructed under each class's own
+   ;;     slot-namespace.  Leaf wins for collisions.  Lets :mm/Decision
+   ;;     pick up :mm.memory/name (inherited) without hijacking :dt/type.
+   (let [effective-slots (dt/slots-of class-ident)
+         chain           (cons class-ident (dt/ancestors-of class-ident))]
+     (some (fn [c]
+             (let [candidate (keyword (class-slot-namespace c) (name yaml-key))]
+               (when (contains? effective-slots candidate)
+                 candidate)))
+           chain))
+   ;; (3) Fallback — leaf-class namespacing (for novel keys not yet
+   ;;     declared as slots; supports incremental class expansion).
+   (keyword (class-slot-namespace class-ident) (name yaml-key))))
 
 (defn- coerce-string->keyword
   "Coerce a YAML-parsed string to a keyword for a keyword-typed slot.
@@ -630,11 +661,14 @@
 
 (defn- invert-aliases
   "Invert the class's codec-aliases map for emission — slot-ident → yaml-key.
-   Reads aliases via `dt/codec-aliases-of` (the runtime metamodel
-   introspection path; no hardcoded substrate-side map)."
+   Reads aliases via `dt/effective-codec-aliases-of` (walks the class
+   hierarchy so emit recognizes inherited aliases — e.g., :mm/Decision
+   inherits :mm/Memory's `:type → :mm.memory/memory-type` mapping and
+   emits `type:` for the :mm.memory/memory-type slot).  Per the Stage 1.5
+   codec slot-inheritance fix."
   [class-ident]
   (into {}
-        (for [[k v] (dt/codec-aliases-of class-ident)]
+        (for [[k v] (dt/effective-codec-aliases-of class-ident)]
           [v k])))
 
 (defn slot->frontmatter-key
@@ -791,7 +825,7 @@
           ;; slots than any individual entity carries).  Then append any
           ;; entity slots not in the class declaration so unknown / extra
           ;; slots still emit.
-          class-order     (dt/codec-slot-order-of class-ident)
+          class-order     (dt/effective-codec-slot-order-of class-ident)
           declared-here   (filterv (fn [k] (contains? slot-map k)) class-order)
           declared-set    (set declared-here)
           extras          (filterv (fn [k] (not (contains? declared-set k)))
@@ -1187,6 +1221,17 @@
              (catch Exception _ nil))
         :mm/Memory)))
 
+(defn- memory-class?
+  "Returns true if `class-ident` is :mm/Memory or transitively a subclass of :mm/Memory.
+   Per the section-decomposition contract — only Memory + its subclasses (e.g.,
+   :mm/Decision, :mm/Plan, :mm/Observation, :mm/Pattern) decompose into section
+   sub-entities; parallel classes like :mm/Tag do not.  Uses dt/subclass-of? to
+   walk the :dt/subclass-of chain in the substrate."
+  [class-ident]
+  (or (= class-ident :mm/Memory)
+      (try (dt/subclass-of? :mm/Memory class-ident)
+           (catch Exception _ false))))
+
 (defn parse-document
   "Full markdown document parse: split frontmatter + body, resolve the
    target class via `:dt/codec-type-keyword` routing, decompose into
@@ -1220,9 +1265,9 @@
         c              (make-codec)
         entity         (proto/parse c source {:class resolved-class})
         entity         (cond-> (assoc entity :db/ident memory-ident)
-                         (= resolved-class :mm/Memory)
+                         (memory-class? resolved-class)
                          (assoc :mm.memory/rel-path rel-path))]
-    (if (= resolved-class :mm/Memory)
+    (if (memory-class? resolved-class)
       (let [body-raw (:mm.memory/body-raw entity)
             sections (parse-sections body-raw memory-ident)]
         (if (empty? sections)
@@ -1253,7 +1298,7 @@
       (nil? e)
       (cond-> acc (seq cur) (conj cur))
 
-      (= :mm/Memory (:dt/type e))
+      (memory-class? (:dt/type e))
       (recur (cond-> acc (seq cur) (conj cur)) [e] rst)
 
       :else

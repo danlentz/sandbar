@@ -1,0 +1,43 @@
+## What this predicate means
+
+**A `superseded-by` B** — B replaces A in A's role (inverse of `supersedes`).  The author-side admission that A is no longer authoritative; readers should follow B.
+
+A memorial declaring its own supersession is the editorial gesture that keeps the corpus's lifecycle-status consistent without requiring readers to scan B-side declarations.
+
+## Substrate identity
+
+- **Slot ident**: `{{predicate-ident}}`
+- **Domain**: `{{domain}}`
+- **Range**: `{{range}}`
+- **Cardinality**: `{{cardinality}}`
+- **Inverse of**: `:mm.memory/supersedes`
+
+## Formal signature
+
+`{{predicate-name}} : {{domain}} × {{range}} → Bool`
+
+## When to use
+
+Declare `superseded-by:` on A when:
+- A's content is no longer the current truth
+- B is the replacement
+- A should remain in the corpus as historical record (not deleted)
+
+Usually paired with a lifecycle-status transition to `superseded` and a brief author's note in A's body explaining the reason for supersession.
+
+## Formal ontology mappings
+
+Aligned predicates from established formal vocabularies:
+
+- **DC Terms** `dcterms:isReplacedBy` — exact semantic match (the canonical inverse of `dcterms:replaces`)
+- **PROV-O** — no direct inverse (PROV-O uses reverse-attribute traversal for inverse access)
+- **OWL** `owl:inverseOf` — provides the META-relation; sandbar declares `:mm.memory/superseded-by` as `inverse-of :mm.memory/supersedes`
+- **PAV** — no direct inverse (similarly computed)
+
+Grounding references in the corpus:
+- [`references/pav_cito_bibo_reference.md`](../references/pav_cito_bibo_reference.md) — supersession semantics (forward direction)
+- [`references/rdfs_reference.md`](../references/rdfs_reference.md) — OWL `owl:inverseOf` semantics
+
+## See also
+
+- [`predicates/supersedes.md`](supersedes.md) — forward direction

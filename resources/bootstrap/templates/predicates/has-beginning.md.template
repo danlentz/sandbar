@@ -1,0 +1,62 @@
+## What this predicate means
+
+**A `has-beginning` B** — memorial A is an *occurrent* (session log, memoir, plan transition, authorization event, or other event-shaped memory) and B is its temporal beginning (a literal `xsd:date` / `xsd:dateTime` for now; eventually a `:mm/TimeInstant` reference when that type lands).  The OWL-Time interval-boundary axis applied to memorial occurrents.  Companion to `has-end` (which marks the occurrent's terminating boundary).  Functional — one beginning per occurrent.
+
+## Substrate identity
+
+- **Slot ident**: `{{predicate-ident}}`
+- **Domain**: `{{domain}}`
+- **Range**: `{{range}}`
+- **Cardinality**: `{{cardinality}}`
+- **`:dt/type`**: `:dt/AsymmetricFunctionalIrreflexiveProperty` (intersection class: asymmetric + functional + irreflexive)
+
+## Formal signature
+
+`{{predicate-name}} : {{domain}} × {{range}} → Bool`
+
+## Characteristics
+
+- **Functional** — one beginning per occurrent (OWL 2 RL `prp-fp`)
+- **Asymmetric** — A has-beginning B doesn't imply B has-beginning A (OWL 2 RL `prp-asyp`)
+- **Irreflexive** — an occurrent doesn't have itself as its beginning (OWL 2 RL `prp-irp`)
+
+## When to use has-beginning
+
+Use `has-beginning` for any memorial that represents an *event* (something that happens in time):
+
+- Session logs (`type: log`) — when did the session start?
+- Memoirs (`type: memoir`) — when did the recounted period begin?
+- Plans + their state transitions — when did the plan move to a given stage?
+- Authorization events — when was the authorization granted?
+
+For purely structural memorials (decisions, patterns, references) that *describe* rather than *occur*, has-beginning typically doesn't apply.
+
+## Adjacent predicates
+
+| Aspect | Predicate |
+|---|---|
+| Start instant | **`has-beginning`** — the temporal beginning |
+| End instant | `has-end` — the temporal terminating boundary |
+| Chronological sequence | `next-by-date` / `previous-by-date` — successor / predecessor |
+| Membership | `has-participant` — who/what participated |
+
+## Formal ontology mappings
+
+- **OWL-Time** `time:hasBeginning` — exact semantic match
+- **W3C OWL Time Ontology** the canonical source
+- **BFO** `bfo:temporal-instant` (related but not aligned to a specific boundary)
+- **PROV-O** `prov:startedAtTime` — close analogue for activities
+
+Grounding references in the corpus:
+- [`references/owl_owl2_reference.md`](../references/owl_owl2_reference.md) §OWL-Time alignment
+
+## Composes with
+
+- **Allen-13 interval predicates** (future arc): `I.before J ≡ I.has-end before J.has-beginning`
+- **Temporal substrate**: when `:mm/TimeInstant` type lands, range migrates from literal date to entity ref
+
+## See also
+
+- [`predicates/has-end.md`](has-end.md) — companion (terminating boundary)
+- [`predicates/next-by-date.md`](next-by-date.md) — chronological successor
+- [`predicates/has-participant.md`](has-participant.md) — event participant

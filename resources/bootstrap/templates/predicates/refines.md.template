@@ -1,0 +1,46 @@
+## What this predicate means
+
+**A `refines` B** — A narrows, sharpens, or detail-fills B's claims without contradicting them.  A presupposes B's framing and adds precision: tighter constraints, additional cases, fuller specification.  Distinct from `supersedes` (which REPLACES B; B is now stale) — `refines` LEAVES B authoritative for its grain of detail and asserts A as a finer-grained companion.
+
+The middle weight in the lifecycle-evolution chain: `cites` < `refines` < `supersedes`.  Refining inherits citation (A refines B implies A cites B), supersession inherits refinement (A supersedes B implies A refines B), per the sub-property hierarchy.
+
+## Substrate identity
+
+- **Slot ident**: `{{predicate-ident}}`
+- **Domain**: `{{domain}}`
+- **Range**: `{{range}}`
+- **Cardinality**: `{{cardinality}}`
+- **Sub-property of**: {{super-property}}
+
+## Formal signature
+
+`{{predicate-name}} : {{domain}} × {{range}} → Bool`
+
+## When to use refines
+
+Use `refines:` when A:
+- Inherits B's framing and vocabulary
+- Adds detail or tightens constraints without contradicting B
+- B remains useful — A is a companion, not a replacement
+
+Counter-example: if A reverses B's conclusion or moots B's claims, use `supersedes:` (or `contradicts:` if there's no lifecycle relation).
+
+## Formal ontology mappings
+
+Aligned predicates from established formal vocabularies:
+
+- **PROV-O** `prov:wasRevisionOf` — close analogue (revision-of relation, but PROV-O carries no companion-vs-replacement distinction)
+- **SKOS** `skos:closeMatch` — distant analogue (concept-level rather than memorial-level)
+- **PAV** `pav:isVersionOf` — distant analogue (versioning rather than refinement)
+- **DC Terms** `dcterms:hasVersion` — distant analogue
+- **OWL** — no direct equivalent
+- **CiTO** — no direct equivalent (closest: `cito:disputes` for adversarial refinement, but that's a different relation)
+
+Grounding references in the corpus:
+- [`references/pav_cito_bibo_reference.md`](../references/pav_cito_bibo_reference.md) — PAV versioning semantics
+- [`references/rdfs_reference.md`](../references/rdfs_reference.md) — RDFS sub-property hierarchy
+
+## See also
+
+- [`predicates/supersedes.md`](supersedes.md) — stronger (replacement)
+- [`predicates/cites.md`](cites.md) — weaker (source-pointer only)

@@ -1,0 +1,60 @@
+## What this predicate means
+
+**Actor A `runs-in-context` Context B** — typed-edge predicate for actor-context attribution.  B is a runtime environment (sandboxed vs unsandboxed, specific host, firewall regime).  The actor-context combination is the unit that firewall and authorization rules attach to.  An actor can run in multiple equivalent contexts (multi-arity); authorization-distinct contexts get separate actor instances, not separate edges from a single instance.
+
+## Substrate identity
+
+- **Slot ident**: `{{predicate-ident}}`
+- **Domain**: `{{domain}}`
+- **Range**: `{{range}}`
+- **Cardinality**: `{{cardinality}}`
+- **`:dt/type`**: `:dt/DirectedBinaryRelationProperty` (asymmetric + irreflexive)
+
+## Formal signature
+
+`{{predicate-name}} : {{domain}} × {{range}} → Bool`
+
+## Characteristics
+
+- **Asymmetric** — actor runs in context doesn't imply context runs in actor (OWL 2 RL `prp-asyp`)
+- **Irreflexive** — no entity runs in itself (OWL 2 RL `prp-irp`)
+- **NOT transitive**
+
+## When to use runs-in-context
+
+Use on actor memorials to record runtime contexts the actor operates in:
+
+```yaml
+type: ai-actor
+name: Claude Opus 4.7 (1M context)
+runs-in-context:
+  - contexts/unsandboxed-home-laptop.md
+  - contexts/sandboxed-claude-code.md
+```
+
+The substrate's firewall + authorization rules query `runs-in-context:` at rule-firing time — if a rule applies-in a context the firing actor doesn't run-in, the rule doesn't fire.
+
+## Adjacent predicates
+
+| Aspect | Predicate |
+|---|---|
+| Runtime context | **`runs-in-context`** — actor's operating context |
+| Membership | `belongs-to` — actor's organizational affiliation |
+| Rule scope | `applies-in` — context the rule applies in |
+| Actor scope | `actor` — rule's actor scope |
+
+## Formal ontology mappings
+
+- **PROV-O** `prov:atLocation` (with context-as-location) — close analogue
+- **OPA / Rego** policy `subject` + `context` tuple — adjacent operational shape
+- **OWL 2** — no direct equivalent (runtime-context attribution is metamodel)
+
+Grounding references in the corpus:
+- [`decisions/actor_as_first_class_type_2026_05_11.md`](../decisions/actor_as_first_class_type_2026_05_11.md) §D7 actor-context combination as firewall/auth unit
+- [`decisions/rules_as_first_class_type_2026_05_11.md`](../decisions/rules_as_first_class_type_2026_05_11.md) — rule-engine context-scoping
+
+## See also
+
+- [`predicates/applies-in.md`](applies-in.md) — rule-side context scoping
+- [`predicates/actor.md`](actor.md) — rule-side actor scoping
+- [`predicates/belongs-to.md`](belongs-to.md) — organizational affiliation

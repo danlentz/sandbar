@@ -1,0 +1,48 @@
+## What this predicate means
+
+**A `has-meta-type` B** — A's class-of-class (meta-class) is B.  The reflective meta-level relation: where `:rdf/type` declares A's class, `:has-meta-type` declares the CLASS OF THAT CLASS.
+
+Examples:
+- `:mm/Decision has-meta-type :dt/Class` (every memorial-type's class is `:dt/Class`)
+- `:mm.memory/cites has-meta-type :dt/Property` (every predicate's class is `:dt/Property`)
+- `:dt/Class has-meta-type :dt/MetaClass` (the metaclass-of-metaclass relation, if reified)
+
+## Substrate identity
+
+- **Slot ident**: `{{predicate-ident}}`
+- **Domain**: `{{domain}}`
+- **Range**: `{{range}}`
+- **Cardinality**: `{{cardinality}}` (typically `:one`)
+- **Sub-property of**: `:dt/instantiation`
+
+## Formal signature
+
+`{{predicate-name}} : {{domain}} × {{range}} → Bool`
+
+## When to use has-meta-type vs instance-of
+
+| Predicate | Meaning |
+|---|---|
+| `instance-of` | A is an individual of class B (e.g., a specific decision memorial is instance-of `:mm/Decision`) |
+| `has-meta-type` | A's class is itself an instance of B (e.g., `:mm/Decision` is-instance-of `:dt/Class`, expressed via meta-type) |
+
+Use `has-meta-type:` for reflective introspection — querying "what kind of thing is this thing's type?"
+
+## Formal ontology mappings
+
+Aligned predicates from established formal vocabularies:
+
+- **RDF** `rdf:type` — close analogue (rdf:type is the immediate-class relation; has-meta-type applies the same shape at the meta-level via OWL Full semantics)
+- **OWL** — no direct equivalent (OWL DL forbids metaclasses; OWL Full / OWL 2 RL admit them via punning)
+- **RDFS** — no direct equivalent (RDFS predates metaclass treatment)
+- **DC Terms** — no direct equivalent
+- **PROV-O** — no direct equivalent
+- **SKOS** — no direct equivalent
+
+Grounding references in the corpus:
+- [`references/rdfs_reference.md`](../references/rdfs_reference.md) — RDF/RDFS meta-modeling and OWL punning
+
+## See also
+
+- [`predicates/instance-of.md`](instance-of.md) — instance-class relation (RDF `rdf:type`)
+- [`predicates/extends.md`](extends.md) — class-class subclass relation

@@ -1,0 +1,57 @@
+## What this predicate means
+
+**A `has-end` B** — memorial A is an occurrent (session log, memoir, plan transition, authorization event) and B is its temporal terminating boundary.  The OWL-Time interval-boundary axis applied to occurrent memorials.  Companion to `has-beginning`.  Functional — one end per occurrent (though ongoing occurrents may omit the assertion until they close).
+
+## Substrate identity
+
+- **Slot ident**: `{{predicate-ident}}`
+- **Domain**: `{{domain}}`
+- **Range**: `{{range}}`
+- **Cardinality**: `{{cardinality}}`
+- **`:dt/type`**: `:dt/AsymmetricFunctionalIrreflexiveProperty`
+
+## Formal signature
+
+`{{predicate-name}} : {{domain}} × {{range}} → Bool`
+
+## Characteristics
+
+- **Functional** — one end per occurrent (OWL 2 RL `prp-fp`)
+- **Asymmetric** — A has-end B doesn't imply B has-end A (OWL 2 RL `prp-asyp`)
+- **Irreflexive** — an occurrent isn't its own end (OWL 2 RL `prp-irp`)
+
+## When to use has-end
+
+Use `has-end` for occurrent memorials AFTER they conclude:
+
+- Closed session logs — when did the session end?
+- Completed memoirs — when did the recounted period end?
+- Resolved plans — when did the plan transition to terminal state?
+- Expired authorizations — when did the authorization lapse?
+
+Ongoing occurrents may omit `has-end` (the absence semantically means "still open"); a closing event triggers the assertion.
+
+## Adjacent predicates
+
+| Aspect | Predicate |
+|---|---|
+| Start instant | `has-beginning` — the temporal beginning |
+| End instant | **`has-end`** — the temporal terminating boundary |
+| Chronological sequence | `next-by-date` / `previous-by-date` |
+| Membership | `has-participant` — who/what participated |
+
+## Formal ontology mappings
+
+- **OWL-Time** `time:hasEnd` — exact semantic match
+- **PROV-O** `prov:endedAtTime` — close analogue for activities
+- **DC Terms** `dcterms:valid` (with end-date) — distant analogue
+
+## Composes with
+
+- **Allen-13 interval predicates** (future arc): `I.before J ≡ I.has-end before J.has-beginning`
+- **Temporal substrate**: range migrates to `:mm/TimeInstant` ref when that type lands
+
+## See also
+
+- [`predicates/has-beginning.md`](has-beginning.md) — companion (start boundary)
+- [`predicates/next-by-date.md`](next-by-date.md) — chronological successor

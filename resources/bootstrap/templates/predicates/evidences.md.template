@@ -1,0 +1,50 @@
+## What this predicate means
+
+**A `evidences` B** — A provides empirical or argumentative SUPPORT for a claim made in B.  Stronger than `cites`: a citation is a pointer; an evidences-edge asserts that A's content materially BACKS B.
+
+Examples (generic):
+- A test memorial evidences a pattern claim
+- A benchmark memorial evidences a library's performance assertion
+- An observation memorial evidences a design rationale
+
+Per RDFS rule rdfs7, `:mm.memory/evidences :dt/subproperty-of :mm.memory/cites` means every evidences-edge IS ALSO a cites-edge — entailment propagates.
+
+## Substrate identity
+
+- **Slot ident**: `{{predicate-ident}}`
+- **Domain**: `{{domain}}`
+- **Range**: `{{range}}`
+- **Cardinality**: `{{cardinality}}`
+- **Sub-property of**: {{super-property}}
+- **Inverse of**: `:mm.memory/evidenced-by`
+
+## Formal signature
+
+`{{predicate-name}} : {{domain}} × {{range}} → Bool`
+
+## When to use evidences vs cites
+
+Use `evidences` when:
+- A's content is OFFERED as support for B's claim
+- The relation is directional (A supports B; not symmetric)
+- Audit can reasonably check "does B's claim survive without A?"
+
+Use `cites` when the pointer is informational without the support claim.
+
+## Formal ontology mappings
+
+Aligned predicates from established formal vocabularies:
+
+- **CiTO** `cito:providesEvidenceFor` — exact semantic match
+- **PAV** `pav:providesEvidenceFor` — exact match (dual of `pav:isSupportedBy`)
+- **PROV-O** — no direct equivalent (PROV-O models derivation, not evidential support)
+- **DC Terms** — no direct equivalent
+- **OWL** — no direct equivalent
+
+Grounding references in the corpus:
+- [`references/pav_cito_bibo_reference.md`](../references/pav_cito_bibo_reference.md) — CiTO + PAV evidential-typing semantics
+
+## See also
+
+- [`predicates/cites.md`](cites.md) — broader citation parent
+- [`predicates/evidenced-by.md`](evidenced-by.md) — inverse partner

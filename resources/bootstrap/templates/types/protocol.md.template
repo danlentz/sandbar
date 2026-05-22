@@ -1,0 +1,91 @@
+## What a `type: protocol` instance is
+
+A **meta-rule governing how the memory system itself is used** — not a pattern (code-level convention), not a preference (taste), but a behavioral discipline that shapes the interaction between collaborators and the corpus.
+
+Protocols are the corpus's own operating rules.  They tell collaborators *when* to consult memory, *how* to propagate new learnings, *how* to restructure the architecture without surprising the principal, *how* to capture state changes mid-conversation.
+
+Protocol is a subtype of [`guidance`](guidance.md) — memorials that prescribe action.
+
+## When to create a protocol memorial
+
+- A pattern emerges in how the principal wants the memory system used (*"before significant actions, consult memory"*)
+- A propagation rule is established (*"learn behavior: X propagates to memory, CLAUDE.md, and AGENTS.md"*)
+- An authorization is granted that requires standing procedural shape (*"when you do X, follow procedure Y"*)
+- A captureability discipline crystallizes (*"when signal Z fires, capture-first then respond"*)
+
+## When NOT to create one
+
+- The rule applies to code rather than to memory-system interaction — use `pattern` or `feedback`
+- The rule is project-specific, not meta-level
+- The rule is a one-off correction — use `feedback`
+- The rule is a standing authorization (different lifecycle) — use `authorization`
+
+## Substrate identity
+
+- **Class ident**: `{{class-ident}}`
+- **Parent class(es)**: {{parent-classes}}
+- **Ancestor chain**: {{ancestor-chain}}
+- **Native codec**: `{{native-codec}}`
+- **Codec type-keyword(s)**: {{codec-type-keywords}}
+
+## Slot vocabulary ({{slot-count}} slots inherited or declared)
+
+Protocol memorials inherit `:mm/Memory` plus guidance-specific extensions:
+
+- **`at-startup`** / **`one-line`** — protocols frequently opt into the at-startup-visibility surface (TIER-0 or TIER-1) since they govern session-level behavior
+
+{{slot-table}}
+
+## Canonical body structure
+
+```markdown
+## The protocol
+
+<What to do, stated as a rule.>
+
+## When to apply
+
+<Trigger conditions.  If protocols don't name their triggers, they
+become advisory prose.>
+
+## How to apply
+
+<Concrete actions.  Step-by-step where appropriate.>
+
+## Why this matters
+
+<The reason the discipline earns its keep.  Usually cites a past
+incident or a scaling concern.>
+
+## See also
+
+<Related protocols and patterns.>
+```
+
+## Why triggers are load-bearing
+
+A protocol without explicit trigger conditions degrades into *"be careful"* prose.  Protocols earn their keep by naming the **specific situations** that invoke them.  The trigger is what makes a protocol mechanizable — it's the precondition that a hook, a pre-action discipline, or a captureability check can fire on.
+
+## Pitfalls
+
+- **Protocols without triggers** — *"be careful"* is not a protocol; protocols must name the situations that invoke them
+- **Protocols that duplicate patterns** — if the rule is about code, it's a pattern.  Protocols govern memory-system interaction specifically
+- **Stale authorizations embedded in protocols** — restructure authorizations granted at one time may need re-confirmation; bump `last-reviewed`
+- **Protocols-as-feedback** — feedback captures a single principal-correction; protocols are the longer-form discipline that may emerge from accumulated feedback
+
+## Composition with adjacent classes
+
+- **`pattern`** — patterns are code-level conventions; protocols are memory-system-level disciplines.  Sister rules in different domains
+- **`feedback`** — protocols often emerge from accumulated feedback; the feedback names the rule, the protocol names the procedure
+- **`reference`** — references catalog tools; protocols govern when to reach for them
+- **`authorization`** — authorizations grant standing decision authority; protocols specify the procedure to follow when exercising it
+- **`preference`** — preferences are tastes; protocols are procedural rules
+
+## See also
+
+- [`types/guidance.md`](guidance.md) — parent abstract supertype
+- [`types/pattern.md`](pattern.md) — code-level convention counterpart
+- [`types/feedback.md`](feedback.md) — single-correction siblings; protocols emerge from accumulated feedback
+- [`types/reference.md`](reference.md) — protocols often cite references
+- [`types/authorization.md`](authorization.md) — standing decision authority
+- Sandbar substrate: `sandbar/schema/mm-guidance.edn`

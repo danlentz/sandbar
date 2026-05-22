@@ -1154,6 +1154,47 @@
       (concat direct-parents
               (mapcat ancestors-of direct-parents)))))
 
+(defn effective-codec-aliases-of
+  "Returns the codec-aliases map merged across the class hierarchy.
+  Walks `:dt/subclass-of` ancestors; leaf-class aliases shadow ancestors
+  for shared keys (specificity wins).
+
+  Used by codecs to handle alias inheritance — e.g., :mm/Decision
+  (subclass of :mm/Memory) inherits :mm/Memory's `:type →
+  :mm.memory/memory-type` alias.  Without this, codec routing to a
+  Memory-subclass loses the :type→:memory-type aliasing because
+  `codec-aliases-of` only consults the leaf class.
+
+  Added 2026-05-21 per
+  plans/codec_subclass_routing_follow_up_arc_2026_05_21.md Stage 1.5
+  (codec slot-inheritance fix).  Sister to `slots-of` which already
+  walks inheritance via the `effective-slot` Datalog rule."
+  [class-ident]
+  (let [chain (cons class-ident (ancestors-of class-ident))]
+    (reduce (fn [acc c] (merge acc (codec-aliases-of c)))
+            {}
+            (reverse chain))))
+
+(defn effective-codec-slot-order-of
+  "Returns the codec-slot-order vector merged across the class hierarchy.
+  Leaf class's declared order comes first; ancestor classes' orders follow
+  in walked order; duplicate slots are deduplicated keeping the FIRST
+  (leaf-closest) occurrence.
+
+  Used by `sandbar.codec.markdown/emit-frontmatter` so that emit respects
+  the canonical ordering declared on ancestors (e.g., :mm/Decision inherits
+  :mm/Memory's slot-order over :mm.memory/* slots that are populated via
+  inheritance).  Without this, emission of Memory-subclass entities would
+  use an unstable iteration-order for inherited slots, breaking round-trip
+  stability.
+
+  Added 2026-05-21 per
+  plans/codec_subclass_routing_follow_up_arc_2026_05_21.md Stage 1.5
+  (codec slot-inheritance fix).  Sister to `effective-codec-aliases-of`."
+  [class-ident]
+  (let [chain (cons class-ident (ancestors-of class-ident))]
+    (vec (distinct (mapcat codec-slot-order-of chain)))))
+
 (defn direct-subclasses-of
   "Returns the idents of classes that directly extend class dt.
   Only returns immediate children, not transitive descendants."
@@ -1187,6 +1228,25 @@
   "Returns true if c is a subclass of dt (direct or transitive)."
   [dt c]
   (some? ((set (subclasses-of dt)) c)))
+
+(defn type-isa?
+  "Map-friendly type-membership predicate: returns true if `entity-type`
+  is `dt` exactly OR a transitive subclass of `dt`.  Sister to
+  `instance-of?` which expects a transacted entity (and does an entity
+  lookup); `type-isa?` takes a class-keyword directly and is safe to
+  call on entity-spec MAPS where `:dt/type` is just a keyword.
+
+  Use at substrate boundaries where exact `(= :mm/Memory (:dt/type e))`
+  would miss legitimate subclass instances (e.g., :mm/Decision via
+  :dt/subclass-of :mm/Memory).  Added 2026-05-21 per
+  plans/codec_subclass_routing_follow_up_arc_2026_05_21.md Stage 1.5
+  — same substrate-pure pattern as `memory-class?` in the codec but
+  promoted to dt/* so projection + codec + future consumers share the
+  helper."
+  [dt entity-type]
+  (or (= dt entity-type)
+      (try (subclass-of? dt entity-type)
+           (catch Exception _ false))))
 
 (defn instance-of?
   "Returns true if entity e is an instance of class dt.

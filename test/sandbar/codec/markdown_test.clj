@@ -332,7 +332,9 @@
     (is (= 3 (count entities)) "memory + 2 sections")
     (let [[memory ctx decision] entities]
       (is (= :decisions/foo (:db/ident memory)))
-      (is (= :mm/Memory     (:dt/type memory)))
+      ;; Post-2026-05-21: type: decision routes to :mm/Decision (subclass of :mm/Memory)
+      ;; via :dt/codec-type-keyword.  Codec walks :dt/subclass-of for slot inheritance.
+      (is (= :mm/Decision   (:dt/type memory)))
       (is (= "Foo Decision" (:mm.memory/name memory)))
       (is (= :decision      (:mm.memory/memory-type memory)))
       (is (= :decisions/foo__context (:mm.memory/first-section memory)))
@@ -517,10 +519,11 @@
 ;; via metamodel introspection (no hardcoded class knowledge per
 ;; interaction/no_hardcoded_consumer_class_knowledge_in_substrate_2026_05_13.md).
 
-(deftest resolve-document-class-defaults-to-memory
-  ;; type: decision → :mm/Memory (no class claims :decision; default)
+(deftest resolve-document-class-routes-decision-to-mm-decision
+  ;; Post-2026-05-21: type: decision routes to :mm/Decision (subclass of :mm/Memory)
+  ;; per its :dt/codec-type-keyword :decision declaration in schema/mm-artifact.edn.
   (let [src "---\nname: Foo\ntype: decision\n---\n# Body\n"]
-    (is (= :mm/Memory (md/resolve-document-class src)))))
+    (is (= :mm/Decision (md/resolve-document-class src)))))
 
 (deftest resolve-document-class-without-frontmatter
   ;; No frontmatter → default :mm/Memory
@@ -586,7 +589,10 @@
     (is (= :mm/Tag (:dt/type (first entities))))))
 
 (deftest parse-document-memory-files-still-decompose-into-sections
-  ;; Regression guard — Stage 7.C must not break existing :mm/Memory routing.
+  ;; Regression guard — Memory-subclasses (post-2026-05-21 codec slot-inheritance fix)
+  ;; must continue to decompose into sections via the memory-class? helper.
+  ;; type: decision routes to :mm/Decision (subclass of :mm/Memory); the codec's
+  ;; memory-class? helper walks dt/subclass-of? and fires section decomposition.
   (let [src (str "---\n"
                  "name: Test\n"
                  "type: decision\n"
@@ -595,7 +601,7 @@
                  "## Section B\n\nBody B.\n")
         entities (md/parse-document src "decisions/test.md")]
     (is (= 3 (count entities)) "memory + 2 sections — section decomposition intact")
-    (is (= :mm/Memory (:dt/type (first entities))))))
+    (is (= :mm/Decision (:dt/type (first entities))))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; B.4 — Performance baseline (informational; assertions soft)

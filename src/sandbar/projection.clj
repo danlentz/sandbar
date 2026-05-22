@@ -94,19 +94,22 @@
    Lifted from sandbar.mcp.resources/mm-walker so both project.export
    and resources/read share the same walk."
   [entity]
-  (case (:dt/type entity)
-    :mm/Memory
-    (when-let [first-sec (:mm.memory/first-section entity)]
-      [first-sec])
+  ;; Subsumption-aware: dispatch on Memory-class-or-subclass / Section-class-or-subclass
+  ;; per post-2026-05-21 codec slot-inheritance fix.
+  (let [t (:dt/type entity)]
+    (cond
+      (dt/type-isa? :mm/Memory t)
+      (when-let [first-sec (:mm.memory/first-section entity)]
+        [first-sec])
 
-    :mm/Section
-    (concat (when-let [next-sib (:mm.section/next-sibling entity)]
-              [next-sib])
-            (->> (:_mm.section/parent entity)
-                 (filter #(nil? (:mm.section/previous-sibling %)))
-                 (take 1)))
+      (dt/type-isa? :mm/Section t)
+      (concat (when-let [next-sib (:mm.section/next-sibling entity)]
+                [next-sib])
+              (->> (:_mm.section/parent entity)
+                   (filter #(nil? (:mm.section/previous-sibling %)))
+                   (take 1)))
 
-    nil))
+      :else nil)))
 
 (defn walker-for-class
   "Return the realize-with walker fn for the given class-ident.
@@ -114,10 +117,11 @@
    classes return nil (no bundle realization needed; emit the entity
    alone)."
   [class-ident]
-  (case class-ident
-    :mm/Memory  mm-walker
-    :mm/Section mm-walker
-    nil))
+  ;; Subsumption-aware: Memory-subclasses (:mm/Decision, :mm/Plan, etc.) share mm-walker.
+  (cond
+    (dt/type-isa? :mm/Memory class-ident)  mm-walker
+    (dt/type-isa? :mm/Section class-ident) mm-walker
+    :else nil))
 
 (defn realize-and-emit-entity
   "Realize the bundle of related entities for `entity` (via the
@@ -165,7 +169,7 @@
    filesystem path).  Returns nil for entities not classified as
    mm/Memory or lacking :mm.memory/rel-path."
   [entity]
-  (when (and (= :mm/Memory (:dt/type entity))
+  (when (and (dt/type-isa? :mm/Memory (:dt/type entity))
              (:mm.memory/rel-path entity))
     (:mm.memory/rel-path entity)))
 
@@ -187,15 +191,26 @@
    Multiple keys compose via AND.  An empty / nil filter spec passes all
    entities."
   [entity filter-spec]
-  (let [{:keys [class classes pred tree-filter]} filter-spec]
-    (and (or (nil? class)        (= class (:dt/type entity)))
-         (or (nil? classes)      (contains? classes (:dt/type entity)))
-         (or (nil? pred)         (pred entity))
-         (or (nil? tree-filter)
-             (not= :mm/Memory (:dt/type entity))   ; non-memory passes
-             (and (:mm.memory/rel-path entity)
-                  (str/starts-with? (:mm.memory/rel-path entity)
-                                    tree-filter))))))
+  ;; Class matching walks :dt/subclass-of so :class :mm/Memory matches
+  ;; :mm/Decision instances (subsumption per RDFS rdfs9).  Substrate-pure;
+  ;; uses dt/subclass-of?.  Post-2026-05-21 codec slot-inheritance fix.
+  (let [{:keys [class classes pred tree-filter]} filter-spec
+        entity-type (:dt/type entity)
+        class-matches? (fn [c]
+                         (or (= c entity-type)
+                             (try (dt/subclass-of? c entity-type)
+                                  (catch Exception _ false))))]
+    (boolean
+      (and (or (nil? class)        (class-matches? class))
+           (or (nil? classes)      (some class-matches? classes))
+           (or (nil? pred)         (pred entity))
+           (or (nil? tree-filter)
+               ;; tree-filter applies to memory-shape entities (memory or subclasses);
+               ;; non-memory-shape entities (e.g. :mm/Section, :mm/Tag) pass through.
+               (not (class-matches? :mm/Memory))
+               (and (:mm.memory/rel-path entity)
+                    (str/starts-with? (:mm.memory/rel-path entity)
+                                      tree-filter)))))))
 
 (defn apply-filter
   "Filter a coll of entity-spec maps via `filter-spec`.  Returns a
@@ -218,8 +233,14 @@
    maps.  Memory-only inputs (no sections) yield `{:memory ... :sections []}`."
   [entities]
   (let [by-type        (group-by :dt/type entities)
-        memories       (or (get by-type :mm/Memory) [])
-        all-sections   (or (get by-type :mm/Section) [])
+        ;; Subsumption-aware: gather any entity whose :dt/type is :mm/Memory or
+        ;; a subclass thereof (e.g., :mm/Decision via :dt/subclass-of :mm/Memory).
+        memories       (vec (mapcat (fn [[t es]]
+                                      (when (dt/type-isa? :mm/Memory t) es))
+                                    by-type))
+        all-sections   (vec (mapcat (fn [[t es]]
+                                      (when (dt/type-isa? :mm/Section t) es))
+                                    by-type))
         section-by-id  (into {} (for [s all-sections] [(:db/ident s) s]))]
     (for [memory memories]
       (let [first-sec-ident (:mm.memory/first-section memory)
@@ -266,11 +287,11 @@
         filtered (if (and filter-spec (seq filter-spec))
                    ;; Keep all sections; filter memories; drop sections
                    ;; whose parent didn't pass.
-                   (let [memories       (clojure.core/filter (fn [e] (= :mm/Memory (:dt/type e)))
+                   (let [memories       (clojure.core/filter (fn [e] (dt/type-isa? :mm/Memory (:dt/type e)))
                                                               entities)
                          pass-memories  (apply-filter memories filter-spec)
                          pass-mem-idents (set (map :db/ident pass-memories))
-                         sections       (clojure.core/filter (fn [e] (= :mm/Section (:dt/type e)))
+                         sections       (clojure.core/filter (fn [e] (dt/type-isa? :mm/Section (:dt/type e)))
                                                               entities)
                          pass-sections  (vec (clojure.core/filter
                                                (fn [s]
@@ -363,14 +384,14 @@
          ;; `sandbar.mcp.tools/project-import-handler`.  Surfaced as
          ;; Friction #17 of memory/plans/sandbar_0_1_1_coevolution_arc_-
          ;; 2026_05_20.md / bootstrap-memory-substrate sub-arc Stage 2.A.
-         (let [memories        (clojure.core/filter #(= :mm/Memory (:dt/type %)) all-entities)
+         (let [memories        (clojure.core/filter #(dt/type-isa? :mm/Memory (:dt/type %)) all-entities)
                pass-mem-idents (set (map :db/ident (apply-filter memories filter-spec)))]
            (loop [out [] include? false [e & rst] all-entities]
              (cond
                (nil? e)
                out
 
-               (= :mm/Memory (:dt/type e))
+               (dt/type-isa? :mm/Memory (:dt/type e))
                (let [inc? (contains? pass-mem-idents (:db/ident e))]
                  (recur (cond-> out inc? (conj e)) inc? rst))
 
@@ -411,7 +432,7 @@
                          (->> coll
                               (mapv (fn [e]
                                       (cond-> (dissoc e :db/id)
-                                        (and (= :mm/Memory (:dt/type e))
+                                        (and (dt/type-isa? :mm/Memory (:dt/type e))
                                              (some? (:mm.memory/first-section e)))
                                         (dissoc :mm.memory/body-raw))))
                               ;; Order-independent comparison — sort by

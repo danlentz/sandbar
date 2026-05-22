@@ -1,0 +1,58 @@
+## What this predicate means
+
+**A `applies-in` B** — scoping typed-edge.  Says "memorial A is especially relevant in the context of memorial B" — letting guidance / rules declare scope-applicability without becoming context-specific artifacts themselves.  Widened in v0.8.0 to admit rules as domain (per `decisions/rules_as_first_class_type_2026_05_11.md` D4 lattice-with-lifting scope + D10 typed-edge introspection graph) and contexts as range (rule applies in context).  Combined with `inherits-from:` lattice edges, supports Cyc-style transitive applicability — a rule applying in context P also applies in any sub-context that inherits-from P.
+
+## Substrate identity
+
+- **Slot ident**: `{{predicate-ident}}`
+- **Domain**: `{{domain}}`
+- **Range**: `{{range}}`
+- **Cardinality**: `{{cardinality}}`
+- **`:dt/type`**: `:dt/DirectedBinaryRelationProperty` (asymmetric + irreflexive)
+
+## Formal signature
+
+`{{predicate-name}} : {{domain}} × {{range}} → Bool`
+
+## Characteristics
+
+- **Asymmetric** — A applies-in B doesn't imply B applies-in A (OWL 2 RL `prp-asyp`)
+- **Irreflexive** — no memorial applies in itself (OWL 2 RL `prp-irp`)
+- **NOT transitive** (BUT — see Cyc-style transitive applicability via inherits-from below)
+
+## When to use applies-in
+
+Use `applies-in` for:
+
+- Guidance memorials declaring relevant library/reference scope
+- Rule memorials declaring runtime context scope
+- Pattern memorials declaring applicable engagement type
+
+## Cyc-style transitive applicability
+
+When the range memorial has an inheritance lattice (`inherits-from:` chain), applicability is INHERITED — if rule R applies-in context P, and context Q inherits-from P, then R is implicitly applicable in Q.  This is the **lattice-with-lifting** semantic from Cyc's microtheory pattern, ported to sandbar's `:dt/subclass-of` machinery + sandbar.db.entailment's rdfs9 entailment.
+
+## Adjacent predicates
+
+| Aspect | Predicate |
+|---|---|
+| Context scope | **`applies-in`** — memorial applies in context |
+| Actor scope | `actor` — which actor the memorial applies to |
+| Runtime context | `runs-in-context` — actor's operating context |
+| Exemption | `bypasses` — actor exempt from rule |
+
+## Formal ontology mappings
+
+- **Cyc** microtheory `mt:applies` — exact semantic match (the source pattern; lattice-with-lifting)
+- **PROV-O** `prov:atLocation` — distant spatial analogue
+- **OWL** no direct equivalent (applicability is a metalogical notion)
+
+Grounding references in the corpus:
+- [`libraries/cyc.md`](../libraries/cyc.md) — Cyc microtheory pattern source
+- [`decisions/rules_as_first_class_type_2026_05_11.md`](../decisions/rules_as_first_class_type_2026_05_11.md) §D4 lattice-with-lifting
+
+## See also
+
+- [`predicates/runs-in-context.md`](runs-in-context.md) — runtime side of context scoping
+- [`predicates/actor.md`](actor.md) — actor-scope axis
+- [`predicates/bypasses.md`](bypasses.md) — exemption mechanism

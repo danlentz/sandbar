@@ -154,31 +154,31 @@
   ;; ============================================================================
 
   {:db/ident       :mm.tag/broader-generic
-   :dt/type        :dt/Property
+   :dt/type        :dt/StrictPartialOrderProperty
    :dt/domain      :mm/Tag
    :dt/range       :mm/Tag
    :db/valueType   :db.type/ref
    :db/cardinality :db.cardinality/many
-   :db/doc "Generic class-superclass hierarchical relation (is-a).  ISO 25964 broaderGeneric analog.  Sub-property of skos:broader.  Transitive + acyclic (enforced by audit).  Per ADR §2.1 Tier C."}
+   :db/doc "Generic class-superclass hierarchical relation (is-a).  ISO 25964 broaderGeneric analog.  Sub-property of skos:broader.  Strict partial order: transitive + asymmetric + irreflexive.  Audit invariant enforces acyclicity (transitive closure via rdfs9 + prp-trp at query time).  Per ADR §2.1 Tier C + sandbar.db.entailment intersection-class pattern."}
 
   {:db/ident       :mm.tag/broader-instantial
-   :dt/type        :dt/Property
+   :dt/type        :dt/StrictPartialOrderProperty
    :dt/domain      :mm/Tag
    :dt/range       :mm/Tag
    :db/valueType   :db.type/ref
    :db/cardinality :db.cardinality/many
-   :db/doc "Instance-class hierarchical relation (instance-of).  ISO 25964 broaderInstantial analog.  Sub-property of skos:broader.  Per ADR §2.1 Tier C."}
+   :db/doc "Instance-class hierarchical relation (instance-of).  ISO 25964 broaderInstantial analog.  Sub-property of skos:broader.  Strict partial order: transitive + asymmetric + irreflexive.  Per ADR §2.1 Tier C + sandbar.db.entailment intersection-class pattern."}
 
   {:db/ident       :mm.tag/broader-partitive
-   :dt/type        :dt/Property
+   :dt/type        :dt/StrictPartialOrderProperty
    :dt/domain      :mm/Tag
    :dt/range       :mm/Tag
    :db/valueType   :db.type/ref
    :db/cardinality :db.cardinality/many
-   :db/doc "Part-whole hierarchical relation.  ISO 25964 broaderPartitive analog.  Sub-property of skos:broader.  Transitive.  Per ADR §2.1 Tier C."}
+   :db/doc "Part-whole hierarchical relation.  ISO 25964 broaderPartitive analog.  Sub-property of skos:broader.  Strict partial order: transitive + asymmetric + irreflexive (mereological-decomposition relations chain).  Per ADR §2.1 Tier C + sandbar.db.entailment intersection-class pattern."}
 
   {:db/ident       :mm.tag/related
-   :dt/type        :dt/Property
+   :dt/type        :dt/IrreflexiveSymmetricProperty
    :dt/domain      :mm/Tag
    :dt/range       :mm/Tag
    :db/valueType   :db.type/ref
@@ -186,12 +186,12 @@
    :db/doc "Symmetric associative relation; non-hierarchical 'see also' link between tags.  SKOS related analog.  Symmetric + irreflexive (enforced by audit).  Per ADR §2.1 Tier C."}
 
   {:db/ident       :mm.tag/in-scheme
-   :dt/type        :dt/Property
+   :dt/type        :dt/DirectedBinaryRelationProperty
    :dt/domain      :mm/Tag
    :dt/range       :mm/ConceptScheme
    :db/valueType   :db.type/ref
    :db/cardinality :db.cardinality/many
-   :db/doc "Microthesaurus / scheme membership.  SKOS inScheme + ISO 25964 microThesaurusOf analog.  A tag may belong to multiple concept schemes (sandbar substrate scheme + consumer corpus scheme + federated scheme).  Per ADR §2.1 Tier C."}
+   :db/doc "Microthesaurus / scheme membership.  SKOS inScheme + ISO 25964 microThesaurusOf analog.  A tag may belong to multiple concept schemes (sandbar substrate scheme + consumer corpus scheme + federated scheme).  Asymmetric + irreflexive (a tag is in a scheme, not vice versa; schemes don't 'in-scheme' tags).  Per ADR §2.1 Tier C + sandbar.db.entailment intersection-class pattern."}
 
   ;; ============================================================================
   ;; Tier D — Lifecycle (per ADR §2.1)
@@ -214,7 +214,7 @@
    :db/doc "Lifecycle state: :active (canonical; in use), :draft (proposed; not yet ready for use), :deprecated (still queryable for backwards compat but new use discouraged), :retired (frontmatter rewritten away; archived).  Per ADR §2.1 Tier D + Stage 2.A SO burnination + Stage 2.B Wikipedia CfD patterns."}
 
   {:db/ident       :mm.tag/superseded-by
-   :dt/type        :dt/Property
+   :dt/type        :dt/StrictPartialOrderProperty
    :dt/domain      :mm/Tag
    :dt/range       :mm/Tag
    :db/valueType   :db.type/ref
@@ -250,12 +250,12 @@
    :db/doc "Schema-version provenance — which sandbar/bootstrap version introduced this tag.  Per ADR §2.1 Tier E + predicates-as-first-class pattern."}
 
   {:db/ident       :mm.tag/constraints
-   :dt/type        :dt/Property
+   :dt/type        :dt/DirectedBinaryRelationProperty
    :dt/domain      :mm/Tag
    :dt/range       :mm/Shape
    :db/valueType   :db.type/ref
    :db/cardinality :db.cardinality/many
-   :db/doc "Machine-checkable usage constraints — references to :mm/Shape instances enforcing per-tag invariants.  SHACL-targeted per Dan-affirmation 2026-05-20 'shacl has been an early commitment and wise investment as a foundational ontology'.  Wikidata-constraint-property analog + PoolParty's commercial SHACL adoption validation.  Per ADR §2.1 Tier E."}
+   :db/doc "Machine-checkable usage constraints — references to :mm/Shape instances enforcing per-tag invariants.  SHACL-targeted per Dan-affirmation 2026-05-20 'shacl has been an early commitment and wise investment as a foundational ontology'.  Wikidata-constraint-property analog + PoolParty's commercial SHACL adoption validation.  Asymmetric + irreflexive (a tag references shapes; shapes don't reference back via this slot).  Per ADR §2.1 Tier E + sandbar.db.entailment intersection-class pattern."}
 
   {:db/ident       :mm.tag/sort-key
    :dt/type        :dt/Property
@@ -268,44 +268,44 @@
   ;; --- Mapping relations (ISO 25964 Part 2 + IPTC NewsCodes pattern) ---
 
   {:db/ident       :mm.tag/exact-match
-   :dt/type        :dt/Property
+   :dt/type        :dt/IrreflexiveSymmetricProperty
    :dt/domain      :mm/Tag
    :dt/range       :mm/Tag
    :db/valueType   :db.type/ref
    :db/cardinality :db.cardinality/many
-   :db/doc "Inter-vocabulary mapping — this tag is exactly equivalent to the target tag (typically in a different concept scheme).  SKOS exactMatch + ISO 25964 Part 2 + IPTC operational pattern.  Per ADR §2.1 Tier E."}
+   :db/doc "Inter-vocabulary mapping — this tag is exactly equivalent to the target tag (typically in a different concept scheme).  SKOS exactMatch + ISO 25964 Part 2 + IPTC operational pattern.  Symmetric + irreflexive (mapping is mutual; a tag never exactMatches itself per SKOS).  Per ADR §2.1 Tier E + sandbar.db.entailment intersection-class pattern."}
 
   {:db/ident       :mm.tag/close-match
-   :dt/type        :dt/Property
+   :dt/type        :dt/IrreflexiveSymmetricProperty
    :dt/domain      :mm/Tag
    :dt/range       :mm/Tag
    :db/valueType   :db.type/ref
    :db/cardinality :db.cardinality/many
-   :db/doc "Inter-vocabulary mapping — this tag is similar but not interchangeable in all cases.  SKOS closeMatch.  Per ADR §2.1 Tier E."}
+   :db/doc "Inter-vocabulary mapping — this tag is similar but not interchangeable in all cases.  SKOS closeMatch.  Symmetric + irreflexive (similarity is mutual; NOT transitive per SKOS — closeness doesn't chain via composition).  Per ADR §2.1 Tier E + sandbar.db.entailment intersection-class pattern."}
 
   {:db/ident       :mm.tag/broader-match
-   :dt/type        :dt/Property
+   :dt/type        :dt/StrictPartialOrderProperty
    :dt/domain      :mm/Tag
    :dt/range       :mm/Tag
    :db/valueType   :db.type/ref
    :db/cardinality :db.cardinality/many
-   :db/doc "Inter-vocabulary mapping — this tag is broader than the target (in the target vocabulary).  SKOS broaderMatch.  Per ADR §2.1 Tier E."}
+   :db/doc "Inter-vocabulary mapping — this tag is broader than the target (in the target vocabulary).  SKOS broaderMatch.  Strict partial order: transitive + asymmetric + irreflexive.  Dagger pair with narrower-match — `:dt/inverse-of` relation declared in the dedicated relations-block at the bottom of mm.edn (separate tx avoids same-tx ident-resolution); OWL 2 RL prp-inv1/inv2 entailment derives both directions.  Per ADR §2.1 Tier E + sandbar.db.entailment intersection-class pattern + inverse-of substrate slot."}
 
   {:db/ident       :mm.tag/narrower-match
-   :dt/type        :dt/Property
+   :dt/type        :dt/StrictPartialOrderProperty
    :dt/domain      :mm/Tag
    :dt/range       :mm/Tag
    :db/valueType   :db.type/ref
    :db/cardinality :db.cardinality/many
-   :db/doc "Inter-vocabulary mapping — this tag is narrower than the target.  SKOS narrowerMatch.  Per ADR §2.1 Tier E."}
+   :db/doc "Inter-vocabulary mapping — this tag is narrower than the target.  SKOS narrowerMatch.  Strict partial order: transitive + asymmetric + irreflexive.  Dagger pair with broader-match — its inverse-of relation declared on the broader-match side per the substrate's one-sided assertion discipline; OWL 2 RL prp-inv1/inv2 entailment derives both directions.  Per ADR §2.1 Tier E + sandbar.db.entailment intersection-class pattern."}
 
   {:db/ident       :mm.tag/related-match
-   :dt/type        :dt/Property
+   :dt/type        :dt/IrreflexiveSymmetricProperty
    :dt/domain      :mm/Tag
    :dt/range       :mm/Tag
    :db/valueType   :db.type/ref
    :db/cardinality :db.cardinality/many
-   :db/doc "Inter-vocabulary mapping — this tag is associatively related to the target (non-hierarchical).  SKOS relatedMatch.  Per ADR §2.1 Tier E."}]
+   :db/doc "Inter-vocabulary mapping — this tag is associatively related to the target (non-hierarchical).  SKOS relatedMatch.  Symmetric + irreflexive (associative mapping is mutual; a tag never relatedMatches itself).  Per ADR §2.1 Tier E + sandbar.db.entailment intersection-class pattern."}]
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; mm.concept-scheme/* Properties — per ADR §2.2 :mm/ConceptScheme class
@@ -581,7 +581,7 @@
    :db/doc "Last-reviewed timestamp (frontmatter `last-reviewed:`)."}
 
   {:db/ident       :mm.memory/created-by
-   :dt/type        :dt/Property
+   :dt/type        :dt/DirectedBinaryRelationProperty
    :dt/domain      :mm/Memory
    :dt/range       :dt/Resource
    :db/valueType   :db.type/ref
@@ -662,7 +662,7 @@
   ;; semantics handle cross-tx target-not-yet-loaded).
 
   {:db/ident       :mm.memory/related
-   :dt/type        :dt/Property
+   :dt/type        :dt/IrreflexiveSymmetricProperty
    :dt/domain      :mm/Memory
    :dt/range       :dt/Resource
    :db/valueType   :db.type/ref
@@ -670,7 +670,7 @@
    :db/doc "See-also typed-edge (frontmatter `related:`).  Rel-paths to sibling memorials whose topic / authority overlaps.  Most-used corpus typed-edge (1236 of 1388 memorials).  Per memory/predicates/related.md."}
 
   {:db/ident       :mm.memory/cites
-   :dt/type        :dt/Property
+   :dt/type        :dt/DirectedBinaryRelationProperty
    :dt/domain      :mm/Memory
    :dt/range       :dt/Resource
    :db/valueType   :db.type/ref
@@ -678,7 +678,7 @@
    :db/doc "Citation typed-edge (frontmatter `cites:`).  Rel-paths to memorials authoring source claims or vocabulary this memorial relies on.  Per memory/predicates/cites.md."}
 
   {:db/ident       :mm.memory/motivated-by
-   :dt/type        :dt/Property
+   :dt/type        :dt/DirectedBinaryRelationProperty
    :dt/domain      :mm/Memory
    :dt/range       :dt/Resource
    :db/valueType   :db.type/ref
@@ -686,7 +686,7 @@
    :db/doc "Causal-motivation typed-edge (frontmatter `motivated-by:`).  Rel-paths to memorials whose existence motivates THIS memorial.  Inverse of :mm.memory/motivates.  Per memory/predicates/motivated-by.md."}
 
   {:db/ident       :mm.memory/motivates
-   :dt/type        :dt/Property
+   :dt/type        :dt/DirectedBinaryRelationProperty
    :dt/domain      :mm/Memory
    :dt/range       :dt/Resource
    :db/valueType   :db.type/ref
@@ -694,7 +694,7 @@
    :db/doc "Inverse of :mm.memory/motivated-by (frontmatter `motivates:`).  Per memory/predicates/motivates.md."}
 
   {:db/ident       :mm.memory/composes-with
-   :dt/type        :dt/Property
+   :dt/type        :dt/IrreflexiveSymmetricProperty
    :dt/domain      :mm/Memory
    :dt/range       :dt/Resource
    :db/valueType   :db.type/ref
@@ -702,7 +702,7 @@
    :db/doc "Composition typed-edge (frontmatter `composes-with:`).  Rel-paths to memorials whose decisions / discipline compose with THIS one.  Per memory/predicates/composes-with.md."}
 
   {:db/ident       :mm.memory/refines
-   :dt/type        :dt/Property
+   :dt/type        :dt/AntisymmetricStrictOrderProperty
    :dt/domain      :mm/Memory
    :dt/range       :dt/Resource
    :db/valueType   :db.type/ref
@@ -710,7 +710,7 @@
    :db/doc "Refinement typed-edge (frontmatter `refines:`).  Rel-paths to memorials this memorial refines (narrows / corrects / extends).  Per memory/predicates/refines.md."}
 
   {:db/ident       :mm.memory/supersedes
-   :dt/type        :dt/Property
+   :dt/type        :dt/StrictPartialOrderProperty
    :dt/domain      :mm/Memory
    :dt/range       :dt/Resource
    :db/valueType   :db.type/ref
@@ -718,7 +718,7 @@
    :db/doc "Supersession typed-edge (frontmatter `supersedes:`).  Rel-paths to memorials this memorial replaces.  Per memory/predicates/supersedes.md."}
 
   {:db/ident       :mm.memory/superseded-by
-   :dt/type        :dt/Property
+   :dt/type        :dt/StrictPartialOrderProperty
    :dt/domain      :mm/Memory
    :dt/range       :dt/Resource
    :db/valueType   :db.type/ref
@@ -726,7 +726,7 @@
    :db/doc "Inverse of :mm.memory/supersedes (frontmatter `superseded-by:`).  Per memory/predicates/superseded-by.md."}
 
   {:db/ident       :mm.memory/conforms-to
-   :dt/type        :dt/Property
+   :dt/type        :dt/DirectedBinaryRelationProperty
    :dt/domain      :mm/Memory
    :dt/range       :dt/Resource
    :db/valueType   :db.type/ref
@@ -734,7 +734,7 @@
    :db/doc "Type-conformance typed-edge (frontmatter `conforms-to:`).  Rel-paths to type / meta-type / pattern memorials this memorial conforms to.  Per memory/predicates/conforms-to.md."}
 
   {:db/ident       :mm.memory/part-of
-   :dt/type        :dt/Property
+   :dt/type        :dt/AntisymmetricStrictOrderProperty
    :dt/domain      :mm/Memory
    :dt/range       :dt/Resource
    :db/valueType   :db.type/ref
@@ -742,7 +742,7 @@
    :db/doc "Hierarchy typed-edge (frontmatter `part-of:`).  Rel-paths to enclosing memorials (arc / parent-plan / etc.).  Per memory/predicates/part-of.md."}
 
   {:db/ident       :mm.memory/has-part
-   :dt/type        :dt/Property
+   :dt/type        :dt/AntisymmetricStrictOrderProperty
    :dt/domain      :mm/Memory
    :dt/range       :dt/Resource
    :db/valueType   :db.type/ref
@@ -750,7 +750,7 @@
    :db/doc "Inverse of :mm.memory/part-of (frontmatter `has-part:`).  Per memory/predicates/has-part.md."}
 
   {:db/ident       :mm.memory/descends-from
-   :dt/type        :dt/Property
+   :dt/type        :dt/StrictPartialOrderProperty
    :dt/domain      :mm/Memory
    :dt/range       :dt/Resource
    :db/valueType   :db.type/ref
@@ -758,7 +758,7 @@
    :db/doc "Lineage typed-edge (frontmatter `descends-from:`).  Rel-paths to ancestor memorials in a derivation chain.  Per memory/predicates/descends-from.md."}
 
   {:db/ident       :mm.memory/evidenced-by
-   :dt/type        :dt/Property
+   :dt/type        :dt/DirectedBinaryRelationProperty
    :dt/domain      :mm/Memory
    :dt/range       :dt/Resource
    :db/valueType   :db.type/ref
@@ -766,7 +766,7 @@
    :db/doc "Evidence typed-edge (frontmatter `evidenced-by:`).  Rel-paths to memorials providing supporting evidence for THIS one.  Per memory/predicates/evidenced-by.md."}
 
   {:db/ident       :mm.memory/evidences
-   :dt/type        :dt/Property
+   :dt/type        :dt/DirectedBinaryRelationProperty
    :dt/domain      :mm/Memory
    :dt/range       :dt/Resource
    :db/valueType   :db.type/ref
@@ -774,7 +774,7 @@
    :db/doc "Inverse of :mm.memory/evidenced-by (frontmatter `evidences:`).  Per memory/predicates/evidences.md."}
 
   {:db/ident       :mm.memory/documented-by
-   :dt/type        :dt/Property
+   :dt/type        :dt/DirectedBinaryRelationProperty
    :dt/domain      :mm/Memory
    :dt/range       :dt/Resource
    :db/valueType   :db.type/ref
@@ -782,7 +782,7 @@
    :db/doc "Documentation typed-edge (frontmatter `documented-by:`).  Rel-paths to memorials documenting THIS one.  Per memory/predicates/documented-by.md."}
 
   {:db/ident       :mm.memory/documents
-   :dt/type        :dt/Property
+   :dt/type        :dt/DirectedBinaryRelationProperty
    :dt/domain      :mm/Memory
    :dt/range       :dt/Resource
    :db/valueType   :db.type/ref
@@ -790,7 +790,7 @@
    :db/doc "Inverse of :mm.memory/documented-by (frontmatter `documents:`).  Per memory/predicates/documents.md."}
 
   {:db/ident       :mm.memory/triggered-by
-   :dt/type        :dt/Property
+   :dt/type        :dt/DirectedBinaryRelationProperty
    :dt/domain      :mm/Memory
    :dt/range       :dt/Resource
    :db/valueType   :db.type/ref
@@ -814,7 +814,7 @@
    :db/doc "Parent-hierarchy typed-edge (frontmatter `parent:`).  Rel-paths to parent memorials — :db.cardinality/many to accommodate the corpus's genuine multi-parent semantics (e.g., :tasks/* memorials with multiple parent plans).  Cardinality bumped from :one → :many at 2026-05-20 per `~/claude/memory/bugs/sandbar_mm_memory_parent_slot_cardinality_one_vs_corpus_multi_parent_usage_2026_05_20.md` — Stage 3.B canonical-ingest validation surfaced 60-of-1502 group failures all sharing the wrong-type-for-attribute pattern.  Consumers reading :mm.memory/parent get a set-of-strings (Datomic many-cardinality return shape)."}
 
   {:db/ident       :mm.memory/informs
-   :dt/type        :dt/Property
+   :dt/type        :dt/DirectedBinaryRelationProperty
    :dt/domain      :mm/Memory
    :dt/range       :dt/Resource
    :db/valueType   :db.type/ref
@@ -822,7 +822,7 @@
    :db/doc "Informational typed-edge (frontmatter `informs:`).  Rel-paths to memorials whose decision-making this memorial informs.  Per memory/predicates/informs.md."}
 
   {:db/ident       :mm.memory/informed-by
-   :dt/type        :dt/Property
+   :dt/type        :dt/DirectedBinaryRelationProperty
    :dt/domain      :mm/Memory
    :dt/range       :dt/Resource
    :db/valueType   :db.type/ref
@@ -830,7 +830,7 @@
    :db/doc "Inverse of :mm.memory/informs (frontmatter `informed-by:`).  Per memory/predicates/informed-by.md."}
 
   {:db/ident       :mm.memory/implements
-   :dt/type        :dt/Property
+   :dt/type        :dt/DirectedBinaryRelationProperty
    :dt/domain      :mm/Memory
    :dt/range       :dt/Resource
    :db/valueType   :db.type/ref
@@ -846,7 +846,7 @@
 
   ;; Inverses of existing forwards
   {:db/ident       :mm.memory/implemented-by
-   :dt/type        :dt/Property
+   :dt/type        :dt/DirectedBinaryRelationProperty
    :dt/domain      :mm/Memory
    :dt/range       :dt/Resource
    :db/valueType   :db.type/ref
@@ -854,7 +854,7 @@
    :db/doc "Inverse of :mm.memory/implements (frontmatter `implemented-by:`).  Per memory/predicates/implemented-by.md."}
 
   {:db/ident       :mm.memory/ancestor-of
-   :dt/type        :dt/Property
+   :dt/type        :dt/StrictPartialOrderProperty
    :dt/domain      :mm/Memory
    :dt/range       :dt/Resource
    :db/valueType   :db.type/ref
@@ -863,7 +863,7 @@
 
   ;; New pairs — about / is-about-of
   {:db/ident       :mm.memory/about
-   :dt/type        :dt/Property
+   :dt/type        :dt/DirectedBinaryRelationProperty
    :dt/domain      :mm/Memory
    :dt/range       :dt/Resource
    :db/valueType   :db.type/ref
@@ -871,7 +871,7 @@
    :db/doc "Topical-aboutness typed-edge (frontmatter `about:`).  Rel-paths to memorials whose topic THIS memorial is fundamentally ABOUT.  Per memory/predicates/about.md."}
 
   {:db/ident       :mm.memory/is-about-of
-   :dt/type        :dt/Property
+   :dt/type        :dt/DirectedBinaryRelationProperty
    :dt/domain      :mm/Memory
    :dt/range       :dt/Resource
    :db/valueType   :db.type/ref
@@ -880,7 +880,7 @@
 
   ;; New pairs — consumes / consumed-by
   {:db/ident       :mm.memory/consumes
-   :dt/type        :dt/Property
+   :dt/type        :dt/StrictPartialOrderProperty
    :dt/domain      :mm/Memory
    :dt/range       :dt/Resource
    :db/valueType   :db.type/ref
@@ -888,7 +888,7 @@
    :db/doc "Library/artifact-consumption typed-edge (frontmatter `consumes:`).  Rel-paths to libraries / artifacts THIS memorial consumes.  Per memory/predicates/consumes.md."}
 
   {:db/ident       :mm.memory/consumed-by
-   :dt/type        :dt/Property
+   :dt/type        :dt/StrictPartialOrderProperty
    :dt/domain      :mm/Memory
    :dt/range       :dt/Resource
    :db/valueType   :db.type/ref
@@ -897,7 +897,7 @@
 
   ;; New pairs — demonstrates / demonstrated-by
   {:db/ident       :mm.memory/demonstrates
-   :dt/type        :dt/Property
+   :dt/type        :dt/DirectedBinaryRelationProperty
    :dt/domain      :mm/Memory
    :dt/range       :dt/Resource
    :db/valueType   :db.type/ref
@@ -905,7 +905,7 @@
    :db/doc "Example-of-concept typed-edge (frontmatter `demonstrates:`).  Rel-paths to concepts/patterns/principles THIS memorial demonstrates.  Per memory/predicates/demonstrates.md."}
 
   {:db/ident       :mm.memory/demonstrated-by
-   :dt/type        :dt/Property
+   :dt/type        :dt/DirectedBinaryRelationProperty
    :dt/domain      :mm/Memory
    :dt/range       :dt/Resource
    :db/valueType   :db.type/ref
@@ -914,7 +914,7 @@
 
   ;; New pairs — disagrees-with / is-disagreed-with-by
   {:db/ident       :mm.memory/disagrees-with
-   :dt/type        :dt/Property
+   :dt/type        :dt/DirectedBinaryRelationProperty
    :dt/domain      :mm/Memory
    :dt/range       :dt/Resource
    :db/valueType   :db.type/ref
@@ -922,7 +922,7 @@
    :db/doc "Anti-relation typed-edge (frontmatter `disagrees-with:`).  Rel-paths to memorials whose claims THIS memorial disagrees with.  Per memory/predicates/disagrees-with.md."}
 
   {:db/ident       :mm.memory/is-disagreed-with-by
-   :dt/type        :dt/Property
+   :dt/type        :dt/DirectedBinaryRelationProperty
    :dt/domain      :mm/Memory
    :dt/range       :dt/Resource
    :db/valueType   :db.type/ref
@@ -931,7 +931,7 @@
 
   ;; New pairs — has-reply / reply-of
   {:db/ident       :mm.memory/has-reply
-   :dt/type        :dt/Property
+   :dt/type        :dt/DirectedBinaryRelationProperty
    :dt/domain      :mm/Memory
    :dt/range       :dt/Resource
    :db/valueType   :db.type/ref
@@ -939,7 +939,7 @@
    :db/doc "Reply-thread typed-edge (frontmatter `has-reply:`).  Rel-paths to reply memorials.  Per memory/predicates/has-reply.md."}
 
   {:db/ident       :mm.memory/reply-of
-   :dt/type        :dt/Property
+   :dt/type        :dt/DirectedBinaryRelationProperty
    :dt/domain      :mm/Memory
    :dt/range       :dt/Resource
    :db/valueType   :db.type/ref
@@ -948,7 +948,7 @@
 
   ;; New pairs — mentions / is-mentioned-by
   {:db/ident       :mm.memory/mentions
-   :dt/type        :dt/Property
+   :dt/type        :dt/DirectedBinaryRelationProperty
    :dt/domain      :mm/Memory
    :dt/range       :dt/Resource
    :db/valueType   :db.type/ref
@@ -956,7 +956,7 @@
    :db/doc "Passing-reference typed-edge (frontmatter `mentions:`).  Rel-paths to memorials this memorial mentions in passing (weaker than `cites`).  Per memory/predicates/mentions.md."}
 
   {:db/ident       :mm.memory/is-mentioned-by
-   :dt/type        :dt/Property
+   :dt/type        :dt/DirectedBinaryRelationProperty
    :dt/domain      :mm/Memory
    :dt/range       :dt/Resource
    :db/valueType   :db.type/ref
@@ -965,7 +965,7 @@
 
   ;; New pairs — realizes / realized-by
   {:db/ident       :mm.memory/realizes
-   :dt/type        :dt/Property
+   :dt/type        :dt/DirectedBinaryRelationProperty
    :dt/domain      :mm/Memory
    :dt/range       :dt/Resource
    :db/valueType   :db.type/ref
@@ -973,7 +973,7 @@
    :db/doc "Realization typed-edge (frontmatter `realizes:`).  Rel-paths to abstract concepts/patterns THIS memorial realizes (concretizes).  Per memory/predicates/realizes.md."}
 
   {:db/ident       :mm.memory/realized-by
-   :dt/type        :dt/Property
+   :dt/type        :dt/DirectedBinaryRelationProperty
    :dt/domain      :mm/Memory
    :dt/range       :dt/Resource
    :db/valueType   :db.type/ref
@@ -982,7 +982,7 @@
 
   ;; Standalone — contradicts (no inverse in current vocabulary)
   {:db/ident       :mm.memory/contradicts
-   :dt/type        :dt/Property
+   :dt/type        :dt/DirectedBinaryRelationProperty
    :dt/domain      :mm/Memory
    :dt/range       :dt/Resource
    :db/valueType   :db.type/ref
@@ -1000,7 +1000,7 @@
   ;; corpus convention is per-memorial frontmatter.
 
   {:db/ident       :mm.memory/extends
-   :dt/type        :dt/Property
+   :dt/type        :dt/AntisymmetricStrictOrderProperty
    :dt/domain      :mm/Memory
    :dt/range       :dt/Resource
    :db/valueType   :db.type/ref
@@ -1008,7 +1008,7 @@
    :db/doc "Type-extension typed-edge (frontmatter `extends:`).  Rel-paths to memorials this memorial extends — used in type-memorials (e.g., types/library.md extends types/meta.md) + meta-type-memorials.  Per memory/predicates/extends.md."}
 
   {:db/ident       :mm.memory/has-meta-type
-   :dt/type        :dt/Property
+   :dt/type        :dt/DirectedBinaryRelationProperty
    :dt/domain      :mm/Memory
    :dt/range       :dt/Resource
    :db/valueType   :db.type/ref
@@ -1016,7 +1016,7 @@
    :db/doc "Meta-type relation (frontmatter `has-meta-type:`).  Rel-paths to meta-type memorials describing THIS memorial's meta-class.  Per memory/predicates/has-meta-type.md."}
 
   {:db/ident       :mm.memory/inherits-from
-   :dt/type        :dt/Property
+   :dt/type        :dt/StrictPartialOrderProperty
    :dt/domain      :mm/Memory
    :dt/range       :dt/Resource
    :db/valueType   :db.type/ref
@@ -1024,7 +1024,7 @@
    :db/doc "Inheritance typed-edge (frontmatter `inherits-from:`).  Rel-paths to memorials THIS memorial inherits-from in a class-hierarchy sense.  Per memory/predicates/inherits-from.md.  Note: substrate-level inheritance lives on :dt/subclass-of for :dt/Class entities; this slot is for corpus memorial-level (type-memorial) frontmatter."}
 
   {:db/ident       :mm.memory/instance-of
-   :dt/type        :dt/Property
+   :dt/type        :dt/FunctionalIrreflexiveProperty
    :dt/domain      :mm/Memory
    :dt/range       :dt/Resource
    :db/valueType   :db.type/ref
@@ -1032,7 +1032,7 @@
    :db/doc "Class-membership typed-edge (frontmatter `instance-of:`).  Rel-paths to type-memorials THIS memorial is an instance-of (corpus-level class membership).  Per memory/predicates/instance-of.md.  Substrate-level instance-of is :dt/type — this slot is for corpus memorial-level frontmatter."}
 
   {:db/ident       :mm.memory/specializes
-   :dt/type        :dt/Property
+   :dt/type        :dt/AntisymmetricStrictOrderProperty
    :dt/domain      :mm/Memory
    :dt/range       :dt/Resource
    :db/valueType   :db.type/ref
@@ -1040,7 +1040,7 @@
    :db/doc "Narrower-than typed-edge (frontmatter `specializes:`).  Rel-paths to memorials THIS memorial is a more-specific case of.  Per memory/predicates/specializes.md."}
 
   {:db/ident       :mm.memory/generalizes
-   :dt/type        :dt/Property
+   :dt/type        :dt/AntisymmetricStrictOrderProperty
    :dt/domain      :mm/Memory
    :dt/range       :dt/Resource
    :db/valueType   :db.type/ref
@@ -1048,7 +1048,7 @@
    :db/doc "Broader-than typed-edge (frontmatter `generalizes:`).  Inverse of :mm.memory/specializes.  Per memory/predicates/generalizes.md."}
 
   {:db/ident       :mm.memory/has-domain
-   :dt/type        :dt/Property
+   :dt/type        :dt/DirectedBinaryRelationProperty
    :dt/domain      :mm/Memory
    :dt/range       :dt/Resource
    :db/valueType   :db.type/ref
@@ -1056,12 +1056,112 @@
    :db/doc "Predicate domain typed-edge (frontmatter `has-domain:` on predicate-memorials).  Rel-paths to type-memorials specifying which classes the predicate applies to.  Per memory/predicates/has-domain.md."}
 
   {:db/ident       :mm.memory/has-range
-   :dt/type        :dt/Property
+   :dt/type        :dt/DirectedBinaryRelationProperty
    :dt/domain      :mm/Memory
    :dt/range       :dt/Resource
    :db/valueType   :db.type/ref
    :db/cardinality :db.cardinality/many
    :db/doc "Predicate range typed-edge (frontmatter `has-range:` on predicate-memorials).  Rel-paths to type-memorials specifying which classes the predicate's values target.  Per memory/predicates/has-range.md."}
+
+  ;; ============================================================================
+  ;; Corpus-substrate completeness — 11 typed-edge predicates that had corpus
+  ;; predicate memorials at `memory/predicates/<name>.md` but no substrate
+  ;; declaration prior to 2026-05-22.  Each gets its OWL-aligned intersection
+  ;; class per the corpus's declared characteristics.
+  ;;
+  ;; Per `observations/eleven_corpus_predicates_lack_substrate_slot_declarations_
+  ;; 2026_05_22.md` (gap surfaced during sandbar.db.entailment Stage 4 full-
+  ;; migration audit) + ADR sandbar_rdfs_entailment_via_datomic_native_datalog_
+  ;; rules_with_swclos_style_metaclass_property_characteristics_2026_05_21.
+  ;; ============================================================================
+
+  {:db/ident       :mm.memory/requires
+   :dt/type        :dt/StrictPartialOrderProperty
+   :dt/domain      :mm/Memory
+   :dt/range       :dt/Resource
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/many
+   :db/doc "Dependency typed-edge (frontmatter `requires:`).  Strict partial order — `A requires B` means applying or adhering to A requires familiarity with / adherence to B; transitive (dependency composition); asymmetric + irreflexive; audit invariant enforces acyclicity (dependency cycles are schema bugs).  Per memory/predicates/requires.md."}
+
+  {:db/ident       :mm.memory/has-beginning
+   :dt/type        :dt/AsymmetricFunctionalIrreflexiveProperty
+   :dt/domain      :mm/Memory
+   :dt/range       :db.type/string
+   :db/valueType   :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/doc "OWL-Time interval-boundary axis (frontmatter `has-beginning:`).  Functional (one beginning per occurrent); range is literal xsd:date / xsd:dateTime until a `:mm/TimeInstant` type lands.  Companion to `has-end`.  Composes with future Allen-13 interval predicates: `I.before J ≡ I.has-end before J.has-beginning`.  Per memory/predicates/has-beginning.md."}
+
+  {:db/ident       :mm.memory/has-end
+   :dt/type        :dt/AsymmetricFunctionalIrreflexiveProperty
+   :dt/domain      :mm/Memory
+   :dt/range       :db.type/string
+   :db/valueType   :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/doc "OWL-Time interval-boundary axis (frontmatter `has-end:`).  Functional (one end per occurrent; ongoing occurrents may omit the assertion); range is literal xsd:date / xsd:dateTime until a `:mm/TimeInstant` type lands.  Companion to `has-beginning`.  Per memory/predicates/has-end.md."}
+
+  {:db/ident       :mm.memory/has-participant
+   :dt/type        :dt/DirectedBinaryRelationProperty
+   :dt/domain      :mm/Memory
+   :dt/range       :dt/Resource
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/many
+   :db/doc "BFO participation relation (frontmatter `has-participant:`).  `A has-participant B` where occurrent A (session log / memoir / event-shaped memory) had memory B as a participant.  BFO `bfo:has-participant` source ontology — the canonical relation for 'an occurrent had this continuant as a participant'.  Asymmetric + irreflexive (NOT transitive).  Per memory/predicates/has-participant.md."}
+
+  {:db/ident       :mm.memory/made
+   :dt/type        :dt/DirectedBinaryRelationProperty
+   :dt/domain      :mm/Memory
+   :dt/range       :dt/Resource
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/many
+   :db/doc "FOAF agent-creation typed-edge (frontmatter `made:`).  Dagger inverse of `created-by` — `Agent A made memory B`.  Per protocol/predicate_lifecycle.md §'Edge assertion is one-sided', the canonical asserted direction is the memory side (`created-by:`); `made:` is derivable on the agent side via inverse-of entailment.  FOAF `foaf:made` source ontology.  Per memory/predicates/made.md."}
+
+  {:db/ident       :mm.memory/created-with
+   :dt/type        :dt/AsymmetricFunctionalIrreflexiveProperty
+   :dt/domain      :mm/Memory
+   :dt/range       :dt/Resource
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/many
+   :db/doc "PAV creation triple tool-axis (frontmatter `created-with:`).  `A was created with tool B` where B is the model / software / mechanism used to author the memory.  The distinctive PAV contribution that no FOAF / DC / PROV-O cognate cleanly supplies — for AI-collaborative corpora the tool axis is load-bearing.  Functional (one canonical tool per memory; substrate cardinality-many for multi-tool authoring flexibility).  Per memory/predicates/created-with.md."}
+
+  {:db/ident       :mm.memory/bypasses
+   :dt/type        :dt/DirectedBinaryRelationProperty
+   :dt/domain      :mm/Memory
+   :dt/range       :dt/Resource
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/many
+   :db/doc "Rule-exemption typed-edge (frontmatter `bypasses:`).  From an actor (or actor+context tuple) to a rule memorial declaring that the named actor in the named context is EXEMPT from the rule.  Modeled on GitHub Rulesets' `bypass_actors` mechanism per the rules-as-first-class ADR + cornerstone modern-tooling broad-survey.  Asymmetric + irreflexive.  Per memory/predicates/bypasses.md."}
+
+  {:db/ident       :mm.memory/provides-method-for
+   :dt/type        :dt/DirectedBinaryRelationProperty
+   :dt/domain      :mm/Memory
+   :dt/range       :dt/Resource
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/many
+   :db/doc "Dagger inverse of `uses-method-in` (frontmatter `provides-method-for:`).  `Pattern/protocol A provides the methodology that artifact B used`.  Per protocol/predicate_lifecycle.md, the canonical asserted direction is the artifact side (`uses-method-in:`); the inverse is derivable.  Predicate exists for vocabulary completeness + reverse-direction retrieval.  Per memory/predicates/provides-method-for.md."}
+
+  {:db/ident       :mm.memory/uses-method-in
+   :dt/type        :dt/DirectedBinaryRelationProperty
+   :dt/domain      :mm/Memory
+   :dt/range       :dt/Resource
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/many
+   :db/doc "Methodology-citation typed-edge (frontmatter `uses-method-in:`).  `A uses-method-in B` where artifact A (memoir / library / decision / synthesis) employs a method, technique, or framework specified by B (pattern / protocol).  CiTO source ontology (`cito:usesMethodIn`).  Distinguishes from `evidences` (witness) and `cites` (weak external pointer) and `implements` (full spec realization).  Dagger pair with `provides-method-for`.  Per memory/predicates/uses-method-in.md."}
+
+  {:db/ident       :mm.memory/next-by-date
+   :dt/type        :dt/DirectedBinaryRelationProperty
+   :dt/domain      :mm/Memory
+   :dt/range       :dt/Resource
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/one
+   :db/doc "SIOC pairwise cons-list temporal successor (frontmatter `next-by-date:`).  `A is chronologically followed by B` for occurrents (logs / sessions / commits / authorization-events / plan-transitions) where A's temporal position precedes B's.  Pairwise primitive for append-only sequences — strictly superior to SKOS OrderedCollection (insertion is O(1) local edits, not O(reshuffle)).  Asymmetric + irreflexive + NOT transitive (chains are walked explicitly).  Dagger pair with `previous-by-date`.  SIOC 2007 `sioc:next_by_date` source.  Per memory/predicates/next-by-date.md."}
+
+  {:db/ident       :mm.memory/previous-by-date
+   :dt/type        :dt/DirectedBinaryRelationProperty
+   :dt/domain      :mm/Memory
+   :dt/range       :dt/Resource
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/one
+   :db/doc "SIOC pairwise cons-list temporal predecessor (frontmatter `previous-by-date:`).  `A is chronologically preceded by B` for occurrents.  Dagger inverse of `next-by-date`; preserves all characteristics (asymmetric + irreflexive + NOT transitive).  SIOC 2007 `sioc:previous_by_date` source.  Per memory/predicates/previous-by-date.md."}
 
   {:db/ident       :mm.memory/introduced-in
    :dt/type        :dt/Property
@@ -1423,15 +1523,15 @@
   {:db/ident :mm.actor/version       :dt/type :dt/Property :dt/domain :mm/Actor :dt/range :db.type/string  :db/valueType :db.type/string  :db/cardinality :db.cardinality/one :db/doc "AI-actor version string (e.g., 'opus-4-7-1m', 'cli-0-130-0')."}
   {:db/ident :mm.actor/context-window :dt/type :dt/Property :dt/domain :mm/Actor :dt/range :db.type/long   :db/valueType :db.type/long    :db/cardinality :db.cardinality/one :db/doc "AI-actor context window size in tokens."}
   {:db/ident :mm.actor/capabilities  :dt/type :dt/Property :dt/domain :mm/Actor :dt/range :db.type/keyword :db/valueType :db.type/keyword :db/cardinality :db.cardinality/many :db/doc "Actor capabilities (:code-review, :tool-use, :extended-thinking, etc.)."}
-  {:db/ident :mm.actor/runs-in-context :dt/type :dt/Property :dt/domain :mm/Actor :dt/range :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/many :db/doc "Rel-paths of context memorials this actor runs in.  Per corpus typed-edge convention (string rel-path; ref migration is future arc per questions/mm_memory_typed_edge_ref_migration_string_to_db_type_ref_2026_05_20.md)."}
-  {:db/ident :mm.actor/belongs-to    :dt/type :dt/Property :dt/domain :mm/Actor :dt/range :db.type/string  :db/valueType :db.type/string  :db/cardinality :db.cardinality/many :db/doc "Rel-paths of organizations this actor belongs to.  String-typed per corpus convention."}
+  {:db/ident :mm.actor/runs-in-context :dt/type :dt/DirectedBinaryRelationProperty :dt/domain :mm/Actor :dt/range :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/many :db/doc "Rel-paths of context memorials this actor runs in.  Per corpus typed-edge convention (string rel-path; ref migration is future arc per questions/mm_memory_typed_edge_ref_migration_string_to_db_type_ref_2026_05_20.md)."}
+  {:db/ident :mm.actor/belongs-to    :dt/type :dt/DirectedBinaryRelationProperty :dt/domain :mm/Actor :dt/range :db.type/string  :db/valueType :db.type/string  :db/cardinality :db.cardinality/many :db/doc "Rel-paths of organizations this actor belongs to.  String-typed per corpus convention."}
   {:db/ident :mm.actor/created       :dt/type :dt/Property :dt/domain :mm/Actor :dt/range :db.type/instant :db/valueType :db.type/instant :db/cardinality :db.cardinality/one :db/doc "Memorial creation date."}
   {:db/ident :mm.actor/last-touched  :dt/type :dt/Property :dt/domain :mm/Actor :dt/range :db.type/instant :db/valueType :db.type/instant :db/cardinality :db.cardinality/one :db/doc "Memorial last-touched date."}
   {:db/ident :mm.actor/last-reviewed :dt/type :dt/Property :dt/domain :mm/Actor :dt/range :db.type/instant :db/valueType :db.type/instant :db/cardinality :db.cardinality/one :db/doc "Memorial last-reviewed date."}
-  {:db/ident :mm.actor/created-by    :dt/type :dt/Property :dt/domain :mm/Actor :dt/range :db.type/string  :db/valueType :db.type/string  :db/cardinality :db.cardinality/many :db/doc "Rel-paths of actor memorials that created this entity."}
+  {:db/ident :mm.actor/created-by    :dt/type :dt/DirectedBinaryRelationProperty :dt/domain :mm/Actor :dt/range :db.type/string  :db/valueType :db.type/string  :db/cardinality :db.cardinality/many :db/doc "Rel-paths of actor memorials that created this entity."}
   {:db/ident :mm.actor/tags          :dt/type :dt/Property :dt/domain :mm/Actor :dt/range :mm/Tag          :db/valueType :db.type/ref     :db/cardinality :db.cardinality/many :db/doc "Tag refs (canonical first-class tag entities)."}
-  {:db/ident :mm.actor/cites         :dt/type :dt/Property :dt/domain :mm/Actor :dt/range :db.type/string  :db/valueType :db.type/string  :db/cardinality :db.cardinality/many :db/doc "Rel-paths of memorials this actor cites."}
-  {:db/ident :mm.actor/related       :dt/type :dt/Property :dt/domain :mm/Actor :dt/range :db.type/string  :db/valueType :db.type/string  :db/cardinality :db.cardinality/many :db/doc "Rel-paths of related memorials."}
+  {:db/ident :mm.actor/cites         :dt/type :dt/DirectedBinaryRelationProperty :dt/domain :mm/Actor :dt/range :db.type/string  :db/valueType :db.type/string  :db/cardinality :db.cardinality/many :db/doc "Rel-paths of memorials this actor cites."}
+  {:db/ident :mm.actor/related       :dt/type :dt/IrreflexiveSymmetricProperty :dt/domain :mm/Actor :dt/range :db.type/string  :db/valueType :db.type/string  :db/cardinality :db.cardinality/many :db/doc "Rel-paths of related memorials."}
   {:db/ident :mm.actor/body-raw      :dt/type :dt/Property :dt/domain :mm/Actor :dt/range :db.type/string  :db/valueType :db.type/string  :db/cardinality :db.cardinality/one :db/fulltext true :db/doc "Verbatim markdown body."}
   {:db/ident :mm.actor/first-section :dt/type :dt/Property :dt/domain :mm/Actor :dt/range :mm/Section      :db/valueType :db.type/ref     :db/cardinality :db.cardinality/one :db/doc "First section in the sibling chain."}
   {:db/ident :mm.actor/links         :dt/type :dt/Property :dt/domain :mm/Actor :dt/range :mm/Link         :db/valueType :db.type/ref     :db/cardinality :db.cardinality/many :db/doc "Markdown links extracted from body."}
@@ -1454,8 +1554,8 @@
   {:db/ident :mm.context/created       :dt/type :dt/Property :dt/domain :mm/Context :dt/range :db.type/instant :db/valueType :db.type/instant :db/cardinality :db.cardinality/one :db/doc "Memorial creation date."}
   {:db/ident :mm.context/last-reviewed :dt/type :dt/Property :dt/domain :mm/Context :dt/range :db.type/instant :db/valueType :db.type/instant :db/cardinality :db.cardinality/one :db/doc "Memorial last-reviewed date."}
   {:db/ident :mm.context/tags          :dt/type :dt/Property :dt/domain :mm/Context :dt/range :mm/Tag :db/valueType :db.type/ref :db/cardinality :db.cardinality/many :db/doc "Tag refs."}
-  {:db/ident :mm.context/cites         :dt/type :dt/Property :dt/domain :mm/Context :dt/range :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/many :db/doc "Rel-paths cited."}
-  {:db/ident :mm.context/related       :dt/type :dt/Property :dt/domain :mm/Context :dt/range :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/many :db/doc "Rel-paths of related memorials."}
+  {:db/ident :mm.context/cites         :dt/type :dt/DirectedBinaryRelationProperty :dt/domain :mm/Context :dt/range :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/many :db/doc "Rel-paths cited."}
+  {:db/ident :mm.context/related       :dt/type :dt/IrreflexiveSymmetricProperty :dt/domain :mm/Context :dt/range :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/many :db/doc "Rel-paths of related memorials."}
   {:db/ident :mm.context/body-raw      :dt/type :dt/Property :dt/domain :mm/Context :dt/range :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/one :db/fulltext true :db/doc "Verbatim markdown body."}
   {:db/ident :mm.context/first-section :dt/type :dt/Property :dt/domain :mm/Context :dt/range :mm/Section :db/valueType :db.type/ref :db/cardinality :db.cardinality/one :db/doc "First section in chain."}
   {:db/ident :mm.context/links         :dt/type :dt/Property :dt/domain :mm/Context :dt/range :mm/Link :db/valueType :db.type/ref :db/cardinality :db.cardinality/many :db/doc "Markdown links from body."}
@@ -1481,14 +1581,14 @@
   {:db/ident :mm.rule/lifecycle     :dt/type :dt/Property :dt/domain :mm/Rule :dt/range :db.type/keyword :db/valueType :db.type/keyword :db/cardinality :db.cardinality/one :db/doc "Lifecycle status (:active / :retired)."}
   {:db/ident :mm.rule/created       :dt/type :dt/Property :dt/domain :mm/Rule :dt/range :db.type/instant :db/valueType :db.type/instant :db/cardinality :db.cardinality/one :db/doc "Memorial creation date."}
   {:db/ident :mm.rule/last-reviewed :dt/type :dt/Property :dt/domain :mm/Rule :dt/range :db.type/instant :db/valueType :db.type/instant :db/cardinality :db.cardinality/one :db/doc "Memorial last-reviewed date."}
-  {:db/ident :mm.rule/created-by    :dt/type :dt/Property :dt/domain :mm/Rule :dt/range :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/many :db/doc "Rel-paths of creating actors."}
+  {:db/ident :mm.rule/created-by    :dt/type :dt/DirectedBinaryRelationProperty :dt/domain :mm/Rule :dt/range :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/many :db/doc "Rel-paths of creating actors."}
   {:db/ident :mm.rule/tags          :dt/type :dt/Property :dt/domain :mm/Rule :dt/range :mm/Tag :db/valueType :db.type/ref :db/cardinality :db.cardinality/many :db/doc "Tag refs."}
-  {:db/ident :mm.rule/cites         :dt/type :dt/Property :dt/domain :mm/Rule :dt/range :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/many :db/doc "Rel-paths cited."}
-  {:db/ident :mm.rule/related       :dt/type :dt/Property :dt/domain :mm/Rule :dt/range :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/many :db/doc "Rel-paths of related memorials."}
+  {:db/ident :mm.rule/cites         :dt/type :dt/DirectedBinaryRelationProperty :dt/domain :mm/Rule :dt/range :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/many :db/doc "Rel-paths cited."}
+  {:db/ident :mm.rule/related       :dt/type :dt/IrreflexiveSymmetricProperty :dt/domain :mm/Rule :dt/range :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/many :db/doc "Rel-paths of related memorials."}
   {:db/ident :mm.rule/governed-by   :dt/type :dt/Property :dt/domain :mm/Rule :dt/range :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/many :db/doc "Rel-paths of protocol / governing memorials."}
-  {:db/ident :mm.rule/triggered-by  :dt/type :dt/Property :dt/domain :mm/Rule :dt/range :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/many :db/doc "Rel-paths of trigger memorials (event meta-memos)."}
-  {:db/ident :mm.rule/applies-in    :dt/type :dt/Property :dt/domain :mm/Rule :dt/range :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/many :db/doc "Rel-paths of memorial types/scopes this rule applies in."}
-  {:db/ident :mm.rule/derives-from  :dt/type :dt/Property :dt/domain :mm/Rule :dt/range :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/many :db/doc "Rel-paths of memorials this rule derives from."}
+  {:db/ident :mm.rule/triggered-by  :dt/type :dt/DirectedBinaryRelationProperty :dt/domain :mm/Rule :dt/range :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/many :db/doc "Rel-paths of trigger memorials (event meta-memos)."}
+  {:db/ident :mm.rule/applies-in    :dt/type :dt/DirectedBinaryRelationProperty :dt/domain :mm/Rule :dt/range :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/many :db/doc "Rel-paths of memorial types/scopes this rule applies in."}
+  {:db/ident :mm.rule/derives-from  :dt/type :dt/DirectedBinaryRelationProperty :dt/domain :mm/Rule :dt/range :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/many :db/doc "Rel-paths of memorials this rule derives from."}
   {:db/ident :mm.rule/body-raw      :dt/type :dt/Property :dt/domain :mm/Rule :dt/range :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/one :db/fulltext true :db/doc "Verbatim markdown body."}
   {:db/ident :mm.rule/first-section :dt/type :dt/Property :dt/domain :mm/Rule :dt/range :mm/Section :db/valueType :db.type/ref :db/cardinality :db.cardinality/one :db/doc "First section in chain."}
   {:db/ident :mm.rule/links         :dt/type :dt/Property :dt/domain :mm/Rule :dt/range :mm/Link :db/valueType :db.type/ref :db/cardinality :db.cardinality/many :db/doc "Markdown links from body."}
@@ -1687,5 +1787,18 @@
   {:db/ident :mm.memory/instance-of    :dt/subproperty-of :dt/instantiation}
   {:db/ident :mm.memory/has-domain     :dt/subproperty-of :dt/property-domain-relation}
   {:db/ident :mm.memory/has-range      :dt/subproperty-of :dt/property-range-relation}]
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Inverse-of relations (2026-05-22) — SEPARATE transaction so both ends
+;; of each pair exist as resolvable entities before the :dt/inverse-of
+;; ref-assertion runs (same-tx forward-reference would fail Datomic's
+;; entity-resolution per the corpus-substrate completeness arc finding).
+;;
+;; OWL 2 RL prp-inv1 + prp-inv2 entailment (in sandbar.db.entailment.core)
+;; derives both directions from the one-sided declaration here.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [;; SKOS broaderMatch ↔ narrowerMatch — dagger pair for inter-vocabulary mapping
+  {:db/ident :mm.tag/broader-match :dt/inverse-of :mm.tag/narrower-match}]
 
 ]

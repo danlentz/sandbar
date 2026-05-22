@@ -226,6 +226,14 @@
    :db/cardinality :db.cardinality/many
    :db/doc "RDFS-style sub-property declaration — `(p :dt/subproperty-of q)` iff `IEXT(p) ⊆ IEXT(q)`.  Reflexive + transitive per Hayes & Patel-Schneider 2014 §5.2.  Operational consequence (RDFS rule rdfs7): `(p :dt/subproperty-of q) ∧ (x p y) → (x q y)` is entailed.  Used to declare predicate hierarchy: e.g., `(:mm.memory/evidences :dt/subproperty-of :mm.memory/cites)` means every evidences-edge is also a cites-edge.  Per `observations/predicate_hierarchy_lattice_analysis_and_substrate_memorial_layered_duplication_2026_05_21.md`."}
 
+  {:db/ident :dt/inverse-of
+   :dt/type  :dt/Property
+   :dt/domain :dt/Property
+   :dt/range :dt/Property
+   :db/valueType :db.type/ref
+   :db/cardinality :db.cardinality/one
+   :db/doc "OWL 2 owl:inverseOf alignment.  Declares two predicates as inverses: `(p :dt/inverse-of q)` iff `(x p y) ↔ (y q x)`.  Symmetric in semantics (if p inverse-of q then q inverse-of p) — but cardinality-one here records the directional assertion; the symmetric companion is asserted separately if needed.  Operational consequences (OWL 2 RL rules prp-inv1 + prp-inv2): `(p :dt/inverse-of q) ∧ (x p y) → (y q x)` AND `(p :dt/inverse-of q) ∧ (x q y) → (y p x)`.  Substrate-level encoding of the inverse-of relation that lives informally in predicate-memorial frontmatter (`inverse-of:` field).  Layer 0 entailment rules per `references/rdfs_entailment_rules_datalog_compilation_reference.md` §4.6 + `plans/layered_rule_subsystem_architecture_arc_2026_05_21.md`."}
+
   ;; ==========================================================================
   ;; Abstract super-properties — RDFS-formal layering of substrate-level
   ;; (`:dt/*`) vs memorial-level (`:mm.memory/*`) facts.  Per
@@ -488,7 +496,21 @@
    :dt/context "meta"}]
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; Extended Property Types (WIP)
+;; Property-Characteristic Marker Classes (OWL 2 RL aligned)
+;;
+;; Each marker class is a sub-class of :dt/Property.  A predicate slot declares
+;; its property-characteristics by adding `:dt/type :dt/<MarkerClass>` to its
+;; slot definition (cardinality-many `:dt/type` permits multiple markers per
+;; property — e.g. an asymmetric+irreflexive predicate).
+;;
+;; Names align with OWL 2 RL `prp-*` rule families per
+;; resources/w3c_owl2_rl_in_rif_2012.md — entailment rules at the substrate
+;; layer (Layer 0 per plans/layered_rule_subsystem_architecture_arc_2026_05_21.md)
+;; can compile from these marker-class assertions to native Datomic Datalog
+;; rules.
+;;
+;; Per interaction/check_substrate_schema_attribute_names_against_rdf_owl_semantics_2026_05_13.md
+;; the names follow OWL 2 canonical terminology exactly.
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
  [{:db/ident :dt/TransitiveProperty
@@ -497,7 +519,31 @@
    :dt/context "meta"
    :dt/slots []
    :dt/label "TransitiveProperty"
-   :db/doc "A property whose value chain is transitive"}
+   :db/doc "OWL 2 owl:TransitiveProperty alignment.  A property whose value chain is transitive: (?p type TransitiveProperty) ∧ (x p y) ∧ (y p z) → (x p z).  Compiles to OWL 2 RL rule prp-trp."}
+
+  {:db/ident :dt/SymmetricProperty
+   :dt/type :dt/Class
+   :dt/subclass-of :dt/Property
+   :dt/context "meta"
+   :dt/slots []
+   :dt/label "Symmetric Property"
+   :db/doc "OWL 2 owl:SymmetricProperty alignment.  A property whose value is bidirectional: (?p type SymmetricProperty) ∧ (x p y) → (y p x).  Compiles to OWL 2 RL rule prp-symp."}
+
+  {:db/ident :dt/AsymmetricProperty
+   :dt/type :dt/Class
+   :dt/subclass-of :dt/Property
+   :dt/context "meta"
+   :dt/slots []
+   :dt/label "Asymmetric Property"
+   :db/doc "OWL 2 owl:AsymmetricProperty alignment.  A property whose extension is asymmetric: (?p type AsymmetricProperty) ∧ (x p y) → ¬(y p x).  Compiles to OWL 2 RL rule prp-asyp (consistency check; firing implies inconsistency).  Logically: asymmetric ≡ antisymmetric + irreflexive — see :dt/AntisymmetricProperty for the weaker variant the corpus uses for mereology (has-part / part-of)."}
+
+  {:db/ident :dt/AntisymmetricProperty
+   :dt/type :dt/Class
+   :dt/subclass-of :dt/Property
+   :dt/context "meta"
+   :dt/slots []
+   :dt/label "Antisymmetric Property"
+   :db/doc "Antisymmetric property characteristic — used by the corpus for proper-mereology predicates (has-part / part-of).  Antisymmetric ≡ ∀x∀y. (x R y ∧ y R x → x = y); weaker than asymmetric (which is antisymmetric + irreflexive).  NOT an OWL 2 standard characteristic (OWL has only owl:AsymmetricProperty); declared here because the corpus's predicate memorials distinguish — has-part / part-of use `antisymmetric` (allowing in principle x = y self-relations, though irreflexive is also declared making the practical effect equivalent to asymmetric).  When compiling to OWL 2 RL rules, treat antisymmetric + irreflexive declarations as if asymmetric (both compile to prp-asyp consistency check)."}
 
   {:db/ident :dt/ReflexiveProperty
    :dt/type :dt/Class
@@ -505,15 +551,129 @@
    :dt/context "meta"
    :dt/slots []
    :dt/label "Reflexive Property"
-   :db/doc "A property whose value is self-referential"}
+   :db/doc "OWL 2 owl:ReflexiveProperty alignment.  A property where every entity in the domain relates to itself: (?p type ReflexiveProperty) ∧ (x p _) → (x p x).  Compiles to OWL 2 RL rule prp-rflp."}
 
+  {:db/ident :dt/IrreflexiveProperty
+   :dt/type :dt/Class
+   :dt/subclass-of :dt/Property
+   :dt/context "meta"
+   :dt/slots []
+   :dt/label "Irreflexive Property"
+   :db/doc "OWL 2 owl:IrreflexiveProperty alignment.  A property where no entity relates to itself: (?p type IrreflexiveProperty) ∧ (x p x) → inconsistent.  Compiles to OWL 2 RL rule prp-irp."}
+
+  {:db/ident :dt/FunctionalProperty
+   :dt/type :dt/Class
+   :dt/subclass-of :dt/Property
+   :dt/context "meta"
+   :dt/slots []
+   :dt/label "Functional Property"
+   :db/doc "OWL 2 owl:FunctionalProperty alignment.  A property where each subject has at most one value: (?p type FunctionalProperty) ∧ (x p y1) ∧ (x p y2) → sameAs(y1, y2).  Compiles to OWL 2 RL rule prp-fp."}
+
+  {:db/ident :dt/InverseFunctionalProperty
+   :dt/type :dt/Class
+   :dt/subclass-of :dt/Property
+   :dt/context "meta"
+   :dt/slots []
+   :dt/label "Inverse-Functional Property"
+   :db/doc "OWL 2 owl:InverseFunctionalProperty alignment.  A property where each object has at most one subject: (?p type InverseFunctionalProperty) ∧ (x1 p y) ∧ (x2 p y) → sameAs(x1, x2).  Compiles to OWL 2 RL rule prp-ifp."}
+
+  ;; DEPRECATED — `:dt/InverseProperty` is a misnamed legacy class that does
+  ;; NOT correspond to any OWL 2 property-characteristic.  In OWL 2, the
+  ;; correct concept names are: `:dt/InverseFunctionalProperty` (the
+  ;; characteristic) or `:dt/inverse-of` (the relation between two properties).
+  ;; Retained for backwards compatibility with legacy doc references; should
+  ;; not be reached for in new substrate work.  Per
+  ;; interaction/check_substrate_schema_attribute_names_against_rdf_owl_semantics_2026_05_13.md.
   {:db/ident :dt/InverseProperty
    :dt/type :dt/Class
    :dt/subclass-of :dt/Property
    :dt/context "meta"
    :dt/slots []
-   :dt/label "Inverse Property"
-   :db/doc "A property which allows reverse linking"}]
+   :dt/label "Inverse Property (DEPRECATED — use :dt/InverseFunctionalProperty or :dt/inverse-of)"
+   :db/doc "DEPRECATED.  Misnamed legacy class.  Use :dt/InverseFunctionalProperty (for the IFP characteristic) or :dt/inverse-of (for the inverseOf relation between two properties).  Retained for backwards compatibility with legacy doc references."}]
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Property-characteristic intersection classes — SWCLOS-style metaclass
+;; pattern (per ADR sandbar_rdfs_entailment_via_datomic_native_datalog_rules_
+;; with_swclos_style_metaclass_property_characteristics_2026_05_21 + synthesis
+;; §4 + implementation arc Stage 4).
+;;
+;; Property characteristics (TransitiveProperty / AsymmetricProperty / ...)
+;; compose orthogonally on a single property — e.g., :mm.memory/descends-from
+;; is simultaneously transitive AND asymmetric AND irreflexive.  Sandbar's
+;; `:dt/type` is cardinality-one (preserved by ADR D2), so orthogonal
+;; characteristics are modeled via INTERSECTION CLASSES that multi-
+;; `:dt/subclass-of` the component characteristic classes.  The property
+;; declares ONE `:dt/type` (the intersection class); RDFS rule rdfs9
+;; (subClassOf instance lift) entails membership in each component class.
+;;
+;; The 6 intersection classes declared below correspond exactly to the
+;; characteristic combinations actually used in the corpus predicate
+;; vocabulary (61 predicate memorials surveyed; output of
+;; etc/audit_characteristics.bb in the corpus repo):
+;;
+;;   :dt/DirectedBinaryRelationProperty       — 41 predicates ([asymmetric, irreflexive])
+;;   :dt/StrictPartialOrderProperty           — 8 predicates  ([asymmetric, irreflexive, transitive])
+;;   :dt/AntisymmetricStrictOrderProperty     — 6 predicates  ([antisymmetric, irreflexive, transitive])
+;;   :dt/AsymmetricFunctionalIrreflexiveProperty — 3 predicates ([asymmetric, functional, irreflexive])
+;;   :dt/IrreflexiveSymmetricProperty         — 2 predicates  ([irreflexive, symmetric])
+;;   :dt/FunctionalIrreflexiveProperty        — 1 predicate   ([functional, irreflexive])
+;;
+;; Hand-named for canonical math/OWL terms (StrictPartialOrder,
+;; DirectedBinaryRelation); compositional naming for the long-tail.
+;;
+;; `:dt/subclass-of` is cardinality-many so a vector value is accepted
+;; (and produces a multi-subclass-of relationship; rdfs11 transitivity
+;; derives `:dt/subclass-of :dt/Property` via the marker classes' chains).
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident :dt/DirectedBinaryRelationProperty
+   :dt/type :dt/Class
+   :dt/subclass-of [:dt/AsymmetricProperty :dt/IrreflexiveProperty]
+   :dt/context "meta"
+   :dt/slots []
+   :dt/label "Directed Binary Relation Property"
+   :db/doc "Intersection class — a property that is asymmetric AND irreflexive (the default 'directed binary relation' shape used by ~41 predicates in the corpus vocabulary).  Activates OWL 2 RL rules prp-asyp (asymmetric integrity check) + prp-irp (irreflexive integrity check) via rdfs9 entailment.  Cardinality-one preserved on `:dt/type` of the consuming property; the orthogonal characteristics are derived via the `:dt/subclass-of` chain per the SWCLOS-style metaclass pattern."}
+
+  {:db/ident :dt/StrictPartialOrderProperty
+   :dt/type :dt/Class
+   :dt/subclass-of [:dt/AsymmetricProperty :dt/IrreflexiveProperty :dt/TransitiveProperty]
+   :dt/context "meta"
+   :dt/slots []
+   :dt/label "Strict Partial Order Property"
+   :db/doc "Intersection class — a property that is asymmetric AND irreflexive AND transitive; the canonical mathematical 'strict partial order' shape (e.g., descends-from, supersedes, requires lineage chains).  Activates OWL 2 RL rules prp-asyp + prp-irp + prp-trp via rdfs9 entailment."}
+
+  {:db/ident :dt/AntisymmetricStrictOrderProperty
+   :dt/type :dt/Class
+   :dt/subclass-of [:dt/AntisymmetricProperty :dt/IrreflexiveProperty :dt/TransitiveProperty]
+   :dt/context "meta"
+   :dt/slots []
+   :dt/label "Antisymmetric Strict Order Property"
+   :db/doc "Intersection class — antisymmetric (weaker than asymmetric) AND irreflexive AND transitive; used by the corpus for mereology predicates (has-part / part-of) and refinement / specialization hierarchies (extends, refines, specializes, generalizes).  The antisymmetric characteristic allows the OWL DL formulation `x R y ∧ y R x → x = y` rather than the strict `x R y → ¬(y R x)`; in practice with the irreflexive constraint also present, the relation is asymmetric per `:dt/AntisymmetricProperty`'s docstring on the compile-to-OWL-2-RL note (treat antisymmetric + irreflexive as if asymmetric for prp-asyp)."}
+
+  {:db/ident :dt/AsymmetricFunctionalIrreflexiveProperty
+   :dt/type :dt/Class
+   :dt/subclass-of [:dt/AsymmetricProperty :dt/FunctionalProperty :dt/IrreflexiveProperty]
+   :dt/context "meta"
+   :dt/slots []
+   :dt/label "Asymmetric Functional Irreflexive Property"
+   :db/doc "Intersection class — asymmetric AND functional AND irreflexive; used by the corpus for unique-endpoint relations (created-with, has-beginning, has-end) where each subject has at most one value, the value relation doesn't loop back, and self-reference is forbidden.  Activates prp-asyp + prp-fp + prp-irp via rdfs9 entailment."}
+
+  {:db/ident :dt/IrreflexiveSymmetricProperty
+   :dt/type :dt/Class
+   :dt/subclass-of [:dt/IrreflexiveProperty :dt/SymmetricProperty]
+   :dt/context "meta"
+   :dt/slots []
+   :dt/label "Irreflexive Symmetric Property"
+   :db/doc "Intersection class — irreflexive AND symmetric; used by the corpus for bidirectional non-loop relations (composes-with, related).  Activates prp-irp (irreflexive integrity) + prp-symp (symmetric derivation) via rdfs9 entailment."}
+
+  {:db/ident :dt/FunctionalIrreflexiveProperty
+   :dt/type :dt/Class
+   :dt/subclass-of [:dt/FunctionalProperty :dt/IrreflexiveProperty]
+   :dt/context "meta"
+   :dt/slots []
+   :dt/label "Functional Irreflexive Property"
+   :db/doc "Intersection class — functional AND irreflexive; used by the corpus for single-valued non-self-loop relations (instance-of).  Activates prp-fp (functional sameAs derivation) + prp-irp (irreflexive integrity) via rdfs9 entailment."}]
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Aggregates (WIP/Unnecessary?)

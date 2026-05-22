@@ -1,0 +1,48 @@
+## What this predicate means
+
+**A `ancestor-of` B** — A is in B's historical lineage; B descends-from A (inverse of `descends-from`).  The downward direction of the lineage relation.
+
+## Substrate identity
+
+- **Slot ident**: `{{predicate-ident}}`
+- **Domain**: `{{domain}}`
+- **Range**: `{{range}}`
+- **Cardinality**: `{{cardinality}}`
+- **Inverse of**: `:mm.memory/descends-from`
+
+## Formal signature
+
+`{{predicate-name}} : {{domain}} × {{range}} → Bool`
+
+## Characteristics
+
+- **Asymmetric** — A ancestor-of B does not imply B ancestor-of A
+- **Irreflexive** — a memorial isn't its own ancestor
+- **Transitive** — A ancestor-of B, B ancestor-of C entails A ancestor-of C
+
+## When to use
+
+Declare `ancestor-of:` on A when:
+- A wants to enumerate descendants explicitly
+- B's lineage includes A as a forebear
+
+For exhaustive enumeration, reverse-attribute lookup (`:_mm.memory/descends-from`) is usually cheaper.
+
+## Formal ontology mappings
+
+Aligned predicates from established formal vocabularies:
+
+- **PROV-O** — no direct flat equivalent (PROV uses `prov:wasDerivedFrom` and reverse-attribute traversal for descendants)
+- **PAV** — no direct flat equivalent (similarly inverse-computed)
+- **OWL** `owl:inverseOf` — sandbar declares `:mm.memory/ancestor-of` as `inverse-of :mm.memory/descends-from`
+- **DC Terms** — no direct equivalent
+- **SKOS** — no direct equivalent
+- **CiTO** — no direct equivalent
+
+Grounding references in the corpus:
+- [`references/pav_cito_bibo_reference.md`](../references/pav_cito_bibo_reference.md) — lineage semantics (forward direction)
+
+## See also
+
+- [`predicates/descends-from.md`](descends-from.md) — forward direction (upward lineage)
+- [`predicates/parent.md`](parent.md) — immediate parent (not transitive)

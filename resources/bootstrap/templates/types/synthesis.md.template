@@ -1,0 +1,109 @@
+## What a `type: synthesis` instance is
+
+**A derived higher-level claim** arrived at by analyzing multiple cited memorials together.  The synthesis *is* the pattern those citations collectively suggest; the memorial names it explicitly.
+
+Three-way contrast with adjacent types:
+
+| Type | Epistemic genre | Example |
+|---|---|---|
+| `observation` | Noticed truth | *"The token-budget count jumped after the Stage-6 predicate adds"* |
+| `decision` | Chosen path | *"Use approach A rather than approach B"* |
+| **`synthesis`** | **Derived truth via analysis** | ***"Cross-library aesthetic across 7 repos converges on metacircularity-as-substrate"*** |
+
+Synthesis emerges from reading the citations together and noticing the pattern they form — not from watching one event (observation) or picking one path (decision).
+
+Synthesis is a subtype of [`artifact`](artifact.md) — a durable, self-contained output with memorial value beyond its immediate trigger.
+
+## When to create a synthesis memorial
+
+- A claim requires citing ≥ 3 memorials to support it
+- The claim is not already true of any single citation — it emerges only from the aggregate
+- The pattern named is non-obvious or non-derivable from the citation shapes alone (so reading the citations separately wouldn't surface it)
+- The synthesis itself is useful as a standalone retrieval target (not just a prose aside in another memorial)
+
+## When NOT to create one
+
+- The claim is actually a *decision* (a path was chosen) — use `decision`
+- The claim is actually an *observation* (a single event was noticed) — use `observation`
+- The claim is actually a *reference catalog* of the cited items — use `reference`
+- The claim is actually a *pattern* (repeatable architectural move with a canonical example) — use `pattern`
+- The cited memorials wouldn't support the claim if anyone else read them — the synthesis is speculative; demote to `idea`
+
+## Substrate identity
+
+- **Class ident**: `{{class-ident}}`
+- **Parent class(es)**: {{parent-classes}}
+- **Ancestor chain**: {{ancestor-chain}}
+- **Native codec**: `{{native-codec}}`
+- **Codec type-keyword(s)**: {{codec-type-keywords}}
+
+## Slot vocabulary ({{slot-count}} slots inherited or declared)
+
+Synthesis memorials inherit `:mm/Memory` plus type-specific required slots:
+
+- **`cites`** (required, ≥ 3) — memorial rel-paths the synthesis draws from
+- **`claim`** (required) — one-line summary of the higher-level pattern; should be quotable as a standalone sentence
+
+{{slot-table}}
+
+## Audit invariant: synthesis-has-citations
+
+Every `type: synthesis` memorial must have ≥ 3 `cites:` entries.  This is load-bearing: a synthesis with fewer citations is either an observation (one source) or a more general claim that should be grounded better.  Error-severity.
+
+## Canonical body structure
+
+```markdown
+## The claim
+
+<One paragraph — the higher-level pattern the synthesis names.
+Should read as a standalone sentence + 2–4 sentences of
+clarification.  This is the quotable kernel.>
+
+## Evidence (cited memorials)
+
+<For each `cites:` entry, a short paragraph naming what that
+memorial contributes to the claim.  Not a summary of the cited
+memorial — a summary of THAT MEMORIAL'S CONTRIBUTION TO THIS
+SYNTHESIS.>
+
+## What this implies
+
+<Downstream consequences if the claim holds.  What becomes
+different because of the synthesis.  Often: "this means future
+X should Y" or "patterns in this space should respect Z."  This
+is where the synthesis is operationalized.>
+
+## Scope and limits
+
+<Where the synthesis holds + doesn't hold.  Counter-examples
+considered + excluded (with reasoning).  Bounds on the claim.>
+
+## See also
+
+<Adjacent syntheses, patterns the synthesis implies, observations
+that could falsify it.>
+```
+
+## Pitfalls
+
+- **Ad-hoc synthesis without recognizing the type** — the hardest failure mode is not "writing a bad synthesis" but "writing a synthesis-shape claim without naming the type, so it gets filed under preference / reference and loses the citation-backed discipline."  When drafting a claim that genuinely depends on 3+ citations, reach for `synthesis`
+- **Promotion of observations to syntheses** — a single observation gaining more citations over time doesn't become a synthesis.  A synthesis is *initially written from* multiple citations; if an observation later gains citation-evidence, the correct move is a new synthesis memorial that cites the observation
+- **Under-specified claim field** — `claim:` should be quotable as a standalone sentence.  Not *"various patterns about X"* (list-shaped) but *"X IS the substrate across these instances"* (claim-shaped)
+
+## Composition with adjacent classes
+
+- **`observation`** — sibling; noticed truth vs derived truth
+- **`decision`** — sibling; chosen path vs derived truth
+- **`reference`** — sibling; catalog vs synthesis (reference lists, synthesis argues)
+- **`briefing`** — sibling audience-artifact; synthesis derives claims for self, briefing explains state for external audience
+- **`example`** — sibling illustration; synthesis asserts, example demonstrates
+
+## See also
+
+- [`types/artifact.md`](artifact.md) — parent abstract supertype
+- [`types/observation.md`](observation.md) — noticed-truth sibling
+- [`types/decision.md`](decision.md) — chosen-path sibling
+- [`types/reference.md`](reference.md) — catalog sibling
+- [`types/briefing.md`](briefing.md) — audience-artifact sibling
+- [`types/example.md`](example.md) — illustration sibling
+- Sandbar substrate: `sandbar/schema/mm-artifact.edn`

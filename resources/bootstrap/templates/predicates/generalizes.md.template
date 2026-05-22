@@ -1,0 +1,53 @@
+## What this predicate means
+
+**A `generalizes` B** — A is a super-property of B; A is a BROADER version of the relation B expresses (inverse of `specializes`).
+
+Examples:
+- `:mm.memory/cites generalizes :mm.memory/evidences`
+- `:mm.memory/informed-by generalizes :mm.memory/motivated-by`
+- `:mm.memory/motivated-by generalizes :mm.memory/triggered-by`
+
+## Substrate identity
+
+- **Slot ident**: `{{predicate-ident}}`
+- **Domain**: `{{domain}}` (typically `:dt/Property`)
+- **Range**: `{{range}}` (typically `:dt/Property`)
+- **Cardinality**: `{{cardinality}}`
+- **Inverse of**: `:mm.memory/specializes`
+
+## Formal signature
+
+`{{predicate-name}} : {{domain}} × {{range}} → Bool`
+
+## Characteristics
+
+- **Asymmetric** — A generalizes B does not imply B generalizes A
+- **Irreflexive** — a property doesn't generalize itself
+- **Transitive** — generalization composes
+
+## When to use
+
+Declare `generalizes:` on A when:
+- A is a broader super-property of B
+- The author wants the explicit downward sub-property pointer
+
+For exhaustive enumeration of sub-properties, reverse-attribute lookup of `:mm.memory/specializes` is usually cheaper.
+
+## Formal ontology mappings
+
+Aligned predicates from established formal vocabularies:
+
+- **RDFS** — no direct flat inverse (RDFS uses `rdfs:subPropertyOf` and reverse-attribute traversal for super-property enumeration)
+- **OWL** `owl:inverseOf` — sandbar declares `:mm.memory/generalizes` as `inverse-of :mm.memory/specializes`
+- **SKOS** `skos:broader` — distant analogue (concept-level broadening, not property-level)
+- **DC Terms** — no direct equivalent
+- **PROV-O** — no direct equivalent
+- **CiTO** — no direct equivalent
+
+Grounding references in the corpus:
+- [`references/rdfs_reference.md`](../references/rdfs_reference.md) — RDFS `rdfs:subPropertyOf` semantics
+
+## See also
+
+- [`predicates/specializes.md`](specializes.md) — forward direction (`rdfs:subPropertyOf`)
+- [`predicates/extends.md`](extends.md) — class-level analog (broader direction)

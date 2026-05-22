@@ -1,0 +1,40 @@
+## What this predicate means
+
+**A `evidenced-by` B** — A's claim is backed by B (inverse of `evidences`).  This is the BACKLINK direction of the evidence relation: a memorial naming its supporting evidence sources.
+
+Used in claim-bearing memorials (decisions, patterns, plans) that want to be explicit about empirical or argumentative grounding.
+
+## Substrate identity
+
+- **Slot ident**: `{{predicate-ident}}`
+- **Domain**: `{{domain}}`
+- **Range**: `{{range}}`
+- **Cardinality**: `{{cardinality}}`
+- **Inverse of**: `:mm.memory/evidences`
+
+## Formal signature
+
+`{{predicate-name}} : {{domain}} × {{range}} → Bool`
+
+## When to use
+
+A memorial uses `evidenced-by:` when:
+- It makes claims that other memorials provide support for
+- The author wants to make the support relationship explicit (vs implicit via `cites`)
+- Audit invariants should track "is this claim still supported?"
+
+## Formal ontology mappings
+
+Aligned predicates from established formal vocabularies:
+
+- **PAV** `pav:isSupportedBy` — exact semantic match (the canonical inverse-evidential predicate)
+- **CiTO** `cito:hasEvidenceFrom` — close analogue
+- **PROV-O** — no direct equivalent
+- **DC Terms** — no direct equivalent
+
+Grounding references in the corpus:
+- [`references/pav_cito_bibo_reference.md`](../references/pav_cito_bibo_reference.md) — PAV `pav:isSupportedBy` semantics
+
+## See also
+
+- [`predicates/evidences.md`](evidences.md) — forward direction

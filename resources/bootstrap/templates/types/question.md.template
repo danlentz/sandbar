@@ -1,0 +1,128 @@
+## What a `type: question` instance is
+
+An **open question** worth preserving — something the current session noticed but couldn't answer, and where the answer would matter for future work.
+
+Questions are the **"I don't know but I'd like to"** category.  They're what gets raised in a session and then lost when the session ends.  Without a home, open questions either:
+
+- Vanish (typical outcome)
+- Get re-discovered session after session, wasting cycles
+- Get guessed-at without ever confirming, accumulating false confidence
+
+The question type fixes all three failure modes by giving open questions a parking spot with enough context to understand why the question matters, enough context for a future session to answer it, and a lifecycle so answered questions become `resolved` and feed into decisions, observations, or patterns.
+
+Question is a subtype of [`signal`](signal.md) — memorials that capture state about the world (here, known unknowns).
+
+## When to create a question memorial
+
+- Notice an ambiguity the current session can't resolve *and* the answer would matter for future work
+- Encounter a library behavior that might be a bug or might be intended; resolution requires research not happening now
+- Need to know whether a threshold / limit / assumption still holds, but verification requires context not currently available
+- Hit a design ambiguity worth raising but not settling (should we X or Y? — file as question, let future work reveal the answer)
+
+## When NOT to create one
+
+- You know the answer — it's an observation, not a question
+- You know the answer AND have a choice to make — write a decision
+- The question is actionable right now — just investigate now
+- The question is tactical (*"does this function work?"*) — just test it; questions are for standing ambiguities
+- The question is answered by reading existing memorials — go read them
+
+## Substrate identity
+
+- **Class ident**: `{{class-ident}}`
+- **Parent class(es)**: {{parent-classes}}
+- **Ancestor chain**: {{ancestor-chain}}
+- **Native codec**: `{{native-codec}}`
+- **Codec type-keyword(s)**: {{codec-type-keywords}}
+
+## Slot vocabulary ({{slot-count}} slots inherited or declared)
+
+Question memorials inherit `:mm/Memory` plus type-specific extensions:
+
+- **`status`** — `open` / `investigating` / `resolved` / `dropped`
+- **`importance`** — `low` / `medium` / `high`
+- **`triggered-by`** — free text naming what surfaced the question
+
+{{slot-table}}
+
+## Status lifecycle
+
+- **open** — noticed, not yet investigated
+- **investigating** — someone's actively researching
+- **resolved** — answered; the memorial becomes a historical record.  A resolution often spawns a sibling artifact (observation, decision, pattern) that captures the answer
+- **dropped** — no longer relevant; keep the memorial + note the drop reason
+
+## Importance rubric
+
+- **low** — nice-to-know; no decisions gated on the answer
+- **medium** — affects an adjacent decision; worth answering eventually
+- **high** — blocks or substantially shapes future work; prioritize answering
+
+## Canonical body structure
+
+```markdown
+## The question
+
+<One clear sentence — what we want to know.>
+
+## Why it matters
+
+<Concrete: what future work / decision / understanding depends
+on the answer.>
+
+## Context
+
+<What's known so far, what's been ruled out, what the partial
+evidence suggests.>
+
+## What would resolve it
+
+<What evidence / experiment / discussion would answer the
+question.  Specificity here speeds resolution.>
+
+## Related
+
+<Adjacent memorials — observations feeding the question, ideas
+that hinge on the answer, decisions that would follow.>
+```
+
+## When a question is resolved
+
+1. Update `status: resolved` and `last-reviewed:`
+2. Add a `## Resolution` body section with:
+   - The answer
+   - The evidence that produced it
+   - What the resolution enables (new observation / idea / decision)
+3. If the resolution spawns a new memorial (e.g., the question *"is X a bug?"* resolves to a bug memorial), link forward
+4. **Keep the question memorial** — the forensic trail of *"we asked X, then answered Y"* is valuable
+
+## Pitfalls
+
+- **Questions as hidden decisions** — if you wrote down *"should we do A or B?"* and already know the answer, that's a decision
+- **Question hoarding** — a corpus with 50 `open` questions from a year ago that nobody's touched is noise; periodic sweep: drop the stale, resolve the answerable
+- **Questions too broad to resolve** — *"how should X work?"* never resolves; split into specific questions a single session can answer
+- **Asking questions you could just answer now** — if a 10-minute investigation answers it, do the investigation
+
+## State-change-detection (captureability)
+
+This class is mid-conversation-captureable.  Inject-triggers:
+- *"not sure what X means..."*
+- *"I wonder..."*
+
+When these signals fire and the question would matter for future work, capture-first.
+
+## Composition with adjacent classes
+
+- **`observation`** — questions are gaps; observations are knowns.  A question resolved with concrete answer becomes an observation
+- **`idea`** — a question resolving *"yes, we should X"* becomes an idea
+- **`decision`** — resolved high-importance questions often spawn decision memorials
+- **`bug`** — a question about *"is this expected behavior?"* may resolve into a bug
+
+## See also
+
+- [`types/signal.md`](signal.md) — parent abstract supertype
+- [`types/observation.md`](observation.md) — the statement counterpart
+- [`types/idea.md`](idea.md) — proposals-for-action that may follow question resolution
+- [`types/decision.md`](decision.md) — high-importance questions often spawn decisions
+- [`types/bug.md`](bug.md) — questions about library behavior may resolve into bug reports
+- Sandbar substrate: `sandbar/schema/mm-signal.edn`

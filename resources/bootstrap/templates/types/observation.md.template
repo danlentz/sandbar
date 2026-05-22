@@ -1,0 +1,111 @@
+## What a `type: observation` instance is
+
+A **noticed truth** about the system, environment, library, or corpus — preserved because a future session would benefit from knowing it, but with no implied action.
+
+Observations are the **"just so you know"** category.  They're what a careful colleague would mention in passing during a handoff: *"the bidirectional audit is O(n²) — fine at current scale, keep an eye on it past 500 entries."*  Not a bug (nothing's broken), not an idea (nothing to do about it today), not a decision (no choice made).  Just a fact worth keeping.
+
+The alternative to capturing observations is **losing them**.  Most *"I noticed X"* thoughts mid-session vanish at session-end.  Observation memorials give them a home.
+
+Observation is a subtype of [`signal`](signal.md) — memorials that capture state about the world.
+
+## When to create an observation memorial
+
+- Noticing a scaling property that matters for capacity planning (algorithm complexity, table sizes, growth rates)
+- Capturing environmental facts that influence future work (library version quirk, tool behavior peculiarity, platform-specific limit)
+- Recording an incident pattern — something that happened twice and might happen again without yet being a formal anti-pattern
+- Documenting an intuition or hypothesis that's too tentative for a pattern/decision but too specific to forget
+
+## When NOT to create one
+
+- There's something to fix → `bug`
+- There's something to do later → `idea`
+- There's a choice made with rationale → `decision`
+- There's a rule to follow → `feedback` or `preference`
+- It's a question, not a statement → `question`
+- It's documenting a convention → `reference` / `library`
+
+If the future-relevance is *someone should act on it someday*, it's an idea.  If the future-relevance is *someone should understand this*, it's an observation.
+
+## Substrate identity
+
+- **Class ident**: `{{class-ident}}`
+- **Parent class(es)**: {{parent-classes}}
+- **Ancestor chain**: {{ancestor-chain}}
+- **Native codec**: `{{native-codec}}`
+- **Codec type-keyword(s)**: {{codec-type-keywords}}
+
+## Slot vocabulary ({{slot-count}} slots inherited or declared)
+
+Observation memorials inherit `:mm/Memory` plus class-specific extensions:
+
+- **`:mm.observation/confidence`** — `:tentative` / `:likely` / `:certain` — how sure are we?
+- **`:mm.observation/scale-dependent`** — true if relevance grows with system scale (O(n²), context-budget pressure, table-size thresholds)
+- **`evidence`** — supporting measurements, code references, incidents
+
+{{slot-table}}
+
+## Canonical body structure
+
+```markdown
+## The observation
+
+<One paragraph — what was noticed.  Be specific.>
+
+## How it was noticed
+
+<Context — what session / work / event surfaced this.>
+
+## Implications
+
+<Why a future session would want to know this.  Zero or more
+concrete consequences.>
+
+## Evidence
+
+<What supports the observation (measurements, code references,
+incidents).  Distinguishes `tentative` from `certain`.>
+
+## Related observations / work
+
+<Adjacent memorials — patterns it might extend, bugs it might
+explain, ideas it might justify.>
+```
+
+## Lifecycle
+
+Observations are generally write-once-then-graduate:
+
+- **Validated** — confidence bumps (`tentative` → `likely` → `certain`); update `last-reviewed`
+- **Invalidated** — don't delete; add a `## Invalidation` section noting what falsified it.  Forensic trail matters
+- **Graduated** — when an observation develops into a formal anti-pattern, pattern, or bug, link forward to the successor; keep the observation
+
+## Pitfalls
+
+- **Observations as hidden ideas** — if every observation ends with *"we should fix this,"* it's an idea, not an observation
+- **Observation inflation** — writing 20 observations per session erodes signal; reserve for things a future session would genuinely benefit from
+- **Confidence inflation** — marking things `certain` when they're really `likely`; trust-erosion risk when a `certain` observation turns out wrong
+
+## State-change-detection (captureability)
+
+This class is mid-conversation-captureable.  Inject-triggers:
+- *"huh, didn't expect..."*
+- *"turns out..."*
+- *"I noticed..."*
+
+When these signals fire, capture-first: write an observation memorial with the body shape above, then proceed.
+
+## Composition with adjacent classes
+
+- **`question`** — observations are statements; questions are gaps.  A question may resolve into an observation
+- **`idea`** — observations may motivate ideas (proposed action based on noticed truth)
+- **`pattern`** / **`anti-pattern`** — observations accumulating around a shape may graduate to named convention
+- **`plan`** — observations frequently appear in plan §0 (motivation) or `## Retrospective`
+
+## See also
+
+- [`types/signal.md`](signal.md) — parent abstract supertype
+- [`types/question.md`](question.md) — the gap-counterpart (known unknowns)
+- [`types/idea.md`](idea.md) — proposals-for-action that may follow observations
+- [`types/anti-pattern.md`](anti-pattern.md) — observations of repeated failures may graduate here
+- [`types/plan.md`](plan.md) — observations frequently cite or are cited by plans
+- Sandbar substrate: `sandbar/schema/mm-signal.edn`

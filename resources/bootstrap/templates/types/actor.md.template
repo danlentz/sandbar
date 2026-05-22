@@ -1,48 +1,59 @@
 ## What a `type: actor` instance is
 
-A first-class representation of an agent — AI model, human collaborator, organization, or service account — that authors, reviews, or interacts with corpus content.  Actors carry identity-level facts (name, version, capabilities) plus contextual membership (which contexts they run in, what organizations they belong to).  The actor type enables typed-edge provenance — memorials cite their `created-by:` actor; rules apply to specific actors; reviews are attributed to actor instances.
+**An actor memorial describes an entity that takes actions in the memory system** — an AI model performing a research pass, a human collaborator making a directive, a system process firing a hook.  Actor memorials are **first-class graph citizens** with the same introspection and queryability as predicates, types, libraries, and patterns.
 
-## When an actor entity is warranted
+Actor is **abstract** — direct instances are not authored.  Instead one of the three concrete subtypes is used:
 
-- An AI model version interacts substantively with the corpus (Claude Opus 4.7, GPT-5.4, etc.)
-- A human collaborator authors or directs the corpus
-- An external service / system contributes substantively (reviewers, broker processes)
+- **[`ai-actor`](ai-actor.md)** — versioned AI models (Claude / codex / future agent types)
+- **[`human-actor`](human-actor.md)** — humans with associated runtime context
+- **[`system-actor`](system-actor.md)** — automated processes that aren't AI (hooks, scheduled tasks, CI runners)
 
-Actors are NOT created for transient interactions — a model invoked once for a specific task doesn't need an actor entity.  Actors are for stable identities that recur across sessions.
+Actor is a subtype of [`meta`](meta.md) — memorials about the memory system itself.
 
-## Identity-and-context orthogonality
+## Why actor is first-class
 
-A single actor identity can run in multiple contexts (sandboxed vs unsandboxed; different host environments; different organizational contexts).  Per the actor-context-rules deep-dive ADR, identity is independent of context — runtime context attaches via `runs-in-context:` multi-arity field rather than creating per-context actor instances.
+The corpus has implicitly referenced actors since its inception: hundreds of memorials say *"Dan said..."*, *"Claude noticed..."*, *"codex flagged..."*.  Treating these as first-class graph citizens (rather than prose mentions or string scalars):
+
+1. **Versioning becomes queryable** — AI actor instances carry version chains; capability-deltas across versions are traceable
+2. **Authorization dispatches on actor** — rules can fire only when actor X is in context Y
+3. **Performed-by edges accumulate** — artifact memorials can declare `performed-by: actor-X` rather than embedding actor information in prose
+4. **The harness layer becomes a first-class citizen** — system actors (hooks / schedulers) get the same treatment as AI and human actors
+
+## Actor is the WHO axis
+
+Actors are the WHO axis of the (actor, context, event) dispatch tuple.  Rules can fire only when the active actor matches the rule's declared `actor:` field.
 
 ## Substrate identity
 
 - **Class ident**: `{{class-ident}}`
 - **Parent class(es)**: {{parent-classes}}
+- **Ancestor chain**: {{ancestor-chain}}
 - **Native codec**: `{{native-codec}}`
 - **Codec type-keyword(s)**: {{codec-type-keywords}}
 
-## Slot vocabulary
+## Slot vocabulary ({{slot-count}} slots inherited or declared)
 
-The class declares **{{slot-count}}** slots covering Identity / Capability / Membership / Provenance / Classification / Typed-edge / Body tiers:
+Actor memorials inherit `:mm/Memory` plus shared actor-family slots:
+
+- **`belongs-to`** — organizations the actor is a member of (multi-arity)
+- **`runs-in-context`** — runtime context(s) the actor operates in
+- **`versioned-as`** — actor version-chain (or use `supersedes`)
+- **`peer-of`** — actor siblings at same release
+
+Concrete subtypes layer their own type-specific slots.
 
 {{slot-table}}
 
-## Two sub-kinds via routing-keyword
+## Not instantiated directly
 
-Sandbar's `:mm/Actor` class is single-class with TWO codec routing keywords (`type: ai-actor` and `type: human-actor`).  The class is shared; the routing keyword distinguishes the kind at parse time + lands on the entity via the `:mm.actor/actor-type` slot.
-
-## Composition with other classes
-
-- **`:mm/Context`** — actors `runs-in-context:` context memorials; rules apply to (actor, context) tuples
-- **`:mm/Rule`** — rules can subject an actor (`:mm.rule/actor`) — apply only to that actor's actions
-- **`:mm/Memory`** — memorials cite their author via `:mm.memory/created-by`
-
-## Codec slot-order
-
-{{slot-order-list}}
+Don't write a memorial with `type: actor` — write `type: ai-actor`, `type: human-actor`, or `type: system-actor` (each declaring this class as parent via `:dt/subclass-of`).  The `abstract?: true` schema flag marks this class as non-instantiable.
 
 ## See also
 
-- [`types/context.md`](context.md) — runtime context class
-- [`types/rule.md`](rule.md) — discipline rule class
-- [`types/memory.md`](memory.md) — memorials that cite actors
+- [`types/meta.md`](meta.md) — parent abstract supertype
+- [`types/ai-actor.md`](ai-actor.md) — versioned AI model subtype
+- [`types/human-actor.md`](human-actor.md) — human collaborator subtype
+- [`types/system-actor.md`](system-actor.md) — automated process subtype
+- [`types/organization.md`](organization.md) — actors belong to organizations
+- [`types/context.md`](context.md) — actors run in contexts
+- Sandbar substrate: `sandbar/schema/mm-meta.edn`

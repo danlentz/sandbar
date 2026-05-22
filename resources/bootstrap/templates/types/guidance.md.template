@@ -1,0 +1,62 @@
+## What a `guidance` memory is
+
+**Guidance is an abstract supertype** — the category of memorials that prescribe action.  They tell future sessions *how to behave*: do-this-because, don't-do-this-because, reach-for-this, be-this-way.  Concrete subtypes carry positive conventions (`pattern`), negative conventions (`anti-pattern`), meta-rules governing the memory system (`protocol`), aesthetic / style filters (`preference`), corrections from the human collaborator (`feedback`), and explicit collaboration rules (`interaction`).
+
+Contrast with the sibling abstract supertypes:
+
+- **`signal`** — captures observation ("here is what we noticed")
+- **`artifact`** — produces durable output (decision / plan / library study)
+- **`meta`** — schema / structural ("about the map, not the territory")
+
+## When `extends: guidance` helps
+
+Category-level rules become expressible across the family:
+
+- *"Every guidance should cite at least one signal that motivated it"* — normative rules need empirical grounding (observed need produces rule)
+- *"Every guidance must carry claim-shaped `name:` (title-as-API)"* — Zettelkasten-derived discipline; the title states the rule
+- *"Every anti-pattern must `contradict` at least one positive guidance"* — every negative carries its positive alternative
+- *"Guidance with `at-startup: keystone` is surfaced TIER-0 at session start"* — the discipline-visibility surface
+
+Without supertype membership, each rule enumerates the concrete subtypes manually.  With it, `is-a? guidance` becomes the predicate, and the rule survives the addition of new subtypes.
+
+## At-startup visibility tier
+
+Guidance memorials can opt into the at-startup-visibility surface via the `at-startup:` frontmatter field:
+
+- **`keystone`** — disciplines whose violation is the most-frequently-observed failure mode; surfaced TIER-0 at the SessionStart hook + project-root CLAUDE.md
+- **`high`** — high-frequency, broad-applicability guidance; surfaced TIER-1
+- **`standard`** (default) — surfaced on-demand only (reachable via `/memory-search` and `/memory-ground`, not auto-loaded)
+
+A paired `one-line:` field carries the hand-curated short label rendered in the at-startup banner.  Required when `at-startup:` is set.  Kept under ~80 chars for one-line-per-entry rendering.
+
+The cache regenerator walks all guidance memorials, filters by presence of `at-startup:`, and emits a sorted-vector EDN keyed by rel-path.  Tier calibration is reviewed at retrospective time; thresholds (e.g., `keystone` ≤7, `high` ≤15) are soft ceilings.
+
+## Not instantiated directly
+
+Don't write a memorial with `type: guidance` — write one of the concrete subtypes (e.g., `type: pattern`, `type: anti-pattern`, `type: protocol`, `type: preference`, `type: feedback`, `type: interaction`), each of which declares this class as its parent via `:dt/subclass-of`.  The `abstract?: true` schema flag marks this class as non-instantiable.
+
+## Substrate identity
+
+- **Class ident**: `{{class-ident}}`
+- **Parent class(es)**: {{parent-classes}}
+- **Ancestor chain**: {{ancestor-chain}}
+- **Native codec**: `{{native-codec}}`
+- **Codec type-keyword(s)**: {{codec-type-keywords}}
+
+## Slot vocabulary ({{slot-count}} slots inherited or declared)
+
+Guidance memorials inherit the full `:mm/Memory` slot vocabulary plus class-specific extensions:
+
+- **at-startup metadata** — `at-startup`, `one-line` (tiering for the at-startup-visibility surface)
+- **captureability metadata** — `mid-conversation-captureable`, `inject-trigger`, `inject-class`, `audit-class` (state-change-detection fields)
+- **cross-memorial relations** — `contradicts` (anti-pattern → guidance), `demonstrates` (pattern ← example)
+
+{{slot-table}}
+
+## See also
+
+- [`types/artifact.md`](artifact.md) — sibling abstract supertype for durable-output memorials
+- [`types/signal.md`](signal.md) — sibling abstract supertype for observational memorials
+- [`types/meta.md`](meta.md) — sibling abstract supertype for schema / structural memorials
+- [`types/memory.md`](memory.md) — the common ancestor (foundational memorial class)
+- Sandbar substrate: `sandbar/schema/mm-guidance.edn`

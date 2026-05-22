@@ -1,0 +1,50 @@
+## What this predicate means
+
+**A `created-by` B** — B is the actor (human or AI) that authored / created A.  The author-attribution predicate.
+
+Common shapes:
+- A decision created-by `actors/dan.md`
+- A plan created-by `actors/claude-opus-4-7-1m.md`
+- A log created-by the agent that ran the session
+
+## Substrate identity
+
+- **Slot ident**: `{{predicate-ident}}`
+- **Domain**: `{{domain}}`
+- **Range**: `{{range}}` (typically `:mm/Actor`)
+- **Cardinality**: `{{cardinality}}`
+
+## Formal signature
+
+`{{predicate-name}} : {{domain}} × {{range}} → Bool`
+
+## When to use
+
+Use `created-by:` when:
+- A's creator is editorially meaningful (multi-actor corpus, AI-vs-human attribution, federation provenance)
+- The author wants to record the creative-attribution chain
+- Audit invariants benefit from knowing the creator (e.g., "every memorial created 2026-05-12+ declares `created-by`")
+
+## Audit invariants
+
+The "artifact memories created 2026-05-12+ declare created-by" audit verifies attribution discipline.  Cross-check via `/memory-audit`.
+
+## Formal ontology mappings
+
+Aligned predicates from established formal vocabularies:
+
+- **DC Terms** `dcterms:creator` — exact semantic match (DC's canonical creator-attribution predicate)
+- **FOAF** `foaf:maker` — exact semantic match (FOAF's creator-attribution predicate)
+- **PROV-O** `prov:wasAttributedTo` — close analogue (PROV's attribution relation between entity and agent)
+- **SIOC** `sioc:has_creator` — close analogue (SIOC's content-creator relation)
+- **OWL** — no direct equivalent
+- **CiTO** — no direct equivalent
+- **SKOS** — no direct equivalent
+
+Grounding references in the corpus:
+- [`references/rdfs_reference.md`](../references/rdfs_reference.md) — DC Terms / FOAF / PROV-O substrate
+
+## See also
+
+- [`predicates/made.md`](made.md) — inverse partner (B made A; equivalent to `foaf:made`)
+- [`predicates/informed-by.md`](informed-by.md) — adjacent (intellectual influence, not authorship)

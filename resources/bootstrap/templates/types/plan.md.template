@@ -1,0 +1,154 @@
+## What a `type: plan` instance is
+
+A **design document for in-progress or recently-completed work**, preserved as a first-class memorial rather than as an ephemeral scratch file.  Plan memorials serve two roles across the work's lifecycle:
+
+1. **Before / during the work**: the plan IS the work-in-progress artifact — the place where motivation is articulated, alternatives are weighed, stages are defined, decisions get resolved.  Updated as the work progresses and stages complete.
+
+2. **After the work**: the plan becomes a **memorial record** — what was set out to do, what actually happened, what emerged during the arc.  Preserves context a flat `git log` can't: the reasoning across commits, the questions that surfaced mid-arc, the cross-cutting observations.
+
+Plan is a subtype of [`artifact`](artifact.md) — a durable, self-contained output with memorial value beyond its immediate trigger.
+
+## Why plans are richly interconnected
+
+A plan is the **arc-level view** of the memory graph:
+
+- Forward to the ideas that spawned the arc
+- Forward to observations surfaced during execution
+- Forward to decisions resolved during design
+- Forward to bugs / questions raised mid-arc
+- Backward from the patterns / protocols / references extracted as durable artifacts
+- Parent / child arcs in the arc-forest hierarchy
+
+This interconnection is the value proposition.  A decision memorial tells you what was chosen; a plan memorial tells you the arc that the decision happened inside of.
+
+## When to create a plan memorial
+
+- Starting a multi-commit arc (3+ commits expected, or complexity warranting design-first)
+- An idea graduates from `status: parked` to `status: exploring` — the plan is the vehicle for exploration
+- A cross-cutting refactor or migration with staged checkpoints
+- Architectural work that will resolve multiple decisions
+- A session rich enough to warrant a structured retrospective — the plan is backfilled from what actually happened
+
+## When NOT to create one
+
+- A single-commit fix or tweak — the commit message is the record
+- Pure tactical work with no design axis
+- Simple sessions where nothing emerged worth memorializing
+
+## Substrate identity
+
+- **Class ident**: `{{class-ident}}`
+- **Parent class(es)**: {{parent-classes}}
+- **Ancestor chain**: {{ancestor-chain}}
+- **Native codec**: `{{native-codec}}`
+- **Codec type-keyword(s)**: {{codec-type-keywords}}
+
+## Slot vocabulary ({{slot-count}} slots inherited or declared)
+
+Plan memorials inherit `:mm/Memory` plus type-specific lifecycle slots:
+
+- **`status`** — `draft` / `active` / `complete` / `paused` / `cancelled` / `abandoned`
+- **`stage`** — current stage name (e.g., "Stage 3 of 5: tooling")
+- **`started`** / **`completed`** — date markers
+- **`parent`** / **`primary-parent`** / **`blocks`** — arc-forest DAG fields
+- **`triggered-by`** — what surfaced this arc
+
+{{slot-table}}
+
+## Canonical body structure
+
+The 8-section template (extended with lifecycle sections):
+
+```markdown
+## §0 Motivation
+
+<Concrete evidence — counts, file paths, observations that prompted
+the arc.  Cite signal memorials: observations / questions / ideas /
+bugs that fed this.>
+
+## §1 Principles
+
+<5–7 priority-ordered invocable-by-name rules.  Each one sentence +
+short justification.  Every decision below traces to one.>
+
+## §2 Architecture
+
+<Concrete design surface.  Namespace topology, API, emission targets.
+Code sketches.  Inline decision rationale for non-obvious choices.>
+
+## §3 Theming / variations
+
+<How the architecture flexes.  Elide if no variations.>
+
+## §4 Migration stages
+
+<Numbered stages, each with work items / verification / stop-point.>
+
+## §5 What we are NOT doing
+
+<Explicit non-goals.  Bounds the arc.>
+
+## §6 Decisions resolved during design
+
+<Alternatives considered + rationale.  These often graduate to
+standalone decision memorials when scope outgrows the plan.>
+
+## §7 Success criteria
+
+<One-line greppable criteria.>
+
+## §8 References / cross-links
+
+<Ideas / observations / bugs / questions / decisions the plan
+touches.  The graph of memorials this plan sits at the center of.>
+
+---
+
+## Stage log
+
+<Updated as stages land.  One bullet per stage completion with date,
+commit, summary.  Narrative, not a commit log — summarize each stage
+in a sentence.>
+
+## Retrospective
+
+<Added when status: complete.  What emerged during execution that
+wasn't anticipated in the plan.  What patterns / observations / bugs /
+questions were produced.  One-paragraph summary + explicit cross-links
+to the artifacts produced.>
+```
+
+## Status lifecycle
+
+- **draft** — plan is being written; work hasn't started or is in very early exploration.  Heavy on motivation / principles / alternatives; light on stage detail.
+- **active** — work in progress.  Plan is being updated as stages complete.  The `## Stage log` section grows.
+- **complete** — all stages landed; the plan now memorializes the arc.  A `## Retrospective` section captures what emerged during execution.  `completed:` date set.
+- **paused** — work deferred.  Keep plan; note the pause reason; may resume.
+- **cancelled / abandoned** — work given up.  Keep plan as forensic trail; document the cancellation rationale.
+
+## Backfilling a completed arc
+
+Plans can be written post-hoc.  Some arcs are worth memorializing even when no plan was written upfront — create with `status: complete`, fill §0–§7 from what the arc actually produced (a reconstruction, not a plan-ahead document), let the retrospective become the main content.
+
+## Pitfalls
+
+- **Plans as scratch files** — a plan that stays in `status: draft` for months is probably not needed
+- **Plans without cross-references** — a plan that doesn't cite ideas / observations / decisions is isolated; its memorial value drops
+- **Plans duplicating commit messages** — the `## Stage log` is a narrative, not a commit log
+- **Retrospectives as self-congratulation** — what emerged during the arc that was surprising or required adjustment is the valuable content; *"everything went perfectly"* is a warning sign
+
+## State-change-detection (captureability)
+
+Plan-level state changes are mid-conversation-captureable.  Inject-triggers:
+- *"pause X"* — bump status to paused
+- *"I'll do Y next"* — update Stage Log + stage:
+
+## See also
+
+- [`types/artifact.md`](artifact.md) — parent abstract supertype
+- [`types/decision.md`](decision.md) — decisions resolved during planning graduate from plan §6 into standalone decision memorials
+- [`types/idea.md`](idea.md) — ideas graduating to `status: exploring` produce a plan
+- [`types/observation.md`](observation.md) — observations often appear in plan §0 (motivation) or `## Retrospective`
+- [`types/question.md`](question.md) — questions often appear in plan §0 or §7
+- [`types/log.md`](log.md) — logs record the sessions in which plan stages land
+- Sandbar substrate: `sandbar/schema/mm-artifact.edn`

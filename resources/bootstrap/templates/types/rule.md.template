@@ -1,49 +1,132 @@
 ## What a `type: rule` instance is
 
-A first-class representation of a DISCIPLINE RULE — a substrate-machinable assertion that some event triggers some enforcement against some subject (actor, context, or memorial pattern).  Rules name the WHAT (event class), the WHO (actor / class scope), the WHERE (context or path glob), and the HOW (enforcement type: warn / block).  They sit at the intersection of policy, hook automation, and the corpus's editorial discipline.
+**A rule memorial describes a programmable deterministic instruction** that the memory system surfaces at specific events to shape collaboration behavior.  Rules scope to a context, an (actor, context) tuple, or are global; they fire at typed lifecycle events; they declare severity (`audit` / `warn` / `block`) and exemption (`bypass`).
 
-## When a rule entity is warranted
+Rules are **first-class graph citizens** — typed-edge memorial entries with the same introspection and queryability as predicates, types, libraries, patterns.  The corpus IS the rule registry; rule application is typed-edge graph query.
 
-- A repeating editorial concern can be captured as a triggerable assertion (post-commit validation, pre-tool-use guard, session-start orientation reminder)
-- Compliance with the rule benefits from substrate enforcement rather than ad-hoc reminders
-- The rule will be referenced by multiple memorials (audit invariants, hooks, protocol docs)
+Rule is a subtype of [`meta`](meta.md) — memorials about the memory system itself.
 
-## Rule lifecycle dimensions
+## The (actor, context, event) dispatch tuple
 
-Each rule declares:
+Rules fire when their `(actor, context, event)` triple matches the runtime situation:
 
-- **Event** — when the rule fires (`:post-commit`, `:pre-tool-use`, `:session-start`, `:pre-grounding`, `:corpus-audit`)
-- **Enforcement** — disposition (`:warn` informational, `:block` halting)
-- **Subject** — actor (specific or `:any`), context (path glob or context ref)
-- **Engine** — dispatch mechanism (`:plain-pattern`, `:graph-query`, `:script-hook`)
-- **Priority** — dispatch ordering (higher fires first)
-- **Lifecycle** — `:active` or `:retired`
+- **`actor`** — WHO is acting (an AI actor / human / system process, or `:any`)
+- **`context`** — WHERE / IN WHAT the action occurs (a runtime context, path glob, tool name, or `:any`)
+- **`event`** — WHEN in the lifecycle the rule evaluates (`pre-grounding` / `pre-tool-use` / `session-start` / etc.)
+
+Rules might apply to a given context, a given (actor, context) tuple, or a given actor only in a specific context.  First-class rules + the hooks that surface them bring the behavioral aspect of AI collaboration into the memory system itself, providing an axis of future extensibility whose value compounds.
 
 ## Substrate identity
 
 - **Class ident**: `{{class-ident}}`
 - **Parent class(es)**: {{parent-classes}}
+- **Ancestor chain**: {{ancestor-chain}}
 - **Native codec**: `{{native-codec}}`
 - **Codec type-keyword(s)**: {{codec-type-keywords}}
 
-## Slot vocabulary
+## Slot vocabulary ({{slot-count}} slots inherited or declared)
 
-The class declares **{{slot-count}}** slots covering Identity / Event / Enforcement / Subject / Dispatch / Lifecycle / Provenance / Typed-edge tiers:
+Rule memorials inherit `:mm/Memory` plus rich dispatch-spec slots:
+
+- **`event`** (required) — which lifecycle event triggers evaluation
+- **`enforcement`** (required) — `audit` / `warn` / `block`
+- **`actor`** — actor rel-paths or `:any`
+- **`context`** — context rel-paths, path globs, tool-name patterns, or `:any`
+- **`bypass`** — list of (actor, context) tuples exempt
+- **`priority`** — numeric utility score within-scope
+- **`engine`** — `:plain-pattern` / `:malli` / `:clara-rules` / `:core.logic` / `:meander-strategy`
+- **`lifecycle`** — `active` / `experimental` / `deprecated` / `superseded`
+- **`dispatch-strategy`** — `:graph-query` (default) / `:match-compile` (hot-path optimization)
+- **`inherits-from`** — parent context for lattice-with-lifting inheritance
 
 {{slot-table}}
 
-## Composition with other classes
+## Scope partitioning — lattice-with-lifting
 
-- **`:mm/Actor`** — rules subject specific actors via `:mm.rule/actor`
-- **`:mm/Context`** — rules subject specific contexts via `:mm.rule/context`
-- **`:mm/Memory`** — rules can reference protocol memorials (`:mm.rule/governed-by`), trigger memorials (`:mm.rule/triggered-by`), and applicability scopes (`:mm.rule/applies-in`)
+Per the Cyc microtheory precedent: scope partitioning is **lattice-with-lifting** — multi-parent context inheritance allowed; sibling contexts may hold contradictory rules; explicit lifting rules translate cross-context applicability when needed.
 
-## Codec slot-order
+The `inherits-from:` typed edge captures multi-parent context inheritance.  The `bypass:` field captures explicit exemptions.  Contradictions across sibling scopes do NOT produce validation errors (per the Cyc precedent).
 
-{{slot-order-list}}
+## Dispatch — typed-edge graph query
+
+Rule dispatch is a typed-edge graph query — `find-rules-applying-to(actor=X, context=Y, event=Z)` is a typed-edge intersection query over the corpus.  Optional `:match-compile` strategy generates optimized matchers for hot-path patterns.
+
+## Pluggable body engines
+
+The body of a rule is evaluated by a pluggable engine (per the `engine:` discriminator):
+
+- **`:plain-pattern`** — simple structural match (ELIZA-like)
+- **`:malli`** — schema-validated rule bodies (Malli library)
+- **`:clara-rules`** — production-rule forward-chaining (Rete + TMS); supports complex many-rule activation networks
+- **`:core.logic`** — relational / bidirectional inference (miniKanren substrate)
+- **`:meander-strategy`** — term-rewriting strategy composition (Stratego tradition)
+
+## Severity gradient (SHACL-inspired)
+
+- **`audit`** — observe + log; no user-facing intervention
+- **`warn`** — surface as soft block; user can proceed
+- **`block`** — refuse + interrupt the action
+
+## Canonical body structure
+
+```markdown
+## What this rule prescribes
+
+<The behavioral instruction the rule encodes, stated as
+declarative content.>
+
+## When it fires
+
+<Trigger conditions: actor / context / event tuple matching.>
+
+## Why it earns its keep
+
+<Rationale.  What failure mode does it catch?  What past
+incident motivated it?>
+
+## Rule body (executable form)
+
+<Optional EDN data block compiling to the chosen engine's
+data form.  Or descriptive prose if the rule is informational.>
+
+## Bypass conditions
+
+<Specific (actor, context) tuples where this rule does NOT
+apply.  Document the rationale for each exemption.>
 
 ## See also
 
-- [`types/actor.md`](actor.md) — actors that rules subject
-- [`types/context.md`](context.md) — contexts that rules subject
-- [`types/memory.md`](memory.md) — memorials that rules reference
+<Related rules, triggered events, applicable actors / contexts,
+underlying engine.>
+```
+
+## Tag tiering
+
+Rules carry tier tags per priority within their substrate role:
+
+- **`tier-0-keystone`** — substrate-correctness-critical
+- **`tier-1-frequent`** — high-applicability discipline
+- **`tier-2-occasional`** — narrower-applicability
+- **`tier-3-niche`** — specialized / experimental
+
+Combined with event tags (pre-grounding / pre-tool-use / ...) and lifecycle tags (active / experimental / deprecated / superseded).
+
+## Rule activation runtime
+
+Per the truth-maintenance pattern: derived memorials produced by rule firing carry a premise list; dependency-directed retraction fires on premise change.  Engines like clara-rules natively support this via Rete + TMS; other engines may approximate.
+
+## Pitfalls
+
+- **Rules without explicit triggers** — a rule without precise event / actor / context dispatch becomes advisory prose
+- **Severity drift** — declaring `block` when `warn` would do; over-aggressive enforcement erodes trust in the rule layer
+- **Bypass abuse** — `bypass:` should name specific (actor, context) tuples with rationale, not be a general escape hatch
+- **Engine mismatch** — picking `:clara-rules` for a one-pattern check is over-engineering; picking `:plain-pattern` for a Rete-shaped multi-rule activation is under-engineering
+
+## See also
+
+- [`types/meta.md`](meta.md) — parent abstract supertype
+- [`types/event.md`](event.md) — events trigger rules via `triggered-by:`
+- [`types/engine.md`](engine.md) — engines evaluate rule bodies
+- [`types/actor.md`](actor.md) — actors are the WHO axis of the dispatch tuple
+- [`types/context.md`](context.md) — contexts are the WHERE axis
+- Sandbar substrate: `sandbar/schema/mm-meta.edn`

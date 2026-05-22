@@ -1,0 +1,43 @@
+## What this predicate means
+
+**A `is-disagreed-with-by` B** — B disputes A's claims (inverse of `disagrees-with`).  The backlink direction: a memorial enumerating its dissenters.
+
+Used in claim-bearing memorials (decisions, patterns, plans) that want to surface known counterarguments transparently.
+
+## Substrate identity
+
+- **Slot ident**: `{{predicate-ident}}`
+- **Domain**: `{{domain}}`
+- **Range**: `{{range}}`
+- **Cardinality**: `{{cardinality}}`
+- **Inverse of**: `:mm.memory/disagrees-with`
+
+## Formal signature
+
+`{{predicate-name}} : {{domain}} × {{range}} → Bool`
+
+## When to use
+
+Declare `is-disagreed-with-by:` on A when:
+- A wants to surface known dissenters for editorial transparency
+- The disagreement is durable (not just a passing comment)
+- Readers benefit from seeing the disagreement explicitly
+
+For exhaustive enumeration, reverse-attribute lookup (`:_mm.memory/disagrees-with`) is usually cheaper.
+
+## Formal ontology mappings
+
+Aligned predicates from established formal vocabularies:
+
+- **CiTO** — no direct flat inverse (CiTO uses reverse-attribute traversal of `cito:disagreesWith`)
+- **OWL** `owl:inverseOf` — sandbar declares `:mm.memory/is-disagreed-with-by` as `inverse-of :mm.memory/disagrees-with`
+- **PROV-O** — no direct equivalent
+- **DC Terms** — no direct equivalent
+- **SKOS** — no direct equivalent
+
+Grounding references in the corpus:
+- [`references/pav_cito_bibo_reference.md`](../references/pav_cito_bibo_reference.md) — CiTO disagreement semantics (forward direction)
+
+## See also
+
+- [`predicates/disagrees-with.md`](disagrees-with.md) — forward direction

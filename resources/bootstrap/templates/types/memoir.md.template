@@ -1,0 +1,139 @@
+## What a `type: memoir` instance is
+
+**A memoir memorializes a process, not an artifact.**  Where a `library` memorial is a deep study of a *thing* (a reusable external library) and a `plan` memorial designs *future work*, a memoir records a *past process* whose value compounds beyond the findings alone — **the methodology itself is load-bearing**.
+
+Canonical scenarios:
+
+| Scenario | Why memoir fits |
+|----------|----------------|
+| Extracting generalizable patterns from a proprietary codebase one can't re-read in the future | The *sanitization process* matters as much as the patterns; later collaborators need to know what was read, what was excluded, and what got scrubbed |
+| Studying a library whose source can't be durably cited (sandbox-blocked, legal-gated, takedown-prone) | The memoir form signals *"this is a process record, not a citable source study"* |
+| Landing a completed arc where the research workflow was itself unusual / reusable | The process becomes a template for future arcs |
+| Recording an audit / investigation / forensic sweep | The fact-pattern + methodology + conclusion triangle is its own genre |
+
+Memoir is a subtype of [`artifact`](artifact.md) — a durable, self-contained output with memorial value beyond its immediate trigger.
+
+## Why memoir exists as its own type
+
+**Memorialized processes have provenance / methodology / exclusions fields that no existing type requires.**  A library study doesn't need a *"what I could NOT read"* section; a plan doesn't need a *"sanitization log"*; an observation doesn't need a *"firewall-check status."*  Bolting these onto existing types via optional fields weakens the audit posture.
+
+Making memoir a distinct type means:
+
+- Audit can enforce memoir-specific invariants (e.g., methodology section present, provenance cited)
+- Future memoirs inherit a canonical body template
+- The type surface signals *"this is a process record"* to readers, setting expectations correctly
+
+The motivating case: **proprietary-codebase pattern extraction** where the pattern is generalizable but the codebase is not re-readable.  Under proprietary-isolation discipline the memoir form is what makes such extraction safe *and* durable.
+
+## When to create a memoir memorial
+
+- **Proprietary extraction** — reading a codebase whose specific identifiers / domain vocabulary / file paths cannot appear in global memory, but whose patterns / algorithms / approaches are generalizable.  Memoir is the correct container; library is not
+- **Source-access-fragile study** — reading material that may not be available to future sessions (sandbox-blocked, ephemeral URL, private repo, internal doc).  Memoir flags that *the findings are load-bearing but the source can't be re-visited*
+- **Arc-completion memorial where the process matters** — e.g., a non-trivial migration whose discipline should be preserved for future similar migrations
+- **Investigation / audit / forensic sweep** — a time-bounded examination whose conclusion + methodology both matter
+
+## When NOT to create one
+
+- Studying a durable public library by name → `library`
+- Designing future work → `plan`
+- Recording one observation → `observation`
+- The process was routine / no methodology discipline applied → a plain paragraph in the arc's plan suffices
+
+## Substrate identity
+
+- **Class ident**: `{{class-ident}}`
+- **Parent class(es)**: {{parent-classes}}
+- **Ancestor chain**: {{ancestor-chain}}
+- **Native codec**: `{{native-codec}}`
+- **Codec type-keyword(s)**: {{codec-type-keywords}}
+
+## Slot vocabulary ({{slot-count}} slots inherited or declared)
+
+Memoir memorials inherit `:mm/Memory` plus type-specific required slots:
+
+- **`methodology`** (required) — one-line description of the process
+- **`provenance`** (required) — origin of source material + when the process occurred
+- **`exclusions`** — what was deliberately NOT read / included
+- **`sanitization-log`** — list of (candidate, disposition, reason) triples for anything that went through the firewall
+- **`firewall-check-status`** — `passed` / `passed-after-sanitization` / `pending`
+
+{{slot-table}}
+
+## Canonical body structure
+
+```markdown
+## Premise
+
+<What process was undertaken, what triggered it, what the
+intended output is.  One paragraph.>
+
+## Methodology
+
+<The method is load-bearing.  Spell out: what was read (by scope,
+not file path if proprietary), what was excluded and why, what
+abstraction discipline was applied, what firewall / sanitization
+gates fired, what evidence standard each finding had to clear.>
+
+## Provenance + exclusions
+
+<Explicit exclusion list.  The value of saying "I did NOT read X"
+is nearly equal to the value of saying "I read Y and found Z" —
+it bounds the memoir's epistemic reach.>
+
+## Findings
+
+<The actual extracted content, organized however suits the
+process.  For pattern-extraction memoirs: one section per
+extracted pattern, each with a citation-equivalent.>
+
+## Sanitization log (if any firewall fired)
+
+<Table of (token-candidate, disposition, reason) so the audit
+record is complete.>
+
+## Confidence / limitations
+
+<What the memoir is NOT — what questions it doesn't answer, what
+evidence it lacks, what should be re-visited if source access
+becomes stable.>
+
+## See also
+
+<Cross-links to: the protocol that governed the process, patterns +
+references that resulted, parent arc if any.>
+```
+
+## Audit invariants (future)
+
+- Every `type: memoir` entry has a `methodology:` line
+- Every memoir has a `provenance:` line
+- Memoirs extracted from proprietary sources have `firewall-check-status: passed` (error if `pending`)
+- Memoir body contains a `## Methodology` section (warning if absent)
+
+## Pitfalls
+
+- **Using memoir where library is correct** — if the source is publicly re-readable AND you cited specific file:line evidence, it's a `library`, not a memoir
+- **Methodology-thin memoirs** — a memoir without a methodology section is just a weakly-sourced library study; methodology IS the substrate
+- **Forgetting the exclusion list** — if you read 10 dirs out of 40, the 30 you DIDN'T read are load-bearing context for future sessions
+- **Sanitization theater** — a sanitization log that only says *"passed"* isn't a log; record actual token-candidates that came up and what happened to each
+- **Memoir rot** — memoirs age; the source may have moved, the methodology may be superseded.  Add `last-reviewed:` and update when re-read
+
+## Composition with adjacent classes
+
+The **protocol ↔ memoir pair** is load-bearing: a protocol memorial names the rule; a memoir memorial records what happened when the rule was applied.  Every memoir that applied a protocol should cite it; every protocol may accumulate memoirs as instances.
+
+- **`library`** — the type memoir most resembles; distinguishing line is *"durable source + re-readable citations"* vs. *"fragile-source / process-record"*
+- **`plan`** — forward-looking artifact; memoir is backward-looking
+- **`decision`** — records a choice; memoir records a process
+- **`log`** — sibling session-record; a single extraction session typically produces one memoir (methodology + findings) and one log (session chronicle) that cross-link
+- **`protocol`** — the rule memoirs of structured extraction instantiate
+
+## See also
+
+- [`types/artifact.md`](artifact.md) — parent abstract supertype
+- [`types/library.md`](library.md) — closest sibling; distinguished by source-durability
+- [`types/plan.md`](plan.md) — forward-looking counterpart
+- [`types/decision.md`](decision.md) — choice-record sibling
+- [`types/log.md`](log.md) — session-record sibling
+- [`types/protocol.md`](protocol.md) — memoirs instantiate protocols
+- Sandbar substrate: `sandbar/schema/mm-artifact.edn`

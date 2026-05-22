@@ -1,0 +1,92 @@
+## What a `type: system-actor` instance is
+
+**A system actor memorial describes an automated process that takes actions in the corpus.**  Distinct from AI actors (model-driven) and human actors (intentional collaboration) — system actors are deterministic / rule-driven processes:
+
+- PreToolUse hooks — discipline-enforcement processes
+- Inject hooks — advisory context-surfacing processes
+- Post-commit hooks (e.g., index refresh, audit triggers)
+- Audit-invariant runners
+- Scheduled tasks / cron-driven processes
+- Companion broker processes
+- CI runners
+
+System actor memorials make the **harness layer** itself a first-class graph citizen — discipline enforcement, capture, and audit are not just code but also memorialized entities that artifacts can be `performed-by:`.
+
+System Actor is a subtype of [`actor`](actor.md) → [`meta`](meta.md).
+
+## Substrate identity
+
+- **Class ident**: `{{class-ident}}`
+- **Parent class(es)**: {{parent-classes}}
+- **Ancestor chain**: {{ancestor-chain}}
+- **Native codec**: `{{native-codec}}`
+- **Codec type-keyword(s)**: {{codec-type-keywords}}
+
+## Slot vocabulary ({{slot-count}} slots inherited or declared)
+
+System Actor memorials inherit `:mm/Memory` (and `actor`) plus system-specific slots:
+
+- **`process-class`** (required) — `hook` / `scheduled-task` / `ci-runner` / `runner-broker` / `audit-invariant` / ...
+- **`triggers`** — natural-language list of trigger conditions
+- **`belongs-to`** — organization that owns this process (often "this corpus")
+- **`runs-in-context`** — where this process operates
+- **`implementation-path`** — rel-path to the source file (hook script / scheduler config / etc.)
+
+{{slot-table}}
+
+## Process-class vocabulary
+
+- **`hook`** — fires synchronously on a lifecycle event (PreToolUse / PostCompact / SessionStart / etc.)
+- **`scheduled-task`** — fires at scheduled intervals via cron-like scheduler
+- **`ci-runner`** — runs in continuous-integration pipeline (test / lint / build / deploy)
+- **`runner-broker`** — orchestrates other runners (multi-agent coordination)
+- **`audit-invariant`** — fires when corpus audit runs; reports violations
+- **`indexer`** — maintains a derived index (xref / search / aggregate)
+
+## Canonical body structure
+
+```markdown
+## What this process does
+
+<Description of the automated action this process performs.>
+
+## When it fires
+
+<Trigger conditions: lifecycle event, schedule, manual invocation,
+upstream signal.>
+
+## Implementation
+
+<Where the source lives, what language / runtime it uses, key
+dependencies.>
+
+## What it produces
+
+<Side effects: memorials written, indices updated, files modified,
+notifications emitted.>
+
+## Operating contexts
+
+<Where this process is permitted to run; firewall constraints.>
+
+## See also
+
+<Adjacent system actors, triggering events, governing rules.>
+```
+
+## Composition with adjacent classes
+
+- **`event`** — system actors are typical triggers for substrate events (especially `post-commit`, `corpus-audit`, `pre-tool-use`)
+- **`rule`** — rules may scope to specific system-actor process-classes
+- **`organization`** — system actors typically `belongs-to` the corpus itself (or a tooling project)
+- **`context`** — system actors run in specific contexts (CI / local / sandboxed)
+- **`bug`** — bugs in system actor processes are tracked like any bug
+
+## See also
+
+- [`types/actor.md`](actor.md) — parent abstract supertype
+- [`types/ai-actor.md`](ai-actor.md) — sibling subtype
+- [`types/human-actor.md`](human-actor.md) — sibling subtype
+- [`types/event.md`](event.md) — events fired by system actors
+- [`patterns/architectural/ai_collaboration/hook_based_discipline_enforcement.md`](../patterns/architectural/ai_collaboration/hook_based_discipline_enforcement.md) — the discipline-enforcement pattern many system actors instantiate
+- Sandbar substrate: `sandbar/schema/mm-meta.edn`

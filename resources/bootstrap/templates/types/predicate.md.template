@@ -1,0 +1,124 @@
+## What a `type: predicate` instance is
+
+**A predicate memorial describes a single typed-edge predicate** — one of the vocabulary terms (`supersedes`, `evidences`, `refines`, etc.) that authors use in frontmatter to declare typed edges between memorials.
+
+The predicate memorial is the **authoritative schema** for its predicate: it declares what source + target types are allowed (`domain` / `range`), what formal characteristics hold (transitive, symmetric, etc.), what its inverse-of mate is, and what the audit layer should enforce.
+
+Tooling that works with typed edges reads the predicate memorial at resolve-time.  No separate config file governs the predicate vocabulary — the predicate memorials ARE the vocabulary.
+
+Predicate is a subtype of [`meta`](meta.md) — memorials about the memory system itself.
+
+## Why predicates are first-class
+
+**RDFS's foundational move**: `rdf:Property` is itself a `rdfs:Class`.  Every property in an RDF graph is a resource with its own URI, domain, range, and describable properties-of-properties.  This corpus inherits that discipline: every predicate in the typed-edge vocabulary is itself a memorial, in the same corpus, described with the same vocabulary, audited by the same invariants as any other memorial.
+
+Four levels of metacircularity:
+
+- **Memorials** describe things
+- **Type memorials** (`type: type`) describe what memorials of a given type contain
+- **Predicate memorials** (`type: predicate`) describe what typed edges between memorials mean
+- **The Predicate type itself** describes what predicate memorials contain
+
+## When to create a predicate memorial
+
+- A new typed-edge relationship enters the vocabulary
+- An existing predicate's semantics change (rare — prefer creating a new predicate to changing an old one)
+- A relationship used only in one context turns out to deserve a vocabulary slot (promotion from `related:` fallback)
+
+## When NOT to create one
+
+- The relationship is covered by an existing predicate; reuse + refine docstring rather than proliferate
+- The relationship is genuinely weak / associative and fits under `related:` (SKOS-style catch-all)
+- The relationship exists only between one pair of memorials; predicates are schema, not one-off cross-links
+
+## Substrate identity
+
+- **Class ident**: `{{class-ident}}`
+- **Parent class(es)**: {{parent-classes}}
+- **Ancestor chain**: {{ancestor-chain}}
+- **Native codec**: `{{native-codec}}`
+- **Codec type-keyword(s)**: {{codec-type-keywords}}
+
+## Slot vocabulary ({{slot-count}} slots inherited or declared)
+
+Predicate memorials inherit `:mm/Memory` plus type-specific required slots:
+
+- **`domain`** — set of type-memorial rel-paths the predicate accepts as source
+- **`range`** — set of type-memorial rel-paths the predicate accepts as target
+- **`characteristics`** — set of formal properties (transitive / reflexive / irreflexive / symmetric / antisymmetric / asymmetric / functional / inverse-functional)
+- **`inverse-of`** — the dagger-dual predicate, if any
+- **`same-type?`** / **`acyclic?`** — additional formal constraints
+- **`lifecycle-status`** — `active` / `deprecated` / `retired` / `candidate`
+- **`prefer-over`** / **`reach-for-instead`** — relative-strength guidance
+
+{{slot-table}}
+
+## Canonical body structure
+
+```markdown
+## What this predicate means
+
+<One-paragraph semantics in plain language.>
+
+## Formal signature
+
+`<predicate> : <Domain> × <Range> → Bool`
+
+<Any type-family notation, category-theoretic notes, etc.>
+
+## Characteristics
+
+<Enumerate the declared characteristics + any that derive from them.>
+
+## Examples from the corpus
+
+<2-3 concrete cases.  Format: `A <predicate> B` with memorial
+rel-paths.  If the predicate is new enough that corpus examples
+don't exist, use hypothetical examples.>
+
+## Audit consequences
+
+<What invariants fire on edges using this predicate.>
+
+## Relationship to adjacent predicates
+
+<Inverse, sub-predicates, contrast with near-siblings.>
+
+## Migration guidance
+
+<Heuristics for edge migration:
+- Reach for this when ...
+- Prefer stronger predicate when ...
+- Stay with `related` when ...>
+
+## Lifecycle
+
+<Current lifecycle-status; history of status changes; migration
+target + timeline if deprecated/retired.>
+
+## See also
+
+<Other predicates in the same cluster; research substrate;
+patterns / plans using this predicate heavily.>
+```
+
+## Audit invariants that operate on predicate memorials
+
+- **`predicate-referential-integrity`** — every predicate key used in any memorial's frontmatter resolves to an existing predicate memorial
+- **`predicate-domain-range-conformance`** — for each typed edge `(A, p, B)`, `type(A) ∈ p.domain` and `type(B) ∈ p.range`
+- **`predicate-characteristics-enforced`** — declared characteristics are upheld on the typed-edge graph (transitive closure / acyclicity / etc.)
+- **`predicate-inverse-integrity`** — if `p.inverse-of = q`, then `(A p B)` implies `(B q A)` is asserted or derivable
+
+## Pitfalls
+
+- **Over-specifying domain / range** — types are already strict; over-restricting means authors can't express real relationships.  Start broad; tighten when real misuse patterns emerge
+- **Hand-wavy characteristics** — `:transitive` is a mathematical claim.  If audit can't verify the closure cleanly, the predicate isn't actually transitive
+- **Creating a new predicate instead of reusing** — check existing vocabulary first
+- **Forgetting the inverse** — most asymmetric predicates have an inverse; declare both with `inverse-of` cross-pointing
+- **Cluttered body** — predicate memorials should be concise (~150 lines max); write schemas, not essays
+
+## See also
+
+- [`types/meta.md`](meta.md) — parent abstract supertype
+- [`types/type.md`](type.md) — analog at one level up (memorial-kinds vs edge-kinds)
+- Sandbar substrate: `sandbar/schema/mm-meta.edn`

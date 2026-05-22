@@ -51,9 +51,12 @@
 ;; Sample entity-spec data
 
 (defn- simple-memory
-  "A frontmatter-only mm/Memory entity (no sections)."
+  "A frontmatter-only mm/Decision entity (no sections).
+   Post-2026-05-21: `type: decision` routes to :mm/Decision (subclass of :mm/Memory)
+   via :dt/codec-type-keyword.  Codec walks ancestors for slot inheritance
+   so :mm.memory/* slots remain the canonical home of name/rel-path/etc."
   []
-  {:dt/type :mm/Memory
+  {:dt/type :mm/Decision
    :db/ident :decisions/foo
    :mm.memory/rel-path "decisions/foo.md"
    :mm.memory/name "Foo Decision"
@@ -61,12 +64,13 @@
    :mm.memory/body-raw ""})
 
 (defn- memory-with-sections
-  "An mm/Memory with two top-level sections."
+  "An mm/Decision (subclass of mm/Memory) with two top-level sections.
+   Post-2026-05-21: `type: decision` routes to :mm/Decision via codec."
   []
   (let [memory-ident :decisions/bar
         ctx-ident    :decisions/bar__context
         dec-ident    :decisions/bar__decision]
-    [{:dt/type :mm/Memory
+    [{:dt/type :mm/Decision
       :db/ident memory-ident
       :mm.memory/rel-path "decisions/bar.md"
       :mm.memory/name "Bar Decision"
@@ -150,7 +154,7 @@
           _    (pg/project-graph [orig] {:to dir})
           back (pg/ingest-graph dir)]
       (is (= 1 (count back)))
-      (is (= :mm/Memory (-> back first :dt/type)))
+      (is (= :mm/Decision (-> back first :dt/type)))
       (is (= "Foo Decision" (-> back first :mm.memory/name)))
       (is (= "decisions/foo.md" (-> back first :mm.memory/rel-path))))))
 

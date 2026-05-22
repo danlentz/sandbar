@@ -1,0 +1,493 @@
+[
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; :mm/Artifact — Abstract Supertype for Durable Output Memorials
+;;
+;; Per:
+;;   - memory/types/artifact.md (corpus self-description)
+;;   - decisions/sandbar_memorial_type_substrate_layering_2026_05_21.md (D2)
+;;   - decisions/substrate_class_catalog_maximally_expressive_opt_in_overrideable_2026_05_21.md (maximally-expressive principle)
+;;   - decisions/sandbar_memorial_type_ontology_corrections_round_c_2026_05_21.md (R5 final taxonomy + R2 4-level inheritance Reference→{Resource, ContentType})
+;;
+;; CONCRETE SUBTYPES (12, declared in this file):
+;;   - :mm/Decision   (ADR; no type-specific slots — body sections + frontmatter inherited)
+;;   - :mm/Plan       (design document + arc memorial; 8 slots)
+;;   - :mm/Log        (chronological session record; 7 slots; handoff-schema-version + closed-at + host)
+;;   - :mm/Example    (reusable illustration; 3 slots; demonstrates: typed-edge already substrate)
+;;   - :mm/Briefing   (audience-targeted explainer; 3 slots: audience + occasion + presented-on)
+;;   - :mm/Library    (deep external-library study; Library-Card axes already substrate-side typed-edges)
+;;   - :mm/Reference  (external-facility pointer; CONCRETE; has sub-subtypes Resource + ContentType)
+;;       ├── :mm/Resource    (URL pointer; 8 slots; url + accessed + ...)
+;;       └── :mm/ContentType (format/purpose axis; 7 slots; mime XOR kind — single-axis discipline)
+;;   - :mm/Memoir     (process record; 5 slots; methodology + provenance + sanitization-log)
+;;   - :mm/Codebase   (code repo; 4 slots beyond has-meta-type; declares has-meta-type :mm/CodeMetaType)
+;;   - :mm/Synthesis  (derived claim ≥ 3 citations; 1 slot: claim; cites already substrate)
+;;
+;; INHERITANCE: :mm/Artifact :dt/subclass-of :mm/Memory.  Concrete subtypes :dt/subclass-of :mm/Artifact.
+;; Reference→Resource and Reference→ContentType form 4-level inheritance chains (Memory → Artifact → Reference → {Resource, ContentType}).
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ ;; Forward Declarations
+ [{:db/ident :mm/Decision     :db/doc "Forward declaration; full class definition later in this file."}
+  {:db/ident :mm/Plan         :db/doc "Forward declaration; full class definition later in this file."}
+  {:db/ident :mm/Log          :db/doc "Forward declaration; full class definition later in this file."}
+  {:db/ident :mm/Example      :db/doc "Forward declaration; full class definition later in this file."}
+  {:db/ident :mm/Briefing     :db/doc "Forward declaration; full class definition later in this file."}
+  {:db/ident :mm/Library      :db/doc "Forward declaration; full class definition later in this file."}
+  {:db/ident :mm/Reference    :db/doc "Forward declaration; full class definition later in this file."}
+  {:db/ident :mm/Resource     :db/doc "Forward declaration; sub-subtype of Reference; full class definition later in this file."}
+  {:db/ident :mm/ContentType  :db/doc "Forward declaration; sub-subtype of Reference; full class definition later in this file."}
+  {:db/ident :mm/Memoir       :db/doc "Forward declaration; full class definition later in this file."}
+  {:db/ident :mm/Codebase     :db/doc "Forward declaration; full class definition later in this file."}
+  {:db/ident :mm/Synthesis    :db/doc "Forward declaration; full class definition later in this file."}]
+
+ [{:db/ident         :mm/Artifact
+   :dt/type          :dt/Class
+   :dt/subclass-of   :mm/Memory
+   :dt/context       "mm"
+   :dt/label         "Artifact"
+   :dt/abstract?     true
+   :db/doc "Abstract supertype for memorial types whose role is producing durable, self-contained outputs with memorial value beyond their immediate trigger.  Per memory/types/artifact.md.  Concrete subtypes: :mm/Decision (ADR), :mm/Plan (design document + arc memorial), :mm/Log (session record), :mm/Example (reusable illustration), :mm/Briefing (audience-targeted explainer), :mm/Library (deep external-library study), :mm/Reference (external-facility pointer; sub-subtypes :mm/Resource + :mm/ContentType), :mm/Memoir (process-record), :mm/Codebase (source-code repo), :mm/Synthesis (derived claim across citations).  Per decisions/sandbar_memorial_type_substrate_layering_2026_05_21.md D2 + decisions/sandbar_memorial_type_ontology_corrections_round_c_2026_05_21.md R5.  Not instantiated directly."}]
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; :mm.plan/* Properties
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident       :mm.plan/status
+   :dt/type        :dt/Property :dt/domain :mm/Plan
+   :dt/range       :db.type/keyword :db/valueType :db.type/keyword :db/cardinality :db.cardinality/one
+   :db/doc "Plan lifecycle state: :draft (plan being written; work not started) | :active (work in progress; updated as stages complete) | :complete (all stages landed; status: complete; completed: date set; retrospective written) | :paused (work deferred; resumable) | :cancelled (work abandoned; rationale documented) | :abandoned (alias for cancelled; mid-work abandonment).  Per memory/types/plan.md."}
+
+  {:db/ident       :mm.plan/stage
+   :dt/type        :dt/Property :dt/domain :mm/Plan
+   :dt/range       :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+   :db/doc "Current stage name within the plan's arc (e.g., 'Stage 3 of 5: tooling').  Auto-bumped as stages complete.  Per memory/types/plan.md."}
+
+  {:db/ident       :mm.plan/started
+   :dt/type        :dt/Property :dt/domain :mm/Plan
+   :dt/range       :db.type/instant :db/valueType :db.type/instant :db/cardinality :db.cardinality/one
+   :db/doc "ISO date the plan's work started (status :draft → :active transition).  Per memory/types/plan.md."}
+
+  {:db/ident       :mm.plan/completed
+   :dt/type        :dt/Property :dt/domain :mm/Plan
+   :dt/range       :db.type/instant :db/valueType :db.type/instant :db/cardinality :db.cardinality/one
+   :db/doc "ISO date the plan completed (only set once status: :complete).  Per memory/types/plan.md."}
+
+  {:db/ident       :mm.plan/triggered-by
+   :dt/type        :dt/Property :dt/domain :mm/Plan
+   :dt/range       :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+   :db/doc "Free-text — what surfaced this arc (idea, incident, decision, Dan-directive).  Per memory/types/plan.md."}
+
+  {:db/ident       :mm.plan/environment-affinity
+   :dt/type        :dt/Property :dt/domain :mm/Plan
+   :dt/range       :db.type/keyword :db/valueType :db.type/keyword :db/cardinality :db.cardinality/one
+   :db/doc "Which environment the arc is most usefully resumed in: :home | :work | :either | <custom-tag>.  Absent or :either means any-host.  Used by `mem arc ready` to bias surfacing toward matching-affinity arcs when the host's environment is detected.  Per memory/types/plan.md + plans/explicit_handoff_coordinates_2026_05_06.md."}
+
+  {:db/ident       :mm.plan/primary-parent
+   :dt/type        :dt/Property :dt/domain :mm/Plan
+   :dt/range       :mm/Plan :db/valueType :db.type/ref :db/cardinality :db.cardinality/one
+   :db/doc "Primary parent plan when this plan has multiple parents (DAG-capable :mm.memory/parent).  Used for tree display.  Per memory/types/plan.md."}
+
+  {:db/ident       :mm.plan/blocks
+   :dt/type        :dt/Property :dt/domain :mm/Plan
+   :dt/range       :mm/Plan :db/valueType :db.type/ref :db/cardinality :db.cardinality/many
+   :db/doc "Arcs this plan blocks (forward dependency).  Per memory/types/plan.md."}]
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; :mm.log/* Properties
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident       :mm.log/date
+   :dt/type        :dt/Property :dt/domain :mm/Log
+   :dt/range       :db.type/instant :db/valueType :db.type/instant :db/cardinality :db.cardinality/one
+   :db/doc "Calendar date the episode occurred (ISO-8601 YYYY-MM-DD).  REQUIRED for log instances; chronological indexing depends on it.  Per memory/types/log.md."}
+
+  {:db/ident       :mm.log/handoff-schema-version
+   :dt/type        :dt/Property :dt/domain :mm/Log
+   :dt/range       :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+   :db/doc "Logs written from 2026-05-06 onward carry a `handoff-schema-version` (e.g. 'v1').  Authoritative registry of versions + shapes lives at `etc/handoff-schema-versions.edn`.  Per memory/types/log.md + decisions/handoff_format_evolution_no_long_lived_compat.md."}
+
+  {:db/ident       :mm.log/closed-at
+   :dt/type        :dt/Property :dt/domain :mm/Log
+   :dt/range       :db.type/instant :db/valueType :db.type/instant :db/cardinality :db.cardinality/one
+   :db/doc "ISO-8601-with-offset timestamp when the session/episode closed (v1+ handoff shape).  Per memory/types/log.md."}
+
+  {:db/ident       :mm.log/host
+   :dt/type        :dt/Property :dt/domain :mm/Log
+   :dt/range       :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+   :db/doc "Machine / host label where the session ran (v1+ handoff shape).  Per memory/types/log.md."}
+
+  {:db/ident       :mm.log/environment
+   :dt/type        :dt/Property :dt/domain :mm/Log
+   :dt/range       :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+   :db/doc "Claude environment tag (sandboxed / unsandboxed; v1+ handoff shape).  Per memory/types/log.md."}
+
+  {:db/ident       :mm.log/session
+   :dt/type        :dt/Property :dt/domain :mm/Log
+   :dt/range       :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+   :db/doc "Session identifier (commit range, session ID, arc name).  Per memory/types/log.md."}
+
+  {:db/ident       :mm.log/duration
+   :dt/type        :dt/Property :dt/domain :mm/Log
+   :dt/range       :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+   :db/doc "Free-text duration ('2 hours', 'half-day', 'across three sessions').  Calibrates reader expectations.  Per memory/types/log.md."}]
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; :mm.example/* Properties — `demonstrates:` typed-edge already substrate-side
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident       :mm.example/origin
+   :dt/type        :dt/Property :dt/domain :mm/Example
+   :dt/range       :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+   :db/doc "Where the example came from (conversation prompt, extracted from a briefing, authored standalone).  Preserves provenance.  Per memory/types/example.md."}
+
+  {:db/ident       :mm.example/audience
+   :dt/type        :dt/Property :dt/domain :mm/Example
+   :dt/range       :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+   :db/doc "Narrowing hint if the example assumes familiarity with a specific domain.  Default 'general' if omitted.  Per memory/types/example.md."}
+
+  {:db/ident       :mm.example/length
+   :dt/type        :dt/Property :dt/domain :mm/Example
+   :dt/range       :db.type/keyword :db/valueType :db.type/keyword :db/cardinality :db.cardinality/one
+   :db/doc "Signal for when to reach for the example: :short (fits in a Slack message) | :medium | :long (mini-briefing).  Per memory/types/example.md."}]
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; :mm.briefing/* Properties
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident       :mm.briefing/audience
+   :dt/type        :dt/Property :dt/domain :mm/Briefing
+   :dt/range       :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+   :db/doc "Named external readers — REQUIRED for briefing instances.  'Team' is too vague; 'CS graduates new to AI + KA + Claude' is right.  Per memory/types/briefing.md."}
+
+  {:db/ident       :mm.briefing/occasion
+   :dt/type        :dt/Property :dt/domain :mm/Briefing
+   :dt/range       :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+   :db/doc "What's triggering the briefing — REQUIRED for briefing instances.  'Onboarding,' 'quarterly demo,' 'interview preview.'  Per memory/types/briefing.md."}
+
+  {:db/ident       :mm.briefing/presented-on
+   :dt/type        :dt/Property :dt/domain :mm/Briefing
+   :dt/range       :db.type/instant :db/valueType :db.type/instant :db/cardinality :db.cardinality/one
+   :db/doc "ISO date the briefing was delivered.  Absence implies :draft lifecycle state; presence implies :presented.  Per memory/types/briefing.md."}]
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; :mm.resource/* Properties
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident       :mm.resource/url
+   :dt/type        :dt/Property :dt/domain :mm/Resource
+   :dt/range       :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+   :db/doc "Canonical URL (^https?://) — REQUIRED for resource instances.  Per memory/types/resource.md.  Audit `resource-has-url` enforces non-empty + http(s) prefix."}
+
+  {:db/ident       :mm.resource/accessed
+   :dt/type        :dt/Property :dt/domain :mm/Resource
+   :dt/range       :db.type/instant :db/valueType :db.type/instant :db/cardinality :db.cardinality/one
+   :db/doc "ISO date when first cited.  Used by audit `resource-accessed-field-stale` for link-rot warnings.  Per memory/types/resource.md."}
+
+  {:db/ident       :mm.resource/content-type
+   :dt/type        :dt/Property :dt/domain :mm/Resource
+   :dt/range       :mm/ContentType :db/valueType :db.type/ref :db/cardinality :db.cardinality/many
+   :db/doc "Multi-valued ref to :mm/ContentType instances.  When a resource combines axes (e.g., PDF paper), cites BOTH :mm/ContentType pdf AND :mm/ContentType paper per the single-axis-per-content-type discipline.  Per memory/types/resource.md + memory/types/content-type.md."}
+
+  {:db/ident       :mm.resource/language
+   :dt/type        :dt/Property :dt/domain :mm/Resource
+   :dt/range       :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+   :db/doc "BCP-47 language tag (e.g., 'en', 'en-US', 'ja').  Optional; only declare when language affects retrieval.  Per memory/types/resource.md."}
+
+  {:db/ident       :mm.resource/archive-url
+   :dt/type        :dt/Property :dt/domain :mm/Resource
+   :dt/range       :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+   :db/doc "web.archive.org or similar archived snapshot URL for link-rot defense.  Per memory/types/resource.md."}
+
+  {:db/ident       :mm.resource/abstract
+   :dt/type        :dt/Property :dt/domain :mm/Resource
+   :dt/range       :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+   :db/doc "1-3 sentence summary when the resource is a paper or substantial document.  Per memory/types/resource.md."}
+
+  {:db/ident       :mm.resource/license
+   :dt/type        :dt/Property :dt/domain :mm/Resource
+   :dt/range       :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+   :db/doc "License string ('CC-BY-4.0', 'MIT', 'proprietary').  Per memory/types/resource.md."}
+
+  {:db/ident       :mm.resource/version
+   :dt/type        :dt/Property :dt/domain :mm/Resource
+   :dt/range       :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+   :db/doc "Version string when versioning matters (RFC version, library doc version).  Per memory/types/resource.md."}]
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; :mm.content-type/* Properties (single-axis discipline per ADR Decision 8 §8.4)
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident       :mm.content-type/mime
+   :dt/type        :dt/Property :dt/domain :mm/ContentType
+   :dt/range       :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+   :db/doc "Canonical MIME (e.g. 'text/html', 'application/pdf') — for format-axis entries.  EXACTLY ONE of mime/kind populated per the single-axis discipline (audit `content-type-has-exactly-one-axis`).  Per memory/types/content-type.md."}
+
+  {:db/ident       :mm.content-type/kind
+   :dt/type        :dt/Property :dt/domain :mm/ContentType
+   :dt/range       :db.type/keyword :db/valueType :db.type/keyword :db/cardinality :db.cardinality/one
+   :db/doc "Purpose label (:talk, :paper, :documentation, :spec, :dataset) — for purpose-axis entries.  EXACTLY ONE of mime/kind populated per the single-axis discipline.  Per memory/types/content-type.md."}
+
+  {:db/ident       :mm.content-type/extensions
+   :dt/type        :dt/Property :dt/domain :mm/ContentType
+   :dt/range       :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/many
+   :db/doc "Accepted file extensions for MIME-axis entries ('.html' for text/html, '.pdf' for application/pdf).  Multi-valued.  Per memory/types/content-type.md."}
+
+  {:db/ident       :mm.content-type/structured?
+   :dt/type        :dt/Property :dt/domain :mm/ContentType
+   :dt/range       :db.type/boolean :db/valueType :db.type/boolean :db/cardinality :db.cardinality/one
+   :db/doc "True if the format is structured (JSON, XML, EDN), false if unstructured (plain text, PDF) for MIME-axis entries.  Per memory/types/content-type.md."}
+
+  {:db/ident       :mm.content-type/bb-parseable?
+   :dt/type        :dt/Property :dt/domain :mm/ContentType
+   :dt/range       :db.type/boolean :db/valueType :db.type/boolean :db/cardinality :db.cardinality/one
+   :db/doc "True if babashka can parse this MIME natively (via babashka.curl + clojure.data.json etc.).  Per memory/types/content-type.md."}
+
+  {:db/ident       :mm.content-type/language-class
+   :dt/type        :dt/Property :dt/domain :mm/ContentType
+   :dt/range       :db.type/keyword :db/valueType :db.type/keyword :db/cardinality :db.cardinality/one
+   :db/doc "Coarse format classification: :markup (HTML, XML, Markdown) | :data-format (JSON, EDN, CSV) | :binary (PDF, image, video).  Per memory/types/content-type.md."}
+
+  {:db/ident       :mm.content-type/citing-corpus-relevance
+   :dt/type        :dt/Property :dt/domain :mm/ContentType
+   :dt/range       :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+   :db/doc "Free-text note on why this content-type matters for the corpus's citing patterns.  Per memory/types/content-type.md."}]
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; :mm.memoir/* Properties
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident       :mm.memoir/methodology
+   :dt/type        :dt/Property :dt/domain :mm/Memoir
+   :dt/range       :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+   :db/doc "One-line description of the process — REQUIRED for memoir instances.  Example: 'firewall-disciplined pattern extraction from proprietary codebase, abstract-only framing, no file paths retained'.  Per memory/types/memoir.md."}
+
+  {:db/ident       :mm.memoir/provenance
+   :dt/type        :dt/Property :dt/domain :mm/Memoir
+   :dt/range       :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+   :db/doc "Origin of the source material + when the process occurred — REQUIRED.  Example: 'private codebase, read 2026-05-02, abstract patterns only'.  Per memory/types/memoir.md."}
+
+  {:db/ident       :mm.memoir/exclusions
+   :dt/type        :dt/Property :dt/domain :mm/Memoir
+   :dt/range       :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/many
+   :db/doc "What was deliberately NOT read / included.  Multi-valued.  The value of saying what was excluded is nearly equal to the value of saying what was found — it bounds the memoir's epistemic reach.  Per memory/types/memoir.md."}
+
+  {:db/ident       :mm.memoir/sanitization-log
+   :dt/type        :dt/Property :dt/domain :mm/Memoir
+   :dt/range       :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/many
+   :db/doc "(token-candidate, disposition, reason) triples for anything that went through the firewall.  Multi-valued.  Per memory/types/memoir.md."}
+
+  {:db/ident       :mm.memoir/firewall-check-status
+   :dt/type        :dt/Property :dt/domain :mm/Memoir
+   :dt/range       :db.type/keyword :db/valueType :db.type/keyword :db/cardinality :db.cardinality/one
+   :db/doc "Firewall status: :passed | :passed-after-sanitization | :pending.  Integrates with audit `no-proprietary-token-leaks` invariant.  Per memory/types/memoir.md."}]
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; :mm.codebase/* Properties — declares :mm/CodeMetaType composition via :mm.memory/has-meta-type (already substrate-side)
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident       :mm.codebase/repo-root
+   :dt/type        :dt/Property :dt/domain :mm/Codebase
+   :dt/range       :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+   :db/doc "Absolute filesystem path to the repo on this machine.  Resolution-handle for clj-xref invocation.  Per memory/types/codebase.md."}
+
+  {:db/ident       :mm.codebase/canonical-reference
+   :dt/type        :dt/Property :dt/domain :mm/Codebase
+   :dt/range       :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+   :db/doc "Authoritative name (typically a github URL) that survives local-path moves; enables cross-machine identity (same repo cloned to different machines has same canonical reference).  Per memory/types/codebase.md."}
+
+  {:db/ident       :mm.codebase/language
+   :dt/type        :dt/Property :dt/domain :mm/Codebase
+   :dt/range       :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+   :db/doc "Primary language (clojure, python, etc.).  Per memory/types/codebase.md."}
+
+  {:db/ident       :mm.codebase/exploration-verbs
+   :dt/type        :dt/Property :dt/domain :mm/Codebase
+   :dt/range       :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/many
+   :db/doc "List of canonical commands the agent should reach for when exploring this repo's code (`mem xref find <symbol>`, `mem search --scope code <query>`, etc.).  Per memory/types/codebase.md."}]
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; :mm.synthesis/* Properties — :mm.memory/cites already substrate-side
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident       :mm.synthesis/claim
+   :dt/type        :dt/Property :dt/domain :mm/Synthesis
+   :dt/range       :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+   :db/doc "One-line summary of the higher-level pattern the synthesis names — REQUIRED.  Should be quotable as a standalone sentence (claim-shaped, not list-shaped).  Per memory/types/synthesis.md.  Audit invariant `synthesis-has-citations` checks ≥ 3 entries in :mm.memory/cites; that's enforced at the memorial level via the typed-edge."}]
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Class Definitions — concrete Artifact subtypes (12)
+;;
+;; Order: simple first (no slots), then incrementally richer.
+;; Reference → Resource + ContentType form the 4-level inheritance chain.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident             :mm/Decision
+   :dt/type              :dt/Class
+   :dt/subclass-of       :mm/Artifact
+   :dt/context           "mm"
+   :dt/label             "Decision"
+   :dt/native-codec      :markdown
+   :dt/abstract?         false
+   :db/doc "Architectural choice captured with alternatives, rationale, and acceptance — ADR shape.  Per memory/types/decision.md.  Body sections: Context / Decision / Alternatives considered / Rationale / Consequences / See also.  Captureable: mid-conversation-captureable: true; inject-trigger: 'the right answer is X over Y because', 'we should X because'; inject-class: 'Decision-worthy'; audit-class: 'decision'.  Audit invariant: 'decision names alternatives' (warning).  Tier: expanding-periphery."}
+
+  {:db/ident             :mm/Library
+   :dt/type              :dt/Class
+   :dt/subclass-of       :mm/Artifact
+   :dt/context           "mm"
+   :dt/label             "Library"
+   :dt/native-codec      :markdown
+   :dt/abstract?         false
+   :db/doc "Deep, sourced study of a reusable library.  Per memory/types/library.md.  Library Card 11-axis catalog via typed-edge frontmatter (documents/has-part/implements/descends-from/consumes/created-by/cites/provides-method-for/disagrees-with/evidences) — all axes already substrate-side as :mm.memory/* typed-edges.  Audit invariants: library-card-empty (warning), library-without-resources (info).  Structural convention: facade + subpages (libraries/<lib>.md + libraries/<lib>/<topic>.md).  Tier: stable-core."}
+
+  {:db/ident             :mm/Reference
+   :dt/type              :dt/Class
+   :dt/subclass-of       :mm/Artifact
+   :dt/context           "mm"
+   :dt/label             "Reference"
+   :dt/native-codec      :markdown
+   :dt/abstract?         false
+   :db/doc "Pointer to an external facility, convention, or tool.  Per memory/types/reference.md.  Library Card 11-axis catalog applicable (same as :mm/Library).  Sub-subtypes: :mm/Resource (URL pointer) + :mm/ContentType (format/purpose axis).  Tier: stable-core."}
+
+  {:db/ident             :mm/Resource
+   :dt/type              :dt/Class
+   :dt/subclass-of       :mm/Reference
+   :dt/context           "mm"
+   :dt/label             "Resource"
+   :dt/native-codec      :markdown
+   :dt/slots             [:mm.resource/url
+                          :mm.resource/accessed
+                          :mm.resource/content-type
+                          :mm.resource/language
+                          :mm.resource/archive-url
+                          :mm.resource/abstract
+                          :mm.resource/license
+                          :mm.resource/version]
+   :dt/abstract?         false
+   :db/doc "Lightweight pointer to an external URL with metadata — sub-subtype of :mm/Reference (4-level inheritance: Memory → Artifact → Reference → Resource).  Per memory/types/resource.md.  REQUIRED url field (matches ^https?://; audit `resource-has-url`).  Typically frontmatter-only — body grows is a promotion-candidate to :mm/Reference.  Tier: expanding-periphery.  Introduced-in: 0.7.0."}
+
+  {:db/ident             :mm/ContentType
+   :dt/type              :dt/Class
+   :dt/subclass-of       :mm/Reference
+   :dt/context           "mm"
+   :dt/label             "ContentType"
+   :dt/native-codec      :markdown
+   :dt/slots             [:mm.content-type/mime
+                          :mm.content-type/kind
+                          :mm.content-type/extensions
+                          :mm.content-type/structured?
+                          :mm.content-type/bb-parseable?
+                          :mm.content-type/language-class
+                          :mm.content-type/citing-corpus-relevance]
+   :dt/abstract?         false
+   :db/doc "Single-axis pointer characterizing one dimension of external-content shape — either format (:mm.content-type/mime) or purpose (:mm.content-type/kind), NEVER BOTH.  Sub-subtype of :mm/Reference.  Per memory/types/content-type.md + decisions/external_resource_reification_2026_05_06.md Decision 8 §8.4 (compound-entry approach rejected).  Audit invariants: `content-type-has-exactly-one-axis` (warning); `resource-content-type-is-typed` (warning).  Tier: expanding-periphery.  Introduced-in: 0.7.0."}
+
+  {:db/ident             :mm/Plan
+   :dt/type              :dt/Class
+   :dt/subclass-of       :mm/Artifact
+   :dt/context           "mm"
+   :dt/label             "Plan"
+   :dt/native-codec      :markdown
+   :dt/slots             [:mm.plan/status
+                          :mm.plan/stage
+                          :mm.plan/started
+                          :mm.plan/completed
+                          :mm.plan/triggered-by
+                          :mm.plan/environment-affinity
+                          :mm.plan/primary-parent
+                          :mm.plan/blocks]
+   :dt/abstract?         false
+   :db/doc "Design document for in-progress or recently-completed work, preserved as memorial record.  Per memory/types/plan.md.  Two roles: before/during work = work-in-progress artifact; after work = memorial record.  Body sections (canonical 8 + lifecycle): Motivation / Principles / Architecture / Theming / Migration stages / What we are NOT doing / Decisions resolved / Success criteria / References --- Stage log / Retrospective / (when paused) Pause rationale.  Captureable: mid-conversation-captureable: true; inject-trigger: 'pause X', 'I'll do Y next'; inject-class: 'Plan decision'; audit-class: 'plan-decision'.  Supersedes the legacy :active_arc type.  Tier: expanding-periphery."}
+
+  {:db/ident             :mm/Log
+   :dt/type              :dt/Class
+   :dt/subclass-of       :mm/Artifact
+   :dt/context           "mm"
+   :dt/label             "Log"
+   :dt/native-codec      :markdown
+   :dt/slots             [:mm.log/date
+                          :mm.log/handoff-schema-version
+                          :mm.log/closed-at
+                          :mm.log/host
+                          :mm.log/environment
+                          :mm.log/session
+                          :mm.log/duration]
+   :dt/abstract?         false
+   :db/doc "Chronological, dated note memorializing what happened during a specific working episode, rich with interlinks to artifacts produced.  Temporal axis of the memory system.  Per memory/types/log.md.  REQUIRED :mm.log/date.  Body sections: What happened / Context-trigger / Flow / Artifacts produced / Surprises-blockers-pivots / Lessons-rules surfaced / Open ends / See also.  Filename convention v1+: <YYYY-MM-DD>T<HHMM>_<slug>.md.  Dual role: chronological diary + handoff artifact read by `mem session-open`.  Tier: stable-core."}
+
+  {:db/ident             :mm/Example
+   :dt/type              :dt/Class
+   :dt/subclass-of       :mm/Artifact
+   :dt/context           "mm"
+   :dt/label             "Example"
+   :dt/native-codec      :markdown
+   :dt/slots             [:mm.example/origin
+                          :mm.example/audience
+                          :mm.example/length]
+   :dt/abstract?         false
+   :db/doc "Reusable, self-contained illustration of a concept — answers 'Here is a clear, memorable way to show what X is.'  Per memory/types/example.md.  REQUIRED :mm.memory/demonstrates (≥ 1 — first-class typed-edge already substrate; audit `example-names-concept` ERROR if missing).  Captureable: mid-conversation-captureable: true; inject-trigger: 'that was useful', 'good example'; inject-class: 'Reusable output'; audit-class: 'reusable-output'.  Tier: expanding-periphery.  Introduced-in: 0.5.17."}
+
+  {:db/ident             :mm/Briefing
+   :dt/type              :dt/Class
+   :dt/subclass-of       :mm/Artifact
+   :dt/context           "mm"
+   :dt/label             "Briefing"
+   :dt/native-codec      :markdown
+   :dt/slots             [:mm.briefing/audience
+                          :mm.briefing/occasion
+                          :mm.briefing/presented-on]
+   :dt/abstract?         false
+   :db/doc "Concise explanatory document prepared for a specific external audience.  Audience-oriented (most memorials are retrieval-oriented).  Per memory/types/briefing.md.  REQUIRED :mm.briefing/audience + :mm.briefing/occasion.  Lifecycle: :draft (no presented-on) → :presented (with date) → :archived.  Body sections: What this is / Why it matters / Key ideas / How it's built / Where to go deeper / Who to ask.  Tier: expanding-periphery.  Introduced-in: 0.5.13."}
+
+  {:db/ident             :mm/Memoir
+   :dt/type              :dt/Class
+   :dt/subclass-of       :mm/Artifact
+   :dt/context           "mm"
+   :dt/label             "Memoir"
+   :dt/native-codec      :markdown
+   :dt/slots             [:mm.memoir/methodology
+                          :mm.memoir/provenance
+                          :mm.memoir/exclusions
+                          :mm.memoir/sanitization-log
+                          :mm.memoir/firewall-check-status]
+   :dt/abstract?         false
+   :db/doc "Memorialized record of a PROCESS (extraction / study / arc) — distinct from :mm/Library (studies a reusable artifact) and :mm/Plan (designs future work).  Per memory/types/memoir.md.  Methodology + provenance + exclusions + sanitization-log + firewall-check-status are LOAD-BEARING.  Body sections: Premise / Methodology / Provenance + exclusions / Findings / Sanitization log / Confidence-limitations / See also.  Tier: stable-core."}
+
+  {:db/ident             :mm/Codebase
+   :dt/type              :dt/Class
+   :dt/subclass-of       :mm/Artifact
+   :dt/context           "mm"
+   :dt/label             "Codebase"
+   :dt/native-codec      :markdown
+   :dt/slots             [:mm.codebase/repo-root
+                          :mm.codebase/canonical-reference
+                          :mm.codebase/language
+                          :mm.codebase/exploration-verbs]
+   :dt/abstract?         false
+   :db/doc "Source-code repository reified as a memorial entry point — ONE memory per registered repo.  Per memory/types/codebase.md.  COMPOSITION pattern: also declares :mm.memory/has-meta-type :mm/CodeMetaType (already substrate-side) so the substrate uses code-xref index instead of pure-markdown for detail-level navigation.  Detail (namespaces / functions / vars / call graph) lives in `etc/code-xref/<slug>.edn` (built by clj-xref), NOT in parallel memorials per substrate-design ADR D13.  Tier: stable-core.  Introduced-in: 0.7.x."}
+
+  {:db/ident             :mm/Synthesis
+   :dt/type              :dt/Class
+   :dt/subclass-of       :mm/Artifact
+   :dt/context           "mm"
+   :dt/label             "Synthesis"
+   :dt/native-codec      :markdown
+   :dt/slots             [:mm.synthesis/claim]
+   :dt/abstract?         false
+   :db/doc "Derived higher-level claim across multiple cited memorials — the pattern those citations collectively suggest.  Distinct from :mm/Observation (noticed truth), :mm/Decision (chosen path), :mm/Reference (catalog).  Per memory/types/synthesis.md.  REQUIRED :mm.synthesis/claim (one-line, quotable as standalone sentence) + :mm.memory/cites ≥ 3 (already substrate; audit `synthesis-has-citations`).  Body sections: The claim / Evidence (cited memories) / What this implies / Scope and limits / See also.  Tier: stable-core.  Introduced-in: 0.5.13.  Per the Round C reconsidered-IN-substrate finding."}]
+
+ ;; :dt/codec-type-keyword routing — frontmatter `type: <keyword>` maps to the concrete class.
+
+ [{:db/ident :mm/Decision     :dt/codec-type-keyword :decision}
+  {:db/ident :mm/Plan         :dt/codec-type-keyword :plan}
+  {:db/ident :mm/Log          :dt/codec-type-keyword :log}
+  {:db/ident :mm/Example      :dt/codec-type-keyword :example}
+  {:db/ident :mm/Briefing     :dt/codec-type-keyword :briefing}
+  {:db/ident :mm/Library      :dt/codec-type-keyword :library}
+  {:db/ident :mm/Reference    :dt/codec-type-keyword :reference}
+  {:db/ident :mm/Resource     :dt/codec-type-keyword :resource}
+  {:db/ident :mm/ContentType  :dt/codec-type-keyword :content-type}
+  {:db/ident :mm/Memoir       :dt/codec-type-keyword :memoir}
+  {:db/ident :mm/Codebase     :dt/codec-type-keyword :codebase}
+  {:db/ident :mm/Synthesis    :dt/codec-type-keyword :synthesis}]
+
+]

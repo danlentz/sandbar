@@ -1,0 +1,84 @@
+## What a `type: preference` instance is
+
+A captured **aesthetic, style, or tooling preference** — something a principal collaborator has expressed as a taste or rule-of-thumb that shapes how code should be written, which tools to reach for, or what aesthetic to honor across projects.
+
+Preferences are the **joint filter** that gets applied before code is written.  They differ from patterns (which describe the *what*) and anti-patterns (which describe the *what-not*) by describing the *how* of composition — the grain of the work.
+
+Preference is a subtype of [`guidance`](guidance.md) — memorials that prescribe action.
+
+## When to create a preference memorial
+
+- A principal states a taste or style rule that recurs across projects
+- A synthesis surfaces after studying multiple libraries by the same author
+- A tooling-stack choice becomes standard across projects (e.g., default formatter, default test runner)
+- Multiple feedback memorials begin sharing an aesthetic shape that can be lifted to a single named preference
+
+## When NOT to create one
+
+- The preference is project-specific — use project-scope memorial
+- The preference is a one-off reaction to a specific piece of code — wait until it recurs
+- The rule is behavioral / procedural (commit discipline, test execution) — use `feedback` or `protocol`
+
+## Substrate identity
+
+- **Class ident**: `{{class-ident}}`
+- **Parent class(es)**: {{parent-classes}}
+- **Ancestor chain**: {{ancestor-chain}}
+- **Native codec**: `{{native-codec}}`
+- **Codec type-keyword(s)**: {{codec-type-keywords}}
+
+## Slot vocabulary ({{slot-count}} slots inherited or declared)
+
+Preference memorials inherit `:mm/Memory` plus guidance-specific extensions.  Voice samples (quoted verbatim from the originator) are strongly recommended in the body — they make the preference internalize-able for future collaborators.
+
+{{slot-table}}
+
+## Canonical body structure
+
+Preferences are less templated than patterns; they trend toward prose.  The established shape:
+
+```markdown
+## The filter
+
+<One-paragraph summary of the preference.>
+
+## Patterns / instincts
+
+<The enumerated convictions (when the preference is a synthesis,
+like a cross-library aesthetic with N enumerated points).>
+
+## Voice samples
+
+<Verbatim quotes that capture the register.  These are
+load-bearing — paraphrasing drifts.>
+
+## What this means for collaboration
+
+<Concrete actions a future session can take to honor the
+preference.>
+
+## See also
+
+<Related preferences and patterns that instantiate the preference.>
+```
+
+## Pitfalls
+
+- **Moralizing without evidence** — a preference with no citation is just an opinion; ground preferences in the principal's own code / commits / conversations
+- **Overlap with patterns** — if the preference is really a convention ("kernel-surface separation"), it's a pattern.  Preferences are tastes; patterns are rules
+- **Stale voice samples** — voice evolves.  Re-audit quoted material on major reviews
+
+## Composition with adjacent classes
+
+- **`pattern`** — the convention counterpart; preferences are softer (aesthetic) than patterns (structural)
+- **`feedback`** — when a preference rises to a procedural rule
+- **`protocol`** — when a preference becomes meta-level about the memory system itself
+- **`library`** — library studies frequently surface preferences through aesthetic audits
+
+## See also
+
+- [`types/guidance.md`](guidance.md) — parent abstract supertype
+- [`types/pattern.md`](pattern.md) — convention counterpart
+- [`types/feedback.md`](feedback.md) — when preferences harden into rules
+- [`types/protocol.md`](protocol.md) — meta-level rules
+- Sandbar substrate: `sandbar/schema/mm-guidance.edn`

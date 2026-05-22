@@ -1,0 +1,53 @@
+## What this predicate means
+
+**A `realizes` B** — A makes B concrete / actual.  Where B is an abstract concept (specification, plan, idea, design), A is its instantiated form.
+
+Adjacent to `implements:` but broader:
+- `implements:` — realization of a CONTRACT / interface / protocol
+- `realizes:` — realization of ANY abstraction (idea, design, vision, plan)
+
+Common shapes:
+- A library realizes a design memorial
+- A working session realizes a plan
+- A code artifact realizes an architectural pattern
+- A working session realizes an idea
+
+## Substrate identity
+
+- **Slot ident**: `{{predicate-ident}}`
+- **Domain**: `{{domain}}`
+- **Range**: `{{range}}`
+- **Cardinality**: `{{cardinality}}`
+- **Inverse of**: `:mm.memory/realized-by`
+
+## Formal signature
+
+`{{predicate-name}} : {{domain}} × {{range}} → Bool`
+
+## When to use realizes vs implements vs demonstrates
+
+| Predicate | Semantics |
+|---|---|
+| `realizes` | A makes B concrete (any abstraction → instantiation) |
+| `implements` | A is a working instance of B's contract (specification → realization) |
+| `demonstrates` | A is an illustrative example of B (concept → exemplar) |
+
+## Formal ontology mappings
+
+Aligned predicates from established formal vocabularies:
+
+- **IAO** `iao:realizes` — exact semantic match (the canonical realization relation in the Information Artifact Ontology)
+- **PROV-O** `prov:wasGeneratedBy` — distant analogue (when A is generated as a realization of B)
+- **OWL** — no direct equivalent
+- **DC Terms** — no direct equivalent
+- **CiTO** — no direct equivalent
+- **SKOS** — no direct equivalent
+
+Grounding references in the corpus:
+- [`references/rdfs_reference.md`](../references/rdfs_reference.md) — IAO substrate
+
+## See also
+
+- [`predicates/realized-by.md`](realized-by.md) — inverse partner
+- [`predicates/implements.md`](implements.md) — narrower (contract-realization)
+- [`predicates/demonstrates.md`](demonstrates.md) — adjacent (exemplification)

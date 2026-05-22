@@ -1,0 +1,140 @@
+## What a `type: idea` instance is
+
+A **speculative future move** — something noticed during current work that might compound value later but isn't worth pursuing right now.  Captured so:
+
+- Current work isn't derailed by scope expansion
+- The thought isn't lost when the session ends
+- A future session can find it when context matches
+- The connection back to original work is preserved (the idea *means* something in relation to the work that surfaced it)
+
+Ideas are **optional**.  Unlike decisions (already made) or patterns (already proven) or feedback (already given), an idea is a parking spot for something speculative.  Most ideas will never be pursued; a small fraction will graduate to decisions, patterns, or implementations.  That's fine — the cost of capturing is tiny, the cost of losing a half-formed thought is non-trivial over time.
+
+Idea is a subtype of [`signal`](signal.md) — memorials that capture state about the world (here, proposed future state).
+
+## When to create an idea memorial
+
+- Mid-work, notice *"we could also do X"* — but X isn't what was asked.  Write the idea, continue with the ask
+- During review, spot an extraction-or-tooling gap that's worth doing *sometime* but not this arc
+- Reading a library study, notice an adjacent feature that would be useful in a different project
+- A principal proposes something tentatively (*"maybe we could..."*) — capture as an idea rather than forcing a decision
+- Reviewing audit history, spot a pattern that could become a new invariant later
+
+## When NOT to create one
+
+- The thing is already a decision, pattern, protocol, or feedback — use the proper type
+- The thing is a bug in someone else's library — use `bug`
+- The thing is urgent enough to just do now — do it, don't park it
+- The thing is too vague to describe in 2 sentences — sharpen it or let it go
+
+## Substrate identity
+
+- **Class ident**: `{{class-ident}}`
+- **Parent class(es)**: {{parent-classes}}
+- **Ancestor chain**: {{ancestor-chain}}
+- **Native codec**: `{{native-codec}}`
+- **Codec type-keyword(s)**: {{codec-type-keywords}}
+
+## Slot vocabulary ({{slot-count}} slots inherited or declared)
+
+Idea memorials inherit `:mm/Memory` plus type-specific lifecycle slots:
+
+- **`status`** — `parked` / `considering` / `exploring` / `ready` / `superseded` / `dropped`
+- **`effort`** — `small` / `medium` / `large` / `capstone`
+- **`timeframe`** — `now` / `soon` / `someday` / `archival`
+- **`triggered-by`** — free text naming the specific context that spawned the idea
+
+{{slot-table}}
+
+## Status lifecycle
+
+- **parked** — recorded, not actively prioritized.  Most ideas start here
+- **considering** — being weighed against current priorities; tradeoffs being sketched
+- **exploring** — work has begun; the idea is being prototyped.  Graduates to a plan / pattern / decision when mature
+- **ready** — specified enough to implement; waiting for a work cycle
+- **superseded** — a better idea replaced this one; link to successor via `superseded-by:`.  Keep the memorial
+- **dropped** — decided not to pursue.  Document the reason; keep the memorial so a future session doesn't re-propose
+
+## Effort rubric
+
+- **small** — < half a day
+- **medium** — half-day to 2–3 days
+- **large** — a week or more
+- **capstone** — major arc spanning multiple stages
+
+## Timeframe rubric
+
+- **now** — actively ready; blocking nothing but cycle
+- **soon** — within a few weeks; relevant to current work
+- **someday** — nice-to-have; no natural trigger
+- **archival** — kept for historical context; not expected to be pursued
+
+## Canonical body structure
+
+```markdown
+## The idea
+
+<One paragraph — what it is, what problem it would solve.>
+
+## Why it surfaced
+
+<One paragraph — what work / thought / observation spawned it.>
+
+## Shape
+
+<Concrete enough for a future session to evaluate.  Bullets,
+sketches, pseudo-code.  Not a full plan; the plan lives in a
+proper plan memorial if/when the idea graduates.>
+
+## Open questions
+
+<What hasn't been decided yet.  If these get answered, the idea's
+ready to move status.>
+
+## Trigger conditions
+
+<What would unblock pursuit?  New project, tooling change,
+external dependency upgrade, explicit go-ahead?>
+
+## Related
+
+<Adjacent memorials, similar ideas, relevant library studies,
+inspirations.>
+```
+
+## How ideas surface
+
+Ideas are deliberately *not* auto-loaded into conversational context.  They surface via:
+
+1. **Explicit retrieval** — `/memory-show ideas/<slug>.md`
+2. **Search match** — `/memory-search <topic>`
+3. **Inventory browse** — listing under the `ideas/` subtree
+4. **Cross-reference** — other memorials pointing forward to an idea
+
+The goal: ideas surface when the current work context makes them relevant, not before.
+
+## Lifecycle: append, don't overwrite
+
+Multiple sessions may update an idea.  Same rule as bugs: **append, don't overwrite**.  Status transitions:
+
+- `parked` → `considering`: append a `## Tradeoffs` section
+- `considering` → `exploring`: note the branch / file / experiment
+- `exploring` → `ready`: link to the plan that captures the now-solid form
+- Any → `superseded` or `dropped`: append a body section explaining why
+
+When an idea reaches `exploring` or `ready` and becomes actual work, **keep the idea memorial** as the historical origin point; link forward to the new pattern / protocol / decision that captures the solid form.
+
+## Pitfalls
+
+- **Hoarding ideas that will never happen** — periodic sweeps move old `timeframe: someday` to `archival` or `dropped` with a reason
+- **Writing decisions as ideas** — if the answer is already known, it's a decision; ideas are for genuinely open questions
+- **Letting ideas grow into full plans in-place** — when an idea matures, extract the plan into a proper `plans/<name>.md`
+- **Duplicating existing ideas** — search before creating; update the existing idea rather than parallel-tracking
+
+## See also
+
+- [`types/signal.md`](signal.md) — parent abstract supertype
+- [`types/decision.md`](decision.md) — graduate here when an idea is chosen over alternatives with rationale
+- [`types/plan.md`](plan.md) — ideas reaching `status: exploring` typically produce a plan
+- [`types/observation.md`](observation.md) — observations of unmet needs often spawn ideas
+- [`types/question.md`](question.md) — ideas may carry open questions that gate pursuit
+- Sandbar substrate: `sandbar/schema/mm-signal.edn`

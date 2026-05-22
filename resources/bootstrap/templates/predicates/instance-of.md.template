@@ -1,0 +1,52 @@
+## What this predicate means
+
+**A `instance-of` B** — A is an individual instance of class B.  The canonical instance-class relation: every memorial declares its type via `instance-of:` (or equivalently `:rdf/type` in the underlying RDF substrate).
+
+Examples:
+- A specific decision memorial is instance-of `:mm/Decision`
+- A library memorial is instance-of `:mm/Library`
+- `:mm/Decision` itself is instance-of `:dt/Class` (metaclass relation)
+
+## Substrate identity
+
+- **Slot ident**: `{{predicate-ident}}`
+- **Domain**: `{{domain}}`
+- **Range**: `{{range}}` (typically `:dt/Class`)
+- **Cardinality**: `{{cardinality}}` (typically `:many` — multiple-class instance possible)
+- **Sub-property of**: `:dt/instantiation`
+
+## Formal signature
+
+`{{predicate-name}} : {{domain}} × {{range}} → Bool`
+
+## When to use instance-of vs has-meta-type vs extends
+
+| Predicate | Levels involved |
+|---|---|
+| `instance-of` | individual → class (e.g., a specific memorial → `:mm/Decision`) |
+| `has-meta-type` | class → metaclass (e.g., `:mm/Decision` → `:dt/Class`) |
+| `extends` | class → superclass (e.g., `:mm/Decision` → `:mm/Memory`) |
+
+## Audit invariants
+
+- "instance-of points to a declared class" — every `instance-of:` target must be a `:dt/Class` instance
+- "type hierarchy consistency" — `instance-of` and `extends` must be consistent (no orphan classes)
+
+## Formal ontology mappings
+
+Aligned predicates from established formal vocabularies:
+
+- **RDF** `rdf:type` — exact semantic match (the canonical instance-class predicate in RDF)
+- **OWL** `owl:NamedIndividual` (in conjunction with class assertion) — close analogue
+- **RDFS** — uses `rdf:type` directly (RDFS does not introduce a separate instance-class predicate)
+- **DC Terms** `dcterms:type` — close analogue (literal-typed)
+- **SKOS** `skos:inScheme` — distant analogue (concept-instance-of-scheme)
+- **PROV-O** — no direct equivalent (PROV-O uses `rdf:type` for class assertions)
+
+Grounding references in the corpus:
+- [`references/rdfs_reference.md`](../references/rdfs_reference.md) — RDF `rdf:type` semantics
+
+## See also
+
+- [`predicates/has-meta-type.md`](has-meta-type.md) — meta-level analog (class-metaclass)
+- [`predicates/extends.md`](extends.md) — class-superclass relation

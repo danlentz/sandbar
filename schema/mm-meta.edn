@@ -1,0 +1,501 @@
+[
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; :mm/Meta — Abstract Supertype for Schema / Structural / Workflow-State Memorials
+;;
+;; Per:
+;;   - memory/types/meta.md (corpus self-description)
+;;   - decisions/sandbar_memorial_type_substrate_layering_2026_05_21.md (D2)
+;;   - decisions/sandbar_memorial_type_ontology_corrections_round_c_2026_05_21.md (R1 + R5)
+;;
+;; NAMING: :mm/Meta preserved (R1).  :mm/MetaType is a SUB-ABSTRACT under :mm/Meta.
+;;
+;; DIRECT CONCRETE SUBTYPES:
+;;   :mm/Type, :mm/Predicate, :mm/Inbox, :mm/Task, :mm/Event, :mm/Engine,
+;;   :mm/Organization, :mm/Context (amend; existing forward decl), :mm/Rule (amend; existing forward decl).
+;;
+;; SUB-ABSTRACTS:
+;;   :mm/Actor (existing forward decl; ELEVATE to :dt/abstract? true)
+;;     concretes: :mm/AIActor, :mm/HumanActor, :mm/SystemActor
+;;     NOTE: existing schema/mm.edn lines 1412+ declares flat :mm.actor/* slot namespace
+;;     covering all actor subtypes (model-family / version / capabilities / role /
+;;     runs-in-context / belongs-to / etc.).  This file does NOT redeclare those slots
+;;     — sub-subtypes inherit them via :dt/subclass-of :mm/Actor.
+;;   :mm/MetaType (new sub-abstract for MOP-style metaclass lift)
+;;     concretes: :mm/MarkdownMetaType, :mm/CodeMetaType, future :mm/DatabaseMetaType
+;;
+;; INHERITANCE: :mm/Meta :dt/subclass-of :mm/Memory.  ABSTRACT.
+;;
+;; NOTE — existing :mm.actor/* + :mm.context/* + :mm.rule/* slots in schema/mm.edn
+;; are NOT redeclared here (Datomic rejects :db.error/unsupported-alter-schema).
+;; Slot expansion (e.g., :mm.rule/event-ref, :mm.context/firewall-class) is a
+;; deliberate follow-up sub-arc with proper migration discipline.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ ;; Forward Declarations (new classes only — Actor/Context/Rule already in mm.edn forward decls)
+ [{:db/ident :mm/Type         :db/doc "Forward declaration; full definition later."}
+  {:db/ident :mm/Predicate    :db/doc "Forward declaration; full definition later."}
+  {:db/ident :mm/Inbox        :db/doc "Forward declaration; full definition later."}
+  {:db/ident :mm/Task         :db/doc "Forward declaration; full definition later."}
+  {:db/ident :mm/Event        :db/doc "Forward declaration; full definition later."}
+  {:db/ident :mm/Engine       :db/doc "Forward declaration; full definition later."}
+  {:db/ident :mm/Organization :db/doc "Forward declaration; full definition later."}
+  {:db/ident :mm/AIActor      :db/doc "Forward declaration; sub-subtype of :mm/Actor; full definition later."}
+  {:db/ident :mm/HumanActor   :db/doc "Forward declaration; sub-subtype of :mm/Actor; full definition later."}
+  {:db/ident :mm/SystemActor  :db/doc "Forward declaration; sub-subtype of :mm/Actor; full definition later."}
+  {:db/ident :mm/MetaType         :db/doc "Forward declaration (sub-abstract); full definition later."}
+  {:db/ident :mm/MarkdownMetaType :db/doc "Forward declaration; sub-subtype of :mm/MetaType; full definition later."}
+  {:db/ident :mm/CodeMetaType     :db/doc "Forward declaration; sub-subtype of :mm/MetaType; full definition later."}]
+
+ [{:db/ident         :mm/Meta
+   :dt/type          :dt/Class
+   :dt/subclass-of   :mm/Memory
+   :dt/context       "mm"
+   :dt/label         "Meta"
+   :dt/abstract?     true
+   :db/doc "Abstract supertype for memorial types describing the memory system itself — schema-facing memorials.  Per memory/types/meta.md.  Direct concrete subtypes: :mm/Type, :mm/Predicate, :mm/Inbox, :mm/Task, :mm/Event, :mm/Engine, :mm/Organization, :mm/Context, :mm/Rule.  Sub-abstracts: :mm/Actor + :mm/MetaType.  Category-level invariants: schema-facing (validation rules apply differently than to artifacts); :mm/Meta memorials don't carry :supersedes.  Per decisions/sandbar_memorial_type_substrate_layering_2026_05_21.md D2 + corrections R1/R5.  Not instantiated directly."}]
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; :mm.type/* Properties — captureability metadata family + tier + subtree routing
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident :mm.type/tier
+   :dt/type :dt/Property :dt/domain :mm/Type :dt/range :db.type/keyword
+   :db/valueType :db.type/keyword :db/cardinality :db.cardinality/one
+   :db/doc "Type tier (per types/type.md): :stable-core | :expanding-periphery."}
+
+  {:db/ident :mm.type/mid-conversation-captureable
+   :dt/type :dt/Property :dt/domain :mm/Type :dt/range :db.type/boolean
+   :db/valueType :db.type/boolean :db/cardinality :db.cardinality/one
+   :db/doc "When true, type participates in inject_signal_scan UserPromptSubmit hook reminder.  Per memory/types/type.md Stage 4.7a."}
+
+  {:db/ident :mm.type/inject-trigger
+   :dt/type :dt/Property :dt/domain :mm/Type :dt/range :db.type/string
+   :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+   :db/doc "Literal trigger phrases for the inject-recall reminder."}
+
+  {:db/ident :mm.type/inject-class-name
+   :dt/type :dt/Property :dt/domain :mm/Type :dt/range :db.type/string
+   :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+   :db/doc "Human-readable class name shown in inject-recall reminder."}
+
+  {:db/ident :mm.type/inject-action
+   :dt/type :dt/Property :dt/domain :mm/Type :dt/range :db.type/string
+   :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+   :db/doc "Free-form short action description emitted in reminder line."}
+
+  {:db/ident :mm.type/audit-class
+   :dt/type :dt/Property :dt/domain :mm/Type :dt/range :db.type/keyword
+   :db/valueType :db.type/keyword :db/cardinality :db.cardinality/one
+   :db/doc "Keyword emitted by audit_turn.bb in :signal-classes."}
+
+  {:db/ident :mm.type/subtree
+   :dt/type :dt/Property :dt/domain :mm/Type :dt/range :db.type/string
+   :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+   :db/doc "Canonical corpus subtree where instances land (e.g., 'interaction/' for Feedback)."}
+
+  {:db/ident :mm.type/subtree-aliases
+   :dt/type :dt/Property :dt/domain :mm/Type :dt/range :db.type/string
+   :db/valueType :db.type/string :db/cardinality :db.cardinality/many
+   :db/doc "Optional legacy / alternative subtree paths."}
+
+  {:db/ident :mm.type/introduced-in
+   :dt/type :dt/Property :dt/domain :mm/Type :dt/range :db.type/string
+   :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+   :db/doc "Semver-shaped string naming the sandbar release in which this type was introduced."}]
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; :mm.predicate/* Properties — typed-edge meta-vocabulary
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident :mm.predicate/characteristics
+   :dt/type :dt/Property :dt/domain :mm/Predicate :dt/range :db.type/keyword
+   :db/valueType :db.type/keyword :db/cardinality :db.cardinality/many
+   :db/doc "Set of formal characteristics: :transitive | :reflexive | :irreflexive | :symmetric | :antisymmetric | :asymmetric | :functional | :inverse-functional."}
+
+  {:db/ident :mm.predicate/inverse-of
+   :dt/type :dt/Property :dt/domain :mm/Predicate :dt/range :mm/Predicate
+   :db/valueType :db.type/ref :db/cardinality :db.cardinality/one
+   :db/doc "The predicate's dagger-dual partner."}
+
+  {:db/ident :mm.predicate/same-type?
+   :dt/type :dt/Property :dt/domain :mm/Predicate :dt/range :db.type/boolean
+   :db/valueType :db.type/boolean :db/cardinality :db.cardinality/one
+   :db/doc "True if domain(edge) and range(edge) must be the same concrete type."}
+
+  {:db/ident :mm.predicate/acyclic?
+   :dt/type :dt/Property :dt/domain :mm/Predicate :dt/range :db.type/boolean
+   :db/valueType :db.type/boolean :db/cardinality :db.cardinality/one
+   :db/doc "True if transitive closure must have no cycles."}
+
+  {:db/ident :mm.predicate/lifecycle-status
+   :dt/type :dt/Property :dt/domain :mm/Predicate :dt/range :db.type/keyword
+   :db/valueType :db.type/keyword :db/cardinality :db.cardinality/one
+   :db/doc "Predicate lifecycle: :active | :deprecated | :retired | :candidate."}
+
+  {:db/ident :mm.predicate/deprecated-in
+   :dt/type :dt/Property :dt/domain :mm/Predicate :dt/range :db.type/string
+   :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+   :db/doc "Schema version when predicate was deprecated."}
+
+  {:db/ident :mm.predicate/retired-in
+   :dt/type :dt/Property :dt/domain :mm/Predicate :dt/range :db.type/string
+   :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+   :db/doc "Schema version when predicate was retired."}
+
+  {:db/ident :mm.predicate/migration-to
+   :dt/type :dt/Property :dt/domain :mm/Predicate :dt/range :mm/Predicate
+   :db/valueType :db.type/ref :db/cardinality :db.cardinality/many
+   :db/doc "Successor predicate(s) for deprecated predicates."}
+
+  {:db/ident :mm.predicate/migration-from
+   :dt/type :dt/Property :dt/domain :mm/Predicate :dt/range :mm/Predicate
+   :db/valueType :db.type/ref :db/cardinality :db.cardinality/many
+   :db/doc "Predecessor predicate(s) — reverse index of migration-to."}
+
+  {:db/ident :mm.predicate/prefer-over
+   :dt/type :dt/Property :dt/domain :mm/Predicate :dt/range :mm/Predicate
+   :db/valueType :db.type/ref :db/cardinality :db.cardinality/many
+   :db/doc "Weaker sibling predicates this should be reached-for instead of."}
+
+  {:db/ident :mm.predicate/reach-for-instead
+   :dt/type :dt/Property :dt/domain :mm/Predicate :dt/range :mm/Predicate
+   :db/valueType :db.type/ref :db/cardinality :db.cardinality/many
+   :db/doc "Stronger cousins to consider before using this predicate."}]
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; :mm.inbox/* Properties
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident :mm.inbox/suggested-type
+   :dt/type :dt/Property :dt/domain :mm/Inbox :dt/range :db.type/keyword
+   :db/valueType :db.type/keyword :db/cardinality :db.cardinality/one
+   :db/doc "Target type for promotion: :observation | :question | :idea | :bug | :feedback | :preference | :decision | :pattern."}
+
+  {:db/ident :mm.inbox/importance
+   :dt/type :dt/Property :dt/domain :mm/Inbox :dt/range :db.type/keyword
+   :db/valueType :db.type/keyword :db/cardinality :db.cardinality/one
+   :db/doc "Promotion-priority hint: :low | :medium | :high."}]
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; :mm.task/* Properties
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident :mm.task/status
+   :dt/type :dt/Property :dt/domain :mm/Task :dt/range :db.type/keyword
+   :db/valueType :db.type/keyword :db/cardinality :db.cardinality/one
+   :db/doc "Task lifecycle: :pending | :active | :blocked | :done | :dropped."}
+
+  {:db/ident :mm.task/priority
+   :dt/type :dt/Property :dt/domain :mm/Task :dt/range :db.type/keyword
+   :db/valueType :db.type/keyword :db/cardinality :db.cardinality/one
+   :db/doc "Task priority: :low | :medium | :high | :urgent."}
+
+  {:db/ident :mm.task/effort
+   :dt/type :dt/Property :dt/domain :mm/Task :dt/range :db.type/keyword
+   :db/valueType :db.type/keyword :db/cardinality :db.cardinality/one
+   :db/doc "Task sizing: :trivial | :small | :medium | :large | :capstone."}
+
+  {:db/ident :mm.task/triggered-by
+   :dt/type :dt/Property :dt/domain :mm/Task :dt/range :db.type/string
+   :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+   :db/doc "Free-text origin (Dan-directive, arc, inbox promotion, prior task completion)."}
+
+  {:db/ident :mm.task/blockers
+   :dt/type :dt/Property :dt/domain :mm/Task :dt/range :db.type/string
+   :db/valueType :db.type/string :db/cardinality :db.cardinality/many
+   :db/doc "First-class list of blockers — prose descriptions or paths to memorials / resources."}]
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; :mm.event/* Properties
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident :mm.event/lifecycle-position
+   :dt/type :dt/Property :dt/domain :mm/Event :dt/range :db.type/keyword
+   :db/valueType :db.type/keyword :db/cardinality :db.cardinality/one
+   :db/doc "Controlled-vocabulary lifecycle position: :session-start | :session-end | :user-prompt-submit | :pre-grounding | :pre-tool-use | :post-tool-use | :post-commit | :pre-response | :post-response | :corpus-audit | :state-change | :retrieval | :navigation."}
+
+  {:db/ident :mm.event/default-severity
+   :dt/type :dt/Property :dt/domain :mm/Event :dt/range :db.type/keyword
+   :db/valueType :db.type/keyword :db/cardinality :db.cardinality/one
+   :db/doc "Default severity: :audit | :warn | :block."}
+
+  {:db/ident :mm.event/applicable-actor-classes
+   :dt/type :dt/Property :dt/domain :mm/Event :dt/range :db.type/keyword
+   :db/valueType :db.type/keyword :db/cardinality :db.cardinality/many
+   :db/doc "Actor classes that can trigger this event."}
+
+  {:db/ident :mm.event/triggered-by-hook
+   :dt/type :dt/Property :dt/domain :mm/Event :dt/range :db.type/string
+   :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+   :db/doc "Hook script path or special token that fires this event."}
+
+  {:db/ident :mm.event/substrate-correctness-criticality
+   :dt/type :dt/Property :dt/domain :mm/Event :dt/range :db.type/keyword
+   :db/valueType :db.type/keyword :db/cardinality :db.cardinality/one
+   :db/doc "Tier criticality: :tier-0 | :tier-1 | :tier-2 | :tier-3."}]
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; :mm.engine/* Properties
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident :mm.engine/rule-body-shape
+   :dt/type :dt/Property :dt/domain :mm/Engine :dt/range :db.type/keyword
+   :db/valueType :db.type/keyword :db/cardinality :db.cardinality/one
+   :db/doc "Engine rule-body classification: :plain-pattern | :malli-schema | :clara-data-form | :core-logic-goal | :meander-strategy | :datalog-query."}
+
+  {:db/ident :mm.engine/dispatch-strategy-default
+   :dt/type :dt/Property :dt/domain :mm/Engine :dt/range :db.type/keyword
+   :db/valueType :db.type/keyword :db/cardinality :db.cardinality/one
+   :db/doc "Default dispatch strategy: :graph-query | :match-compile."}
+
+  {:db/ident :mm.engine/complexity-tier
+   :dt/type :dt/Property :dt/domain :mm/Engine :dt/range :db.type/keyword
+   :db/valueType :db.type/keyword :db/cardinality :db.cardinality/one
+   :db/doc "Complexity tier: :simple | :moderate | :complex."}
+
+  {:db/ident :mm.engine/performance-characteristics
+   :dt/type :dt/Property :dt/domain :mm/Engine :dt/range :db.type/string
+   :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+   :db/doc "Free-text performance characterization."}
+
+  {:db/ident :mm.engine/library-implementation
+   :dt/type :dt/Property :dt/domain :mm/Engine :dt/range :db.type/string
+   :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+   :db/doc "Library rel-path implementing this engine."}
+
+  {:db/ident :mm.engine/applicable-rule-body-classes
+   :dt/type :dt/Property :dt/domain :mm/Engine :dt/range :db.type/string
+   :db/valueType :db.type/string :db/cardinality :db.cardinality/many
+   :db/doc "Categories of rule bodies this engine handles."}]
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; :mm.organization/* Properties
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident :mm.organization/org-class
+   :dt/type :dt/Property :dt/domain :mm/Organization :dt/range :db.type/keyword
+   :db/valueType :db.type/keyword :db/cardinality :db.cardinality/one
+   :db/doc "Organization class: :company | :community | :project | :research-partnership."}
+
+  {:db/ident :mm.organization/members
+   :dt/type :dt/Property :dt/domain :mm/Organization :dt/range :mm/Actor
+   :db/valueType :db.type/ref :db/cardinality :db.cardinality/many
+   :db/doc "Actor members — inverse of :mm.actor/belongs-to."}
+
+  {:db/ident :mm.organization/founded
+   :dt/type :dt/Property :dt/domain :mm/Organization :dt/range :db.type/string
+   :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+   :db/doc "Founding date or descriptive epoch."}
+
+  {:db/ident :mm.organization/url
+   :dt/type :dt/Property :dt/domain :mm/Organization :dt/range :db.type/string
+   :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+   :db/doc "Primary external URL."}]
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Class Definitions — Meta sub-tree
+;;
+;; Actor / Context / Rule are AMENDED: idempotent upsert of :db/ident adds
+;; :dt/subclass-of :mm/Meta + (for Actor) :dt/abstract? true.  No :dt/slots
+;; redeclared (mm.edn's existing :mm.actor/* / :mm.context/* / :mm.rule/* slots
+;; cover the per-class field set).
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident         :mm/Actor
+   :dt/type          :dt/Class
+   :dt/subclass-of   :mm/Meta
+   :dt/context       "mm"
+   :dt/label         "Actor"
+   :dt/abstract?     true
+   :db/doc "Abstract supertype for entities that take actions in the memory system — AI models, human collaborators, automated processes.  AMENDED (2026-05-21): :dt/abstract? true; sub-abstract under :mm/Meta.  Concrete subtypes: :mm/AIActor, :mm/HumanActor, :mm/SystemActor.  Per memory/types/actor.md.  Existing :mm.actor/* slots in schema/mm.edn cover the flat per-subtype field set (model-family / version / capabilities / role / runs-in-context / belongs-to / etc.)."}
+
+  {:db/ident         :mm/MetaType
+   :dt/type          :dt/Class
+   :dt/subclass-of   :mm/Meta
+   :dt/context       "mm"
+   :dt/label         "MetaType"
+   :dt/abstract?     true
+   :db/doc "Abstract supertype for substrate / access-protocol classifications — MOP-style metaclass lift.  Concrete subtypes: :mm/MarkdownMetaType, :mm/CodeMetaType, future :mm/DatabaseMetaType.  Per memory/types/meta_type.md.  Not instantiated directly."}
+
+  {:db/ident         :mm/Type
+   :dt/type          :dt/Class
+   :dt/subclass-of   :mm/Meta
+   :dt/context       "mm"
+   :dt/label         "Type"
+   :dt/native-codec  :markdown
+   :dt/slots         [:mm.type/tier
+                      :mm.type/mid-conversation-captureable
+                      :mm.type/inject-trigger
+                      :mm.type/inject-class-name
+                      :mm.type/inject-action
+                      :mm.type/audit-class
+                      :mm.type/subtree
+                      :mm.type/subtree-aliases
+                      :mm.type/introduced-in]
+   :dt/abstract?     false
+   :db/doc "Self-referential type-of-types — describes what entries of some other type should contain.  Per memory/types/type.md.  Carries captureability metadata family + tier classification + corpus subtree routing + introduced-in."}
+
+  {:db/ident         :mm/Predicate
+   :dt/type          :dt/Class
+   :dt/subclass-of   :mm/Meta
+   :dt/context       "mm"
+   :dt/label         "Predicate"
+   :dt/native-codec  :markdown
+   :dt/slots         [:mm.predicate/characteristics
+                      :mm.predicate/inverse-of
+                      :mm.predicate/same-type?
+                      :mm.predicate/acyclic?
+                      :mm.predicate/lifecycle-status
+                      :mm.predicate/deprecated-in
+                      :mm.predicate/retired-in
+                      :mm.predicate/migration-to
+                      :mm.predicate/migration-from
+                      :mm.predicate/prefer-over
+                      :mm.predicate/reach-for-instead]
+   :dt/abstract?     false
+   :db/doc "First-class typed-edge predicate — RDFS-native property-as-memory.  Per memory/types/predicate.md.  Domain + range carried via :dt/domain + :dt/range (substrate-shared).  Introduced-in: 0.4.0."}
+
+  {:db/ident         :mm/Inbox
+   :dt/type          :dt/Class
+   :dt/subclass-of   :mm/Meta
+   :dt/context       "mm"
+   :dt/label         "Inbox"
+   :dt/native-codec  :markdown
+   :dt/slots         [:mm.inbox/suggested-type
+                      :mm.inbox/importance]
+   :dt/abstract?     false
+   :db/doc "Low-ceremony staging note — sub-60-second capture via `mem notice`.  Promoted during `/memory-review` OR deleted.  Per memory/types/inbox.md.  Zettelkasten 'fleeting note' (Ahrens 2017); 70-80% discard rate is a feature.  Audit-exempt from reciprocal / body-link audits."}
+
+  {:db/ident         :mm/Task
+   :dt/type          :dt/Class
+   :dt/subclass-of   :mm/Meta
+   :dt/context       "mm"
+   :dt/label         "Task"
+   :dt/native-codec  :markdown
+   :dt/slots         [:mm.task/status
+                      :mm.task/priority
+                      :mm.task/effort
+                      :mm.task/triggered-by
+                      :mm.task/blockers]
+   :dt/abstract?     false
+   :db/doc "Durable actionable work item.  Distinct from :mm/Inbox (observation-shaped) and :mm/Plan (multi-stage arc).  Per memory/types/task.md.  Captureable: inject-trigger 'come back to this', 'blocked on X'."}
+
+  {:db/ident         :mm/Event
+   :dt/type          :dt/Class
+   :dt/subclass-of   :mm/Meta
+   :dt/context       "mm"
+   :dt/label         "Event"
+   :dt/native-codec  :markdown
+   :dt/slots         [:mm.event/lifecycle-position
+                      :mm.event/default-severity
+                      :mm.event/applicable-actor-classes
+                      :mm.event/triggered-by-hook
+                      :mm.event/substrate-correctness-criticality]
+   :dt/abstract?     false
+   :db/doc "First-class lifecycle / dispatch event — typed-edge graph citizen that hooks fire and rules trigger from.  Per memory/types/event.md.  Introduced-in: 0.8.0."}
+
+  {:db/ident         :mm/Engine
+   :dt/type          :dt/Class
+   :dt/subclass-of   :mm/Meta
+   :dt/context       "mm"
+   :dt/label         "Engine"
+   :dt/native-codec  :markdown
+   :dt/slots         [:mm.engine/rule-body-shape
+                      :mm.engine/dispatch-strategy-default
+                      :mm.engine/complexity-tier
+                      :mm.engine/performance-characteristics
+                      :mm.engine/library-implementation
+                      :mm.engine/applicable-rule-body-classes]
+   :dt/abstract?     false
+   :db/doc "First-class rule-body evaluation engine.  Per memory/types/engine.md.  Five canonical engines: :plain-pattern, :malli, :clara-rules, :core-logic, :meander-strategy.  Introduced-in: 0.8.0."}
+
+  {:db/ident         :mm/Organization
+   :dt/type          :dt/Class
+   :dt/subclass-of   :mm/Meta
+   :dt/context       "mm"
+   :dt/label         "Organization"
+   :dt/native-codec  :markdown
+   :dt/slots         [:mm.organization/org-class
+                      :mm.organization/members
+                      :mm.organization/founded
+                      :mm.organization/url]
+   :dt/abstract?     false
+   :db/doc "Grouping of actors.  Peer-of-:mm/Actor (NOT subtype) — orgs are SUBJECTS of pronouncements but don't perform corpus-actions.  Per memory/types/organization.md.  Introduced-in: 0.8.0."}
+
+  {:db/ident         :mm/Context
+   :dt/type          :dt/Class
+   :dt/subclass-of   :mm/Meta
+   :dt/context       "mm"
+   :dt/label         "Context"
+   :dt/native-codec  :markdown
+   :dt/abstract?     false
+   :db/doc "Runtime environment distinguishing authorization-relevant actor instances.  AMENDED (2026-05-21): :dt/subclass-of :mm/Meta.  Existing :mm.context/* slots in schema/mm.edn carry the per-instance field set.  Actors reference contexts via :mm.actor/runs-in-context.  Per memory/types/context.md."}
+
+  {:db/ident         :mm/Rule
+   :dt/type          :dt/Class
+   :dt/subclass-of   :mm/Meta
+   :dt/context       "mm"
+   :dt/label         "Rule"
+   :dt/native-codec  :markdown
+   :dt/abstract?     false
+   :db/doc "Programmable deterministic instruction surfaced at events.  AMENDED (2026-05-21): :dt/subclass-of :mm/Meta.  Existing :mm.rule/* slots in schema/mm.edn carry the per-instance field set (event / enforcement / actor / context / etc.).  Per memory/types/rule.md.  Introduced-in: 0.8.0."}
+
+  {:db/ident         :mm/AIActor
+   :dt/type          :dt/Class
+   :dt/subclass-of   :mm/Actor
+   :dt/context       "mm"
+   :dt/label         "AIActor"
+   :dt/native-codec  :markdown
+   :dt/abstract?     false
+   :db/doc "Versioned AI model performing actions — Claude version, codex version, etc.  Per memory/types/ai_actor.md.  Inherits existing flat :mm.actor/* slots (model-family / version / context-window / capabilities / runs-in-context / belongs-to)."}
+
+  {:db/ident         :mm/HumanActor
+   :dt/type          :dt/Class
+   :dt/subclass-of   :mm/Actor
+   :dt/context       "mm"
+   :dt/label         "HumanActor"
+   :dt/native-codec  :markdown
+   :dt/abstract?     false
+   :db/doc "Human collaborator at the identity level.  Per memory/types/human_actor.md.  Inherits existing :mm.actor/* slots (role / runs-in-context / belongs-to)."}
+
+  {:db/ident         :mm/SystemActor
+   :dt/type          :dt/Class
+   :dt/subclass-of   :mm/Actor
+   :dt/context       "mm"
+   :dt/label         "SystemActor"
+   :dt/native-codec  :markdown
+   :dt/abstract?     false
+   :db/doc "Automated process — PreToolUse hooks, post-commit hooks, audit-invariant runners, codex-companion broker.  Per memory/types/system_actor.md.  Inherits existing :mm.actor/* slots; system-actor-specific slots (process-class / triggers / implementation-path) are deferred to follow-up substrate work."}
+
+  {:db/ident         :mm/MarkdownMetaType
+   :dt/type          :dt/Class
+   :dt/subclass-of   :mm/MetaType
+   :dt/context       "mm"
+   :dt/label         "MarkdownMetaType"
+   :dt/abstract?     false
+   :db/doc "Default meta-type — markdown files with YAML frontmatter under memory/, accessed via `mem search` / `mem show`.  Per memory/types/markdown_meta_type.md."}
+
+  {:db/ident         :mm/CodeMetaType
+   :dt/type          :dt/Class
+   :dt/subclass-of   :mm/MetaType
+   :dt/context       "mm"
+   :dt/label         "CodeMetaType"
+   :dt/abstract?     false
+   :db/doc "Concrete meta-type for source-code repos — each instance is a markdown memory under memory/code/ reifying a code repo, with detailed structure in clj-xref index at etc/code-xref/<slug>.edn.  Per memory/types/code_meta_type.md."}]
+
+ ;; :dt/codec-type-keyword routing — frontmatter `type: <keyword>` maps to the concrete class.
+
+ [{:db/ident :mm/Type              :dt/codec-type-keyword :type}
+  {:db/ident :mm/Predicate         :dt/codec-type-keyword :predicate}
+  {:db/ident :mm/Inbox             :dt/codec-type-keyword :inbox}
+  {:db/ident :mm/Task              :dt/codec-type-keyword :task}
+  {:db/ident :mm/Event             :dt/codec-type-keyword :event}
+  {:db/ident :mm/Engine            :dt/codec-type-keyword :engine}
+  {:db/ident :mm/Organization      :dt/codec-type-keyword :organization}
+  {:db/ident :mm/AIActor           :dt/codec-type-keyword :ai_actor}
+  {:db/ident :mm/HumanActor        :dt/codec-type-keyword :human_actor}
+  {:db/ident :mm/SystemActor       :dt/codec-type-keyword :system_actor}
+  {:db/ident :mm/MarkdownMetaType  :dt/codec-type-keyword :markdown_meta_type}
+  {:db/ident :mm/CodeMetaType      :dt/codec-type-keyword :code_meta_type}]
+
+]

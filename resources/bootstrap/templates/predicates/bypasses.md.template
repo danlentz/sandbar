@@ -1,0 +1,57 @@
+## What this predicate means
+
+**A `bypasses` B** — actor (or actor+context tuple) memorial A is EXEMPT from rule memorial B.  The exception/override declaration in the substrate's rules-as-first-class architecture.  Modeled on GitHub Rulesets' `bypass_actors` mechanism per the rules-as-first-class ADR + cornerstone modern-tooling broad-survey.  Lets specific actors operate outside a rule's enforcement when authorized exemption exists.
+
+## Substrate identity
+
+- **Slot ident**: `{{predicate-ident}}`
+- **Domain**: `{{domain}}`
+- **Range**: `{{range}}`
+- **Cardinality**: `{{cardinality}}`
+- **`:dt/type`**: `:dt/DirectedBinaryRelationProperty` (asymmetric + irreflexive)
+
+## Formal signature
+
+`{{predicate-name}} : {{domain}} × {{range}} → Bool`
+
+## Characteristics
+
+- **Asymmetric** — actor bypasses rule doesn't imply rule bypasses actor (OWL 2 RL `prp-asyp`)
+- **Irreflexive** — no actor bypasses themselves; no rule bypasses itself (OWL 2 RL `prp-irp`)
+- **NOT transitive** — exemption doesn't chain through actor delegation
+
+## When to use bypasses
+
+Use `bypasses` on actor memorials (or actor+context tuple memorials) when:
+
+- An actor has authorized exemption from a rule in some context
+- A meta-actor (e.g., the project admin) needs override capability
+- A test-mode actor needs to skip production rules
+
+The substrate's rule-engine layer queries `bypasses` at rule-firing time — if the firing actor (in the firing context) bypasses the rule, the rule's enforcement is short-circuited.
+
+## Adjacent predicates
+
+| Aspect | Predicate |
+|---|---|
+| Exemption | **`bypasses`** — actor is exempt from rule |
+| Rule scope | `applies-in` — context the rule applies in |
+| Governance | `governed-by` — memorial governed by rule |
+| Runtime context | `runs-in-context` — actor's operating context |
+
+## Formal ontology mappings
+
+- **GitHub Rulesets** `bypass_actors` — exact operational analogue (source pattern)
+- **OWL 2** — no direct equivalent (exemption is a meta-rule, not a base relation)
+- **WebACL** `access:exempt` — distant analogue (access control exemption)
+- **OPA / Rego** policy `default allow` patterns — adjacent operational shape
+
+Grounding references in the corpus:
+- [`decisions/rules_as_first_class_type_2026_05_11.md`](../decisions/rules_as_first_class_type_2026_05_11.md) §D3 bypass field
+- [`decisions/rules_as_first_class_type_2026_05_11.md`](../decisions/rules_as_first_class_type_2026_05_11.md) §D10 typed-edge introspection graph
+
+## See also
+
+- [`predicates/applies-in.md`](applies-in.md) — rule scoping (the inverse axis)
+- [`predicates/governed-by.md`](governed-by.md) — memorial governed by rule
+- [`predicates/runs-in-context.md`](runs-in-context.md) — actor's context

@@ -480,8 +480,10 @@
                                      ;; realize-with returns entity-spec maps with
                                      ;; :dt/type populated; ensure mm/Memory entries
                                      ;; carry it explicitly for downstream filter logic
-                                     (map #(if (= :mm/Memory (:dt/type %))
-                                             (into {:dt/type :mm/Memory} %)
+                                     (map #(if (dt/type-isa? :mm/Memory (:dt/type %))
+                                             ;; Preserve existing :dt/type (which may be a Memory subclass
+                                             ;; e.g. :mm/Decision); fall back to :mm/Memory if absent.
+                                             (update % :dt/type (fn [t] (or t :mm/Memory)))
                                              %)
                                           realized)))
                                  memories))

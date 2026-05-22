@@ -1,0 +1,54 @@
+## What this predicate means
+
+**A `has-part` B** — B is a structural part of A; A is the composite, B is contained.  The containment-down direction of the mereology relation.
+
+Common shapes:
+- A library has-part a chapter (sub-page)
+- A plan has-part a stage
+- A memorial has-part a section (when sections are reified as memorials)
+
+## Substrate identity
+
+- **Slot ident**: `{{predicate-ident}}`
+- **Domain**: `{{domain}}`
+- **Range**: `{{range}}`
+- **Cardinality**: `{{cardinality}}`
+- **Inverse of**: `:mm.memory/part-of`
+
+## Formal signature
+
+`{{predicate-name}} : {{domain}} × {{range}} → Bool`
+
+## Characteristics
+
+- **Asymmetric** — A has-part B does not imply B has-part A
+- **Irreflexive** — a memorial doesn't have itself as a part
+- **Transitive** (semantically) — A has-part B, B has-part C entails A has-part C
+
+## When to use has-part vs composes-with
+
+Use `has-part:` when:
+- A is the composite, B is the part
+- The relation is directional (containment)
+- A and B are not peers
+
+Use `composes-with:` (symmetric) when A and B are PEER parts of a larger composite.
+
+## Formal ontology mappings
+
+Aligned predicates from established formal vocabularies:
+
+- **DC Terms** `dcterms:hasPart` — exact semantic match
+- **BFO** `bfo:has_continuant_part_at_some_time` — close analogue (upper-ontology mereology)
+- **IAO** — no direct equivalent (uses BFO for mereology)
+- **OWL** — no direct equivalent (provides `owl:TransitiveProperty` characteristic only)
+- **SKOS** — no direct equivalent (uses `skos:broader` / `skos:narrower` for concept-level relations, not mereological)
+- **CiTO** — no direct equivalent
+
+Grounding references in the corpus:
+- [`references/rdfs_reference.md`](../references/rdfs_reference.md) — DC Terms `dcterms:hasPart` semantics
+
+## See also
+
+- [`predicates/part-of.md`](part-of.md) — inverse partner
+- [`predicates/composes-with.md`](composes-with.md) — symmetric (peer composition)

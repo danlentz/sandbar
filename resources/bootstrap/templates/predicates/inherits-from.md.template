@@ -1,0 +1,59 @@
+## What this predicate means
+
+**A `inherits-from` B** — A inherits properties / slots / values from B.  Distinct from `extends` (which is strict CLASS-level subclassing): `inherits-from` covers prototype inheritance, slot inheritance, dataset inheritance, configuration inheritance — any "A acquires B's properties" relation that doesn't fit class-subclass.
+
+Common shapes:
+- A consumer's memory-model inherits-from sandbar's default memory-model (config inheritance)
+- A prototype-based instance inherits-from another instance (rather than a class)
+- A dataset extension inherits-from a base dataset
+
+## Substrate identity
+
+- **Slot ident**: `{{predicate-ident}}`
+- **Domain**: `{{domain}}`
+- **Range**: `{{range}}`
+- **Cardinality**: `{{cardinality}}`
+- **Sub-property of**: `:dt/structural-derivation`
+
+## Formal signature
+
+`{{predicate-name}} : {{domain}} × {{range}} → Bool`
+
+## Characteristics
+
+- **Asymmetric** — A inherits-from B does not imply B inherits-from A
+- **Irreflexive** — a thing doesn't inherit from itself
+- **Transitive** — inheritance composes
+
+## When to use inherits-from vs extends
+
+Use `extends:` when:
+- A and B are both `:dt/Class` instances
+- The relation is strict subclassing (A IS-A B)
+- The audit invariant "extends graph is acyclic" should apply
+
+Use `inherits-from:` when:
+- The relation is property-acquisition broader than class-subclass
+- Prototype / slot / dataset / config inheritance applies
+- A and B may not be classes (could be config files, dataset specifications, etc.)
+
+## Formal ontology mappings
+
+Aligned predicates from established formal vocabularies:
+
+- **RDFS** `rdfs:subClassOf` — close analogue (when both A and B are classes; `inherits-from` is the broader prototype-friendly form)
+- **OWL** `owl:subClassOf` — close analogue (similarly)
+- **PROV-O** `prov:specializationOf` — close analogue (when A specializes B's properties as a refinement of an entity)
+- **PAV** `pav:derivedFrom` — distant analogue
+- **DC Terms** — no direct equivalent
+- **SKOS** — no direct equivalent
+- **CiTO** — no direct equivalent
+
+Grounding references in the corpus:
+- [`references/rdfs_reference.md`](../references/rdfs_reference.md) — RDFS substrate
+- [`references/pav_cito_bibo_reference.md`](../references/pav_cito_bibo_reference.md) — PROV-O specialization-of semantics
+
+## See also
+
+- [`predicates/extends.md`](extends.md) — narrower (class-level subclass strictly)
+- [`predicates/descends-from.md`](descends-from.md) — adjacent (lineage / history)

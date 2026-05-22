@@ -1,0 +1,51 @@
+## What this predicate means
+
+**A `contradicts` B** — A's claims logically contradict B's claims; the two CANNOT both be true.  Strongest in the dispute chain — stronger than `disagrees-with` (which is intellectual disagreement that may admit qualifications).
+
+The logical-contradiction predicate: declaring `contradicts:` is an editorial commitment that one of A / B must be wrong if both are taken literally.
+
+## Substrate identity
+
+- **Slot ident**: `{{predicate-ident}}`
+- **Domain**: `{{domain}}`
+- **Range**: `{{range}}`
+- **Cardinality**: `{{cardinality}}`
+- **Sub-property of**: `:mm.memory/disagrees-with`
+
+## Formal signature
+
+`{{predicate-name}} : {{domain}} × {{range}} → Bool`
+
+## Characteristics
+
+- **Symmetric** (semantically) — if A contradicts B, B contradicts A
+- **Irreflexive** — a memorial doesn't contradict itself (logically impossible)
+- **NOT transitive** — A contradicts B, B contradicts C does not entail A contradicts C
+
+## When to use contradicts vs disagrees-with
+
+Use `contradicts:` when:
+- A and B make claims that are LOGICALLY incompatible
+- Both cannot be true under any interpretation
+- The relation is stronger than mere disagreement
+
+Use `disagrees-with:` (weaker) when the disagreement admits qualifications, interpretations, or compromises.
+
+## Formal ontology mappings
+
+Aligned predicates from established formal vocabularies:
+
+- **CiTO** `cito:refutes` — close analogue (refutes carries dispute-with-proof; sandbar's `contradicts` is the bare logical-contradiction relation)
+- **CiTO** `cito:disputes` — distant analogue (disputes is weaker; closer to `disagrees-with`)
+- **OWL** `owl:disjointWith` — distant analogue (class-level disjointness)
+- **PROV-O** — no direct equivalent
+- **DC Terms** — no direct equivalent
+- **SKOS** — no direct equivalent
+
+Grounding references in the corpus:
+- [`references/pav_cito_bibo_reference.md`](../references/pav_cito_bibo_reference.md) — CiTO `cito:refutes` semantics
+
+## See also
+
+- [`predicates/disagrees-with.md`](disagrees-with.md) — weaker (intellectual disagreement)
+- [`predicates/supersedes.md`](supersedes.md) — different shape (lifecycle replacement, not logical contradiction)

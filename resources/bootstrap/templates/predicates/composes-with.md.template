@@ -1,0 +1,54 @@
+## What this predicate means
+
+**A `composes-with` B** — A and B combine to form a larger whole; both are peer parts of the composite, neither is contained-by the other.  Distinguishes from `has-part` / `part-of` (which carries CONTAINMENT direction).
+
+Common shapes:
+- A pattern composes-with another pattern in a larger architecture
+- A library composes-with another library in a stack
+- A skill composes-with another skill in a workflow
+
+## Substrate identity
+
+- **Slot ident**: `{{predicate-ident}}`
+- **Domain**: `{{domain}}`
+- **Range**: `{{range}}`
+- **Cardinality**: `{{cardinality}}`
+
+## Formal signature
+
+`{{predicate-name}} : {{domain}} × {{range}} → Bool`
+
+## Characteristics
+
+- **Symmetric** (semantically) — if A composes-with B, B composes-with A
+- **Irreflexive** — a memorial doesn't compose with itself
+- **NOT transitive** — A composes-with B, B composes-with C does not give A composes-with C (the composite formed may differ)
+
+## When to use composes-with
+
+Use `composes-with:` when:
+- A and B are PEER parts of a larger composite
+- Neither contains the other
+- The relation is lateral (composition without hierarchy)
+
+Use `has-part:` / `part-of:` (containment) when one CONTAINS the other.
+
+## Formal ontology mappings
+
+Aligned predicates from established formal vocabularies:
+
+- **OWL** — no direct equivalent (closest: characteristic `owl:SymmetricProperty` applies)
+- **DC Terms** — no direct equivalent
+- **PROV-O** — no direct equivalent
+- **SKOS** — no direct equivalent (closest: `skos:related` for lateral non-containment relations)
+- **BFO / IAO** — close analogues exist in upper-ontology mereology but operate at object-level rather than memorial-level
+- **CiTO** — no direct equivalent
+
+Grounding references in the corpus:
+- [`references/rdfs_reference.md`](../references/rdfs_reference.md) — OWL symmetric-property characteristics
+
+## See also
+
+- [`predicates/has-part.md`](has-part.md) — containment (A contains B)
+- [`predicates/part-of.md`](part-of.md) — containment (A is contained by B)
+- [`predicates/related.md`](related.md) — weaker (general lateral relation)

@@ -1,0 +1,54 @@
+## What this predicate means
+
+**A `part-of` B** — A is a structural part of B; B is the composite, A is contained (inverse of `has-part`).  The containment-up direction of the mereology relation.
+
+Common shapes:
+- A chapter is part-of a library
+- A stage is part-of a plan
+- A section is part-of a memorial
+
+## Substrate identity
+
+- **Slot ident**: `{{predicate-ident}}`
+- **Domain**: `{{domain}}`
+- **Range**: `{{range}}`
+- **Cardinality**: `{{cardinality}}`
+- **Inverse of**: `:mm.memory/has-part`
+
+## Formal signature
+
+`{{predicate-name}} : {{domain}} × {{range}} → Bool`
+
+## Characteristics
+
+- **Asymmetric** — A part-of B does not imply B part-of A
+- **Irreflexive** — a memorial isn't part of itself
+- **Transitive** (semantically) — A part-of B, B part-of C entails A part-of C
+
+## When to use
+
+Declare `part-of:` on A when:
+- A is structurally contained by B
+- A's identity meaningfully depends on its membership in B
+- The author wants the explicit upward containment pointer
+
+For exhaustive enumeration, reverse-attribute lookup (`:_mm.memory/has-part`) is usually cheaper than explicit assertion.
+
+## Formal ontology mappings
+
+Aligned predicates from established formal vocabularies:
+
+- **DC Terms** `dcterms:isPartOf` — exact semantic match
+- **BFO** `bfo:part_of` — close analogue (upper-ontology mereology, atemporal variant)
+- **OWL** `owl:inverseOf` — sandbar declares `:mm.memory/part-of` as `inverse-of :mm.memory/has-part`
+- **IAO** — no direct equivalent (uses BFO for mereology)
+- **SKOS** — no direct equivalent
+- **CiTO** — no direct equivalent
+
+Grounding references in the corpus:
+- [`references/rdfs_reference.md`](../references/rdfs_reference.md) — DC Terms `dcterms:isPartOf` semantics
+
+## See also
+
+- [`predicates/has-part.md`](has-part.md) — forward direction (containment-down)
+- [`predicates/composes-with.md`](composes-with.md) — symmetric (peer composition)

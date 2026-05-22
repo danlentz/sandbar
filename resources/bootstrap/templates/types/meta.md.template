@@ -1,0 +1,77 @@
+## What a `meta` memory is
+
+**Meta is an abstract supertype** — memorials *about the memory system itself*.  They describe categories, schemas, structural conventions, and operational primitives that the rest of the corpus consumes.  Concrete subtypes carry schema self-description (`type`), typed-edge vocabulary (`predicate`), low-ceremony fleeting capture (`inbox`), durable work queue (`task`), causal-trigger records (`event`), reasoning engines (`engine`), collaborators (`actor` and its subtypes), session / project contexts (`context`), behavior rules (`rule`), and meta-meta type modeling (`meta-type` and subtypes).
+
+Contrast with the sibling abstract supertypes:
+
+- **`artifact`** — produces durable output (decision / plan / library study)
+- **`signal`** — captures observation ("here is what we noticed")
+- **`guidance`** — prescribes action ("when X happens, do / don't do Y")
+
+Where the other three supertypes deal with the *content* of the corpus (its assertions, observations, prescriptions), `meta` deals with the *structure* of the corpus (what kinds of things exist, how they connect, who created them, when they fired, what rules govern them).
+
+## When `extends: meta` helps
+
+Category-level rules become expressible across the family:
+
+- *"Meta memorials are schema-facing — validation rules apply differently"* — e.g., `inbox` is exempt from reciprocal / body-link audits; `type` self-descriptions don't need empirical grounding
+- *"Meta memorials don't carry `supersedes:` the way artifacts do"* — meta is living structure, not versioned output (with exceptions for `predicate` deprecation)
+- *"Actor + Engine + Rule + Context + Event compose into the agent-discipline substrate"* — the layer-3 mechanization of behavior compliance
+
+## The Meta sub-tree
+
+The Meta supertype organizes a richer sub-hierarchy than its siblings:
+
+| Subclass             | Role                                              |
+|----------------------|---------------------------------------------------|
+| `type`               | schema self-description (every type carries a `types/<name>.md`) |
+| `predicate`          | typed-edge vocabulary (every predicate carries a `predicates/<name>.md`) |
+| `inbox`              | fleeting capture staging                          |
+| `task`               | durable actionable work queue                     |
+| `event`              | causal-trigger record (something happened at time T) |
+| `engine`             | reasoning / projection engine (e.g., codec, rule-engine, search engine) |
+| `context`            | session / project / arc context                   |
+| `rule`               | behavior rule (LHS pattern → RHS action)          |
+| `organization`       | collaborator organization                         |
+| `actor` (abstract)   | collaborator (ai / human / system)                |
+| └ `ai-actor`         | AI collaborator (model + provider)                |
+| └ `human-actor`      | human collaborator                                |
+| └ `system-actor`     | system / automation collaborator                  |
+| `meta-type` (abstract) | meta-meta type modeling                          |
+| └ `markdown-meta-type` | markdown-shaped meta-type                       |
+| └ `code-meta-type`   | code-shaped meta-type                             |
+
+The Actor + Context + Rule + Engine + Event quintet forms the substrate for the agent-discipline layer: actors operate in contexts; events fire; engines fire rules in response; rules prescribe action.
+
+## Not instantiated directly
+
+Don't write a memorial with `type: meta` — write one of the concrete subtypes (or, for the sub-abstracts `actor` / `meta-type`, write their further concrete subtypes).  The `abstract?: true` schema flag marks this class as non-instantiable.
+
+## Substrate identity
+
+- **Class ident**: `{{class-ident}}`
+- **Parent class(es)**: {{parent-classes}}
+- **Ancestor chain**: {{ancestor-chain}}
+- **Native codec**: `{{native-codec}}`
+- **Codec type-keyword(s)**: {{codec-type-keywords}}
+
+## Slot vocabulary ({{slot-count}} slots inherited or declared)
+
+Meta memorials inherit the full `:mm/Memory` slot vocabulary; sub-trees layer in their own specialized slots:
+
+- **type / predicate** — schema-attribute metadata, sub-property hierarchy, audit invariants
+- **actor sub-tree** — model name, provider, capabilities, version
+- **rule / engine / event** — LHS pattern, RHS action, firing context, engine binding
+- **meta-type sub-tree** — meta-meta type composition
+
+{{slot-table}}
+
+## See also
+
+- [`types/artifact.md`](artifact.md) — sibling abstract supertype for durable-output memorials
+- [`types/signal.md`](signal.md) — sibling abstract supertype for observational memorials
+- [`types/guidance.md`](guidance.md) — sibling abstract supertype for normative memorials
+- [`types/memory.md`](memory.md) — the common ancestor (foundational memorial class)
+- [`types/type.md`](type.md) — the self-referential root: a `type` memorial of type `type`
+- [`types/predicate.md`](predicate.md) — typed-edge vocabulary
+- Sandbar substrate: `sandbar/schema/mm-meta.edn`
