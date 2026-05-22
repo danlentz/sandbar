@@ -409,6 +409,14 @@
           (catch Exception e
             (log/warn e :MCP/entity-create-notify-failed
                       {:class class-ident :entity-id (:db/id new-entity)})))
+        ;; Stage 5 D5 — invalidate/refresh the BM25F search cache.
+        ;; Per-entity hook; skipped (no-op) when the class has no
+        ;; :dt/bm25f-weights declaration.  See sandbar.search/entity-changed!
+        (try
+          (search/entity-changed! class-ident new-entity)
+          (catch Exception e
+            (log/warn e :MCP/entity-create-cache-failed
+                      {:class class-ident :entity-id (:db/id new-entity)})))
         {:entity (entity-projection new-entity)}))))
 
 (defn- entity-find-handler [args]
@@ -807,6 +815,14 @@
           class-ident    (dt/class-ident-of entity-current)
           slot-map       (coerce-slot-map class-ident slot-arg)
           updated        (dt/update-entity! entity-ident slot-map)]
+      ;; Stage 5 D5 — invalidate/refresh the BM25F search cache.
+      ;; Per-entity hook; skipped (no-op) when the class has no
+      ;; :dt/bm25f-weights declaration.  See sandbar.search/entity-changed!
+      (try
+        (search/entity-changed! class-ident updated)
+        (catch Exception e
+          (log/warn e :MCP/entity-update-cache-failed
+                    {:class class-ident :entity-id (:db/id updated)})))
       {:entity (str entity-ident)
        :slots  slot-map
        :result (entity-projection updated)})))

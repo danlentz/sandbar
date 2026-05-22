@@ -6,7 +6,16 @@
             [sandbar.db.datatype :as dt]
             [sandbar.test-util :as tu]))
 
-(use-fixtures :each (tu/make-test-db-fixture {:test-name "search-test"}))
+(use-fixtures :each
+  (tu/make-test-db-fixture {:test-name "search-test"})
+  ;; Stage 5 D5 — clear the per-class BM25F analyzed-corpus cache between
+  ;; fixtures.  The cache keys by (class, basis-t); two fresh DBs from
+  ;; separate fixtures can reach the same basis-t value with different
+  ;; entity content, which would surface stale analyzed-entries to the
+  ;; snippet path (visible as :entity-map staleness in cross-fixture
+  ;; test runs).  Production has one conn per JVM so basis-t advances
+  ;; monotonically; this is a fixture-only concern.
+  (fn [t] (search/clear-bm25f-cache!) (t)))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; search-attribute — result-shape + ranking + limit

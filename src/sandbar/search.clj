@@ -303,6 +303,159 @@
         (for [[slot weight] field-weights]
           [slot (bm25f/score query-tokens analyzed-entity stats {slot weight})])))
 
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; BM25F analyzed-entry + corpus-stats cache (Stage 5 D5 resolution)
+;;
+;; Per-class, per-entity cache of analyzed entries + the derived corpus
+;; stats.  Re-tokenizing 1500+ entities per query costs ~5.7s (per the
+;; corpus parity probe at
+;; observations/sandbar_bm25f_parity_probe_5_divergences_2026_05_22.md).
+;; Cache hit drops latency to <100ms (score loop dominates).
+;;
+;; Invalidation strategy: per-entity, hook-driven.  basis-t advances on
+;; EVERY MCP request (audit log + token-last-used + session bookkeeping
+;; transact even when :mm/Memory entities are untouched), so basis-t-
+;; keyed invalidation produces 0% hit rate.  Instead, mutators of class
+;; instances call `entity-changed!` / `entity-removed!` post-transact:
+;;
+;;   - sandbar.mcp.tools/entity-create-handler — fires entity-changed!
+;;     after dt/make on the new entity
+;;   - sandbar.mcp.tools/entity-update-handler — fires entity-changed!
+;;     after dt/update-entity! on the updated entity
+;;   - test fixtures — clear via clear-bm25f-cache! (see search_test fixture)
+;;
+;; Per-class because each :mm/* class has its own :dt/bm25f-weights.
+;; Per-entity because file-level edits (one :mm/Memory per file in the
+;; canonical FS shape) map to one entity update; only that entity's
+;; analyzed-entry needs recomputation.
+;;
+;; Sub-entity walk: :mm/Memory's BM25F weights cover only :mm.memory/name
+;; + :mm.memory/description + :mm.memory/body-raw.  Sections are a
+;; separate :mm/Section class with its own tokenization; section updates
+;; invalidate the :mm/Section cache but NOT :mm/Memory (sections aren't
+;; in :mm/Memory's weights).  File-edit semantics are preserved because
+;; the codec updates body-raw on the parent :mm/Memory simultaneously
+;; with section recreation; both invalidations fire naturally.
+;;
+;; Cold-warm: `warm-bm25f-cache!` populates the cache for a class at
+;; startup (called from sandbar.core/start).  First-query post-restart
+;; is therefore <100ms instead of 5.7s.
+;;
+;; Per Stage 5 D5 resolution of the sandbar 0.1.1 co-evolution arc:
+;; plans/sandbar_0_1_1_coevolution_arc_2026_05_20.md.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defonce ^:private bm25f-entry-cache
+  ;; {class-ident {eid analyzed-entry}}
+  (atom {}))
+
+(defonce ^:private bm25f-stats-cache
+  ;; {class-ident corpus-stats}  — dropped on any mutation; lazy-rebuilt
+  ;; from bm25f-entry-cache values on next query.
+  (atom {}))
+
+(defn clear-bm25f-cache!
+  "Clear the BM25F cache.  No-arg form clears every class; the 1-arg form
+  clears just the named class.  Returns the prior cache values.
+
+  Callers:
+   - test fixtures (per-test isolation)
+   - sandbar.project.import (post-bulk-import; cheaper than per-entity
+     re-analyze for large imports)
+   - any mutator path that bypasses `entity-changed!`"
+  ([]
+   (let [prior-entries @bm25f-entry-cache
+         prior-stats   @bm25f-stats-cache]
+     (reset! bm25f-entry-cache {})
+     (reset! bm25f-stats-cache {})
+     {:entries prior-entries :stats prior-stats}))
+  ([class]
+   (swap! bm25f-entry-cache dissoc class)
+   (swap! bm25f-stats-cache dissoc class)))
+
+(defn entity-changed!
+  "Cache hook for post-mutation invalidation/refresh.  Called by mutators
+  of `:mm/*` class instances (sandbar.entity.create + .update via the MCP
+  layer) after a successful transact.  `entity-map` is the new (post-
+  update) entity-map; `class` is its class ident.
+
+  Behavior:
+   - Re-tokenizes the entity (single bm25f/analyze-entity call; ~4ms)
+   - Stores the new analyzed-entry under [class eid]
+   - Drops the cached corpus-stats for `class` so the next query
+     rebuilds them from the updated entry set
+
+  Skipped (no-op) when the class has no `:dt/bm25f-weights` declaration
+  — the class isn't BM25F-searchable, so cache work is irrelevant.
+
+  Idempotent: safe to call multiple times for the same entity."
+  [class entity-map]
+  (when (seq (dt/bm25f-weights-of class))
+    (let [eid (:db/id entity-map)]
+      (when eid
+        (let [analyzed (bm25f/analyze-entity class entity-map)]
+          (swap! bm25f-entry-cache assoc-in [class eid] analyzed)
+          (swap! bm25f-stats-cache dissoc class))))))
+
+(defn entity-removed!
+  "Cache hook for post-delete invalidation.  Called by mutators when an
+  entity is retracted/deleted.  Drops the entry from the cache + drops
+  stats for the class.  Idempotent."
+  [class eid]
+  (when (seq (dt/bm25f-weights-of class))
+    (swap! bm25f-entry-cache update class dissoc eid)
+    (swap! bm25f-stats-cache dissoc class)))
+
+(defn warm-bm25f-cache!
+  "Cold-warm the BM25F cache for `class` by walking all current instances,
+  tokenizing each, and storing the per-entity analyzed-entries + the
+  derived corpus-stats.  Called from sandbar.core/start at JVM startup
+  so the first query post-restart hits <100ms instead of cold-tokenizing.
+
+  Returns a map describing the warm:
+    {:class C :count N :ms <timing>}"
+  [class]
+  (let [t0       (System/currentTimeMillis)
+        entities (dt/all-instances-of class)
+        analyzed (mapv #(bm25f/analyze-entity class %) entities)
+        entries  (into {} (map (fn [ae] [(:eid ae) ae])) analyzed)
+        stats    (bm25f/corpus-stats analyzed)
+        t1       (System/currentTimeMillis)]
+    (swap! bm25f-entry-cache assoc class entries)
+    (swap! bm25f-stats-cache assoc class stats)
+    {:class class
+     :count (count entries)
+     :ms    (- t1 t0)}))
+
+(defn- analyzed-corpus-for
+  "Get `[analyzed-corpus stats]` for `class`.  Cache lookup; lazy-builds
+  the per-entity cache on miss via `warm-bm25f-cache!`.  Stats are
+  lazy-derived from the per-entity cache when missing (post-mutation
+  invalidation drops stats but preserves entries; next query rebuilds
+  stats from the cached entries — fast).
+
+  Returns:
+    [analyzed-corpus stats]
+  where analyzed-corpus is a vector of analyzed-entries for scoring
+  (order doesn't matter — search-bm25f sorts by score post-scoring).
+
+  Performance:
+   - cache hit (entries + stats both cached): O(N) walk of vals to build
+     the analyzed-corpus vector; ~5ms at N=1500
+   - stats-miss (post-mutation; entries cached): + bm25f/corpus-stats
+     recompute over the cached values; ~200ms at N=1500
+   - full-miss (cold; first query post-restart if not warmed): full
+     corpus walk + tokenize + stats; ~5.7s at N=1500"
+  [class]
+  (let [entries (or (get @bm25f-entry-cache class)
+                    (do (warm-bm25f-cache! class)
+                        (get @bm25f-entry-cache class)))
+        stats   (or (get @bm25f-stats-cache class)
+                    (let [s (bm25f/corpus-stats (vals entries))]
+                      (swap! bm25f-stats-cache assoc class s)
+                      s))]
+    [(vec (vals entries)) stats]))
+
 (defn search-bm25f
   "Multi-field BM25F search over Datomic-stored entities of `:class`.
 
@@ -383,9 +536,10 @@
                                           {:class         class
                                            :field-weights field-weights})))
         q-tokens        (analysis/tokenize query)
-        all-entities    (dt/all-instances-of class)
-        analyzed-corpus (mapv #(bm25f/analyze-entity class %) all-entities)
-        stats           (bm25f/corpus-stats analyzed-corpus)
+        ;; Stage 5 D5 — cached per (class, basis-t); see analyzed-corpus-for
+        ;; above.  Cache miss on first-after-tx: full ~5.7s corpus rebuild.
+        ;; Cache hit (overwhelmingly common): <100ms; score loop dominates.
+        [analyzed-corpus stats] (analyzed-corpus-for class)
         ;; Stage 5: structured composition via :where Datalog clauses.
         ;; Filter scoring-set to entities matching the predicate before
         ;; the scoring pass.  Stats are still computed over the FULL
