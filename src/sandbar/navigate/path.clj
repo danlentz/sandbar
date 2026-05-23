@@ -41,32 +41,12 @@
   `sandbar.navigate.path.evaluate` for full operator coverage."
   (:require [clojure.edn         :as edn]
             [datomic.api         :as d]
+            [sandbar.api.projection         :as projection]
             [sandbar.db.datomic  :as db]
             [sandbar.navigate.path.ast      :as ast]
             [sandbar.navigate.path.datomic  :as compiler]
             [sandbar.navigate.path.evaluate :as evalpath]
             [sandbar.navigate.path.ir       :as ir]))
-
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; Internal: entity projection (mirror MCP/REST layer convention so
-;; results round-trip cleanly through JSON / EDN serialization).
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-
-(defn- entity-projection
-  "Project a Datomic entity-map to a plain map keyed by :db/id +
-   :db/ident + namespaced-keyword slots.
-
-   Note: Datomic entity-iteration does NOT include `:db/id` in the
-   key-seq (special method).  We explicitly add it."
-  [entity]
-  (when entity
-    (let [base (into {}
-                     (filter (fn [[k _v]]
-                               (or (= :db/ident k)
-                                   (and (keyword? k) (some? (namespace k))))))
-                     entity)]
-      (cond-> base
-        (:db/id entity) (assoc :db/id (:db/id entity))))))
 
 (defn- parse-via
   "Accept :via as EDN-string OR pre-parsed Clojure data (vector /
@@ -151,7 +131,7 @@
       ;; project entity-maps + apply :limit for the result shape.
       (let [eval-results (evalpath/evaluate-from (db/db) canon-tree seed-eid)
             enriched     (mapv (fn [{:keys [eid path]}]
-                                 {:entity (entity-projection (db/entity eid))
+                                 {:entity (projection/full-projection (db/entity eid))
                                   :path   path})
                                eval-results)
             total        (count enriched)
@@ -167,7 +147,7 @@
                                        :in $ % ?start
                                        :where] where))
             eids       (d/q q (db/db) rules seed-eid)
-            entities   (mapv (comp entity-projection db/entity) eids)
+            entities   (mapv (comp projection/full-projection db/entity) eids)
             total      (count entities)
             limited    (if (zero? limit) entities (take limit entities))
             returned   (vec limited)]

@@ -39,6 +39,7 @@
             [clojure.tools.logging      :as log]
             [datomic.api                :as d]
             [sandbar.aggregate          :as aggregate]
+            [sandbar.api.projection     :as projection]
             [sandbar.audit.tag          :as audit-tag]
             [sandbar.codec              :as codec]
             [sandbar.codec.markdown     :as codec-md]
@@ -82,39 +83,9 @@
     (map? x)     (str (:db/ident x))
     :else        (str x)))
 
-(defn- entity-projection
-  "Project an entity-map to a JSON-friendly map.
-   Keeps `:db/id`, `:db/ident`, and namespaced-keyword slots.
-
-   Note: Datomic entity-iteration does NOT include `:db/id` in the
-   key-seq (it's accessed via a special method).  We explicitly add
-   `:db/id` to the projection so callers can rely on it being present
-   in serialized JSON / EDN output."
-  [entity]
-  (when entity
-    (let [base (into {}
-                     (filter (fn [[k _v]]
-                               (or (= :db/ident k)
-                                   (and (keyword? k) (some? (namespace k))))))
-                     entity)]
-      (cond-> base
-        (:db/id entity) (assoc :db/id (:db/id entity))))))
-
-(defn- ->projection-mode
-  "Coerce a JSON-string :projection arg to the keyword form the
-  substrate wrappers expect.  Accepts 'metadata-only', 'full',
-  ':metadata-only', ':full', or already-coerced keywords.  Returns
-  nil when arg is nil (lets the wrapper apply its default).
-
-  Hoisted to early in the file so handlers further down (entity-find,
-  navigate, orient) can reference it without forward-reference errors."
-  [raw]
-  (cond
-    (nil? raw)     nil
-    (keyword? raw) raw
-    (string? raw)  (keyword (clojure.string/replace raw #"^:" ""))
-    :else          (throw (ex-info (str "Unparseable :projection arg `" raw "`")
-                                   {:projection raw}))))
+;; Projection helpers lifted to `sandbar.api.projection` per Task #12.
+;; Local aliases: `projection/full-projection` → `projection/full-projection`;
+;; `->projection-mode` → `projection/->projection-mode`; etc.
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; JSON Schema type mapping (carried over from per-class implementation
@@ -290,7 +261,7 @@
   (let [c (class-arg args)
         instances (dt/all-instances-of c)]
     {:class (str c)
-     :instances (mapv entity-projection instances)}))
+     :instances (mapv projection/full-projection instances)}))
 
 (defn- schema-entities-handler
   "Batch fetch — return entity-spec maps for all non-abstract classes
@@ -312,7 +283,7 @@
         by-class (into {}
                        (for [cls target-classes]
                          [(->ident-str cls)
-                          (mapv entity-projection (dt/all-instances-of cls))]))
+                          (mapv projection/full-projection (dt/all-instances-of cls))]))
         total    (reduce + (map count (vals by-class)))]
     {:by-class       by-class
      :total-classes  (count target-classes)
@@ -433,33 +404,7 @@
           (catch Exception e
             (log/warn e :MCP/entity-create-cache-failed
                       {:class class-ident :entity-id (:db/id new-entity)})))
-        {:entity (entity-projection new-entity)}))))
-
-(defn- entity-metadata-projection
-  "Metadata-only projection — substrate-universal fields:
-  `:db/id`, `:db/ident` (if interned), `:dt/type` (if set).
-  Per Gap 3 (#11 follow-up) — used when caller passes
-  `:projection :metadata-only` to entity-find for lightweight
-  enumeration / pre-check use cases."
-  [entity]
-  (when entity
-    (cond-> {}
-      (:db/id entity)    (assoc :db/id    (:db/id entity))
-      (:db/ident entity) (assoc :db/ident (:db/ident entity))
-      (:dt/type entity)  (assoc :dt/type  (:dt/type entity)))))
-
-(defn- apply-entity-projection
-  "Route to the appropriate projection per mode keyword.  Defaults to
-  full when mode is nil (entity-find's natural default is full —
-  single-entity lookup; caller has explicit intent)."
-  [entity projection-mode]
-  (case (or projection-mode :full)
-    :full          (entity-projection entity)
-    :metadata-only (entity-metadata-projection entity)
-    (throw (ex-info (str "Unknown :projection mode `" projection-mode
-                         "`.  Valid: :full, :metadata-only.")
-                    {:projection-mode projection-mode
-                     :valid-modes #{:full :metadata-only}}))))
+        {:entity (projection/full-projection new-entity)}))))
 
 (defn- entity-find-handler [args]
   ;; Find-or-missing semantic — does NOT throw on not-found; returns a
@@ -478,9 +423,9 @@
     (when (nil? ident-or-id)
       (throw (ex-info "Missing required argument: ident (or id)" {:args args})))
     (let [{:keys [valid? entity reasons]} (eref/validate ident-or-id)
-          projection (->projection-mode projection-raw)]
+          projection (projection/->projection-mode projection-raw)]
       (if valid?
-        {:entity (apply-entity-projection entity projection)}
+        {:entity (projection/apply-projection entity projection)}
         {:entity nil :missing? true :lookup (str ident-or-id) :reasons reasons}))))
 
 (defn- entity-find-by-rel-path-handler [args]
@@ -502,13 +447,13 @@
     (when (nil? rel-path)
       (throw (ex-info "Missing required argument: rel-path" {:args args})))
     (let [ident (codec-md/rel-path->memory-ident rel-path)
-          projection (->projection-mode projection-raw)]
+          projection (projection/->projection-mode projection-raw)]
       (if (nil? ident)
         {:entity nil :missing? true :lookup rel-path
          :reasons #{:rel-path/unparseable}}
         (let [{:keys [valid? entity reasons]} (eref/validate ident)]
           (if valid?
-            {:entity (apply-entity-projection entity projection)
+            {:entity (projection/apply-projection entity projection)
              :resolved-ident (str ident)}
             {:entity nil :missing? true :lookup rel-path
              :resolved-ident (str ident) :reasons reasons}))))))
@@ -832,7 +777,7 @@
         projection-raw   (or (get args "projection") (get args :projection))]
     (when (nil? entity-raw)
       (throw (ex-info "Missing required argument: entity" {:args args})))
-    (let [projection (->projection-mode projection-raw)
+    (let [projection (projection/->projection-mode projection-raw)
           opts (cond-> {:entity (eref/resolve-ident entity-raw)}
                  predicate-raw    (assoc :predicate (parse-predicate-arg predicate-raw))
                  target-type-raw  (assoc :target-type (eref/resolve-ident target-type-raw))
@@ -848,7 +793,7 @@
         projection-raw   (or (get args "projection") (get args :projection))]
     (when (nil? entity-raw)
       (throw (ex-info "Missing required argument: entity" {:args args})))
-    (let [projection (->projection-mode projection-raw)
+    (let [projection (projection/->projection-mode projection-raw)
           opts (cond-> {:entity (eref/resolve-ident entity-raw)}
                  predicate-raw    (assoc :predicate (parse-predicate-arg predicate-raw))
                  source-type-raw  (assoc :source-type (eref/resolve-ident source-type-raw))
@@ -923,7 +868,7 @@
                       {:args args})))
     (let [entity-ident (eref/resolve-ident entity-arg)
           axes (mapv ->axis-spec axes-arg)
-          projection (->projection-mode projection-raw)
+          projection (projection/->projection-mode projection-raw)
           opts (cond-> {:entity entity-ident :axes axes}
                  projection (assoc :projection projection))]
       (orient/library-card opts))))
@@ -989,7 +934,7 @@
                     {:class class-ident :entity-id (:db/id updated)})))
       {:entity (str entity-ident)
        :slots  slot-map
-       :result (entity-projection updated)})))
+       :result (projection/full-projection updated)})))
 
 (defn- entity-validate-handler [args]
   (let [class-arg (or (get args "class") (get args :class))
@@ -1018,7 +963,7 @@
 (defn- workflow-find-handler [args]
   (let [w (workflow-arg args)
         def (workflow/find-workflow w)]
-    {:workflow (str w) :definition (entity-projection def)}))
+    {:workflow (str w) :definition (projection/full-projection def)}))
 
 (defn- workflow-start-process-handler [args]
   (let [w       (workflow-arg args)
@@ -1070,7 +1015,7 @@
 (defn- workflow-active-processes-handler [args]
   (let [w (or (->ident (get args "workflow")) (->ident (get args :workflow)))]
     {:workflow (when w (str w))
-     :processes (mapv entity-projection
+     :processes (mapv projection/full-projection
                       (if w
                         (workflow/active-processes :workflow w)
                         (workflow/active-processes)))}))

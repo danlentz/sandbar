@@ -17,7 +17,8 @@
   interaction/target_sandbar_introspection_api_layer_not_raw_datomic_2026_05_12.md:
   wrappers route through `sandbar.db.datatype/*-edges-of` primitives,
   never raw `datomic.api`."
-  (:require [sandbar.db.datatype :as dt]))
+  (:require [sandbar.api.projection :as projection]
+            [sandbar.db.datatype :as dt]))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Predicate resolution (Gap 7 — surfaced via MCP cutover exercise 2026-05-22)
@@ -98,76 +99,10 @@
                       p))
                   preds)))))))
 
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; Edge-target/source projection (Gap 3 — response-size friction fix)
-;;
-;; The dt/* edge primitives return FULL entity-maps for each edge's
-;; target/source.  For exploration use cases (the typical reach for
-;; navigate/library-card), this produces 10-300x more bytes than needed
-;; — a single navigate call on a popular entity can exceed 200KB of
-;; full entity bodies.  The `:projection` opt restricts the per-edge
-;; target/source projection to a minimal-metadata shape suitable for
-;; orientation, with `:full` available when the consumer actually wants
-;; bodies.
-;;
-;; Class-agnostic: the metadata projection includes only `:db/id` +
-;; `:db/ident` + `:dt/type` — truly substrate-universal fields.  An
-;; `:include-slots` opt (future) could add caller-specified slots
-;; without hardcoding consumer-class knowledge.
-;;
-;; Per inbox capture
-;; memory/inbox/2026-05-22_mcp_cutover_exercise_substrate_verb_authoring_queue_10_gaps_surfaced_via_orientation_of_sandbar_as_mcp_server_arc.md
-;; — Gap 3 addresses Gap 4 (tags-slot-projection pattern extended) +
-;; Gap 5 (limit doesn't bound bytes) + Gap 6 (file-fallback friction)
-;; in one fix.
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-
-(defn- metadata-projection
-  "Project an entity-map to substrate-universal metadata only:
-  `:db/id` + `:db/ident` (if interned) + `:dt/type` (if set).
-  Class-agnostic — no consumer-specific slot inclusion.
-
-  Returns nil when entity is nil.  Returns an empty map when entity
-  has none of the three universal fields populated."
-  [entity]
-  (when entity
-    (cond-> {}
-      (:db/id entity)    (assoc :db/id    (:db/id entity))
-      (:db/ident entity) (assoc :db/ident (:db/ident entity))
-      (:dt/type entity)  (assoc :dt/type  (:dt/type entity)))))
-
-(defn- full-projection
-  "Project a Datomic EntityMap to a regular Clojure map with `:db/id`
-  made explicit.  EntityMap iteration doesn't include `:db/id` in its
-  key-seq (it's accessed via a special method), but `(:db/id entity)`
-  works — this projection adds the field so JSON/EDN serialization
-  carries it.
-
-  Mirrors `sandbar.mcp.tools/entity-projection` shape (the existing
-  duplicate; see also navigate/siblings, navigate/path, api/aggregate,
-  orient — DRY cleanup is a separate task)."
-  [entity]
-  (when entity
-    (cond-> (into {} entity)
-      (:db/id entity) (assoc :db/id (:db/id entity)))))
-
-(defn- project-edge
-  "Apply the projection mode to the target/source entity of an edge.
-  Both `:full` and `:metadata-only` produce regular Clojure maps with
-  explicit `:db/id` (EntityMap iteration alone omits `:db/id`).
-  `:full` carries all slots; `:metadata-only` restricts to
-  substrate-universal metadata."
-  [edge projection-mode]
-  (let [project-fn (case projection-mode
-                     :full          full-projection
-                     :metadata-only metadata-projection
-                     (throw (ex-info (str "Unknown :projection mode `" projection-mode
-                                          "`.  Valid: :full, :metadata-only.")
-                                     {:projection-mode projection-mode
-                                      :valid-modes #{:full :metadata-only}})))]
-    (cond-> edge
-      (contains? edge :target) (update :target project-fn)
-      (contains? edge :source) (update :source project-fn))))
+;; Projection helpers lifted to `sandbar.api.projection` per Task #12 —
+;; navigate/edges uses the shared `project-edge` which dispatches on
+;; the `:projection` mode (`:metadata-only` default for navigation use
+;; cases; `:full` available for complete-body consumers).
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; inbound-edges — edges pointing AT the entity
@@ -213,7 +148,7 @@
                     source-type   (assoc :source-type source-type)))
         total   (count edges)
         limited (if (zero? limit) edges (take limit edges))
-        edges-v (mapv #(project-edge % projection) limited)]
+        edges-v (mapv #(projection/project-edge % projection) limited)]
     {:edges    edges-v
      :total    total
      :returned (count edges-v)}))
@@ -261,7 +196,7 @@
                     target-type   (assoc :target-type target-type)))
         total   (count edges)
         limited (if (zero? limit) edges (take limit edges))
-        edges-v (mapv #(project-edge % projection) limited)]
+        edges-v (mapv #(projection/project-edge % projection) limited)]
     {:edges    edges-v
      :total    total
      :returned (count edges-v)}))

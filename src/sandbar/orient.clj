@@ -17,66 +17,15 @@
 
   Substrate-quality discipline preserved: class-agnostic; axis-specs are
   caller-supplied."
-  (:require [sandbar.db.datatype     :as dt]
+  (:require [sandbar.api.projection :as projection]
+            [sandbar.db.datatype     :as dt]
             [sandbar.db.datomic      :as db]
             [sandbar.navigate.edges  :as nav-edges]))
 
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; Entity projection helpers (mirror navigate.edges projection shape)
-;;
-;; Per Gap 3 of MCP cutover exercise 2026-05-22 (inbox capture
-;; memory/inbox/2026-05-22_mcp_cutover_exercise_substrate_verb_authoring_queue_10_gaps_surfaced_via_orientation_of_sandbar_as_mcp_server_arc.md)
-;; — library-card returns the BIGGEST payload of any orientation verb
-;; (364KB for a 4-axis query in the cutover exercise) because every
-;; edge's target/source carries the full entity body.  `:projection`
-;; opt switches to metadata-only mode (substrate-universal fields only)
-;; for orientation use cases.
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-
-(defn- full-projection
-  "Project a Datomic entity-map to a plain Clojure map preserving all
-  namespaced-keyword slots + explicit `:db/id` (EntityMap iteration
-  omits `:db/id`)."
-  [entity]
-  (when entity
-    (let [base (into {}
-                     (filter (fn [[k _v]]
-                               (or (= :db/ident k)
-                                   (and (keyword? k) (some? (namespace k))))))
-                     entity)]
-      (cond-> base
-        (:db/id entity) (assoc :db/id (:db/id entity))))))
-
-(defn- metadata-projection
-  "Project a Datomic entity-map to substrate-universal metadata only:
-  `:db/id` + `:db/ident` (if interned) + `:dt/type` (if set).
-  Class-agnostic — no consumer-specific slot inclusion."
-  [entity]
-  (when entity
-    (cond-> {}
-      (:db/id entity)    (assoc :db/id    (:db/id entity))
-      (:db/ident entity) (assoc :db/ident (:db/ident entity))
-      (:dt/type entity)  (assoc :dt/type  (:dt/type entity)))))
-
-(defn- projection-fn-for
-  "Return the projection function for a `:projection` mode keyword.
-  Fails loud on unknown modes rather than silently misshaping output."
-  [projection-mode]
-  (case projection-mode
-    :full          full-projection
-    :metadata-only metadata-projection
-    (throw (ex-info (str "Unknown :projection mode `" projection-mode
-                         "`.  Valid: :full, :metadata-only.")
-                    {:projection-mode projection-mode
-                     :valid-modes #{:full :metadata-only}}))))
-
-(defn- project-edge
-  "Project an edge-record's `:target` or `:source` via `project-fn`.
-  Preserves the `:predicate` keyword as-is."
-  [edge project-fn]
-  (cond-> edge
-    (:target edge) (update :target project-fn)
-    (:source edge) (update :source project-fn)))
+;; Projection helpers lifted to `sandbar.api.projection` (single source
+;; of truth across navigate/edges + orient + api/aggregate + mcp/tools
+;; + navigate/siblings + navigate/path).  Per Task #12 of MCP cutover
+;; batch — DRY cleanup of 5+ duplicates.
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; library-card — multi-axis typed-edge neighborhood view
@@ -129,11 +78,11 @@
               axes)
         {raw-entity :entity raw-axes :axes}
         (dt/library-card-of entity resolved-axes)
-        project-fn (projection-fn-for projection)]
+        project-fn (projection/projection-fn-for projection)]
     {:entity (project-fn raw-entity)
      :axes   (reduce-kv (fn [acc axis-name edges]
                           (assoc acc axis-name
-                                 (mapv #(project-edge % project-fn) edges)))
+                                 (mapv #(projection/project-edge % projection) edges)))
                         {}
                         raw-axes)}))
 
