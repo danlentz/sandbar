@@ -1021,22 +1021,39 @@
   ;; Stage I of plans/sandbar_codex_review_remediation_arc_2026_05_13.md
   ;; landed dt/update-entity!; this verb now wires through.  Per codex
   ;; SHOULD-FIX #5 (sandbar.entity.update advertised but unimplemented).
-  (let [entity-arg (or (get args "entity") (get args :entity))
-        slot-arg   (or (get args "slots")  (get args :slots))]
+  ;;
+  ;; Gap #6 fix (2026-05-23): use eref/resolve (returns canonical entity)
+  ;; instead of eref/resolve-ident — supports identless entities (those
+  ;; authored via codec ingest where :db/ident derivation didn't fire).
+  ;; Substrate dt/update-entity! already accepts any ref-form including
+  ;; raw entity-maps via (db/entity entity); only the MCP handler was
+  ;; over-requiring ident.  See observations/entity_update_rejects_
+  ;; identless_entities_substrate_gap_6_2026_05_23.md.
+  ;;
+  ;; Gap #7 fix (2026-05-23): default response :projection mode to
+  ;; :metadata-only (was unconditional :full).  Large entities' full
+  ;; projection overflowed the MCP tool-result wire limit, blocking
+  ;; updates by overflowing the response (transaction commits OK but
+  ;; client can't see the response shape).  Mirrors the projection
+  ;; pattern already used by search.bm25f / class.instances etc.
+  ;; Consumers opt to :projection :full when they want the body echo.
+  (let [entity-arg     (or (get args "entity") (get args :entity))
+        slot-arg       (or (get args "slots")  (get args :slots))
+        projection-raw (or (get args "projection") (get args :projection))]
     (when (nil? entity-arg)
       (throw (ex-info "Missing required argument: entity (ident or eid)" {:args args})))
     (when (or (nil? slot-arg) (not (map? slot-arg)))
       (throw (ex-info "Missing or non-map argument: slots (must be {:slot-ident value ...} map)"
                       {:args args})))
-    ;; Resolve the entity's class so we can coerce JSON-shaped slot
-    ;; values into Datomic-shaped values via dt/range-of (slot map's
-    ;; values from JSON arrive as strings; codec needs proper keyword /
-    ;; instant / etc.).
-    (let [entity-ident   (eref/resolve-ident entity-arg)
-          entity-current (dt/find-by-ident entity-ident)
-          class-ident    (dt/class-ident-of entity-current)
-          slot-map       (coerce-slot-map class-ident slot-arg)
-          updated        (dt/update-entity! entity-ident slot-map)]
+    ;; Resolve the entity (works for identless too) so we can derive its
+    ;; class for slot coercion (JSON-shaped values → Datomic-shaped via
+    ;; dt/range-of).
+    (let [entity-current  (eref/resolve entity-arg)
+          class-ident     (dt/class-ident-of entity-current)
+          slot-map        (coerce-slot-map class-ident slot-arg)
+          updated         (dt/update-entity! entity-current slot-map)
+          projection-mode (or (projection/->projection-mode projection-raw)
+                              :metadata-only)]
       ;; Stage 5 D5 — invalidate/refresh the BM25F search cache.
       ;; Per-entity hook; skipped (no-op) when the class has no
       ;; :dt/bm25f-weights declaration.  See sandbar.search/entity-changed!
@@ -1045,9 +1062,10 @@
         (catch Exception e
           (log/warn e :MCP/entity-update-cache-failed
                     {:class class-ident :entity-id (:db/id updated)})))
-      {:entity (str entity-ident)
+      {:entity (or (some-> (:db/ident updated) str)
+                   (:db/id updated))
        :slots  slot-map
-       :result (projection/full-projection updated)})))
+       :result (projection/apply-projection updated projection-mode)})))
 
 (defn- entity-validate-handler [args]
   (let [class-arg (or (get args "class") (get args :class))
@@ -1408,7 +1426,10 @@
   [args]
   (let [value     (or (get args "name") (get args :name))
         slots     (or (get args "slots") (get args :slots) {})
-        upgrade?  (boolean (or (get args "upgrade?") (get args :upgrade?)))]
+        upgrade?  (boolean (or (get args "upgrade")
+                               (get args "upgrade?")
+                               (get args :upgrade)
+                               (get args :upgrade?)))]
     (when (str/blank? (str value))
       (throw (ex-info "Missing required argument: name" {:args args})))
     (let [existing (tag-by-value value)]
@@ -1909,10 +1930,11 @@
     :handler entity-find-by-rel-path-handler}
    {:name "sandbar.entity.update"
     :title "Update slots on an existing entity"
-    :description "WHICH: applies slot-value updates to an existing entity.  Validates the updated slot map against the entity's class constraints before transacting.\n\nWHEN: use to MUTATE an existing entity — change a slot value, set a previously-empty slot, etc.  When NOT to use: (a) creating a new entity — `sandbar.entity.create`; (b) you want to validate proposed updates WITHOUT committing — `sandbar.entity.validate` (against the class with the merged slot map); (c) you want to retract a slot value entirely — Datomic retraction is a separate concern not currently exposed via MCP.\n\nHOW: `:entity` is the target entity ident or eid (REQUIRED).  `:slots` is a slot-ident-string → new-value map (REQUIRED; non-map values rejected).  Substrate auto-coerces JSON-shaped values via `dt/range-of` (e.g., `:db.type/keyword` slots accept either keyword strings or already-coerced keywords).  Cardinality-many slots accept either a single value (wrapped to vec) or a vec / array.\n\nORDER: prerequisite — `sandbar.entity.find` to confirm the entity exists.  Optional pre-check: `sandbar.entity.validate` against the FULL merged slot map (current slots ∪ updates).\n\nCOMBINATION: pairs with `sandbar.entity.find` (pre-confirm + post-read-back).  For bulk class-wide updates, no single-call alternative; iterate `sandbar.class.instances` and apply per-entity.  Per Stage I of plans/sandbar_codex_review_remediation_arc_2026_05_13.md (`dt/update-entity!` substrate primitive)."
+    :description "WHICH: applies slot-value updates to an existing entity.  Validates the updated slot map against the entity's class constraints before transacting.  Accepts identful AND identless entities (per Gap #6 fix 2026-05-23 — identless entities resolved by eid are now updatable; previously rejected with `:entity-ref/no-ident`).\n\nWHEN: use to MUTATE an existing entity — change a slot value, set a previously-empty slot, etc.  When NOT to use: (a) creating a new entity — `sandbar.entity.create`; (b) you want to validate proposed updates WITHOUT committing — `sandbar.entity.validate` (against the class with the merged slot map); (c) you want to retract a slot value entirely — Datomic retraction is a separate concern not currently exposed via MCP.\n\nHOW: `:entity` is the target entity ident or eid (REQUIRED).  `:slots` is a slot-ident-string → new-value map (REQUIRED; non-map values rejected).  Substrate auto-coerces JSON-shaped values via `dt/range-of` (e.g., `:db.type/keyword` slots accept either keyword strings or already-coerced keywords).  Cardinality-many slots accept either a single value (wrapped to vec) or a vec / array.  Optional `:projection` — `metadata-only` (DEFAULT per Gap #7 fix 2026-05-23 — lightweight :db/id/:db/ident/:dt/type echo; avoids MCP wire-limit overflow on large entities) or `full` (complete entity-map; opt in when you want the body echo).\n\nORDER: prerequisite — `sandbar.entity.find` to confirm the entity exists.  Optional pre-check: `sandbar.entity.validate` against the FULL merged slot map (current slots ∪ updates).\n\nCOMBINATION: pairs with `sandbar.entity.find` (pre-confirm + post-read-back).  For bulk class-wide updates, no single-call alternative; iterate `sandbar.class.instances` and apply per-entity.  Per Stage I of plans/sandbar_codex_review_remediation_arc_2026_05_13.md (`dt/update-entity!` substrate primitive)."
     :inputSchema (one-required
-                   {:entity {:type "string" :description "Entity ident (keyword string) or eid (numeric)"}
-                    :slots  {:type "object" :description "Slot-ident-string → new-value map"}}
+                   {:entity     {:type "string" :description "Entity ident (keyword string) or eid (numeric).  Identless entities accepted by eid per Gap #6 fix."}
+                    :slots      {:type "object" :description "Slot-ident-string → new-value map"}
+                    :projection {:type "string" :description "Response :result entity shape — 'metadata-only' (default; :db/id + :db/ident + :dt/type) or 'full' (complete entity-map; ~10-300x larger; risks wire-limit overflow on large bodies per Gap #7).  Per Gap #7 fix 2026-05-23."}}
                    [:entity :slots])
     :handler entity-update-handler}
    {:name "sandbar.entity.validate"
@@ -2033,8 +2055,8 @@
                    {:from     {:type "string" :description "Input directory path"}
                     :filter   {:type "object"
                                :description "Optional filter spec (same shape as project.export)"}
-                    :persist? {:type        "boolean"
-                               :description "When true, dt/make each parsed entity-spec into the Datomic substrate after import (one-shot ingest).  When false / omitted, this verb is a DRY-RUN that returns entity summaries without persisting.  Per Friction Item #11 of the 0.1.1 co-evolution arc — gives clients a single-call bootstrap path instead of N+1 round-trips (import + entity.create per).  On persist failure for any individual entity, the per-entity failure is captured in the response's `:failed` list (does NOT abort the whole ingest).  Returns `{:persisted-count :failed-count :failed [...]}` when :persist? true."}}
+                    :persist  {:type        "boolean"
+                               :description "When true, dt/make each parsed entity-spec into the Datomic substrate after import (one-shot ingest).  When false / omitted, this verb is a DRY-RUN that returns entity summaries without persisting.  Per Friction Item #11 of the 0.1.1 co-evolution arc — gives clients a single-call bootstrap path instead of N+1 round-trips (import + entity.create per).  On persist failure for any individual entity, the per-entity failure is captured in the response's `:failed` list (does NOT abort the whole ingest).  Returns `{:persisted-count :failed-count :failed [...]}` when :persist true.  (Wire-format key MUST be `persist` — no `?` suffix — to comply with Anthropic MCP tool-schema property-key regex `^[a-zA-Z0-9_.-]{1,64}$`.  Handler accepts both `persist` and legacy `persist?` for back-compat.)"}}
                    [:from])
     :handler project-import-handler}
 
@@ -2264,9 +2286,9 @@
    {:name "sandbar.tag.define"
     :title "Author a new canonical :mm/Tag with required documentation slots"
     :description "WHICH: creates a new :mm/Tag entity with the supplied canonical :value + optional documentation slots (definition / scope-note / example / broader-* / in-scheme / etc.).  Forces explicit authoring at the boundary — `sandbar.tag.audit` will surface tags without definitions as the `:undefined-used` invariant.\n\nWHEN: use after sandbar.tag.lookup reports `:gap? true` (no canonical exists for this concept).  Authoring includes scope-note — the editorial boundary anchoring the canonical.  When NOT to use: (a) a canonical already exists — use sandbar.tag.consolidate to merge instead; (b) you want to rename — use sandbar.tag.rename; (c) the new tag overlaps a memorial-type — don't define (memorial-type slot already carries that information).\n\nHOW: `:name` is the canonical tag string (becomes :mm.tag/value).  `:slots` (optional) is a map of additional :mm.tag/* slot values:\n  `:definition`  — SKOS canonical definition\n  `:scope-note`  — editorial boundary\n  `:example`     — usage illustration\n  `:in-scheme`   — :mm/ConceptScheme ref (e.g., `:memory-system-meta-vocabulary`)\n  `:canonical?`  — boolean (default true once defined)\n  `:vocabulary-level` — :substrate-level / :corpus-level / etc.\n  `:lifecycle-status` — :proposed / :active / :deprecated / :superseded\n\nReturns `{:tag <tag-summary> :created true}`.  Errors when a tag with this :value already exists.\n\nORDER: after sandbar.tag.lookup confirms gap.\n\nCOMBINATION: pairs with sandbar.tag.lookup (gap discovery), sandbar.tag.audit (post-define audit-check), sandbar.tag.align (cross-vocabulary mapping after defining)."
-    :inputSchema (one-required {:name     {:type "string" :description "Canonical tag string (becomes :mm.tag/value)"}
-                                :slots    {:type "object" :description "Optional :mm.tag/* slots (definition, scope-note, example, broader-*, etc.)"}
-                                :upgrade? {:type "boolean" :description "When true, ADD the supplied :slots to an EXISTING tag with this :value (the normalization workflow for the 5705 undefined-used tags surfaced by sandbar.tag.audit).  Default false — create-only mode rejects existing tags loudly.  Per Gap 25 fix 2026-05-22."}}
+    :inputSchema (one-required {:name    {:type "string" :description "Canonical tag string (becomes :mm.tag/value)"}
+                                :slots   {:type "object" :description "Optional :mm.tag/* slots (definition, scope-note, example, broader-*, etc.)"}
+                                :upgrade {:type "boolean" :description "When true, ADD the supplied :slots to an EXISTING tag with this :value (the normalization workflow for the 5705 undefined-used tags surfaced by sandbar.tag.audit).  Default false — create-only mode rejects existing tags loudly.  Per Gap 25 fix 2026-05-22.  (Wire-format key MUST be `upgrade` — no `?` suffix — to comply with Anthropic MCP tool-schema property-key regex `^[a-zA-Z0-9_.-]{1,64}$`.  Handler accepts both `upgrade` and legacy `upgrade?` for back-compat.)"}}
                                [:name])
     :handler tag-define-handler}
    {:name "sandbar.tag.audit"
