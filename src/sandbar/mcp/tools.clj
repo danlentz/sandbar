@@ -279,10 +279,18 @@
    :slots (->> (dt/required-slots-of (class-arg args)) (map ->ident-str) sort vec)})
 
 (defn- class-instances-handler [args]
-  (let [c (class-arg args)
-        instances (dt/all-instances-of c)]
-    {:class (str c)
-     :instances (mapv projection/full-projection instances)}))
+  (let [c              (class-arg args)
+        projection-raw (or (get args "projection") (get args :projection))
+        ;; MCP boundary default per Gap 12 follow-on (B.3 — :projection opt
+        ;; on bulky-response verbs).  Enumeration ships :metadata-only by
+        ;; default for payload safety (10-300x reduction).  Symmetric with
+        ;; search.bm25f + aggregate.rank-by.  Consumers opt to :full when
+        ;; slot bodies are needed.
+        projection-fn  (projection/projection-fn-for
+                         (or (projection/->projection-mode projection-raw) :metadata-only))
+        instances      (dt/all-instances-of c)]
+    {:class     (str c)
+     :instances (mapv projection-fn instances)}))
 
 (defn- schema-entities-handler
   "Batch fetch — return entity-spec maps for all non-abstract classes
@@ -1693,8 +1701,12 @@
     :handler class-required-slots-handler}
    {:name "sandbar.class.instances"
     :title "All instances of a class (incl. subclass instances)"
-    :description "WHICH: returns every entity that is an instance of `:class` — directly OR via `:dt/subclass-of` (i.e., subclass instances are included; instance-of relation is transitive through inheritance).\n\nWHEN: use to enumerate a class's full instance population.  Foundational read for any class-based traversal.  When NOT to use: (a) the population is large and you only want top-K by some rank — `sandbar.aggregate.rank-by`; (b) you want only DIRECT instances (no subclass instances) — there's no MCP verb for this in the current catalog; substrate has `dt/direct-instances-of` accessible via in-process Clojure; (c) you want a count, not the entities — `sandbar.aggregate.count`; (d) you want to filter by some predicate — `sandbar.aggregate.count` / `.group-by` with `:where` Datalog, or `sandbar.search.bm25f` for fulltext-filtered instances.\n\nHOW: `:class` is the class ident.  Returns `{:class <ident-string> :instances [<entity-map>...]}`.  Each entity-map has `:db/id`, `:db/ident` (if interned), and namespaced-keyword slots.\n\nORDER: typical sequence — `sandbar.schema.classes` (discover class) → `sandbar.class.describe` (inspect) → `sandbar.class.instances` (this verb; enumerate).  No strict prerequisites.\n\nCOMBINATION: pairs with `sandbar.aggregate.rank-by` (rank the enumerated set), `sandbar.aggregate.group-by` (faceted counts), `sandbar.search.bm25f` (fulltext-search within a class's instances).  For batch fetch across multiple classes, use `sandbar.schema.entities` (N+1 elimination) instead."
-    :inputSchema (one-required class-arg-schema [:class])
+    :description "WHICH: returns every entity that is an instance of `:class` — directly OR via `:dt/subclass-of` (i.e., subclass instances are included; instance-of relation is transitive through inheritance).\n\nWHEN: use to enumerate a class's full instance population.  Foundational read for any class-based traversal.  When NOT to use: (a) the population is large and you only want top-K by some rank — `sandbar.aggregate.rank-by`; (b) you want only DIRECT instances (no subclass instances) — there's no MCP verb for this in the current catalog; substrate has `dt/direct-instances-of` accessible via in-process Clojure; (c) you want a count, not the entities — `sandbar.aggregate.count`; (d) you want to filter by some predicate — `sandbar.aggregate.count` / `.group-by` with `:where` Datalog, or `sandbar.search.bm25f` for fulltext-filtered instances.\n\nHOW: `:class` is the class ident.  Optional `:projection` — `metadata-only` (default at MCP boundary; `:db/id` + `:db/ident` + `:dt/type` per entity; 10-300x payload reduction) or `full` (all slots; recursive ref-projection to one-hop-deep metadata-only).  Returns `{:class <ident-string> :instances [<entity-map>...]}`.\n\nORDER: typical sequence — `sandbar.schema.classes` (discover class) → `sandbar.class.describe` (inspect) → `sandbar.class.instances` (this verb; enumerate).  No strict prerequisites.\n\nCOMBINATION: pairs with `sandbar.aggregate.rank-by` (rank the enumerated set), `sandbar.aggregate.group-by` (faceted counts), `sandbar.search.bm25f` (fulltext-search within a class's instances).  For batch fetch across multiple classes, use `sandbar.schema.entities` (N+1 elimination) instead."
+    :inputSchema (one-required
+                   (merge class-arg-schema
+                          {:projection {:type "string"
+                                        :description "Per-entity shape — 'metadata-only' (default for MCP — :db/id + :db/ident + :dt/type only) or 'full' (all slots; ~10-300x larger payload).  Opt to 'full' when consumers need slot bodies."}})
+                   [:class])
     :handler class-instances-handler}
    {:name "sandbar.class.subclasses"
     :title "All transitive subclasses of a class"
