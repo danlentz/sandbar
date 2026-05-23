@@ -44,7 +44,8 @@
   {:db/ident :mm/SystemActor  :db/doc "Forward declaration; sub-subtype of :mm/Actor; full definition later."}
   {:db/ident :mm/MetaType         :db/doc "Forward declaration (sub-abstract); full definition later."}
   {:db/ident :mm/MarkdownMetaType :db/doc "Forward declaration; sub-subtype of :mm/MetaType; full definition later."}
-  {:db/ident :mm/CodeMetaType     :db/doc "Forward declaration; sub-subtype of :mm/MetaType; full definition later."}]
+  {:db/ident :mm/CodeMetaType     :db/doc "Forward declaration; sub-subtype of :mm/MetaType; full definition later."}
+  {:db/ident :mm/Session          :db/doc "Forward declaration; full definition later — concrete sub-type of :mm/Meta carrying session-lifecycle slots + workflow.process linkage per session-lifecycle-rebuild ADR cluster 2026-05-22."}]
 
  [{:db/ident         :mm/Meta
    :dt/type          :dt/Class
@@ -293,6 +294,44 @@
    :db/doc "Primary external URL."}]
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; :mm.session/* Properties — session-lifecycle linkage + chain continuity
+;;
+;; Per session-lifecycle-rebuild ADR cluster 2026-05-22:
+;;   Q1 (a+c hybrid): a session is represented by TWO linked entities — a
+;;     :mm/Session memorial (human handle; carries lifecycle metadata) +
+;;     a workflow.Process instance (state machine + history)
+;;   Q2 (all-of-above hybrid): handoff artifact is a :mm/Log memorial cited
+;;     from the :mm/Session.
+;;   Q5 (chain continuity): :previous-session ref enables session-chain
+;;     navigation for the next-session pick-up workflow.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident :mm.session/started-at
+   :dt/type :dt/Property :dt/domain :mm/Session :dt/range :db.type/instant
+   :db/valueType :db.type/instant :db/cardinality :db.cardinality/one
+   :db/doc "Wall-clock instant when the session transitioned :opening → :active.  Set via session-workflow :start transition; immutable thereafter."}
+
+  {:db/ident :mm.session/ended-at
+   :dt/type :dt/Property :dt/domain :mm/Session :dt/range :db.type/instant
+   :db/valueType :db.type/instant :db/cardinality :db.cardinality/one
+   :db/doc "Wall-clock instant when the session reached the terminal :closed state.  Absent for in-progress sessions; set via session-workflow :finalize transition."}
+
+  {:db/ident :mm.session/workflow-process
+   :dt/type :dt/Property :dt/domain :mm/Session :dt/range :workflow/Process
+   :db/valueType :db.type/ref :db/cardinality :db.cardinality/one
+   :db/doc "Reference to the workflow.Process instance carrying this session's state-machine history.  Per session-lifecycle-rebuild ADR cluster Q1 (a+c hybrid).  process-history accessible via sandbar.workflow.process-history; current state via sandbar.workflow.process-state."}
+
+  {:db/ident :mm.session/log
+   :dt/type :dt/Property :dt/domain :mm/Session :dt/range :mm/Log
+   :db/valueType :db.type/ref :db/cardinality :db.cardinality/one
+   :db/doc "Reference to the :mm/Log memorial authored at session-close (the handoff artifact carrying narrative summary + arc-touches + next-move).  Per session-lifecycle-rebuild ADR cluster Q2 (handoff = :mm/Log)."}
+
+  {:db/ident :mm.session/previous-session
+   :dt/type :dt/Property :dt/domain :mm/Session :dt/range :mm/Session
+   :db/valueType :db.type/ref :db/cardinality :db.cardinality/one
+   :db/doc "Reference to the chronologically-prior :mm/Session — enables session-chain navigation for handoff continuity and next-session pick-up workflows.  Per session-lifecycle-rebuild ADR cluster Q5 (pick-up via MCP-native primitives)."}]
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Class Definitions — Meta sub-tree
 ;;
 ;; Actor / Context / Rule are AMENDED: idempotent upsert of :db/ident adds
@@ -481,7 +520,21 @@
    :dt/context       "mm"
    :dt/label         "CodeMetaType"
    :dt/abstract?     false
-   :db/doc "Concrete meta-type for source-code repos — each instance is a markdown memory under memory/code/ reifying a code repo, with detailed structure in clj-xref index at etc/code-xref/<slug>.edn.  Per memory/types/code_meta_type.md."}]
+   :db/doc "Concrete meta-type for source-code repos — each instance is a markdown memory under memory/code/ reifying a code repo, with detailed structure in clj-xref index at etc/code-xref/<slug>.edn.  Per memory/types/code_meta_type.md."}
+
+  {:db/ident         :mm/Session
+   :dt/type          :dt/Class
+   :dt/subclass-of   :mm/Meta
+   :dt/context       "mm"
+   :dt/label         "Session"
+   :dt/native-codec  :markdown
+   :dt/slots         [:mm.session/started-at
+                      :mm.session/ended-at
+                      :mm.session/workflow-process
+                      :mm.session/log
+                      :mm.session/previous-session]
+   :dt/abstract?     false
+   :db/doc "A unit of AI-collaboration work — opens at session-start, closes at session-close.  Hybrid representation per session-lifecycle-rebuild ADR cluster 2026-05-22 Q1 (a+c): the :mm/Session memorial is the human handle (carries started-at + ended-at + workflow-process + log + previous-session); the linked :workflow/Process is the state machine + history.  Session-workflow states: :session/opening (initial) → :session/active → :session/closing → :session/closed (terminal :success).  Transitions: :session/start (opening → active), :session/pause (active → opening), :session/resume (opening → active), :session/close (active → closing), :session/finalize (closing → closed).  Per decisions/session_lifecycle_mcp_native_rebuild_q1_q2_q3_q4_resolved_plus_slash_command_deprecation_dan_directive_2026_05_22.md.  Introduced-in: 0.8.x."}]
 
  ;; :dt/codec-type-keyword routing — frontmatter `type: <keyword>` maps to the concrete class.
 
@@ -496,6 +549,7 @@
   {:db/ident :mm/HumanActor        :dt/codec-type-keyword :human_actor}
   {:db/ident :mm/SystemActor       :dt/codec-type-keyword :system_actor}
   {:db/ident :mm/MarkdownMetaType  :dt/codec-type-keyword :markdown_meta_type}
-  {:db/ident :mm/CodeMetaType      :dt/codec-type-keyword :code_meta_type}]
+  {:db/ident :mm/CodeMetaType      :dt/codec-type-keyword :code_meta_type}
+  {:db/ident :mm/Session           :dt/codec-type-keyword :session}]
 
 ]
