@@ -251,17 +251,20 @@
    already succeeded; the reactive-projection side-effect shouldn't
    crash the substrate)."
   [class-ident entity per-call-project?]
-  (let [eid (:db/id entity)]
+  (let [eid   (:db/id entity)
+        ident (:db/ident entity)]
     (if (project? class-ident per-call-project?)
       (do
         (log/debug :REACTIVE/hook-fired
-                   {:eid        eid
+                   {:ident      ident
+                    :eid        eid
                     :class      class-ident
                     :callbacks  (count @+callbacks+)})
         (dispatch! eid entity))
       (do
         (log/debug :REACTIVE/opt-out-skip
-                   {:eid    eid
+                   {:ident  ident
+                    :eid    eid
                     :class  class-ident
                     :reason (opt-out-reason class-ident per-call-project?)})
         nil))))

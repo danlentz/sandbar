@@ -175,13 +175,16 @@
    Returns nil."
   [eid post-tx-slots]
   (let [now (java.time.Instant/now)
-        already-dirty? (contains? @+dirty-entities+ eid)]
+        already-dirty? (contains? @+dirty-entities+ eid)
+        ident (:db/ident post-tx-slots)
+        class-ident (:dt/type post-tx-slots)]
     (if already-dirty?
       (do
         (swap! +metrics+ update :coalesce-total inc)
         (log/debug :REACTIVE/coalesce
-                   {:eid                eid
-                    :class              (:dt/type post-tx-slots)
+                   {:ident              ident
+                    :eid                eid
+                    :class              class-ident
                     :first-enqueue-at   (get @+dirty-entities+ eid)
                     :coalesce-total     (:coalesce-total @+metrics+)})
         nil)
@@ -192,8 +195,9 @@
                                      (assoc :last-enqueue-instant now))))
         (a/put! +projection-chan+ {:eid eid :slots post-tx-slots :enqueued-at now})
         (log/debug :REACTIVE/enqueue
-                   {:eid                eid
-                    :class              (:dt/type post-tx-slots)
+                   {:ident              ident
+                    :eid                eid
+                    :class              class-ident
                     :dirty-entity-count (count @+dirty-entities+)
                     :enqueue-total      (:enqueue-total @+metrics+)})
         nil))))
@@ -226,9 +230,11 @@
   [{:keys [eid slots enqueued-at]}]
   (let [start-instant (java.time.Instant/now)
         wait-ms       (- (.toEpochMilli start-instant)
-                         (.toEpochMilli enqueued-at))]
+                         (.toEpochMilli enqueued-at))
+        ident         (:db/ident slots)
+        class-ident   (:dt/type slots)]
     (log/debug :REACTIVE/drain-start
-               {:eid eid :class (:dt/type slots) :wait-ms wait-ms})
+               {:ident ident :eid eid :class class-ident :wait-ms wait-ms})
     (let [failed-sinks (dispatch-sinks! eid slots)
           end-instant  (java.time.Instant/now)
           total-ms     (- (.toEpochMilli end-instant)
@@ -245,17 +251,17 @@
       (cond
         (zero? sinks-attempted)
         (log/debug :REACTIVE/projection-noop
-                   {:eid eid :class (:dt/type slots) :total-ms total-ms
+                   {:ident ident :eid eid :class class-ident :total-ms total-ms
                     :reason :no-sinks-registered})
 
         (zero? sinks-failed)
         (log/info :REACTIVE/projection-success
-                  {:eid eid :class (:dt/type slots) :total-ms total-ms
+                  {:ident ident :eid eid :class class-ident :total-ms total-ms
                    :sinks-succeeded sinks-succeeded})
 
         :else
         (log/warn :REACTIVE/projection-partial
-                  {:eid eid :class (:dt/type slots) :total-ms total-ms
+                  {:ident ident :eid eid :class class-ident :total-ms total-ms
                    :sinks-attempted sinks-attempted
                    :sinks-succeeded sinks-succeeded
                    :sinks-failed    sinks-failed})))))

@@ -110,16 +110,17 @@
    propagate; the entity stays drained (will re-enqueue on next
    mutation).  Stage D will refine retry semantics."
   [eid post-tx-slots]
-  (let [class-ident (:dt/type post-tx-slots)
+  (let [ident       (:db/ident post-tx-slots)
+        class-ident (:dt/type post-tx-slots)
         rel-path    (:mm.memory/rel-path post-tx-slots)]
     (cond
       (not (memory-class? class-ident))
       (log/debug :REACTIVE/fs-write-skipped
-                 {:eid eid :class class-ident :reason :non-memory-class})
+                 {:ident ident :eid eid :class class-ident :reason :non-memory-class})
 
       (nil? rel-path)
       (log/debug :REACTIVE/fs-write-skipped
-                 {:eid eid :class class-ident :reason :no-rel-path})
+                 {:ident ident :eid eid :class class-ident :reason :no-rel-path})
 
       :else
       (try
@@ -129,20 +130,20 @@
               content  (pg/realize-and-emit-entity post-tx-slots)]
           (if (nil? content)
             (log/debug :REACTIVE/fs-write-skipped
-                       {:eid eid :class class-ident :reason :no-native-codec})
+                       {:ident ident :eid eid :class class-ident :reason :no-native-codec})
             (let [target-path (str (corpus-root) "/memory/" rel-path)
                   _           (log/debug :REACTIVE/fs-write
-                                         {:eid eid :class class-ident
+                                         {:ident ident :eid eid :class class-ident
                                           :rel-path rel-path :phase :start})
                   _           (atomic-write! target-path content)
                   done-ms     (- (System/currentTimeMillis) start-ms)
                   bytes       (count content)]
               (log/info :REACTIVE/fs-write-done
-                        {:eid eid :class class-ident :rel-path rel-path
+                        {:ident ident :eid eid :class class-ident :rel-path rel-path
                          :duration-ms done-ms :bytes bytes}))))
         (catch Throwable t
           (log/warn t :REACTIVE/fs-write-failed
-                    {:eid eid :class class-ident :rel-path rel-path
+                    {:ident ident :eid eid :class class-ident :rel-path rel-path
                      :error (.getMessage t)}))))))
 
 
@@ -167,19 +168,21 @@
    Failure semantics: per-entity try/catch.  A failed emit doesn't
    propagate; future mutations re-trigger."
   [eid post-tx-slots]
-  (try
-    (let [start-ms (System/currentTimeMillis)
-          ;; entity-updated! takes a Datomic Entity (or entity-shaped map);
-          ;; uses (entity->uri ...) internally to derive the URI
-          _ (resources/entity-updated! post-tx-slots)
-          done-ms (- (System/currentTimeMillis) start-ms)]
-      (log/debug :REACTIVE/sse-emit
-                 {:eid eid :class (:dt/type post-tx-slots)
-                  :duration-ms done-ms}))
-    (catch Throwable t
-      (log/warn t :REACTIVE/sse-emit-failed
-                {:eid eid :class (:dt/type post-tx-slots)
-                 :error (.getMessage t)}))))
+  (let [ident       (:db/ident post-tx-slots)
+        class-ident (:dt/type post-tx-slots)]
+    (try
+      (let [start-ms (System/currentTimeMillis)
+            ;; entity-updated! takes a Datomic Entity (or entity-shaped map);
+            ;; uses (entity->uri ...) internally to derive the URI
+            _ (resources/entity-updated! post-tx-slots)
+            done-ms (- (System/currentTimeMillis) start-ms)]
+        (log/debug :REACTIVE/sse-emit
+                   {:ident ident :eid eid :class class-ident
+                    :duration-ms done-ms}))
+      (catch Throwable t
+        (log/warn t :REACTIVE/sse-emit-failed
+                  {:ident ident :eid eid :class class-ident
+                   :error (.getMessage t)})))))
 
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
