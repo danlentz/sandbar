@@ -340,6 +340,7 @@
    :dt/subclass-of :dt/Ref
    :dt/context "workflow"
    :dt/label "Definition"
+   :dt/memorial-policy :first-class       ;; user-visible behavioral spec — projects to memory/workflows/<name>.md per first-class-memorialization arc Stage E migration
    :db/doc "A complete workflow specification with states and transitions."
    :dt/slots [:workflow/definition-name
               :workflow/states
@@ -351,6 +352,7 @@
    :dt/subclass-of :dt/Ref
    :dt/context "workflow"
    :dt/label "Process"
+   :dt/memorial-policy :db-only           ;; runtime state — covered by DB-dump arc for disaster recovery + audit
    :db/doc "A running instance of a workflow attached to a subject entity."
    :dt/slots [:workflow/definition
               :workflow/current-state

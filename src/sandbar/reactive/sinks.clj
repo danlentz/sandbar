@@ -88,6 +88,45 @@
     (dt/type-isa? :mm/Memory class-ident)
     (catch Throwable _ false)))
 
+(defn- effective-memorial-policy-of
+  "Walk the class hierarchy starting at `class-ident` looking for the
+   nearest `:dt/memorial-policy` declaration.  Per
+   [`memory.decisions/option_b_plus_c_ratified_spec_vs_state_criterion_pivot_to_first_class_memorialization_2026_05_23`](decisions/option_b_plus_c_ratified_spec_vs_state_criterion_pivot_to_first_class_memorialization_2026_05_23.md)
+   + the first-class-memorialization arc Stage B.3 enforcement wiring.
+
+   Returns one of `:first-class` / `:db-only` / `:inline`, or nil if no
+   declaration is found anywhere in the ancestry chain.  Nil means the
+   class is policy-undeclared — for Stage B.3 MVP, treated as
+   `:db-only` (conservative default; future Stage G makes nil a
+   loud-fail at class-registration time).
+
+   Class-hierarchy walk uses `dt/parents-of` (single-step) iterated until
+   policy found or root reached.  Cycles in the hierarchy are unlikely
+   (would be a schema bug) but defended via depth-bound."
+  [class-ident]
+  (loop [current class-ident
+         depth 0]
+    (when (and current (< depth 16))
+      (let [class-entity (try (db/entity current) (catch Throwable _ nil))
+            policy (some-> class-entity :dt/memorial-policy)]
+        (or policy
+            (let [parents (try (some-> class-entity :dt/subclass-of) (catch Throwable _ nil))
+                  ;; :dt/subclass-of returns set of keywords directly (idents),
+                  ;; OR a single keyword/eid, OR an entity-map.  Normalize to
+                  ;; a single keyword ident to recur on.
+                  parent-ident (cond
+                                 (keyword? parents) parents
+                                 (and (set? parents) (seq parents))
+                                 (or (first (filter keyword? parents))
+                                     (some :db/ident parents))
+                                 (and (sequential? parents) (seq parents))
+                                 (or (first (filter keyword? parents))
+                                     (some :db/ident parents))
+                                 (and parents (associative? parents)) (:db/ident parents)
+                                 :else nil)]
+              (when parent-ident
+                (recur parent-ident (inc depth)))))))))
+
 (defn fs-projection-sink
   "Per-drain sink: reactive forward projection (DB → FS).
 
@@ -112,11 +151,20 @@
   [eid post-tx-slots]
   (let [ident       (:db/ident post-tx-slots)
         class-ident (:dt/type post-tx-slots)
-        rel-path    (:mm.memory/rel-path post-tx-slots)]
+        rel-path    (:mm.memory/rel-path post-tx-slots)
+        ;; Stage B.3 of first-class-memorialization arc — consult
+        ;; :dt/memorial-policy (with class-hierarchy walk) before projecting.
+        ;; Replaces the prior `memory-class?` check which was ancestry-based
+        ;; ("is this a :mm/Memory descendant?") with the semantic check
+        ;; ("does this class want fs projection?").  Policy-undeclared
+        ;; classes treated as :db-only (conservative MVP default).
+        policy      (effective-memorial-policy-of class-ident)]
     (cond
-      (not (memory-class? class-ident))
+      (not= policy :first-class)
       (log/debug :REACTIVE/fs-write-skipped
-                 {:ident ident :eid eid :class class-ident :reason :non-memory-class})
+                 {:ident ident :eid eid :class class-ident
+                  :reason :memorial-policy-not-first-class
+                  :policy (or policy :undeclared)})
 
       (nil? rel-path)
       (log/debug :REACTIVE/fs-write-skipped

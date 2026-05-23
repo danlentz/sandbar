@@ -1,0 +1,54 @@
+---
+name: ":dt/memorial-policy"
+description: "Per-class declarative classification governing how instances of the class are persisted + projected to the filesystem corpus.  Three values discriminate the post-pivot architecture: :first-class (project to memory/<class-path>/<ident>.md via the reactive sink); :db-only (stay DB-resident; covered by DB-dump arc); :inline (serialize inline within host memorial slots).  Substrate-resident slot on :dt/Class instances; consumed by the reactive-projection sink + the DB-dump worker."
+type: predicate
+scope: project
+created: 2026-05-23
+last-touched: 2026-05-23
+created-by:
+  - memory.actors/claude-opus-4-7-1m
+---
+
+## What `:dt/memorial-policy` is
+
+A `:db.type/keyword` slot on `:dt/Class` instances declaring how members of the class are made durable + presented across the substrate / corpus boundary.  Introduced 2026-05-23 per the SPEC-vs-STATE pivot ratifying [decisions/option_b_plus_c_ratified_spec_vs_state_criterion_pivot_to_first_class_memorialization_2026_05_23.md](../decisions/option_b_plus_c_ratified_spec_vs_state_criterion_pivot_to_first_class_memorialization_2026_05_23.md).
+
+The slot composes with `:dt/native-codec` (codec format selection) + `:dt/codec-aliases` (per-class slot-name aliasing) + `:dt/codec-slot-order` (canonical frontmatter emit order) + `:dt/bm25f-weights` (per-class fulltext weights) to form the per-class projection-control surface.
+
+## The three values
+
+| Value | Semantics | Example classes |
+|---|---|---|
+| `:first-class` | Instances project to `memory/<class-path>/<ident>.md` via `sandbar.reactive.sinks/fs-projection-sink`.  BM25F-searchable.  Human-editable.  Git-versioned alongside corpus memorials. | `:mm/Memory` (and descendants by hierarchy walk), `:workflow/Definition`, future `:scheduler/Schedule` + `:scheduler/Job` |
+| `:db-only` | Instances stay DB-resident.  No fs counterpart.  Covered by the DB-dump arc (phantom-ref/branch in git) for disaster recovery + audit.  Not searchable via BM25F (no body content). | `:workflow/Process`, future `:scheduler/Process`, `:dt/Class`, `:dt/Property`, `:event/HttpRequest` |
+| `:inline` | Instances serialize inline within host memorials' slot values.  No standalone fs file (cardinality would explode the fs tree).  Searchable indirectly via host memorial's body / slots. | `:mm/Tag` (serialized in `:mm.memory/tags` slot of host memorials) |
+
+## Why this exists
+
+Pre-pivot, the substrate had several classes (`:workflow/Definition` etc.) that lived ONLY in the DB — not in the fs corpus.  This broke metacircularity / reflectivity / introspection: the AI couldn't search workflows via BM25F (no body content); couldn't navigate to a workflow's .md file (none existed); couldn't edit workflows via the same authoring path used for decisions / observations.
+
+Post-pivot, `:dt/memorial-policy` makes the classification DECLARATIVE + INTROSPECTABLE.  The substrate's reactive-projection sink consults it at projection time; the DB-dump worker consults it at dump time.  Future class authoring is required to declare the policy explicitly (per [plans/sandbar_first_class_memorialization_arc_workflows_schedules_contexts_dt_memorial_policy_2026_05_23.md](../plans/sandbar_first_class_memorialization_arc_workflows_schedules_contexts_dt_memorial_policy_2026_05_23.md) §6.7 Stage G).
+
+## Inheritance semantics
+
+`:dt/memorial-policy` is declared per-class.  Subclasses inherit via `:dt/subclass-of` walk if not overridden — implemented in the consumer (fs-projection-sink walks the class hierarchy looking for the closest declaration).  `:mm/Memory` declares `:first-class` once; all 40+ descendants inherit.  Specific classes override (`:event/HttpRequest` declares `:db-only` even though it descends from `:mm/Memory`).
+
+## Substrate-side enforcement
+
+- **`sandbar.reactive.sinks/fs-projection-sink`** (Stage B.3 of the first-class-memorialization arc): consults `:dt/memorial-policy` before invoking codec.emit + fs.write.  Skips classes with `:db-only` or `:inline` policy.
+- **`sandbar.project.dump-db-only`** (Stage B of the DB-dump arc): walks classes; includes only those with `:db-only` policy.
+- **Class registration validation** (future; Stage G of the first-class-memorialization arc): loud-fails on `:dt/Class` instances without explicit `:dt/memorial-policy` declaration.
+
+## Origin lineage
+
+- [Question: Which Entities Are First-Class Memorialized? (2026-05-23)](../questions/which_entities_are_first_class_memorialized_corpus_db_relationship_inverted_metacircularity_2026_05_23.md) — the architectural reframing
+- [Decision: Option B + C Ratified (2026-05-23)](../decisions/option_b_plus_c_ratified_spec_vs_state_criterion_pivot_to_first_class_memorialization_2026_05_23.md) — Dan-ratification of the SPEC-vs-STATE criterion
+- [Plan: First-Class Memorialization Arc (2026-05-23)](../plans/sandbar_first_class_memorialization_arc_workflows_schedules_contexts_dt_memorial_policy_2026_05_23.md) — implementation arc this slot is the centerpiece of
+- [Idea: Sandbar as Emerging AI OS (2026-05-23)](../ideas/sandbar_as_emerging_ai_os_not_just_memory_model_2026_05_23.md) — the metacircular invariant rationale
+
+## See also
+
+- `:dt/native-codec` — sister slot governing codec FORMAT (markdown / TTL / EDN / JSON) for instances that get projected
+- `:dt/codec-aliases` — per-class wire-form short-key aliasing
+- `:dt/codec-slot-order` — canonical emit order for frontmatter slots
+- `:dt/bm25f-weights` — per-class fulltext-search field weights (applies only to `:first-class` instances since `:db-only` entities aren't searchable)

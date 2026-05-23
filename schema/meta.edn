@@ -451,7 +451,40 @@
             scoring fulltext hits against the memory class.
 
             Per fulltext arc Stage 1 of
-            plans/sandbar_fulltext_search_substrate_arc_2026_05_13.md."}]
+            plans/sandbar_fulltext_search_substrate_arc_2026_05_13.md."}
+
+  {:db/ident :dt/memorial-policy
+   :dt/type  :dt/Property
+   :dt/domain :dt/Class
+   :dt/range :db.type/keyword
+   :db/valueType :db.type/keyword
+   :db/cardinality :db.cardinality/one
+   :db/doc "Per-class declarative classification governing how instances
+            are persisted + projected to the fs corpus.  Three values:
+
+              :first-class — instances project to memory/<class-path>/<ident>.md
+                             via the reactive sink (sandbar.reactive.sinks);
+                             BM25F-searchable + human-editable + git-versioned
+
+              :db-only     — instances stay DB-resident; covered by the DB-dump
+                             arc for disaster recovery + audit
+
+              :inline      — instances serialize inline within host memorials
+                             (e.g., :mm/Tag in :mm.memory/tags)
+
+            The reactive-projection sink consults this slot at projection time
+            to decide whether to materialize a fs counterpart.  The DB-dump arc
+            consults this slot at dump time to decide whether to include.
+
+            Per decisions/option_b_plus_c_ratified_spec_vs_state_criterion_pivot_to_first_class_memorialization_2026_05_23.md
+            + plans/sandbar_first_class_memorialization_arc_workflows_schedules_contexts_dt_memorial_policy_2026_05_23.md
+            (Dan-pivot 2026-05-23 ratifying Option B + C of the corpus/DB
+            inversion question; SPEC-vs-STATE criterion).
+
+            Future evolution: REQUIRED at class-design time (loud-fail without)
+            per the arc plan's §6.7 Stage G.  Currently optional with no enforced
+            default; Stage A.2 of the first-class-memorialization arc resolves
+            the required-vs-optional default semantics."}]
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Fundamental Classes
@@ -469,13 +502,15 @@
    :dt/context "meta"
    :dt/subclass-of :dt/Resource
    :dt/label "Class"
-   :dt/slots [:dt/subclass-of :dt/abstract? :dt/list :dt/component :dt/slots :dt/validator :dt/native-codec :dt/codec-aliases :dt/bm25f-weights]}
+   :dt/memorial-policy :db-only            ;; schema entity — bootstrapped from sandbar source; covered by DB-dump arc
+   :dt/slots [:dt/subclass-of :dt/abstract? :dt/list :dt/component :dt/slots :dt/validator :dt/native-codec :dt/codec-aliases :dt/bm25f-weights :dt/memorial-policy]}
 
   {:db/ident :dt/Property
    :dt/type :dt/Class
    :dt/subclass-of :dt/Resource
    :dt/label "Property"
    :dt/context "meta"
+   :dt/memorial-policy :db-only            ;; schema entity — bootstrapped from sandbar source; covered by DB-dump arc
    :dt/slots [:db/cardinality :db/unique :db/fulltext
               :dt/domain :dt/range :dt/subproperty-of :dt/required?]}
 

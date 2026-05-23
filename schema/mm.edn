@@ -1276,6 +1276,7 @@
    :dt/context           "mm"
    :dt/label             "Tag"
    :dt/native-codec      :markdown                         ;; tag memorials are markdown documents
+   :dt/memorial-policy   :inline                           ;; serialized within host memorial's :mm.memory/tags slot; cardinality makes per-tag fs files impractical
    :dt/codec-type-keyword :tag                             ;; frontmatter `type: tag` routes to :mm/Tag (Stage 7.C class-routing)
    :dt/bm25f-weights     [[:mm.tag/value         12.0]
                           [:mm.tag/alt-label      8.0]
@@ -1423,6 +1424,7 @@
    :dt/context       "mm"
    :dt/label         "Memory"
    :dt/native-codec  :markdown
+   :dt/memorial-policy :first-class                       ;; inherited by descendants via class-hierarchy walk per first-class-memorialization arc
    :dt/codec-aliases [[:type :mm.memory/memory-type]]
    :dt/bm25f-weights [[:mm.memory/name        12.0]
                       [:mm.memory/description  8.0]
