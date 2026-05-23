@@ -386,14 +386,14 @@
   time) and must re-tokenize.
 
   Substrate-quality: metamodel-driven enumeration via
-  `dt/all-classes` + `dt/bm25f-weights-of` + `dt/range-of`.  No
+  `dt/all-classes` + `dt/effective-bm25f-weights-of` + `dt/range-of`.  No
   hardcoded consumer-class knowledge."
   [target-class]
   (into #{}
         (filter (fn [class-ident]
                   (some (fn [[slot _w]]
                           (= target-class (dt/range-of slot)))
-                        (dt/bm25f-weights-of class-ident))))
+                        (dt/effective-bm25f-weights-of class-ident))))
         (dt/all-classes)))
 
 (defn- referencing-eids
@@ -402,7 +402,7 @@
   whose range is `target-class`.  Pure metamodel-driven Datalog walk."
   [dependent-class target-class target-eid]
   (let [db        (db/db)
-        ref-slots (->> (dt/bm25f-weights-of dependent-class)
+        ref-slots (->> (dt/effective-bm25f-weights-of dependent-class)
                        (filter (fn [[slot _w]]
                                  (= target-class (dt/range-of slot))))
                        (mapv first))]
@@ -439,7 +439,7 @@
   [class entity-map]
   (let [eid (:db/id entity-map)]
     ;; Direct cache update (only if the changed class itself is bm25f-weighted)
-    (when (and eid (seq (dt/bm25f-weights-of class)))
+    (when (and eid (seq (dt/effective-bm25f-weights-of class)))
       (let [analyzed (bm25f/analyze-entity class entity-map)]
         (swap! bm25f-entry-cache assoc-in [class eid] analyzed)
         (swap! bm25f-stats-cache dissoc class)))
@@ -463,7 +463,7 @@
   entity is retracted/deleted.  Drops the entry from the cache + drops
   stats for the class.  Idempotent."
   [class eid]
-  (when (seq (dt/bm25f-weights-of class))
+  (when (seq (dt/effective-bm25f-weights-of class))
     (swap! bm25f-entry-cache update class dissoc eid)
     (swap! bm25f-stats-cache dissoc class)))
 
@@ -611,7 +611,7 @@
              (and (some? from) (some? via)))
          (or (nil? projection) (#{:full :metadata-only} projection))]}
   (let [t-start         (System/currentTimeMillis)
-        weights         (or field-weights (dt/bm25f-weights-of class))
+        weights         (or field-weights (dt/effective-bm25f-weights-of class))
         _               (when (empty? weights)
                           (throw (ex-info "No :dt/bm25f-weights declared on class; supply :field-weights opt"
                                           {:class         class

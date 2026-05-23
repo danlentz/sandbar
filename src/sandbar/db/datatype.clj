@@ -1262,6 +1262,29 @@
   (let [chain (cons class-ident (ancestors-of class-ident))]
     (vec (distinct (mapcat codec-slot-order-of chain)))))
 
+(defn effective-bm25f-weights-of
+  "Returns the BM25F field-weight map merged across the class hierarchy.
+  Walks `:dt/subclass-of` ancestors; leaf-class weights shadow ancestors
+  for shared slot keys (specificity wins).
+
+  Used by `sandbar.search/search-bm25f` so subclasses of a class declaring
+  `:dt/bm25f-weights` (e.g., the consumer's memorial-subclass family)
+  inherit the parent's declared weights without having to redeclare them.
+  Without this, `search.bm25f` against a subclass fails with
+  'No :dt/bm25f-weights declared on class'.
+
+  Added 2026-05-23 per Gap 13 fix
+  (plans/sandbar_mcp_end_to_end_correctness_pass_substrate_stabilization_arc_2026_05_22.md
+  Stage C — subclass inheritance for class-metadata helpers).  Sister to
+  `effective-codec-aliases-of` / `effective-codec-slot-order-of` — same
+  ancestor-walk pattern, different attribute.  Class-agnostic per
+  interaction/no_hardcoded_consumer_class_knowledge_in_substrate_2026_05_13.md."
+  [class-ident]
+  (let [chain (cons class-ident (ancestors-of class-ident))]
+    (reduce (fn [acc c] (merge acc (bm25f-weights-of c)))
+            {}
+            (reverse chain))))
+
 (defn direct-subclasses-of
   "Returns the idents of classes that directly extend class dt.
   Only returns immediate children, not transitive descendants."

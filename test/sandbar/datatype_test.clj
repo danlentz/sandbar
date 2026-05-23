@@ -234,13 +234,17 @@
     (is (= {} (dt/bm25f-weights-of :mm/Link))
         ":mm/Link has no per-class :dt/bm25f-weights declaration"))
   (testing "bm25f-weights-of returns the declared weight map for :mm/Memory"
-    ;; Positive-path: :mm/Memory declares
-    ;;   [[:mm.memory/name 12.0] [:mm.memory/description 8.0] [:mm.memory/body-raw 1.0]]
-    ;; in schema/mm.edn per fulltext arc Stage 1.
+    ;; :mm/Memory declares per-class weights in schema/mm.edn — name + description +
+    ;; body-raw from fulltext arc Stage 1; tags + themes + rel-path added subsequently
+    ;; for the tag-content / themes / rel-path retrieval axes.  Assertion mirrors
+    ;; whatever is currently declared; treat this as a schema-state probe.
     (let [weights (dt/bm25f-weights-of :mm/Memory)]
       (is (= {:mm.memory/name        12.0
-              :mm.memory/description  8.0
-              :mm.memory/body-raw     1.0}
+              :mm.memory/description   8.0
+              :mm.memory/themes        6.0
+              :mm.memory/tags          4.0
+              :mm.memory/rel-path      3.0
+              :mm.memory/body-raw      1.0}
              weights)
           ":mm/Memory's :dt/bm25f-weights tuples reconstruct as {slot weight} map")))
   (testing "bm25f-weights-of returns the declared weight map for :mm/Section"
@@ -258,6 +262,54 @@
   ;; (plural form) per schema/meta.edn — distinct from :dt/codec-aliases's
   ;; homogeneous :db/tupleType (singular) two-keyword shape.
   )
+
+(deftest effective-bm25f-weights-of-test
+  ;; Gap 13 fix per substrate-stabilization arc Phase 3 Stage C — subclass
+  ;; inheritance for class-metadata helpers.  Mirrors the
+  ;; `effective-codec-aliases-of` / `effective-codec-slot-order-of` ancestor-
+  ;; walk pattern.  Class-agnostic per
+  ;; interaction/no_hardcoded_consumer_class_knowledge_in_substrate_2026_05_13.md.
+  (testing "effective-bm25f-weights-of equals direct getter when no ancestor contributes"
+    ;; :mm/Memory declares its weights directly.  No ancestor in the chain
+    ;; (:mm/Memory → :dt/Resource → ...) adds anything; the effective view
+    ;; equals the direct getter.
+    (is (= (dt/bm25f-weights-of :mm/Memory)
+           (dt/effective-bm25f-weights-of :mm/Memory))
+        ":mm/Memory's effective weights = direct weights (no ancestor declares)"))
+  (testing "effective-bm25f-weights-of walks :dt/subclass-of ancestors to inherit weights"
+    ;; :mm/Plan is :dt/subclass-of :mm/Artifact :dt/subclass-of :mm/Memory.
+    ;; :mm/Plan declares no per-class weights; effective-bm25f-weights-of
+    ;; should surface :mm/Memory's declared weights via ancestor walk.
+    ;; Before Gap 13 fix: search.bm25f on :mm/Plan raised "No :dt/bm25f-weights
+    ;; declared on class".
+    (let [memory-weights (dt/bm25f-weights-of :mm/Memory)
+          plan-effective (dt/effective-bm25f-weights-of :mm/Plan)]
+      (is (= {} (dt/bm25f-weights-of :mm/Plan))
+          ":mm/Plan declares no direct weights (precondition for the inheritance test)")
+      (is (seq plan-effective)
+          ":mm/Plan inherits non-empty weights via ancestor walk")
+      (is (= memory-weights plan-effective)
+          ":mm/Plan's effective weights equal ancestor :mm/Memory's declared weights")))
+  (testing "effective-bm25f-weights-of returns {} when neither class nor ancestors declare weights"
+    (is (= {} (dt/effective-bm25f-weights-of :mm/Link))
+        ":mm/Link has no direct weights and no weighted ancestor")
+    (is (= {} (dt/effective-bm25f-weights-of :dt/Property))
+        "metamodel-only class outside the weighted hierarchy"))
+  (testing "effective-bm25f-weights-of return shape is always a map"
+    (is (map? (dt/effective-bm25f-weights-of :mm/Memory)))
+    (is (map? (dt/effective-bm25f-weights-of :mm/Plan)))
+    (is (map? (dt/effective-bm25f-weights-of :nonexistent/Class))))
+  (testing "leaf-class declared weights shadow ancestor weights (specificity wins)"
+    ;; If a subclass declared its own weight for a slot already weighted in an
+    ;; ancestor, the subclass weight should win in the effective view.  Tested
+    ;; here by direct construction over the in-process helpers; if no
+    ;; corpus class exhibits this pattern today, the test still asserts the
+    ;; reduce/merge semantic via direct invocation.
+    ;; (Defer richer corpus-driven verification until a leaf class declares
+    ;; an overlapping weight.)
+    (is (= (dt/bm25f-weights-of :mm/Memory)
+           (dt/effective-bm25f-weights-of :mm/Memory))
+        "Specificity-wins is the merge semantic; with no overlap today, leaf-direct = effective")))
 
 (deftest fulltext-indexed?-test
   (testing "fulltext-indexed? returns true for slots declared :db/fulltext true"

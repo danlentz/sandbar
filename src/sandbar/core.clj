@@ -49,7 +49,7 @@
   ;; declared.  Per-class warm is independent; failure on one class doesn't
   ;; block others (per-class try/catch).
   (try
-    (let [searchable (filter #(seq (dt/bm25f-weights-of %)) (dt/all-classes))]
+    (let [searchable (filter #(seq (dt/effective-bm25f-weights-of %)) (dt/all-classes))]
       (doseq [class searchable]
         (try
           (let [{:keys [count ms]} (search/warm-bm25f-cache! class)]

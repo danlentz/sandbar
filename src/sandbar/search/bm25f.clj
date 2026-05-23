@@ -13,7 +13,7 @@
 
   `analyze-entity` is the per-entity analyzer (tokenize each weighted
   slot, frequencies, length).  Weights come from the entity's class
-  `:dt/bm25f-weights` declaration via `dt/bm25f-weights-of` — no
+  `:dt/bm25f-weights` declaration via `dt/effective-bm25f-weights-of` — no
   hardcoded consumer-class knowledge in the substrate.  `corpus-stats`
   aggregates corpus-wide N, df-by-term, avgdl-by-slot.  `score` is the
   scoring kernel.  All three are pure.
@@ -42,7 +42,7 @@
 
   Ported 2026-05-13 from `etc/lib/bm25f.clj` (Robertson-Zaragoza canonical)
   to Sandbar substrate.  Field-extraction adapted from corpus-frontmatter-
-  shape to metamodel-driven via `dt/bm25f-weights-of` per substrate-quality
+  shape to metamodel-driven via `dt/effective-bm25f-weights-of` per substrate-quality
   discipline (no hardcoded consumer-class knowledge).
 
   Per fulltext arc Stage 4b of
@@ -129,7 +129,7 @@
   (let [target-class (dt/range-of slot-ident)]
     (when (and (keyword? target-class)
                (not= "db.type" (namespace target-class)))
-      (when-let [target-weights (dt/bm25f-weights-of target-class)]
+      (when-let [target-weights (dt/effective-bm25f-weights-of target-class)]
         (let [refs        (cond
                             (nil? value)                  nil
                             (and (coll? value)
@@ -178,13 +178,13 @@
        :eid     entity id (when available)
        :fields  {<slot-ident> {:tf {term count} :len token-count}}}
 
-  Reads field set from `dt/bm25f-weights-of class-ident` — substrate-
+  Reads field set from `dt/effective-bm25f-weights-of class-ident` — substrate-
   quality discipline (no hardcoded consumer-class knowledge).  Slot
   values are extracted via `raw-field` which handles string +
   cardinality-many-string cases.  Non-string slots yield empty
   `{:tf {} :len 0}` so the scoring kernel can still compose."
   [class-ident entity-map]
-  (let [weights (dt/bm25f-weights-of class-ident)]
+  (let [weights (dt/effective-bm25f-weights-of class-ident)]
     {:entity entity-map
      :eid    (:db/id entity-map)
      :fields (into {}
@@ -320,7 +320,7 @@
   double, 0.0 when no query term has any field-presence in the entity.
 
   `field-weights` is the per-slot weight map (e.g. from
-  `dt/bm25f-weights-of class-ident` or supplied per-query).  Required
+  `dt/effective-bm25f-weights-of class-ident` or supplied per-query).  Required
   argument — substrate does not hardcode defaults; consumers always pass
   weights derived from the class declaration or a per-query override."
   [query-tokens analyzed-entity stats field-weights]
