@@ -985,21 +985,37 @@
       (nav-siblings/siblings-of opts))))
 
 (defn- navigate-path-via-handler [args]
-  (let [from-arg (or (get args "from") (get args :from))
-        via-arg  (or (get args "via")  (get args :via))
-        limit    (or (get args "limit") (get args :limit))
-        include  (or (get args "include") (get args :include))]
+  (let [from-arg       (or (get args "from") (get args :from))
+        via-arg        (or (get args "via")  (get args :via))
+        limit          (or (get args "limit") (get args :limit))
+        include        (or (get args "include") (get args :include))
+        projection-raw (or (get args "projection") (get args :projection))]
     (when (nil? from-arg)
       (throw (ex-info "Missing required argument: from" {:args args})))
     (when (nil? via-arg)
       (throw (ex-info "Missing required argument: via" {:args args})))
-    (let [from-ident (eref/resolve-ident from-arg)
-          include-set (when (sequential? include)
-                        (set (map keyword include)))
-          opts (cond-> {:from from-ident :via via-arg}
-                 (some? limit)   (assoc :limit limit)
-                 include-set     (assoc :include include-set))]
-      (nav-path/path-via opts))))
+    (let [from-ident    (eref/resolve-ident from-arg)
+          include-set   (when (sequential? include)
+                          (set (map keyword include)))
+          opts          (cond-> {:from from-ident :via via-arg}
+                          (some? limit) (assoc :limit limit)
+                          include-set   (assoc :include include-set))
+          ;; B.3 — MCP boundary defaults to :metadata-only for the bulky
+          ;; reachable-entity collection; consumers opt to :full when slot
+          ;; bodies needed.  Apply post-hoc to each :reachable entry.
+          ;; When :include :paths is set, entries are {:entity :path}; otherwise
+          ;; entries are plain entity-maps.  Substrate path-via always full-
+          ;; projects; we downsize at the MCP boundary per Stage B.3.
+          projection-fn (projection/projection-fn-for
+                          (or (projection/->projection-mode projection-raw) :metadata-only))
+          result        (nav-path/path-via opts)
+          paths?        (boolean (and include-set (include-set :paths)))]
+      (update result :reachable
+              (fn [reachable]
+                (mapv (if paths?
+                        (fn [entry] (update entry :entity projection-fn))
+                        projection-fn)
+                      reachable))))))
 
 (defn- entity-update-handler [args]
   ;; Stage I of plans/sandbar_codex_review_remediation_arc_2026_05_13.md
@@ -2127,15 +2143,17 @@
     :title "Walk a Wilbur-lineage path-grammar expression from a seed entity"
     :description "WHICH: walks a path-grammar expression (`:via`) starting from a seed entity (`:from`); returns the set of entities reachable under the binary-relation algebra denoted by the expression.  Path-grammar is Kleene-algebra-over-binary-relations — same lineage as SPARQL 1.1 property paths and ISO GQL 39075:2024.\n\nWHEN: use when navigation needs more expressiveness than direct edges (`sandbar.navigate.inbound` / `.outbound`) or bounded BFS — specifically when you need Kleene closure (`:REP*` / `:REP+`), alternation (`:OR`), inverse traversal at depth, or shape-specific restrictions.  Real-world property-path queries are <0.1% of total per Bonifati 2017 — but when you need them, only path-grammar fits.  When NOT to use: (a) single hop — use `sandbar.navigate.outbound` / `.inbound` (simpler + faster); (b) bounded N-hop reachability — use `sandbar.navigate.walk` (BFS with hop-cap is more efficient than `:REP*` for known-depth walks); (c) you need the seed itself in results — `:REP*` (or `:OPT`) includes the seed via the zero-application branch.\n\nHOW: `:from` is the seed entity ident or eid.  `:via` is an EDN-STRING path expression using one of 13 currently-executable operators:\n  * Canonical-8 (Tier-1): `:SEQ` (n-ary sequence) / `:OR` (n-ary union) / `:REP+` (transitive closure 1+) / `:REP*` (reflexive-transitive 0+) / `:INV` (inverse — swap subject/object roles) / `:SELF` (identity) / `:RESTRICT [pred value]` (specific-node filter) / `:ANY` (wildcard predicate)\n  * Tier-2: `:NOT` (atomic-predicate property-set negation) / `:OPT` (zero-or-one; desugars to `(:OR p :SELF)`) / `:REP p min max` (bounded repetition) / `:FILTER p substring` (URI-substring filter on `:db/ident`) / `:TEST p fn-name` (functional predicate via registered fn)\nCasing: UPPERCASE combinators / lowercase predicates.  Examples:\n  * `\"[:REP+ :dt/subclass-of]\"` — transitive ancestor walk\n  * `\"[:SEQ [:REP* [:OR :cites :evidences]] [:RESTRICT [:dt/type :mm.memory/decision]]]\"` — closure-then-filter\n  * `\"[:INV [:REP+ :cites]]\"` — entities that transitively cite this seed\nTier-3 operators (`:LANG`, `:VALUE`, `:DAEMON`, `:NOREWRITE`, `:MEMBERS`, `:PREDICATE-OF-*`) are vocabulary-registered but compilation deferred; passing them raises descriptive ex-info.  `:include [\"paths\"]` is accepted but path-data is not yet populated (recursive-path reconstruction lands at follow-on); result carries `:path-data-deferred true` flag when requested.\n\nORDER: no strict prerequisites.  To explore the typed-edge vocabulary available at the seed first, call `sandbar.navigate.outbound` to see what predicates emerge from the entity; to discover class-hierarchy predicates, use `sandbar.class.slots` on a class.\n\nCOMBINATION: composes with `sandbar.navigate.inbound`/`.outbound` (use them to discover predicate vocab before authoring path expressions) and `sandbar.navigate.walk` (use walk first if depth-bounded reachability is enough; reach for path-via only when Kleene closure adds value).  Cross-axis composition with `sandbar.search.bm25f` (`:from` + `:via` opts to restrict candidate set) and `sandbar.aggregate.rank-by` (rank within a graph-walk neighborhood) lands at Stage 29.\n\nResult: `{:reachable [<entity-map>...] :total <int> :returned <int>}`.  Per fulltext arc Stage P-6 of plans/sandbar_fulltext_search_substrate_arc_2026_05_13.md."
     :inputSchema (one-required
-                   {:from    {:type "string"
-                              :description "Seed entity ident (e.g. ':dt/Property') or eid"}
-                    :via     {:type "string"
-                              :description "EDN-string path expression (e.g. \"[:REP* [:OR :cites :evidences]]\")"}
-                    :limit   {:type "integer"
-                              :description "Max returned entities (default 0 = no cap)"}
-                    :include {:type "array"
-                              :items {:type "string"}
-                              :description "Projection options; supports 'paths' (deferred surfacing)"}}
+                   {:from       {:type "string"
+                                 :description "Seed entity ident (e.g. ':dt/Property') or eid"}
+                    :via        {:type "string"
+                                 :description "EDN-string path expression (e.g. \"[:REP* [:OR :cites :evidences]]\")"}
+                    :limit      {:type "integer"
+                                 :description "Max returned entities (default 0 = no cap)"}
+                    :include    {:type "array"
+                                 :items {:type "string"}
+                                 :description "Projection options; supports 'paths' (deferred surfacing)"}
+                    :projection {:type "string"
+                                 :description "Per-reachable-entity shape — 'metadata-only' (default for MCP — :db/id + :db/ident + :dt/type only) or 'full' (all slots; ~10-300x larger payload).  When :include includes 'paths', applies to the :entity field of each {:entity :path} entry."}}
                    [:from :via])
     :handler navigate-path-via-handler}
 
