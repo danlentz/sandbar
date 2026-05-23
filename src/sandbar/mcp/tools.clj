@@ -1269,11 +1269,27 @@
    in lookup results — they surface in `sandbar.tag.audit` as
    `:undefined-used` violations + migrate to canonical via Stage 8 M.2."
   [args]
-  (let [concept (or (get args "concept") (get args :concept))
-        limit   (or (get args "limit")   (get args :limit) 10)]
+  (let [concept        (or (get args "concept") (get args :concept))
+        limit          (or (get args "limit")   (get args :limit) 10)
+        projection-raw (or (get args "projection") (get args :projection))]
     (when (str/blank? (str concept))
       (throw (ex-info "Missing required argument: concept" {:args args})))
-    (let [{:keys [hits total]}
+    (let [;; B.3 — :projection opt.  Default :full ships the curated
+          ;; tag-summary shape (broader/narrower context — tag.lookup's
+          ;; primary semantic).  Consumers opt to :metadata-only for
+          ;; lightweight match-set traversal (e.g., walking thousands of
+          ;; audit-flagged tags without per-tag body).
+          ;;
+          ;; NOTE: tag.lookup's :full mode is NOT generic full-projection;
+          ;; it's the domain-specific tag-summary shape (:value + :ident +
+          ;; :alt-label + :definition + :scope-note + broader/narrower
+          ;; idents).  :metadata-only mode falls back to substrate-universal
+          ;; projection/metadata-projection.
+          projection-mode (or (projection/->projection-mode projection-raw) :full)
+          summarize       (case projection-mode
+                            :full          tag-summary
+                            :metadata-only projection/metadata-projection)
+          {:keys [hits total]}
           (try
             (search/search-bm25f {:query concept
                                   :class :mm/Tag
@@ -1284,7 +1300,7 @@
               {:hits [] :total 0 :error (.getMessage e)}))]
       {:concept     concept
        :matches     (vec (for [hit hits]
-                           (assoc (tag-summary (:entity hit))
+                           (assoc (summarize (:entity hit))
                                   :score (:score hit))))
        :match-total total
        :gap?        (zero? (count hits))
@@ -2166,9 +2182,11 @@
     :handler ground-handler}
    {:name "sandbar.tag.lookup"
     :title "Tag-vocabulary primitive — find canonical tags aligned with a concept"
-    :description "WHICH: surfaces tags whose canonical-form / alt-label / hidden-label / definition / scope-note / example align with the query concept.  Step 1 of the sandbar.ground compositional workflow.  Returns ranked candidates with broader/narrower context.\n\nWHEN: use to discover whether the corpus's tag vocabulary already has a concept covered before authoring a new tag.  Disambiguation primitive — if scope-notes differ across candidates, the right tag becomes obvious.  When NOT to use: (a) the concept is corpus-wide (try sandbar.search.bm25f over body content instead); (b) you already have a specific tag-value (use sandbar.entity.find or read directly).\n\nHOW: `:concept` is the concept-string; `:limit` (optional) caps returned matches (default 10).  Returns `:concept`, `:matches` (vec of tag-summary maps with `:score`), `:gap?` (true when no tag matches), `:gap-hint` (suggested sandbar.tag.define invocation when gap).\n\nORDER: step 1 of sandbar.ground.  Called directly when you want JUST the tag-vocabulary primitive (no meta-vocab / suggested-next).\n\nCOMBINATION: pairs with sandbar.tag.define (when `:gap? true` — author the canonical), sandbar.tag.consolidate (when matches show drift), sandbar.tag.audit (which tags' lifecycle-status is healthy?)."
-    :inputSchema (one-required {:concept {:type "string" :description "Concept-string to look up"}
-                                :limit   {:type "integer" :description "Max matches returned (default 10)"}}
+    :description "WHICH: surfaces tags whose canonical-form / alt-label / hidden-label / definition / scope-note / example align with the query concept.  Step 1 of the sandbar.ground compositional workflow.  Returns ranked candidates with broader/narrower context.\n\nWHEN: use to discover whether the corpus's tag vocabulary already has a concept covered before authoring a new tag.  Disambiguation primitive — if scope-notes differ across candidates, the right tag becomes obvious.  When NOT to use: (a) the concept is corpus-wide (try sandbar.search.bm25f over body content instead); (b) you already have a specific tag-value (use sandbar.entity.find or read directly).\n\nHOW: `:concept` is the concept-string; `:limit` (optional) caps returned matches (default 10).  Optional `:projection` — `full` (default; curated tag-summary with :value + :alt-label + :definition + :scope-note + broader/narrower context) or `metadata-only` (lightweight; :db/id + :db/ident + :dt/type per match for bulk traversal).  Returns `:concept`, `:matches` (vec of match-maps with `:score`), `:gap?` (true when no tag matches), `:gap-hint` (suggested sandbar.tag.define invocation when gap).\n\nORDER: step 1 of sandbar.ground.  Called directly when you want JUST the tag-vocabulary primitive (no meta-vocab / suggested-next).\n\nCOMBINATION: pairs with sandbar.tag.define (when `:gap? true` — author the canonical), sandbar.tag.consolidate (when matches show drift), sandbar.tag.audit (which tags' lifecycle-status is healthy?)."
+    :inputSchema (one-required {:concept    {:type "string" :description "Concept-string to look up"}
+                                :limit      {:type "integer" :description "Max matches returned (default 10)"}
+                                :projection {:type "string"
+                                             :description "Per-match shape — 'full' (default; curated tag-summary with broader/narrower context) or 'metadata-only' (lightweight; :db/id + :db/ident + :dt/type + :score).  Opt to 'metadata-only' for bulk traversal (e.g., walking thousands of audit-flagged tags)."}}
                                [:concept])
     :handler tag-lookup-handler}
    {:name "sandbar.tag.define"
