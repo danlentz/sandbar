@@ -1148,15 +1148,24 @@
     {:workflow (str w) :definition (projection-fn def)}))
 
 (defn- workflow-start-process-handler [args]
-  (let [w       (workflow-arg args)
-        subject (or (get args "subject") (get args :subject))
-        data    (or (get args "data") (get args :data) {})]
+  (let [w           (workflow-arg args)
+        subject-raw (or (get args "subject") (get args :subject))
+        data        (or (get args "data") (get args :data) {})]
+    (when (nil? subject-raw)
+      (throw (ex-info "Missing required argument: subject (ident or eid)" {:args args})))
+    ;; Gap fix 2026-05-23 — handler passed subject as a raw string; substrate
+    ;; start-process! calls (:db/id subject) which returns nil for strings →
+    ;; :db.error/nil-value at transact.  Resolve subject via eref to a real
+    ;; entity first.  (Boundary owns boundary validation per
+    ;; decisions/sandbar_entity_ref_abstraction_2026_05_14.md Option B.)
+    ;;
     ;; workflow/start-process! signature: [workflow subject & {:keys [data]}]
     ;; — :data is a KWARG, not positional.  Prior call `(start-process! w
     ;; subject data)` placed data in the rest-seq which never matched the
     ;; :data destructure, so user-supplied data was silently dropped
     ;; (ultrareview #5 at tools.clj:454).
-    (let [process (workflow/start-process! w subject :data data)]
+    (let [subject (eref/resolve subject-raw)
+          process (workflow/start-process! w subject :data data)]
       {:process-id (str (:db/id process))
        :workflow   (str w)
        :state      (->ident-str (workflow/get-current-state process))})))
