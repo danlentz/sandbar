@@ -28,7 +28,19 @@
                  [cheshire "6.1.0"]
                  [clj-commons/clj-yaml "1.0.29"]
                  [com.cognitect/transit-clj "1.0.333"]
-                 [danlentz/clj-uuid "0.2.0"]
+                 [danlentz/clj-uuid "0.2.5"]
+                 ;; com.dean/ordered-collections deferred — conflicts with
+                 ;; flatland/ordered (transitive via clj-yaml) on the
+                 ;; `#ordered/set` data-reader tag.  Coordination concern
+                 ;; (Stage F.1 of substrate-stabilization arc): either
+                 ;; (a) namespace com.dean readers under `com.dean.ordered/*`,
+                 ;; (b) migrate clj-yaml off flatland/ordered to com.dean,
+                 ;; (c) data-reader conflict-resolution at JVM startup.
+                 ;; See plans/sandbar_mcp_end_to_end_correctness_pass_substrate_stabilization_arc_2026_05_22.md
+                 ;; [com.dean/ordered-collections "0.2.1"]
+                 [com.github.danlentz/clj-format "0.1.2"]
+                 [com.github.danlentz/clj-figlet "0.1.4"]
+                 [com.github.danlentz/clj-xref "0.1.1"]
                  [rm-hull/table "0.7.1"]
 
                  [com.stuartsierra/component "1.2.0"]

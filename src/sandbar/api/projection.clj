@@ -2,30 +2,39 @@
   "Entity-projection helpers — single source of truth shared across
   `sandbar.navigate.*`, `sandbar.orient`, `sandbar.api.aggregate`, and
   `sandbar.mcp.tools` handlers.  Lifted from 5+ duplicate definitions
-  per Task #12 of the MCP cutover-friction batch (2026-05-22) — the
-  Gap 3 :projection-opt work surfaced the DRY violation across:
-
-  - sandbar.mcp.tools/entity-projection
-  - sandbar.orient/{full,metadata}-projection + project-edge + projection-fn-for
-  - sandbar.navigate.edges/{full,metadata}-projection + project-edge
-  - sandbar.navigate.siblings/entity-projection
-  - sandbar.navigate.path/entity-projection
-  - sandbar.api.aggregate/entity-projection
-
-  All five did the same work; the substrate now ships one canonical
-  shape with `:metadata-only` and `:full` modes.
+  per Task #12 of the MCP cutover-friction batch (2026-05-22).
 
   ## Modes
 
   - `:full` — preserves all namespaced-keyword slots + `:db/ident` +
-    explicit `:db/id` (the existing entity-projection shape).
-    Datomic EntityMap iteration omits `:db/id` from key-seq; we
-    explicitly add it so JSON/EDN serialization carries the field.
+    explicit `:db/id`.  Calls `d/touch` first to realize all slot
+    values (Datomic Entity iteration via `seq` only enumerates
+    already-realized attrs; fresh-from-transact entities are sparse
+    without touch — see Bug C4 in `audit-results/mcp_e2e_correctness_audit_2026_05_22.md`).
+    Ref-slot values (Datomic Entity instances) recursively project to
+    `:metadata-only` shape — enough to identify the target without
+    unbounded recursion or JSON-serialization failure on raw
+    EntityMap (see Bug C1).
 
   - `:metadata-only` — substrate-universal fields only: `:db/id` +
     `:db/ident` (if interned) + `:dt/type` (if set).  Class-agnostic;
-    no consumer-specific slot inclusion.  10-300x smaller payload than
-    `:full` for exploration use cases (navigate/library-card defaults).
+    no consumer-specific slot inclusion.  Doesn't `d/touch` — these
+    three attrs are accessible without realization.  10-300x smaller
+    payload than `:full` for exploration use cases (navigate /
+    library-card defaults).
+
+  ## Recursive projection bound
+
+  `:full` projection of a top-level entity recurses to `:metadata-only`
+  for nested ref-slot values (one hop deep).  Avoids:
+  - infinite recursion on circular ref graphs (corpus has many
+    cites / related / composes-with cycles)
+  - exponential payload blow-up on deeply-connected entities
+  - JSON-serialization failure on unprocessed Datomic Entity objects
+
+  Consumers wanting deeper traversal use `sandbar.navigate.*` or
+  `sandbar.orient.library-card` explicitly with their own `:projection`
+  opts per axis.
 
   ## Why class-agnostic?
 
@@ -33,41 +42,104 @@
   — substrate helpers don't carry knowledge of consumer-class-specific
   slots.  `:dt/type` is the universal class-membership slot every
   entity carries; `:db/id` + `:db/ident` are substrate-level fields.
-  These three together suffice for orientation use cases without
-  coupling the substrate to any specific consumer schema."
-  (:require [clojure.string :as str]))
+  These three together suffice for orientation without coupling the
+  substrate to any specific consumer schema.
+
+  ## Stage B.1 of substrate-stabilization arc
+
+  Per `plans/sandbar_mcp_end_to_end_correctness_pass_substrate_stabilization_arc_2026_05_22.md`
+  Stage B.1.  Unified fix for:
+  - Bug C1 (entity.create / write-verb response fails JSON serialization
+    on nested Datomic Entity values)
+  - Bug C4 (fresh-from-transact entity returns sparse projection
+    because seq iteration only surfaces realized attrs)"
+  (:require [clojure.string :as str]
+            [datomic.api    :as d])
+  (:import (datomic Entity)))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Entity-shape predicate
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defn- datomic-entity?
+  "True iff `v` is a Datomic Entity instance (EntityMap implements the
+  `datomic.Entity` interface).  Used by `full-projection` to detect
+  nested ref-slot values that need recursive projection rather than
+  pass-through (which would fail at the JSON serialization boundary)."
+  [v]
+  (instance? Entity v))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Projection functions
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-(defn full-projection
-  "Project a Datomic EntityMap to a plain Clojure map preserving all
-  namespaced-keyword slots + explicit `:db/id` (EntityMap iteration
-  omits `:db/id` from key-seq; we add it explicitly so serialization
-  carries the field).  Returns nil when entity is nil."
-  [entity]
-  (when entity
-    (let [base (into {}
-                     (filter (fn [[k _v]]
-                               (or (= :db/ident k)
-                                   (and (keyword? k) (some? (namespace k))))))
-                     entity)]
-      (cond-> base
-        (:db/id entity) (assoc :db/id (:db/id entity))))))
-
 (defn metadata-projection
-  "Project a Datomic EntityMap to substrate-universal metadata only:
-  `:db/id` + `:db/ident` (if interned) + `:dt/type` (if set).
-  Class-agnostic — no consumer-specific slot inclusion.  Returns nil
-  when entity is nil; returns an empty map when entity carries none
-  of the three universal fields."
+  "Project a Datomic Entity (or entity-shaped map) to substrate-universal
+  metadata only: `:db/id` + `:db/ident` (if interned) + `:dt/type`
+  (if set).  Class-agnostic — no consumer-specific slot inclusion.
+  Returns nil when entity is nil; returns an empty map when entity
+  carries none of the three universal fields.
+
+  Doesn't call `d/touch` — these three attrs are accessible without
+  realization."
   [entity]
   (when entity
     (cond-> {}
       (:db/id entity)    (assoc :db/id    (:db/id entity))
       (:db/ident entity) (assoc :db/ident (:db/ident entity))
       (:dt/type entity)  (assoc :dt/type  (:dt/type entity)))))
+
+(defn- project-nested-value
+  "Project a slot value for inclusion in `:full` projection output.
+  Datomic Entity values (cardinality-one ref slots) → `metadata-projection`.
+  Clojure collections of Entity values (cardinality-many ref slots →
+  Datomic Peer returns `PersistentHashSet`) → mapv project.
+  Primitive values (string / keyword / number / inst / etc.) → pass-through.
+
+  One-hop-deep — nested entities project to metadata-only, not full.
+  Prevents JSON-serialization failure on raw EntityMap + unbounded
+  recursion on circular ref graphs + exponential payload blow-up."
+  [v]
+  (cond
+    (datomic-entity? v)
+    (metadata-projection v)
+
+    (or (set? v) (sequential? v))
+    (mapv (fn [x] (if (datomic-entity? x) (metadata-projection x) x)) v)
+
+    :else v))
+
+(defn full-projection
+  "Project a Datomic Entity to a plain Clojure map preserving all
+  namespaced-keyword slots + explicit `:db/id`.
+
+  Calls `d/touch` to realize all slot values before iteration —
+  EntityMap iteration via `seq` only enumerates already-realized
+  attrs; without touch, fresh-from-transact entities return sparse
+  projections (Bug C4 — entity.create returned only `:dt/type` +
+  `:db/id` of a just-created entity even though name + description
+  were transacted).
+
+  Nested ref-slot values (Datomic Entity instances) recursively
+  project to `:metadata-only` shape via `project-nested-value`.
+  Prevents JSON-serialization failure on raw EntityMap (Bug C1 — the
+  PersistentVector-class-object error from cheshire on nested
+  Entities) + unbounded recursion on circular ref graphs.
+
+  Returns nil when entity is nil.  Falls back gracefully if `d/touch`
+  fails (some non-Entity inputs may not support touch)."
+  [entity]
+  (when entity
+    (let [touched (try (d/touch entity) (catch Throwable _ entity))
+          slots   (->> touched
+                       (filter (fn [[k _]]
+                                 (or (= :db/ident k)
+                                     (and (keyword? k) (some? (namespace k))))))
+                       (map (fn [[k v]]
+                              [k (project-nested-value v)]))
+                       (into {}))]
+      (cond-> slots
+        (:db/id touched) (assoc :db/id (:db/id touched))))))
 
 (defn projection-fn-for
   "Return the projection function for a `:projection` mode keyword.

@@ -2,6 +2,7 @@
   (:gen-class)
   (:require [clojure.tools.logging :as log]
             [com.stuartsierra.component :as component]
+            [sandbar.codec.markdown :as codec-md]
             [sandbar.db.datatype :as dt]
             [sandbar.db.datomic :as db]
             [sandbar.search :as search]
@@ -29,6 +30,19 @@
   (log/info :SYS/START "Starting system components")
   (alter-var-root #'sys/system component/start)
   (log/info :SYS/STARTED "System started successfully")
+  ;; Register codecs with the mediator so MCP entity.create + project.import/export
+  ;; can codec-mediate via :format opt.  Per `sandbar.codec.markdown/register!`
+  ;; the explicit-registration model is deliberate (side-effect-on-load is an
+  ;; anti-pattern); without this call, the codec mediator stays empty and
+  ;; entity.create with :format :markdown fails with "No codec registered for
+  ;; format :markdown".  Surfaced 2026-05-22 during MCP cutover work — the
+  ;; verb-catalog advertised codec-mediated authoring but the codec was never
+  ;; registered at startup.
+  (try
+    (codec-md/register!)
+    (catch Exception e
+      (log/warn e :SYS/CODEC-MARKDOWN-REGISTER-FAILED
+                "Markdown codec registration failed; entity.create with :format :markdown will reject")))
   ;; Stage 5 D5 — cold-warm the BM25F search cache for every BM25F-searchable
   ;; class.  First-query post-restart drops from cold-tokenize (~5.7s at
   ;; 1500-entity scale) to <100ms.  Searchable = class has :dt/bm25f-weights
