@@ -7,6 +7,7 @@
             [sandbar.db.datomic :as db]
             [sandbar.reactive :as reactive]
             [sandbar.reactive.queue :as reactive-queue]
+            [sandbar.reactive.sinks :as reactive-sinks]
             [sandbar.search :as search]
             [sandbar.server.nrepl :as nrepl]
             [sandbar.server.pedestal :as pedestal]
@@ -72,10 +73,16 @@
   (try
     (reactive-queue/start!)
     (reactive/register-callback! reactive-queue/enqueue-projection!)
+    ;; Stage B.1: register the codec.emit + fs.write + SSE.emit sinks.
+    ;; Per plans/sse_reactive_corpus_projection_arc_2026_05_23.md Stage B.
+    ;; Closes gap #2 (entity.create :format :markdown one-way ingest) by
+    ;; making the forward DB→FS projection live.
+    (reactive-sinks/register-all!)
     (log/info :SYS/REACTIVE-PROJECTION-STARTED
-              {:callbacks (reactive/callback-count)
-               :sinks     (reactive-queue/sink-count)
-               :buffer-size reactive-queue/+default-buffer-size+})
+              {:callbacks   (reactive/callback-count)
+               :sinks       (reactive-queue/sink-count)
+               :buffer-size reactive-queue/+default-buffer-size+
+               :corpus-root (reactive-sinks/corpus-root)})
     (catch Exception e
       (log/warn e :SYS/REACTIVE-PROJECTION-STARTUP-FAILED
                 "Reactive-projection worker failed to start; dt/* mutations will skip the hook"))))
