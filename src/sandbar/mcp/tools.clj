@@ -1360,6 +1360,90 @@
          :alt-label-added    from-val
          :lifecycle-status   :superseded}))))
 
+(defn- tag-consolidate-all-handler
+  "Batch-merge a sequence of `:pairs` via tag.consolidate semantics.
+   Each pair is `{from, into}` (or `{:from, :into}`).  Iterates in
+   order; collects per-pair result; surfaces aggregate counts.
+
+   Per Phase 2 cutover discipline 2026-05-22 — the 70 drift clusters
+   surfaced by tag.harmonize need per-cluster consolidation; doing
+   70 separate MCP calls is tedious + slow.  Batch verb amortizes
+   the round-trip + transaction overhead.
+
+   Failure semantics: per-pair errors collected as `{:from :into
+   :error <message>}`; iteration continues (does NOT halt on first
+   error).  Returns `{:results [<per-pair...>] :total :succeeded
+   :failed :memorials-rewritten-total}` so consumers see the full
+   picture.
+
+   Per Gap 29 fix 2026-05-22 (substrate-stabilization arc Phase 2
+   followup for the tag-vocabulary normalization arc)."
+  [args]
+  (let [pairs (or (get args "pairs") (get args :pairs))]
+    (when (or (nil? pairs) (not (sequential? pairs)))
+      (throw (ex-info "Missing or invalid required argument: pairs (must be sequential)"
+                      {:args args})))
+    (let [results
+          (mapv
+            (fn [pair]
+              (let [from-val (or (get pair "from") (get pair :from))
+                    into-val (or (get pair "into") (get pair :into))]
+                (try
+                  (cond
+                    (str/blank? (str from-val))
+                    {:from from-val :into into-val :error "Missing :from"}
+
+                    (str/blank? (str into-val))
+                    {:from from-val :into into-val :error "Missing :into"}
+
+                    (= from-val into-val)
+                    {:from from-val :into into-val :error ":from and :into must differ"}
+
+                    :else
+                    (let [from-ent (tag-by-value from-val)
+                          into-ent (tag-by-value into-val)]
+                      (cond
+                        (nil? from-ent)
+                        {:from from-val :into into-val :error (str "Tag not found: " from-val)}
+
+                        (nil? into-ent)
+                        {:from from-val :into into-val :error (str "Tag not found: " into-val)}
+
+                        :else
+                        (do
+                          @(d/transact (db/conn)
+                                       [[:db/add (:db/id into-ent) :mm.tag/alt-label from-val]
+                                        [:db/add (:db/id from-ent) :mm.tag/lifecycle-status :superseded]
+                                        [:db/add (:db/id from-ent) :mm.tag/superseded-by    (:db/id into-ent)]])
+                          (let [memorials-with-from (d/q '[:find [?m ...]
+                                                           :in $ ?from
+                                                           :where [?m :mm.memory/tags ?from]]
+                                                         (db/db) (:db/id from-ent))
+                                rewrite-tx (vec (mapcat (fn [m]
+                                                          [[:db/retract m :mm.memory/tags (:db/id from-ent)]
+                                                           [:db/add     m :mm.memory/tags (:db/id into-ent)]])
+                                                        memorials-with-from))]
+                            (when (seq rewrite-tx)
+                              @(d/transact (db/conn) rewrite-tx))
+                            {:from from-val
+                             :into into-val
+                             :memorials-rewritten (count memorials-with-from)
+                             :ok true})))))
+                  (catch Throwable e
+                    {:from from-val :into into-val :error (.getMessage e)}))))
+            pairs)
+          succeeded (count (filter :ok results))
+          failed    (count (filter :error results))
+          total-rw  (reduce + 0 (keep :memorials-rewritten results))]
+      (log/info :MCP/tag-consolidate-all
+                {:total (count pairs) :succeeded succeeded :failed failed
+                 :memorials-rewritten-total total-rw})
+      {:results                    results
+       :total                      (count pairs)
+       :succeeded                  succeeded
+       :failed                     failed
+       :memorials-rewritten-total  total-rw})))
+
 (defn- tag-split-handler
   "Declare that :tag is being partitioned into multiple narrower tags
    :into-tags (vec of `{:value :scope-note}` maps).  Creates each new tag
@@ -2053,6 +2137,17 @@
                                 :into {:type "string" :description "Tag :value to merge INTO (canonical preserved)"}}
                                [:from :into])
     :handler tag-consolidate-handler}
+   {:name "sandbar.tag.consolidate-all"
+    :title "Batch-merge multiple drift clusters in a single MCP call"
+    :description "WHICH: applies tag.consolidate semantics to a vector of `{from, into}` pairs in one MCP round-trip.  Per-pair errors collected (does NOT halt on first error); aggregate counts surface in the response.\n\nWHEN: use after sandbar.tag.harmonize surfaces drift clusters + editorial decisions selecting canonicals — batch-apply the 70+ consolidations Dan-style without 70 separate MCP calls.  When NOT to use: (a) you have a single pair — sandbar.tag.consolidate (simpler); (b) pairs need different editorial review per cluster — review then batch the auto-mergeable subset only.\n\nHOW: `:pairs` is a JSON array of `{from, into}` objects.  Both fields per object are required.  Returns `{:results [{:from :into :memorials-rewritten :ok | :error} ...] :total :succeeded :failed :memorials-rewritten-total}`.  Per-pair semantics match sandbar.tag.consolidate exactly (alt-label + lifecycle :superseded + :superseded-by + memorial-rewrite).\n\nORDER: after sandbar.tag.harmonize surfaces cluster list + editorial decisions selected canonical per cluster.\n\nCOMBINATION: amortizes the round-trip overhead of per-cluster sandbar.tag.consolidate during the M.3 phase of the tag-modeling arc.  Per Gap 29 fix 2026-05-22."
+    :inputSchema (one-required {:pairs {:type "array"
+                                        :description "Vector of {from, into} objects to consolidate"
+                                        :items {:type "object"
+                                                :properties {:from {:type "string"}
+                                                             :into {:type "string"}}
+                                                :required ["from" "into"]}}}
+                               [:pairs])
+    :handler tag-consolidate-all-handler}
    {:name "sandbar.tag.split"
     :title "Partition a tag into narrower tags (creates :broader-generic children)"
     :description "WHICH: declares that :tag is being partitioned into 2+ narrower tags (:into-tags).  Each new tag is created as :mm.tag/broader-generic :tag.  Does NOT auto-reroute existing memorial refs — surfaces the partition; per-memorial reassignment is editorial follow-on.\n\nWHEN: use when scope-creep has accumulated under a single tag and the editorial decision is to partition (e.g., \"audit\" → \"audit-corpus\" + \"audit-discipline\" + \"audit-schema\").  When NOT to use: (a) you want to merge tags — sandbar.tag.consolidate; (b) you want to rename — sandbar.tag.rename; (c) the narrower tags already exist — manually wire :broader-generic via sandbar.entity.update.\n\nHOW: `:tag` is the parent tag :value.  `:into-tags` is a vector of `{:value :scope-note}` maps (2+ entries).  Returns `:parent`, `:into-tags` (vec of created values), `:note` (reminder about manual memorial reassignment).\n\nORDER: after editorial decision to partition.  After this verb, manually reassign existing memorial :mm.memory/tags refs via sandbar.entity.update.\n\nCOMBINATION: pairs with sandbar.entity.update (for memorial reassignment), sandbar.tag.audit (post-split, audit confirms partition is wired)."
