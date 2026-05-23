@@ -5,6 +5,8 @@
             [sandbar.codec.markdown :as codec-md]
             [sandbar.db.datatype :as dt]
             [sandbar.db.datomic :as db]
+            [sandbar.reactive :as reactive]
+            [sandbar.reactive.queue :as reactive-queue]
             [sandbar.search :as search]
             [sandbar.server.nrepl :as nrepl]
             [sandbar.server.pedestal :as pedestal]
@@ -59,7 +61,24 @@
             (log/warn e :SYS/BM25F-CACHE-WARM-FAILED {:class class})))))
     (catch Exception e
       (log/warn e :SYS/BM25F-CACHE-WARM-SWEEP-FAILED
-                "BM25F cache cold-warm sweep failed; queries will lazy-build on first access"))))
+                "BM25F cache cold-warm sweep failed; queries will lazy-build on first access")))
+  ;; Stage A.6 of SSE-reactive-projection arc: start the bounded queue
+  ;; worker + register `enqueue-projection!` as the reactive callback.
+  ;; Per decisions/reactive_projection_queue_bounded_buffer_and_health_observability_2026_05_23.md
+  ;; (eid 17592186094353) + plans/sse_reactive_corpus_projection_arc_2026_05_23.md
+  ;; (eid 17592186094359).  The worker drains the projection-task channel
+  ;; + invokes registered sinks per drain; sinks default empty until
+  ;; Stage B.1+ wires codec.emit / fs.write / SSE.emit.
+  (try
+    (reactive-queue/start!)
+    (reactive/register-callback! reactive-queue/enqueue-projection!)
+    (log/info :SYS/REACTIVE-PROJECTION-STARTED
+              {:callbacks (reactive/callback-count)
+               :sinks     (reactive-queue/sink-count)
+               :buffer-size reactive-queue/+default-buffer-size+})
+    (catch Exception e
+      (log/warn e :SYS/REACTIVE-PROJECTION-STARTUP-FAILED
+                "Reactive-projection worker failed to start; dt/* mutations will skip the hook"))))
 
 (defn stop []
   (log/info :SYS/STOP "Stopping system components")

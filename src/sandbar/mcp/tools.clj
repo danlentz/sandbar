@@ -49,6 +49,7 @@
             [sandbar.navigate.siblings  :as nav-siblings]
             [sandbar.orient             :as orient]
             [sandbar.projection      :as pg]
+            [sandbar.reactive.queue     :as reactive-queue]
             [sandbar.search             :as search]
             [sandbar.db.datatype        :as dt]
             [sandbar.db.datomic         :as db]
@@ -511,6 +512,20 @@
 
 (defn- codec-list-handler [_args]
   {:codecs (codec/list-codecs)})
+
+(defn- reactive-health-handler [_args]
+  ;; Stage A.6 of SSE-reactive-projection arc (decision eid 17592186094353
+  ;; + plan eid 17592186094359): expose reactive-projection pipeline
+  ;; health metrics as an MCP-readable verb.  Backing fn:
+  ;; `sandbar.reactive.queue/health`.  Renders Instants as ISO-8601
+  ;; strings for JSON wire-format friendliness.
+  (let [h (reactive-queue/health)
+        ->str (fn [^java.time.Instant inst]
+                (when inst (.toString inst)))]
+    (-> h
+        (update :startup-instant       ->str)
+        (update :last-enqueue-instant  ->str)
+        (update :last-drain-instant    ->str))))
 
 (defn- ->filter-spec
   "Coerce JSON-shaped filter arg to a Clojure filter spec for
@@ -2039,6 +2054,11 @@
     :description "WHICH: returns the set of codecs currently registered with the Sandbar codec mediator — each codec entry has a format keyword (e.g. `:codec/markdown`), supported MIME types, and (optionally) the classes it supports.\n\nWHEN: use to discover what wire formats Sandbar can parse / emit.  Foundational for codec-driven entity construction (`sandbar.entity.create` with `:format` + `:source`) and for projection/ingestion (`sandbar.project.export` / `.import` choose codecs per class's `:dt/native-codec`).  When NOT to use: (a) you want a specific class's declared native codec — `sandbar.class.describe` and read `:dt/native-codec`; (b) you want to register a NEW codec — not exposed via MCP; programmatic Clojure call against `sandbar.codec`.\n\nHOW: no arguments.  Returns `{:codecs [<codec-info>...]}`.\n\nORDER: foundational discovery.\n\nCOMBINATION: pairs with `sandbar.entity.create` (use `:format` + `:source` opts with one of the listed codec keywords) and `sandbar.project.export` / `.import` (codecs underpin the bidirectional projection).  Per codec arc Stage F.3b."
     :inputSchema {:type "object" :properties {} :required []}
     :handler codec-list-handler}
+   {:name "sandbar.reactive.health"
+    :title "Reactive-projection pipeline health snapshot (queue depth, throughput, error counts)"
+    :description "WHICH: returns a snapshot of the reactive-projection pipeline's health metrics — queue depth, dirty-entity count, throughput counters (enqueue / drain / coalesce), sink-error count, saturation flag, lifecycle timestamps.\n\nWHEN: use for substrate-health monitoring during reactive-projection work — diagnosing queue backpressure, verifying the worker is running, checking whether the dirty-set is draining cleanly.  When NOT to use: (a) you want the per-event log timeline — read sandbar.log for `:REACTIVE/<event-name>` records; (b) you want to check the registered callback / sink count specifically — those counters are in the response but `sandbar.reactive/callback-count` + `sandbar.reactive.queue/sink-count` (in-process API) give direct access.\n\nHOW: no arguments.  Returns:\n  - `:worker-running?` — bool (was `(reactive-queue/start!)` called?)\n  - `:buffer-size` — int (sliding-buffer capacity)\n  - `:dirty-entity-count` — distinct entities currently pending projection\n  - `:oldest-pending-age-ms` — int or nil (lag indicator)\n  - `:enqueue-total` / `:drain-total` / `:coalesce-total` — cumulative counters since startup\n  - `:sink-error-total` — cumulative sink-fn failures\n  - `:registered-sinks` — sink count (Stage B.1+ registers codec.emit / fs.write / SSE.emit)\n  - `:saturated?` — bool (oldest-pending-age-ms exceeds threshold; Stage E.3 bench tuning informs the threshold)\n  - `:startup-instant` / `:last-enqueue-instant` / `:last-drain-instant` — ISO-8601 timestamps\n\nORDER: leaf-call; no prerequisites beyond sandbar being up.\n\nCOMBINATION: composes with `:REACTIVE/<event-name>` log records (timeline forensics).  Per Stage A.6 of plans/sse_reactive_corpus_projection_arc_2026_05_23.md."
+    :inputSchema {:type "object" :properties {} :required []}
+    :handler reactive-health-handler}
    {:name "sandbar.project.export"
     :title "Project entities from DB to a filesystem hierarchy via native-format codecs"
     :description "WHICH: projects entities from the Datomic substrate to a filesystem hierarchy under `:to` — each entity emits as a file in its class's `:dt/native-codec` format.  The bidirectional half of the Anderson `de.setf.rdf:project-graph` boundary-layer primitive (see `doc/concepts/projection.md`).  Bidirectionally inverse of `sandbar.project.import`.\n\nWHEN: use to materialize the current substrate state as a filesystem hierarchy — for backup, git versioning, manual editing, or hybrid FS/DB experimentation.  The filesystem format is the CANONICAL ground-truth; any backend must comply with it.  When NOT to use: (a) you want a single entity's representation — `sandbar.entity.find` returns the entity-map directly; (b) you want a subset — use `:filter` opt; (c) you want to read FROM filesystem — `sandbar.project.import`.\n\nHOW: `:to` is the output directory path (REQUIRED).  `:filter` (optional) restricts which entities project; keys: `:class` (single class-ident — only that class's instances), `:classes` (array — multiple classes), `:tree-filter` (string — rel-path prefix restriction).  Returns `{:to :filter :exported <count> :files [<rel-path>...]}`.\n\nORDER: idempotent; safe to run repeatedly (overwrites).  For round-trip verification, follow with `sandbar.project.import` against the output directory and compare results.\n\nCOMBINATION: inverse of `sandbar.project.import`.  For hybrid-backend experimentation, use `:filter` to project subsets selectively (per `ideas/sandbar_project_export_filtering_for_hybrid_backend_experimentation_2026_05_13.md`).  Codec selection driven by `sandbar.class.describe` `:dt/native-codec` per class."
