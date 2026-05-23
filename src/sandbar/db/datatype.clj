@@ -26,7 +26,8 @@
             [datomic.api :as d]
             [sandbar.db.rules :refer [defrule clear-rulebase! all-rules] :as rule]
             [sandbar.db.fn :refer [defdbfn dbfn clear-fnbase! all-dbfn] :as fn]
-            [sandbar.db.datomic :refer [entity describe] :as db]))
+            [sandbar.db.datomic :refer [entity describe] :as db]
+            [sandbar.reactive :as reactive]))
 
 (defn all-datatypes
   "Returns a sequence of all class idents in the database.
@@ -260,7 +261,7 @@
                           :source \"---\\nname: Foo\\n---\\n# Body\\n\"})"
   ([dt] (make dt {} {}))
   ([dt props] (make dt props {}))
-  ([dt props {:keys [validate? format source] :or {validate? true}}]
+  ([dt props {:keys [validate? format source project?] :or {validate? true}}]
    ;; F.1 codec arc Stage F per
    ;; plans/sandbar_codec_layer_arc_2026-05-12.md — when :format +
    ;; :source supplied, parse via the codec mediator first; explicit
@@ -270,6 +271,13 @@
    ;; explicit :format, fall back to the class's :dt/native-codec
    ;; attribute (the mediator's class-default resolution semantics).
    ;; Symmetric with codec/parse's class-aware default.
+   ;;
+   ;; Stage A.5 of SSE-reactive-projection arc (decision eid
+   ;; 17592186094347 + plan eid 17592186094359): on successful create,
+   ;; invoke `reactive/on-entity-changed!` to fire the reactive-
+   ;; projection hook.  `:project?` kwarg participates in three-layer
+   ;; opt-out resolution (per-call kwarg > dynamic binding > class-
+   ;; level skip-list).  Hook is a no-op when no callbacks registered.
    (let [resolved-format (or format
                              (when source
                                (:dt/native-codec (entity dt))))
@@ -277,14 +285,16 @@
                  (let [parse-fn (requiring-resolve 'sandbar.codec/parse)
                        parsed   (parse-fn source {:format resolved-format :class dt})]
                    (merge (dissoc parsed :dt/type) props))
-                 props)]
-     (if-not validate?
-       (make* dt props)
-       (if-let [errors (validate-data dt props)]
-         (do
-           (log/debug :DT/VALIDATION-FAILED {:class dt :errors errors})
-           (throw (ex-info "Validation failed" errors)))
-         (make* dt props))))))
+                 props)
+         new-entity (if-not validate?
+                      (make* dt props)
+                      (if-let [errors (validate-data dt props)]
+                        (do
+                          (log/debug :DT/VALIDATION-FAILED {:class dt :errors errors})
+                          (throw (ex-info "Validation failed" errors)))
+                        (make* dt props)))]
+     (reactive/on-entity-changed! dt new-entity project?)
+     new-entity)))
 
 (defn make-all
   "Creates a batch of typed instances in a SINGLE atomic Datomic
@@ -319,23 +329,46 @@
    Per Phase 1 B.4 of substrate-stabilization arc + Dan-directive
    2026-05-22 — the validated-batch verb is `make-all` (NOT
    `make-all-validated`); the naming convention is bare-name for
-   validated, `*` suffix for unvalidated."
-  [entity-specs]
-  (let [failures (keep-indexed
-                   (fn [i spec]
-                     (let [dt        (:dt/type spec)
-                           spec-only (dissoc spec :dt/type)]
-                       (when-let [errs (validate-data dt spec-only)]
-                         (assoc errs :index i :class dt))))
-                   entity-specs)]
-    (if (seq failures)
-      (do
-        (log/debug :DT/MAKE-ALL-VALIDATION-FAILED
-                   {:total (count entity-specs) :failures (count failures)})
-        (throw (ex-info "Validation failed for one or more entities"
-                        {:errors (vec failures)
-                         :total  (count entity-specs)})))
-      (make-all* entity-specs))))
+   validated, `*` suffix for unvalidated.
+
+   Stage A.5 of SSE-reactive-projection arc (decision eid 17592186094347
+   + plan eid 17592186094359): added optional opts map carrying
+   `:project?` kwarg.  After the batch transaction commits, iterates
+   entity-specs + invokes `reactive/on-entity-changed!` per entity that
+   carries `:db/ident` or `:db/id` (anonymous specs are skipped —
+   reactive-projection requires a resolvable post-tx entity to operate
+   on).  Per-spec hook failures don't abort the batch (the substrate
+   already transacted; reactive side-effects are observability-grade)."
+  ([entity-specs] (make-all entity-specs {}))
+  ([entity-specs {:keys [project?]}]
+   (let [failures (keep-indexed
+                    (fn [i spec]
+                      (let [dt        (:dt/type spec)
+                            spec-only (dissoc spec :dt/type)]
+                        (when-let [errs (validate-data dt spec-only)]
+                          (assoc errs :index i :class dt))))
+                    entity-specs)]
+     (if (seq failures)
+       (do
+         (log/debug :DT/MAKE-ALL-VALIDATION-FAILED
+                    {:total (count entity-specs) :failures (count failures)})
+         (throw (ex-info "Validation failed for one or more entities"
+                         {:errors (vec failures)
+                          :total  (count entity-specs)})))
+       (let [tx-result (make-all* entity-specs)]
+         ;; Per-entity reactive-projection hook fire
+         (doseq [spec entity-specs
+                 :let [class-ident  (:dt/type spec)
+                       ident-or-eid (or (:db/ident spec) (:db/id spec))]
+                 :when (and class-ident ident-or-eid)]
+           (try
+             (when-let [ent (entity ident-or-eid)]
+               (reactive/on-entity-changed! class-ident ent project?))
+             (catch Throwable t
+               (log/warn t :REACTIVE/make-all-hook-skipped
+                         {:spec-class class-ident
+                          :spec-ident ident-or-eid}))))
+         tx-result)))))
 
 (defn realize-with
   "General-purpose entity realization helper — given a seed entity + a
@@ -446,7 +479,7 @@
   that gap.  Per the improve-abstraction-not-bypass discipline (the
   prior gap-throw lampshade pointed exactly here)."
   ([entity slot-updates] (update-entity! entity slot-updates {}))
-  ([entity slot-updates {:keys [validate?] :or {validate? true}}]
+  ([entity slot-updates {:keys [validate? project?] :or {validate? true}}]
    (when-not (map? slot-updates)
      (throw (ex-info "update-entity! requires slot-updates to be a map"
                      {:received slot-updates})))
@@ -474,7 +507,14 @@
      ;; replacement (currently consumer's responsibility if needed).
      @(d/transact (db/conn)
                   [(assoc slot-updates :db/id eid)])
-     (db/entity eid))))
+     ;; Stage A.5 of SSE-reactive-projection arc (decision eid
+     ;; 17592186094347 + plan eid 17592186094359): on successful update,
+     ;; fire the reactive-projection hook.  `:project?` participates in
+     ;; the three-layer opt-out priority resolution.  No-op when no
+     ;; callbacks registered.
+     (let [updated-entity (db/entity eid)]
+       (reactive/on-entity-changed! class-ident updated-entity project?)
+       updated-entity))))
 
 (defn class-ident-of
   "Returns the class IDENT (keyword) for entity e — the `:dt/type`
