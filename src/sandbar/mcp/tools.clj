@@ -1058,9 +1058,15 @@
     {:workflow (workflow/define-workflow! spec)}))
 
 (defn- workflow-find-handler [args]
-  (let [w (workflow-arg args)
-        def (workflow/find-workflow w)]
-    {:workflow (str w) :definition (projection/full-projection def)}))
+  (let [w              (workflow-arg args)
+        projection-raw (or (get args "projection") (get args :projection))
+        ;; B.3 — single-entity verb defaults to :full (caller wants the
+        ;; workflow definition body); consumers opt to :metadata-only
+        ;; for lightweight existence-check use cases.
+        projection-fn  (projection/projection-fn-for
+                         (or (projection/->projection-mode projection-raw) :full))
+        def            (workflow/find-workflow w)]
+    {:workflow (str w) :definition (projection-fn def)}))
 
 (defn- workflow-start-process-handler [args]
   (let [w       (workflow-arg args)
@@ -1110,9 +1116,14 @@
        :history    (workflow/get-process-history p)})))
 
 (defn- workflow-active-processes-handler [args]
-  (let [w (or (->ident (get args "workflow")) (->ident (get args :workflow)))]
-    {:workflow (when w (str w))
-     :processes (mapv projection/full-projection
+  (let [w              (or (->ident (get args "workflow")) (->ident (get args :workflow)))
+        projection-raw (or (get args "projection") (get args :projection))
+        ;; B.3 — MCP boundary defaults to :metadata-only for the bulky
+        ;; process-list case; symmetric with class.instances + search.bm25f.
+        projection-fn  (projection/projection-fn-for
+                         (or (projection/->projection-mode projection-raw) :metadata-only))]
+    {:workflow  (when w (str w))
+     :processes (mapv projection-fn
                       (if w
                         (workflow/active-processes :workflow w)
                         (workflow/active-processes)))}))
@@ -1817,8 +1828,12 @@
     :handler workflow-define-handler}
    {:name "sandbar.workflow.find"
     :title "Look up a workflow definition by ident"
-    :description "WHICH: returns the entity-map of a workflow definition (its states + transitions + metadata) given the workflow ident.\n\nWHEN: use to inspect an existing workflow — discover its state-machine shape before starting a process or analyzing process histories.  When NOT to use: (a) you want all workflows — `sandbar.class.instances :class :workflow/Definition`; (b) you want process-state inspection — `sandbar.workflow.process-state`.\n\nHOW: `:workflow` is the workflow ident string.  Returns `{:workflow <ident-string> :definition <entity-map>}`.\n\nORDER: typical sequence — `sandbar.class.instances :class :workflow/Definition` (discover) → `sandbar.workflow.find :workflow :foo/wf` (inspect).\n\nCOMBINATION: pairs with `sandbar.workflow.start-process` (start a new process against this definition) and `sandbar.workflow.active-processes` (current processes against this workflow)."
-    :inputSchema (one-required {:workflow {:type "string"}} [:workflow])
+    :description "WHICH: returns the entity-map of a workflow definition (its states + transitions + metadata) given the workflow ident.\n\nWHEN: use to inspect an existing workflow — discover its state-machine shape before starting a process or analyzing process histories.  When NOT to use: (a) you want all workflows — `sandbar.class.instances :class :workflow/Definition`; (b) you want process-state inspection — `sandbar.workflow.process-state`.\n\nHOW: `:workflow` is the workflow ident string.  Optional `:projection` — `full` (default; single-entity lookup ships the full definition) or `metadata-only` (lightweight existence check).  Returns `{:workflow <ident-string> :definition <entity-map>}`.\n\nORDER: typical sequence — `sandbar.class.instances :class :workflow/Definition` (discover) → `sandbar.workflow.find :workflow :foo/wf` (inspect).\n\nCOMBINATION: pairs with `sandbar.workflow.start-process` (start a new process against this definition) and `sandbar.workflow.active-processes` (current processes against this workflow)."
+    :inputSchema (one-required
+                   {:workflow   {:type "string"}
+                    :projection {:type "string"
+                                 :description "Definition entity shape — 'full' (default; complete entity-map) or 'metadata-only' (lightweight; :db/id + :db/ident + :dt/type only)."}}
+                   [:workflow])
     :handler workflow-find-handler}
    {:name "sandbar.workflow.start-process"
     :title "Start a new workflow process attached to a subject entity"
@@ -1850,9 +1865,11 @@
     :handler workflow-process-history-handler}
    {:name "sandbar.workflow.active-processes"
     :title "All active (non-terminal) workflow processes; optionally filtered by workflow"
-    :description "WHICH: returns the list of currently-active (non-terminal-state) workflow processes — every process that's currently running.  Optional `:workflow` filter restricts to processes against a specific workflow definition.\n\nWHEN: use to enumerate live state-machine flows — dashboards, oncall views, 'what's currently in flight'.  When NOT to use: (a) one specific process — `sandbar.workflow.process-state`; (b) finished processes — query via `sandbar.class.instances :class :workflow/Process` + filter terminal states.\n\nHOW: `:workflow` (optional) restricts to one workflow definition's processes.  Without it, returns active processes across ALL workflows.  Returns `{:workflow <ident-or-nil> :processes [<process-entity-map>...]}`.\n\nORDER: leaf-call.\n\nCOMBINATION: pairs with `sandbar.workflow.process-state` (drill into one) + `sandbar.workflow.transition` (advance one)."
+    :description "WHICH: returns the list of currently-active (non-terminal-state) workflow processes — every process that's currently running.  Optional `:workflow` filter restricts to processes against a specific workflow definition.\n\nWHEN: use to enumerate live state-machine flows — dashboards, oncall views, 'what's currently in flight'.  When NOT to use: (a) one specific process — `sandbar.workflow.process-state`; (b) finished processes — query via `sandbar.class.instances :class :workflow/Process` + filter terminal states.\n\nHOW: `:workflow` (optional) restricts to one workflow definition's processes.  Without it, returns active processes across ALL workflows.  Optional `:projection` — `metadata-only` (default at MCP boundary) or `full`.  Returns `{:workflow <ident-or-nil> :processes [<process-entity-map>...]}`.\n\nORDER: leaf-call.\n\nCOMBINATION: pairs with `sandbar.workflow.process-state` (drill into one) + `sandbar.workflow.transition` (advance one)."
     :inputSchema {:type "object"
-                  :properties {:workflow {:type "string" :description "Optional workflow ident to filter by"}}
+                  :properties {:workflow   {:type "string" :description "Optional workflow ident to filter by"}
+                               :projection {:type "string"
+                                            :description "Per-process entity shape — 'metadata-only' (default for MCP — :db/id + :db/ident + :dt/type only) or 'full' (all slots; ~10-300x larger payload).  Opt to 'full' when consumers need slot bodies."}}
                   :required []}
     :handler workflow-active-processes-handler}
 
