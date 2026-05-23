@@ -1553,15 +1553,27 @@
       :db.type/tuple   (vector? value)
       true)  ;; unknown literal type - pass
 
-    ;; Reference to a class — accept either:
-    ;; (a) a Datomic Entity that is instance-of the target class, OR
+    ;; Reference to a class — accept any of:
+    ;; (a) a Datomic Entity that is instance-of the target class
     ;; (b) an upsert map `{<unique-attr> <value>}` that Datomic transact
     ;;     will resolve to a ref via :db.unique/identity (codec produces
     ;;     this shape for tags + other ref slots; per C6 of substrate-
-    ;;     stabilization arc — codec ↔ validation contract gap).
+    ;;     stabilization arc — codec ↔ validation contract gap)
+    ;; (c) Gap 20 — an untyped stub entity (resolved entity with :db/id
+    ;;     but NO :dt/type).  Stubs are created via :db/ident upsert when
+    ;;     a citation target doesn't exist yet (per the stub-then-fill
+    ;;     pattern in decisions/mm_memory_typed_edge_migration_string_to_-
+    ;;     ref_2026_05_21.md).  Subsequent ingest of the actual memorial
+    ;;     upserts via the same ident, filling in the slots.  Permissive
+    ;;     validation here honors that intentional design — refusing
+    ;;     untyped stubs would break entity.update on any memorial that
+    ;;     cites a not-yet-ingested target (common during MCP cutover).
     :else
     (or (instance-of? range-type value)
-        (upsert-map-for? value range-type))))
+        (upsert-map-for? value range-type)
+        (when-let [e (try (entity value) (catch Throwable _ nil))]
+          (and (:db/id e)
+               (nil? (:dt/type e)))))))
 
 (defn required? [prop]
   "Check if a property is required"
