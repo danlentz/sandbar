@@ -446,6 +446,37 @@
     (let [user (dt/make :model/User {:user/login "another"} {:validate? false})]
       (is (some? user) "Should create entity without validation"))))
 
+(deftest make-all-test
+  (testing "make-all transacts validated batch atomically"
+    (let [result (dt/make-all [{:dt/type :model/User :user/login "ma-1"}
+                               {:dt/type :model/User :user/login "ma-2"}
+                               {:dt/type :model/User :user/login "ma-3"}])]
+      (is (some? result) "Should return tx result")
+      (is (>= (count (:tempids result)) 3)
+          "Should transact all three users in single tx")))
+
+  (testing "make-all rejects whole batch when any spec fails validation"
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo
+                          #"Validation failed for one or more entities"
+                          (dt/make-all [{:dt/type :model/User :user/login "ma-good"}
+                                        {:dt/type :dt/Literal}]))
+        "Should throw — :dt/Literal is abstract"))
+
+  (testing "make-all error envelope carries per-spec failure detail"
+    (let [thrown (try
+                   (dt/make-all [{:dt/type :model/User :user/login "ma-good"}
+                                 {:dt/type :dt/Literal}
+                                 {:dt/type :model/User :user/login "ma-also-good"}])
+                   nil
+                   (catch clojure.lang.ExceptionInfo e e))
+          data   (ex-data thrown)]
+      (is (= 3 (:total data)) "Should report total spec count")
+      (is (= 1 (count (:errors data))) "Should report only the failing spec")
+      (is (= 1 (-> data :errors first :index))
+          "Should identify failing spec by index")
+      (is (= :dt/Literal (-> data :errors first :class))
+          "Should identify failing spec's class"))))
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Validation Tests
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;

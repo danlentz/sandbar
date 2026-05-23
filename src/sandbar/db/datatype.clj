@@ -270,6 +270,57 @@
            (throw (ex-info "Validation failed" errors)))
          (make* dt props))))))
 
+(defn make-all
+  "Creates a batch of typed instances in a SINGLE atomic Datomic
+   transaction WITH pre-transaction validation.  Batch analog of `make`
+   extending the `make` / `make*` validated / unvalidated parallelism
+   to the batch shape (symmetric with `make-all*` which is the
+   unvalidated batch counterpart).
+
+   Arguments:
+     entity-specs - vec of entity-spec maps; each carries `:dt/type` +
+                    sandbar / Datomic keys (`:db/ident`, slot idents).
+
+   Returns the Datomic transaction result map (same as `make-all*`).
+
+   Validates EVERY spec via `validate-data` before transacting; if ANY
+   spec fails validation, raises ex-info with `:errors` carrying per-
+   index per-class failure detail and transacts NONE of them (atomic
+   all-or-nothing).  The error envelope shape:
+
+     {:errors [{:errors [...] :index <int> :class <ident>} ...]
+      :total  <int>}
+
+   Cross-entity refs resolve via Datomic's `:db/ident` upsert semantics
+   within the single tx; forward references inside the batch resolve
+   at transaction time (same semantics as `make-all*`).
+
+   For batch creation WITHOUT validation (faster; trust-caller path,
+   e.g. corpus-bulk-import where the codec has pre-validated), use
+   `make-all*` instead.  For single-entity creation, use `make`
+   (validated) or `make*` (unvalidated).
+
+   Per Phase 1 B.4 of substrate-stabilization arc + Dan-directive
+   2026-05-22 — the validated-batch verb is `make-all` (NOT
+   `make-all-validated`); the naming convention is bare-name for
+   validated, `*` suffix for unvalidated."
+  [entity-specs]
+  (let [failures (keep-indexed
+                   (fn [i spec]
+                     (let [dt        (:dt/type spec)
+                           spec-only (dissoc spec :dt/type)]
+                       (when-let [errs (validate-data dt spec-only)]
+                         (assoc errs :index i :class dt))))
+                   entity-specs)]
+    (if (seq failures)
+      (do
+        (log/debug :DT/MAKE-ALL-VALIDATION-FAILED
+                   {:total (count entity-specs) :failures (count failures)})
+        (throw (ex-info "Validation failed for one or more entities"
+                        {:errors (vec failures)
+                         :total  (count entity-specs)})))
+      (make-all* entity-specs))))
+
 (defn realize-with
   "General-purpose entity realization helper — given a seed entity + a
    `walk-fn`, returns a vector of entity-spec maps including the seed
