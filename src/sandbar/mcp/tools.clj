@@ -759,16 +759,21 @@
     (aggregate/tag-histogram opts)))
 
 (defn- search-attribute-handler [args]
-  (let [attribute-raw (or (get args "attribute") (get args :attribute))
-        query         (or (get args "query") (get args :query))
-        limit-arg     (or (get args "limit") (get args :limit))]
+  (let [attribute-raw  (or (get args "attribute") (get args :attribute))
+        query          (or (get args "query") (get args :query))
+        limit-arg      (or (get args "limit") (get args :limit))
+        projection-raw (or (get args "projection") (get args :projection))]
     (when (nil? attribute-raw)
       (throw (ex-info "Missing required argument: attribute" {:args args})))
     (when (nil? query)
       (throw (ex-info "Missing required argument: query" {:args args})))
-    (let [attribute (eref/resolve-ident attribute-raw)
-          opts (cond-> {:attribute attribute :query query}
-                 (some? limit-arg) (assoc :limit limit-arg))]
+    (let [attribute  (eref/resolve-ident attribute-raw)
+          ;; B.3 — MCP boundary defaults to :metadata-only for the bulky
+          ;; search-result case; symmetric with search.bm25f + class.instances
+          ;; + aggregate.rank-by.
+          projection (or (projection/->projection-mode projection-raw) :metadata-only)
+          opts       (cond-> {:attribute attribute :query query :projection projection}
+                       (some? limit-arg) (assoc :limit limit-arg))]
       (search/search-attribute opts))))
 
 (defn- search-bm25f-handler [args]
@@ -1969,9 +1974,11 @@
     :title "Single-attribute Lucene-syntax fulltext search (`:db.fn/fulltext-search`)"
     :description "WHICH: returns entities whose `:attribute` value matches the Lucene query under Datomic's `:db.fn/fulltext-search`.  Single-slot search — unlike `sandbar.search.bm25f` which scores across multi-field weights, this verb hits ONE attribute (which must be `:db/fulltext true`) with full Lucene query-syntax support.\n\nWHEN: use when the query needs Lucene operators — phrase quoting (`\"exact phrase\"`), boolean (`foo AND bar`, `foo OR bar`, `NOT foo`), wildcards (`foo*`), fuzzy (`foo~`), field-prefixed (`field:value`).  Also: when you want single-attribute targeted retrieval without multi-field weighting (e.g., search ONLY the description slot).  When NOT to use: (a) multi-field weighted ranking across name + description + body + tags — use `sandbar.search.bm25f`; (b) bag-of-words across the entity surface — `sandbar.search.bm25f` (which lacks Lucene syntax but covers the full weighted-field set).\n\nHOW: `:attribute` is the slot ident (must be `:db/fulltext true`).  `:query` is a Lucene query string.  Optional `:limit` caps hits (default 50; 0 = no cap).\n\nORDER: prerequisite — discover fulltext-indexed attributes via `sandbar.class.slots` + check `:db/fulltext` flag (or by domain knowledge of which slots are indexed).\n\nCOMBINATION: pairs with `sandbar.search.bm25f` (BM25F handles the multi-field bag-of-words case; this verb handles the Lucene-syntax single-slot case).  Result entity-ids can feed downstream `sandbar.aggregate.rank-by` or `sandbar.navigate.*` for further composition.\n\nResult: `{:hits [{:entity <entity-map> :score <double>} ...] :total <int> :returned <int> :timing {:total-ms <int>}}`.  Per fulltext arc Stage 3 + Phase B P2."
     :inputSchema (one-required
-                   {:attribute {:type "string" :description "Slot ident with :db/fulltext true (e.g. ':mm.memory/body-raw')"}
-                    :query     {:type "string" :description "Lucene query string"}
-                    :limit     {:type "integer" :description "Max hits (default 50; 0 = no cap)"}}
+                   {:attribute  {:type "string" :description "Slot ident with :db/fulltext true (e.g. ':mm.memory/body-raw')"}
+                    :query      {:type "string" :description "Lucene query string"}
+                    :limit      {:type "integer" :description "Max hits (default 50; 0 = no cap)"}
+                    :projection {:type "string"
+                                 :description "Per-hit entity shape — 'metadata-only' (default for MCP — :db/id + :db/ident + :dt/type only) or 'full' (all slots; ~10-300x larger payload).  Opt to 'full' when consumers need slot bodies."}}
                    [:attribute :query])
     :handler search-attribute-handler}
 

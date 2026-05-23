@@ -34,11 +34,15 @@
 (defn- hit-map
   "Project an [eid score] tuple into the canonical hit-map shape.
 
-  Resolves the entity via dt/* substrate (entity-map view).  Per
-  interaction/target_sandbar_introspection_api_layer_not_raw_datomic_2026_05_12.md,
-  uses the introspectable API layer rather than raw Datomic d/pull."
-  [[eid score]]
-  {:entity (into {:db/id eid} (db/entity eid))
+  Resolves the entity via dt/* substrate, then applies `projection-mode`
+  (`:full` / `:metadata-only`) via `sandbar.api.projection/apply-projection`.
+  When `projection-mode` is nil, apply-projection defaults to `:full`
+  (legacy substrate-fn contract; MCP handlers explicitly opt to
+  :metadata-only at the MCP boundary).  Per
+  interaction/target_sandbar_introspection_api_layer_not_raw_datomic_2026_05_12.md
+  + B.3 of substrate-stab arc (:projection opt on bulky-response verbs)."
+  [[eid score] projection-mode]
+  {:entity (projection/apply-projection (db/entity eid) projection-mode)
    :score  score})
 
 (defn- now-ms []
@@ -66,6 +70,11 @@
 
   Optional opts:
     :limit       — max hits to return (default 50; 0 = no limit)
+    :projection  — :metadata-only (default) or :full; controls per-hit
+                   :entity shape.  B.3 of substrate-stab arc — exploration
+                   verbs default to :metadata-only at substrate boundary
+                   for payload safety (10-300x reduction).  Consumers opt
+                   to :full when slot bodies needed.
 
   Returns:
     {:hits     [{:entity <entity-map> :score <double>} ...]
@@ -77,19 +86,20 @@
 
   Per fulltext arc Stage 3 of
   plans/sandbar_fulltext_search_substrate_arc_2026_05_13.md."
-  [{:keys [attribute query limit]
+  [{:keys [attribute query limit projection]
     :or   {limit 50}}]
   {:pre [(keyword? attribute)
          (string? query)
          (integer? limit)
          (>= limit 0)
+         (or (nil? projection) (#{:full :metadata-only} projection))
          (dt/fulltext-indexed? attribute)]}
   (let [t-start    (now-ms)
         raw-hits   (dt/search-fulltext attribute query)
         sorted     (sort-by (fn [[_ score]] (- score)) raw-hits)
         total      (count sorted)
         limited    (if (zero? limit) sorted (take limit sorted))
-        hits       (mapv hit-map limited)
+        hits       (mapv #(hit-map % projection) limited)
         t-end      (now-ms)]
     {:hits     hits
      :total    total
