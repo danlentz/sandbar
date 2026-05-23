@@ -1299,6 +1299,15 @@
         (log/info :MCP/tag-define {:value value
                                    :entity-id (:db/id new-ent)
                                    :upgraded  (boolean existing)})
+        ;; Gap 27 fix (2026-05-22) — fire entity-changed! hook so
+        ;; the BM25F cache reindexes this tag.  Without this, tag.lookup
+        ;; continues to miss the upgraded tag until the next full cache
+        ;; rebuild.  Matches the equivalent fire in entity-create-handler.
+        (try
+          (search/entity-changed! :mm/Tag new-ent)
+          (catch Exception e
+            (log/warn e :MCP/tag-define-cache-failed
+                      {:value value :entity-id (:db/id new-ent)})))
         {:tag      (tag-summary new-ent)
          :created  (not existing)
          :upgraded (boolean existing)}))))
