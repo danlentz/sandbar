@@ -18,6 +18,7 @@
   Per fulltext arc plan §1.1, §1.6, §6.5 of
   plans/sandbar_fulltext_search_substrate_arc_2026_05_13.md."
   (:require [clojure.set]
+            [sandbar.api.projection  :as projection]
             [sandbar.db.datatype     :as dt]
             [sandbar.db.datomic      :as db]
             [sandbar.db.rules        :refer [all-rules]]
@@ -595,7 +596,7 @@
   Per fulltext arc Stage 4c + Stage 29 of
   plans/sandbar_fulltext_search_substrate_arc_2026_05_13.md."
   [{:keys [query class field-weights limit where facet-by include
-           from via rank-by temporal-slot]
+           from via rank-by temporal-slot projection]
     :or   {limit 20 include []}}]
   {:pre [(string? query)
          (keyword? class)
@@ -607,7 +608,8 @@
          (or (not (#{:recency :freshness} rank-by))
              (keyword? temporal-slot))
          (or (and (nil? from) (nil? via))
-             (and (some? from) (some? via)))]}
+             (and (some? from) (some? via)))
+         (or (nil? projection) (#{:full :metadata-only} projection))]}
   (let [t-start         (System/currentTimeMillis)
         weights         (or field-weights (dt/bm25f-weights-of class))
         _               (when (empty? weights)
@@ -677,7 +679,7 @@
         include-set     (set include)
         q-raw-words     (when (include-set :snippets) (raw-query-words query))
         hits            (mapv (fn [{:keys [entity eid score analyzed relevance-score rank-score]}]
-                                (cond-> {:entity entity
+                                (cond-> {:entity (projection/apply-projection entity projection)
                                          :eid    eid
                                          :score  (if rank-by (or rank-score score) score)}
                                   rank-by

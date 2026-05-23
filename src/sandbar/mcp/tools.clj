@@ -719,7 +719,8 @@
         from-raw        (or (get args "from") (get args :from))
         via-raw         (or (get args "via") (get args :via))
         rank-by-raw     (or (get args "rank-by") (get args :rank-by))
-        temporal-raw    (or (get args "temporal-slot") (get args :temporal-slot))]
+        temporal-raw    (or (get args "temporal-slot") (get args :temporal-slot))
+        projection-raw  (or (get args "projection") (get args :projection))]
     (when (nil? query)
       (throw (ex-info "Missing required argument: query" {:args args})))
     (let [where     (when where-raw
@@ -741,7 +742,14 @@
                                                                                (keyword rank-by-raw)))
                                                                      #"^:" "")))
           temporal  (when temporal-raw (eref/resolve-ident temporal-raw))
-          opts (cond-> {:query query :class class-ident}
+          ;; MCP boundary default per Gap 12 (substrate-stabilization arc
+          ;; Phase 1 B.3) — exploration verbs ship :metadata-only hits;
+          ;; consumers opt INTO :full when they need the body shape.
+          ;; In-process callers still get :full by default (substrate
+          ;; apply-projection's nil-default is :full per the legacy contract).
+          ;; Avoids the 431KB payload friction surfaced during cutover.
+          projection (or (projection/->projection-mode projection-raw) :metadata-only)
+          opts (cond-> {:query query :class class-ident :projection projection}
                  (some? limit-arg) (assoc :limit limit-arg)
                  where             (assoc :where where)
                  facet-by          (assoc :facet-by facet-by)
@@ -1807,7 +1815,9 @@
                     :rank-by       {:type "string"
                                     :description "Stage 29: re-rank axis — ':degree' / ':backlink-density' / ':recency' / ':freshness'"}
                     :temporal-slot {:type "string"
-                                    :description "Stage 29: required for :rank-by :recency / :freshness — temporal-axis slot ident (e.g. ':mm.memory/last-touched')"}}
+                                    :description "Stage 29: required for :rank-by :recency / :freshness — temporal-axis slot ident (e.g. ':mm.memory/last-touched')"}
+                    :projection    {:type "string"
+                                    :description "Per-hit entity-shape — 'metadata-only' (default for MCP — :db/id + :db/ident + :dt/type only) or 'full' (all slots; ~10-100× larger payload).  Opt to 'full' when consumers need slot bodies; otherwise default keeps exploration payloads small per Gap 12 / Phase 1 B.3."}}
                    [:query :class])
     :handler search-bm25f-handler}
 
