@@ -1068,10 +1068,73 @@
       (->ident (get args :workflow))
       (throw (ex-info "Missing required argument: workflow" {:args args}))))
 
+(defn- ->workflow-kw
+  "Coerce a workflow-spec keyword-shaped value (state name, transition name,
+   from/to, terminal-kind) to a Clojure keyword.  Accepts already-keywords,
+   string with leading colon (':session/opening'), or namespaced-name string
+   ('session/opening').  Returns nil for nil; non-string/non-keyword inputs
+   pass through unchanged (validator catches the type error downstream)."
+  [v]
+  (cond
+    (nil? v)     nil
+    (keyword? v) v
+    (string? v)  (keyword (clojure.string/replace v #"^:" ""))
+    :else        v))
+
+(defn- coerce-workflow-spec
+  "Walk a JSON-shaped workflow spec map and coerce keyword-shaped string
+   values to Clojure keywords.  Handles both string-key (JSON-typical) and
+   keyword-key (cheshire-coerced) maps for the nested state + transition
+   entries.  Per Gap fix 2026-05-23 (sandbar.workflow.define handler).
+
+   Coerces these fields:
+     - :states[*].:name          (state ident)
+     - :states[*].:terminal-kind (:success | :failure | :cancel)
+     - :transitions[*].:name     (transition action)
+     - :transitions[*].:from     (source state ident)
+     - :transitions[*].:to       (target state ident)"
+  [spec]
+  (let [get*            (fn [m k] (or (get m k) (get m (name k))))
+        coerce-state    (fn [s]
+                          (cond-> s
+                            (contains? s :name)          (assoc :name (->workflow-kw (:name s)))
+                            (contains? s "name")         (-> (assoc :name (->workflow-kw (get s "name")))
+                                                             (dissoc "name"))
+                            (contains? s :terminal-kind) (assoc :terminal-kind (->workflow-kw (:terminal-kind s)))
+                            (contains? s "terminal-kind") (-> (assoc :terminal-kind (->workflow-kw (get s "terminal-kind")))
+                                                              (dissoc "terminal-kind"))))
+        coerce-trans    (fn [t]
+                          (cond-> t
+                            (contains? t :name)  (assoc :name (->workflow-kw (:name t)))
+                            (contains? t "name") (-> (assoc :name (->workflow-kw (get t "name")))
+                                                     (dissoc "name"))
+                            (contains? t :from)  (assoc :from (->workflow-kw (:from t)))
+                            (contains? t "from") (-> (assoc :from (->workflow-kw (get t "from")))
+                                                     (dissoc "from"))
+                            (contains? t :to)    (assoc :to (->workflow-kw (:to t)))
+                            (contains? t "to")   (-> (assoc :to (->workflow-kw (get t "to")))
+                                                     (dissoc "to"))))
+        states          (or (get* spec :states) [])
+        transitions     (or (get* spec :transitions) [])]
+    (-> spec
+        (dissoc "states" "transitions")
+        (assoc :states      (mapv coerce-state states))
+        (assoc :transitions (mapv coerce-trans transitions)))))
+
 (defn- workflow-define-handler [args]
+  ;; Gap fix 2026-05-23 — handler was calling (define-workflow! spec) with
+  ;; one arg, but the substrate fn expects [definition-name spec].  Plus the
+  ;; nested state/transition keyword-shaped fields arrive as JSON strings;
+  ;; coerce-workflow-spec normalizes them to actual keywords before transact.
   (let [spec (or (get args "spec") (get args :spec))]
     (when (nil? spec) (throw (ex-info "Missing required argument: spec" {:args args})))
-    {:workflow (workflow/define-workflow! spec)}))
+    (let [raw-name (or (get spec "name") (get spec :name))
+          _        (when (nil? raw-name)
+                     (throw (ex-info "spec must contain :name (workflow definition ident)"
+                                     {:spec spec})))
+          definition-name (->workflow-kw raw-name)
+          spec'           (coerce-workflow-spec spec)]
+      {:workflow (workflow/define-workflow! definition-name spec')})))
 
 (defn- workflow-find-handler [args]
   (let [w              (workflow-arg args)
