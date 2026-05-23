@@ -1256,26 +1256,52 @@
                            ":undefined-used invariant."))})))
 
 (defn- tag-define-handler
-  "Author a new canonical tag.  Per ADR §2.5 — `sandbar.tag.define` forces
-   explicit definition before a tag can be applied; the :scope-note slot
-   should be supplied to anchor the canonical boundary.  Errors if a tag
-   with this :value already exists (use sandbar.tag.consolidate to merge
-   into an existing canonical, or sandbar.tag.rename to change canonical)."
+  "Author a new canonical tag OR upgrade an existing undefined tag.
+   Per ADR §2.5 — `sandbar.tag.define` forces explicit definition
+   before a tag can be applied; the :scope-note slot should be supplied
+   to anchor the canonical boundary.
+
+   Modes:
+   - `:upgrade? false` (default) — errors if a tag with this :value
+     already exists.  Use sandbar.tag.consolidate to merge into an
+     existing canonical, or sandbar.tag.rename to change canonical.
+   - `:upgrade? true` — adds the supplied :slots to an existing tag
+     (the common case for normalizing the 5705 undefined-used tags
+     surfaced by sandbar.tag.audit).  Datomic :db.unique/identity
+     upsert via :mm.tag/value resolves the existing entity; new slot
+     values overlay existing slot values (Datomic last-write-wins).
+
+   Gap 25 fix (2026-05-22): the prior implementation refused all
+   existing tags, blocking the normalization workflow Dan named
+   2026-05-22 (\"fix and normalize our existing text tags with mostly
+   orphans and utilize our nicely designed tag ontology\").  The
+   undefined-used invariant SURFACES the candidates; the verb must
+   support their upgrade."
   [args]
-  (let [value (or (get args "name") (get args :name))
-        slots (or (get args "slots") (get args :slots) {})]
+  (let [value     (or (get args "name") (get args :name))
+        slots     (or (get args "slots") (get args :slots) {})
+        upgrade?  (boolean (or (get args "upgrade?") (get args :upgrade?)))]
     (when (str/blank? (str value))
       (throw (ex-info "Missing required argument: name" {:args args})))
-    (when (tag-by-value value)
-      (throw (ex-info (str "Tag already exists with value: " value)
-                      {:value value
-                       :hint "Use sandbar.tag.consolidate to merge, or sandbar.tag.rename to change canonical."})))
-    (let [coerced (coerce-slot-map :mm/Tag slots)
-          props   (merge {:mm.tag/value value} coerced)
-          new-ent (dt/make :mm/Tag props {})]
-      (log/info :MCP/tag-define {:value value :entity-id (:db/id new-ent)})
-      {:tag     (tag-summary new-ent)
-       :created true})))
+    (let [existing (tag-by-value value)]
+      (when (and existing (not upgrade?))
+        (throw (ex-info (str "Tag already exists with value: " value)
+                        {:value value
+                         :existing-summary (tag-summary existing)
+                         :hint "Pass :upgrade? true to add slots to existing tag, or use sandbar.tag.consolidate / .rename."})))
+      (let [coerced (coerce-slot-map :mm/Tag slots)
+            props   (merge {:mm.tag/value value} coerced)
+            ;; dt/make on :mm/Tag uses Datomic :db.unique/identity
+            ;; upsert via :mm.tag/value — same call path covers both
+            ;; create + upgrade (named-tempid + upsert resolves to the
+            ;; existing eid when the tag exists).
+            new-ent (dt/make :mm/Tag props {})]
+        (log/info :MCP/tag-define {:value value
+                                   :entity-id (:db/id new-ent)
+                                   :upgraded  (boolean existing)})
+        {:tag      (tag-summary new-ent)
+         :created  (not existing)
+         :upgraded (boolean existing)}))))
 
 (defn- tag-audit-handler
   "Run the full tag-lifecycle audit (sandbar.audit.tag/audit-all).  No
@@ -2001,8 +2027,9 @@
    {:name "sandbar.tag.define"
     :title "Author a new canonical :mm/Tag with required documentation slots"
     :description "WHICH: creates a new :mm/Tag entity with the supplied canonical :value + optional documentation slots (definition / scope-note / example / broader-* / in-scheme / etc.).  Forces explicit authoring at the boundary — `sandbar.tag.audit` will surface tags without definitions as the `:undefined-used` invariant.\n\nWHEN: use after sandbar.tag.lookup reports `:gap? true` (no canonical exists for this concept).  Authoring includes scope-note — the editorial boundary anchoring the canonical.  When NOT to use: (a) a canonical already exists — use sandbar.tag.consolidate to merge instead; (b) you want to rename — use sandbar.tag.rename; (c) the new tag overlaps a memorial-type — don't define (memorial-type slot already carries that information).\n\nHOW: `:name` is the canonical tag string (becomes :mm.tag/value).  `:slots` (optional) is a map of additional :mm.tag/* slot values:\n  `:definition`  — SKOS canonical definition\n  `:scope-note`  — editorial boundary\n  `:example`     — usage illustration\n  `:in-scheme`   — :mm/ConceptScheme ref (e.g., `:memory-system-meta-vocabulary`)\n  `:canonical?`  — boolean (default true once defined)\n  `:vocabulary-level` — :substrate-level / :corpus-level / etc.\n  `:lifecycle-status` — :proposed / :active / :deprecated / :superseded\n\nReturns `{:tag <tag-summary> :created true}`.  Errors when a tag with this :value already exists.\n\nORDER: after sandbar.tag.lookup confirms gap.\n\nCOMBINATION: pairs with sandbar.tag.lookup (gap discovery), sandbar.tag.audit (post-define audit-check), sandbar.tag.align (cross-vocabulary mapping after defining)."
-    :inputSchema (one-required {:name  {:type "string" :description "Canonical tag string (becomes :mm.tag/value)"}
-                                :slots {:type "object" :description "Optional :mm.tag/* slots (definition, scope-note, example, broader-*, etc.)"}}
+    :inputSchema (one-required {:name     {:type "string" :description "Canonical tag string (becomes :mm.tag/value)"}
+                                :slots    {:type "object" :description "Optional :mm.tag/* slots (definition, scope-note, example, broader-*, etc.)"}
+                                :upgrade? {:type "boolean" :description "When true, ADD the supplied :slots to an EXISTING tag with this :value (the normalization workflow for the 5705 undefined-used tags surfaced by sandbar.tag.audit).  Default false — create-only mode rejects existing tags loudly.  Per Gap 25 fix 2026-05-22."}}
                                [:name])
     :handler tag-define-handler}
    {:name "sandbar.tag.audit"
