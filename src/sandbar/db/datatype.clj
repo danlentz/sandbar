@@ -138,12 +138,28 @@
   Example:
     (make* :User {:user/login \"dan\" :user/secret \"hash\"})
 
-  Note: Use `make` instead for validated instance creation."
+  Note: Use `make` instead for validated instance creation.
+
+  Bug C10 fix (2026-05-22): the entity is identified by a NAMED
+  string tempid so the post-transact eid lookup is deterministic.
+  The prior implementation used `(-> result :tempids vals first
+  entity)`, which is unsound when the transact contains MORE THAN
+  ONE tempid — e.g., when props carries cardinality-many ref slots
+  whose values are `:db.unique/identity` upsert-maps (each generates
+  its own tempid).  `(first (vals ...))` over an unordered tempids
+  map then non-deterministically returns the wrong entity.
+
+  Named-tempid lookup ensures we always recover the MAIN entity
+  regardless of how many secondary tempids the upsert resolution
+  produces.  If `props` already declares `:db/id`, that takes
+  precedence (caller-explicit identity wins)."
   ([dt] (make* dt {}))
   ([dt props]
-   (let [row (merge props {:dt/type dt})
-         result @(d/transact (db/conn) [row])
-         new-entity (-> result :tempids vals first entity)]
+   (let [main-tid    (or (:db/id props) "main")
+         row         (assoc props :dt/type dt :db/id main-tid)
+         result      @(d/transact (db/conn) [row])
+         new-eid     (get (:tempids result) main-tid main-tid)
+         new-entity  (entity new-eid)]
      (log/debug :DT/MAKE {:class dt :entity-id (:db/id new-entity)})
      new-entity)))
 
