@@ -17,8 +17,9 @@
   Per fulltext arc Stage 13 of
   plans/sandbar_fulltext_search_substrate_arc_2026_05_13.md."
   (:refer-clojure :exclude [count-by group-by rank-by])
-  (:require [sandbar.db.datatype :as dt]
-            [sandbar.db.datomic  :as db]))
+  (:require [sandbar.api.projection :as projection]
+            [sandbar.db.datatype    :as dt]
+            [sandbar.db.datomic     :as db]))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; count-by — entity count with optional predicate filter
@@ -100,13 +101,14 @@
      :returned <int>}
 
   Per fulltext arc Stage 13."
-  [{:keys [class rank-by limit temporal-slot]
+  [{:keys [class rank-by limit temporal-slot projection]
     :or   {limit 20}}]
   {:pre [(keyword? class)
          (rank-axis-keyword? rank-by)
          (integer? limit) (>= limit 0)
          (or (not (#{:recency :freshness} rank-by))
-             (keyword? temporal-slot))]}
+             (keyword? temporal-slot))
+         (or (nil? projection) (#{:full :metadata-only} projection))]}
   (let [pairs   (case rank-by
                   :degree
                   (->> (dt/all-instances-of class)
@@ -129,7 +131,7 @@
         total   (count pairs)
         limited (if (zero? limit) pairs (take limit pairs))
         hits    (mapv (fn [[entity rank-score]]
-                        {:entity     entity
+                        {:entity     (projection/apply-projection entity projection)
                          :rank-score rank-score})
                       limited)]
     {:hits     hits

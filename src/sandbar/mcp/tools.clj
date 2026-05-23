@@ -667,17 +667,52 @@
                            (or (get args "where") (get args :where)))]
       (aggregate/group-by {:class class-ident :group-by group-by-ident :where where}))))
 
+(defn- ->rank-by-mode
+  "Coerce a JSON-shaped `:rank-by` arg to the keyword form
+   `sandbar.api.aggregate/rank-by` expects.  Accepts the four mode
+   keywords (`:degree`, `:backlink-density`, `:recency`, `:freshness`)
+   in either keyword or string form, with or without leading colon.
+   Loud rejection for unknown modes — silent fallback would let
+   degenerate calls succeed with surprising shapes.
+
+   Before Gap 11 fix (2026-05-22): handler called `eref/resolve-ident`
+   on the rank-by arg, treating mode keywords as entity idents.  Mode
+   keywords (`:degree`, etc.) are NOT entities in the substrate; they
+   are an axis-selector enum.  `eref/resolve-ident` rejected them as
+   entity-not-found, blocking the verb entirely from MCP callers."
+  [raw]
+  (let [kw (cond
+             (keyword? raw) raw
+             (string? raw)  (keyword (clojure.string/replace raw #"^:" ""))
+             :else
+             (throw (ex-info (str "Unparseable :rank-by arg `" raw "`")
+                             {:rank-by raw})))]
+    (when-not (#{:degree :backlink-density :recency :freshness} kw)
+      (throw (ex-info (str "Unknown :rank-by mode `" kw
+                           "`.  Valid: :degree, :backlink-density, "
+                           ":recency, :freshness.")
+                      {:rank-by kw
+                       :valid-modes #{:degree :backlink-density
+                                      :recency :freshness}})))
+    kw))
+
 (defn- aggregate-rank-by-handler [args]
   (let [class-ident        (class-arg args)
         rank-by-raw        (or (get args "rank-by") (get args :rank-by))
         limit-arg          (or (get args "limit") (get args :limit))
-        temporal-slot-raw  (or (get args "temporal-slot") (get args :temporal-slot))]
+        temporal-slot-raw  (or (get args "temporal-slot") (get args :temporal-slot))
+        projection-raw     (or (get args "projection") (get args :projection))]
     (when (nil? rank-by-raw)
       (throw (ex-info "Missing required argument: rank-by" {:args args})))
-    (let [rank-by-ident      (eref/resolve-ident rank-by-raw)
+    (let [rank-by-mode       (->rank-by-mode rank-by-raw)
           temporal-slot      (when (some? temporal-slot-raw)
                                (eref/resolve-ident temporal-slot-raw))
-          opts (cond-> {:class class-ident :rank-by rank-by-ident}
+          ;; MCP boundary default per Gap 11 follow-on — exploration verbs
+          ;; ship :metadata-only hits.  Avoids raw Datomic Entity values
+          ;; reaching the safe-for-json fallback (which would render them
+          ;; as toString'd strings).  Symmetric with search.bm25f.
+          projection (or (projection/->projection-mode projection-raw) :metadata-only)
+          opts (cond-> {:class class-ident :rank-by rank-by-mode :projection projection}
                  (some? limit-arg)     (assoc :limit limit-arg)
                  (some? temporal-slot) (assoc :temporal-slot temporal-slot))]
       (aggregate/rank-by opts))))
@@ -1762,7 +1797,9 @@
                     :limit         {:type "integer"
                                     :description "Max hits to return (default 20; 0 = no cap)"}
                     :temporal-slot {:type "string"
-                                    :description "REQUIRED for :recency / :freshness — temporal-axis slot ident (e.g. ':mm.memory/last-touched')"}}
+                                    :description "REQUIRED for :recency / :freshness — temporal-axis slot ident (e.g. ':mm.memory/last-touched')"}
+                    :projection    {:type "string"
+                                    :description "Per-hit entity-shape — 'metadata-only' (default for MCP — :db/id + :db/ident + :dt/type only) or 'full' (all slots; ~10-100× larger payload).  Opt to 'full' when consumers need slot bodies."}}
                    [:class :rank-by])
     :handler aggregate-rank-by-handler}
 
