@@ -388,7 +388,27 @@
       (when (dt/abstract? class-ident)
         (throw (ex-info (str "Cannot instantiate abstract class: " class-ident)
                         {:class class-ident :reason :abstract})))
-      (let [props        (coerce-slot-map class-ident slots)
+      (let [props-raw    (coerce-slot-map class-ident slots)
+            ;; Gap 17 fix (2026-05-22) — when authoring a :mm/Memory (or
+            ;; subclass) entity via MCP with :mm.memory/rel-path set but
+            ;; :db/ident absent, auto-derive the canonical ident via the
+            ;; codec's rel-path → ident convention.  Without this,
+            ;; MCP-authored memorials lack interned idents → typed-edge
+            ;; navigation (navigate.outbound-edges / library-card / etc.)
+            ;; rejects the entity with "no :db/ident".  The codec ingest
+            ;; path (project.import) already does this auto-derivation;
+            ;; the direct entity.create path must match for consistency
+            ;; with the .md-canonical principle (decisions/markdown_corpus_-
+            ;; as_canonical_projection_substrate_as_derived_retargetable_-
+            ;; index_bootstrap_reprojection_2026_05_22.md).
+            rel-path     (or (get props-raw :mm.memory/rel-path)
+                             (get props-raw "mm.memory/rel-path"))
+            derived-id   (when (and rel-path
+                                    (not (contains? props-raw :db/ident))
+                                    (dt/type-isa? :mm/Memory class-ident))
+                           (codec-md/rel-path->memory-ident rel-path))
+            props        (cond-> props-raw
+                           derived-id (assoc :db/ident derived-id))
             ;; When format + source provided, dt/make's :format opt
             ;; parses via codec mediator; explicit slots override.
             make-opts    (cond-> {}
