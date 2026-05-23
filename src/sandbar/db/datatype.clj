@@ -1415,6 +1415,30 @@
   (and (keyword? dt)
        (= "db.type" (namespace dt))))
 
+(defn- upsert-map-for?
+  "True if `v` is a single-key map whose key is either `:db/ident` OR
+  the unique-identity slot of `target-class`.  Datomic transact resolves
+  such maps to refs via the :db.unique/identity index — they are
+  semantically valid ref-slot values pre-transact even though they are
+  not Datomic Entity instances yet.
+
+  Codec produces this shape for cardinality-many ref slots (per the
+  .md-canonical principle — frontmatter strings like `tags: [observation,
+  test]` become `[{:mm.tag/value \"observation\"} ...]` upsert maps that
+  resolve to :mm/Tag refs at transact time).  Pre-transact validation
+  must accept this shape; otherwise the codec ↔ validation contract
+  breaks at entity.create-with-tags + similar cases.
+
+  Per substrate-stabilization arc C6 / Coupling 1
+  (codec ↔ validation contract gap) — added 2026-05-22."
+  [v target-class]
+  (and (map? v)
+       (= 1 (count v))
+       (let [k (first (keys v))]
+         (or (= :db/ident k)
+             (when target-class
+               (= k (unique-identity-slot-of target-class)))))))
+
 (defn- value-matches-range?
   "Check if a value matches the expected range type"
   [value range-type]
@@ -1444,9 +1468,15 @@
       :db.type/tuple   (vector? value)
       true)  ;; unknown literal type - pass
 
-    ;; Reference to a class - check instance-of
+    ;; Reference to a class — accept either:
+    ;; (a) a Datomic Entity that is instance-of the target class, OR
+    ;; (b) an upsert map `{<unique-attr> <value>}` that Datomic transact
+    ;;     will resolve to a ref via :db.unique/identity (codec produces
+    ;;     this shape for tags + other ref slots; per C6 of substrate-
+    ;;     stabilization arc — codec ↔ validation contract gap).
     :else
-    (instance-of? range-type value)))
+    (or (instance-of? range-type value)
+        (upsert-map-for? value range-type))))
 
 (defn required? [prop]
   "Check if a property is required"
@@ -1478,10 +1508,29 @@
       (catch Exception _ nil))))
 
 (defn- validate-slot-type
-  "Validate a single slot value against its range. Returns nil if valid, error map if invalid."
+  "Validate a single slot value against its range. Returns nil if valid, error map if invalid.
+
+   Multi-value handling: cardinality-many slots may arrive as
+   - sets (Datomic peer reads return cardinality-many as sets)
+   - vectors / lists / seqs (JSON arrays / EDN vectors at the MCP /
+     codec boundaries)
+
+   Both shapes iterate per-element through value-matches-range?.  Maps
+   are single values (an upsert-map shape like {:mm.tag/value \"x\"}
+   IS the value, not a collection); primitives wrap in a singleton set.
+
+   Before C9 (2026-05-22): only sets iterated; vectors fell through
+   to the singleton-set branch, passing the whole vector to
+   value-matches-range? which (correctly) rejected it as a non-target-
+   class collection.  Surfaced during C6 verification — cardinality-
+   many ref slots with upsert-map values failed validation even
+   though each individual upsert-map satisfies the range type."
   [slot-ident slot-value]
   (let [range-type (range-of slot-ident)
-        values (if (set? slot-value) slot-value #{slot-value})]
+        values (cond
+                 (set? slot-value)        slot-value
+                 (sequential? slot-value) (set slot-value)
+                 :else                    #{slot-value})]
     (when-let [invalid (seq (remove #(value-matches-range? % range-type) values))]
       {:type :invalid-type
        :slot slot-ident

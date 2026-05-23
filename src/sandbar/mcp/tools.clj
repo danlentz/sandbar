@@ -140,16 +140,37 @@
       (coerce-one value))))
 
 (defn- coerce-slot-map
-  "Coerce a JSON-shaped slot map (string keys → arbitrary values) to a
-   Datomic-shaped props map (keyword keys → coerced values).  Uses
-   `dt/range-of` + `dt/cardinality-many?` for each declared slot."
+  "Coerce a JSON-shaped slot map (string OR keyword keys → arbitrary values)
+   to a Datomic-shaped props map (keyword keys → coerced values).  Uses
+   `dt/range-of` + `dt/cardinality-many?` for each declared slot.
+
+   Accepts keys in any of these shapes (checked in priority order):
+   1. Keyword ident — `:mm.memory/name` — MCP boundary arrives this way
+      because cheshire JSON-parse uses `:key-fn keyword` per
+      sandbar.util.codec/json-read; cheshire's keyword coercion handles
+      both `\"mm.memory/name\"` (typical JSON) and `\":mm.memory/name\"`
+      (leading-colon variant) shapes.
+   2. Bare-name string — `\"name\"` — legacy callers passing the slot's
+      local name only (rare; class introspection ambiguous if multiple
+      slots share a local name).
+   3. Full-ident string — `\":mm.memory/name\"` — in-process callers
+      passing the printed-keyword shape as a string.
+   4. Stripped-colon string — `\"mm.memory/name\"` — in-process callers
+      passing the namespaced-name shape as a string.
+
+   Before C8 (2026-05-22): only string-key lookups were attempted; MCP
+   calls (which arrive with keyword keys per the cheshire boundary)
+   silently dropped all slots, transacting only `:dt/type`.  Surfaced
+   during C6 verification — entity.create succeeded but produced
+   schema-only entities with no content."
   [class-ident slot-map]
   (let [slots (dt/slots-of class-ident)]
     (reduce
       (fn [acc slot-ident]
         (let [k        slot-ident
               key-name (name slot-ident)
-              v        (or (get slot-map key-name)
+              v        (or (get slot-map slot-ident)
+                           (get slot-map key-name)
                            (get slot-map (str k))
                            (get slot-map (subs (str k) 1)))]
           (if (some? v)
@@ -1983,14 +2004,55 @@
 ;; tools/call — dispatch verb by name; project result to MCP content array
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
+(defn- safe-for-json
+  "Walk a value tree; coerce values cheshire can't natively serialize
+   (Class instances, functions, futures, refs, arbitrary Java objects)
+   to string form.  Used at the MCP response boundary (`result->content`)
+   so a stray Class object in handler return OR ex-data doesn't crash
+   the JSON-encoding path + mask the actual error with a generic
+   'Tool execution failed' (Bug C5 of substrate-stabilization arc).
+
+   Preserves maps + vectors + sets + sequences structurally; leaves
+   primitives + Dates + UUIDs + keywords + symbols alone (cheshire
+   handles those natively).  Catch-all for any other type: coerce to
+   (str v) — produces a readable representation (e.g. 'class
+   clojure.lang.PersistentVector' for Class metaobjects) instead of
+   triggering JsonGenerationException."
+  [v]
+  (cond
+    (nil? v) v
+
+    (or (string? v) (boolean? v) (number? v)
+        (keyword? v) (symbol? v)
+        (instance? java.util.Date v)
+        (instance? java.util.UUID v))
+    v
+
+    (map? v)        (into {} (map (fn [[k v]] [k (safe-for-json v)]) v))
+    (set? v)        (into #{} (map safe-for-json v))
+    (vector? v)     (mapv safe-for-json v)
+    (sequential? v) (mapv safe-for-json v)
+
+    ;; Catch-all for Class instances / fns / futures / refs / arbitrary
+    ;; Java objects — coerce to string.  Cheshire would otherwise throw
+    ;; JsonGenerationException; that exception then escapes the user-error
+    ;; envelope path + gets caught as generic Exception → masked error.
+    :else (str v)))
+
 (defn- result->content
   "Project a handler's return value to an MCP `content` array entry.
    Per MCP spec: `content` is an array of typed parts; `text` parts
    carry stringified content.  We JSON-encode the handler's return
-   value for consistent client-side parsing."
+   value for consistent client-side parsing.
+
+   Pre-walks via `safe-for-json` to coerce non-serializable values
+   (Class objects, fns, etc.) to string form — protects against
+   ex-data + handler-return shapes that include type-mismatch reports,
+   class metaobjects, or other Clojure values cheshire can't natively
+   encode."
   [data]
   [{:type "text"
-    :text (json/generate-string data {:pretty true})}])
+    :text (json/generate-string (safe-for-json data) {:pretty true})}])
 
 (defn handle-call
   "MCP `tools/call` — dispatch a named verb from the catalog and project
