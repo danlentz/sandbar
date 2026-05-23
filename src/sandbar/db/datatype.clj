@@ -1384,10 +1384,28 @@
 
 (defn instance-of?
   "Returns true if entity e is an instance of class dt.
-  True when e's :dt/type is dt or a subclass of dt."
+  True when e's :dt/type is dt or a subclass of dt.
+
+  Robust to BOTH shapes of `:dt/type` value:
+  - keyword form (entity-spec map; pre-transact; in-memory data)
+  - Datomic Entity form (post-DB-read; ref-slot resolution returns
+    the target entity rather than its ident)
+
+  Gap 20 fix (2026-05-22): the prior implementation `(= dt t)` /
+  `(subclass-of? dt t)` worked when `t` was a keyword but silently
+  returned false when `t` was an EntityMap — because the keyword-
+  vs-EntityMap comparison is always false + the subclass cache stores
+  keyword idents.  Surfaced via entity.update flow which validates
+  the merged slot map: DB-read ref values fail the type check even
+  though they're already-resolved valid refs."
   [dt e]
-  (let [t (-> e entity :dt/type)]
-    (or (= dt t) (subclass-of? dt t))))
+  (let [t-val   (-> e entity :dt/type)
+        t-ident (cond
+                  (keyword? t-val)      t-val
+                  (associative? t-val)  (:db/ident t-val)
+                  :else                 nil)]
+    (or (= dt t-ident)
+        (and t-ident (subclass-of? dt t-ident)))))
 
 (defn abstract?
   "Returns true if class dt is marked as abstract.
