@@ -84,17 +84,50 @@
   [f]
   (swap! post-schema-reload-handlers conj f))
 
-(defn load-all-schema! [uri]
-  (doseq [sd (required-schema)]
-    (load-schema uri sd))
-  ;; Fire post-schema-reload handlers (e.g., type-relation cache clear).
+(defn fire-post-schema-reload-handlers!
+  "Invoke every registered post-schema-reload handler, swallowing per-
+  handler failures so one bad handler can't block the others.  Public so
+  alternative schema-load entry points (e.g. `sandbar.test-util`) can
+  preserve the cache-invalidation invariant that `load-all-schema!`
+  guarantees."
+  []
   (doseq [handler @post-schema-reload-handlers]
     (try (handler)
          (catch Throwable t
            (log/warn t :DB/POST-SCHEMA-RELOAD-HANDLER-FAILED
                      {:handler (str handler)})))))
 
+(defn load-all-schema! [uri]
+  (doseq [sd (required-schema)]
+    (load-schema uri sd))
+  (fire-post-schema-reload-handlers!))
+
 ; (load-all-schema! (db-uri))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Schema-derived cache invalidator registrations
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;
+;; Per the precedent of `sandbar.db.datatype` (which registers its own
+;; type-relation-cache invalidator) + the symmetric-handler-fire pattern of
+;; decisions/zorp_test_cross_fixture_cache_survival_fix_option_2_2026_05_23.md,
+;; register schema-derived cache invalidators here in db.datomic — the one ns
+;; that already requires the consumer namespaces (inverse would cycle).
+;;
+;; NOT registered:
+;;  - `fn/clear-fnbase!` / `fn/clear-mm-fn-memorial-base!` — populated at
+;;    namespace-load (ONCE per JVM) by `defdbfn` macro; consumed by
+;;    `fn/load-all-dbfn` which runs AFTER `load-all-schema!` in
+;;    `initialize-db!` (line ~145 above).  Clearing post-schema-reload would
+;;    wipe the bases BEFORE dbfn install, breaking production startup.
+;;  - `rules/clear-rulebase!` — same shape; populated at namespace-load via
+;;    `defrule` macros, consumed by test fixtures via `(d/transact conn (all-rules))`.
+;;    Clearing wipes rules needed by subsequent fixtures.
+;;
+;; Wave 0 W.0.4 of the metamodel-unification arc.
+
+;; (No additional registrations needed beyond dt.datatype's auto-registration of
+;; clear-type-relation-cache! + search.clj's auto-registration of clear-bm25f-cache!)
 
 
 (defn initialize-db! [uri & schema]

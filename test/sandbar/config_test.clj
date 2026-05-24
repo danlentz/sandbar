@@ -7,8 +7,26 @@
 
    Per memory/decisions/sandbar_deployment_consumption_cohabitability_strategy_2026_05_24.md
    Per memory/interaction/verification_is_tests_memorialized_not_repl_verification_2026_05_23.md."
-  (:require [clojure.test  :refer [deftest is testing]]
+  (:require [clojure.test  :refer [deftest is testing use-fixtures]]
             [sandbar.config :as cfg]))
+
+;; Wave 0 W.0.4 fix per metamodel-unification arc:
+;; This test file uses with-redefs to stub `cfg/read-bundled-defaults` etc. to
+;; minimal maps that DO NOT include `:required-schema`.  Tests call `cfg/reload!`
+;; inside with-redefs to populate `cfg/config-state` from the stubbed sources.
+;; When with-redefs exits the stubs revert, but `cfg/config-state` retains the
+;; stubbed values — so subsequent tests in the SAME JVM see a config-state with
+;; no `:required-schema`, causing test fixtures (sandbar.test-util/load-schema)
+;; to load NO schemas → cascade failures with `:db.error/not-an-entity` for
+;; substrate slots like `:dt/slots` (declared in schema/meta.edn).
+;;
+;; Fix: per-test fixture that calls `cfg/reload!` AFTER each test (with real
+;; read-* fns restored) so the config-state is restored to bundled defaults
+;; for any subsequent test in the JVM.
+(use-fixtures :each
+  (fn [t]
+    (try (t)
+         (finally (cfg/reload!)))))
 
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;

@@ -33,8 +33,11 @@
 (deftest server-event-hierarchy-test
   (testing "ServerEvent class hierarchy"
     (is (some? (db/entity :event/ServerEvent)) "ServerEvent should exist")
-    (is (= #{:dt/Event} (set (dt/parents-of :event/ServerEvent)))
-        "ServerEvent parent should be Event")
+    ;; Per the metamodel-unification arc (mm/Event collision-resolution ADR 2026-05-24):
+    ;; the :event/* family is ADDITIVELY re-parented under :mm/Event while keeping
+    ;; the legacy :dt/Event parent for back-compat.  Expected parents set = both.
+    (is (= #{:dt/Event :mm/Event} (set (dt/parents-of :event/ServerEvent)))
+        "ServerEvent parents should be :dt/Event + :mm/Event (additive re-parent per mm/Event collision-resolution ADR)")
     (is (not (dt/abstract? :event/ServerEvent)) "ServerEvent should not be abstract"))
 
   (testing "ServerEvent ancestors"
@@ -46,22 +49,22 @@
 (deftest user-event-hierarchy-test
   (testing "UserEvent class hierarchy"
     (is (some? (db/entity :event/UserEvent)) "UserEvent should exist")
-    (is (= #{:dt/Event} (set (dt/parents-of :event/UserEvent)))
-        "UserEvent parent should be Event")
+    (is (= #{:dt/Event :mm/Event} (set (dt/parents-of :event/UserEvent)))
+        "UserEvent parents should be :dt/Event + :mm/Event (additive re-parent per mm/Event collision-resolution ADR)")
     (is (not (dt/abstract? :event/UserEvent)) "UserEvent should not be abstract")))
 
 (deftest system-event-hierarchy-test
   (testing "SystemEvent class hierarchy"
     (is (some? (db/entity :event/SystemEvent)) "SystemEvent should exist")
-    (is (= #{:dt/Event} (set (dt/parents-of :event/SystemEvent)))
-        "SystemEvent parent should be Event")
+    (is (= #{:dt/Event :mm/Event} (set (dt/parents-of :event/SystemEvent)))
+        "SystemEvent parents should be :dt/Event + :mm/Event (additive re-parent per mm/Event collision-resolution ADR)")
     (is (not (dt/abstract? :event/SystemEvent)) "SystemEvent should not be abstract")))
 
 (deftest http-request-hierarchy-test
   (testing "HttpRequest class hierarchy"
     (is (some? (db/entity :event/HttpRequest)) "HttpRequest should exist")
-    (is (= #{:event/ServerEvent} (set (dt/parents-of :event/HttpRequest)))
-        "HttpRequest parent should be ServerEvent"))
+    (is (= #{:event/ServerEvent :mm/Event} (set (dt/parents-of :event/HttpRequest)))
+        "HttpRequest parents should be :event/ServerEvent + :mm/Event (additive re-parent per mm/Event collision-resolution ADR)"))
 
   (testing "HttpRequest full ancestor chain"
     (let [ancestors (set (dt/ancestors-of :event/HttpRequest))]
@@ -73,14 +76,14 @@
 (deftest api-call-hierarchy-test
   (testing "ApiCall class hierarchy"
     (is (some? (db/entity :event/ApiCall)) "ApiCall should exist")
-    (is (= #{:event/ServerEvent} (set (dt/parents-of :event/ApiCall)))
-        "ApiCall parent should be ServerEvent")))
+    (is (= #{:event/ServerEvent :mm/Event} (set (dt/parents-of :event/ApiCall)))
+        "ApiCall parents should be :event/ServerEvent + :mm/Event (additive re-parent per mm/Event collision-resolution ADR)")))
 
 (deftest transaction-hierarchy-test
   (testing "Transaction class hierarchy"
     (is (some? (db/entity :event/Transaction)) "Transaction should exist")
-    (is (= #{:event/ServerEvent} (set (dt/parents-of :event/Transaction)))
-        "Transaction parent should be ServerEvent")))
+    (is (= #{:event/ServerEvent :mm/Event} (set (dt/parents-of :event/Transaction)))
+        "Transaction parents should be :event/ServerEvent + :mm/Event (additive re-parent per mm/Event collision-resolution ADR)")))
 
 (deftest subclass-relationships-test
   (testing "subclasses-of returns all transitive subclasses"

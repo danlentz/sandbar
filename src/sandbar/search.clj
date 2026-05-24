@@ -710,3 +710,15 @@
                          :timing   {:total-ms (- t-end t-start)}}]
     (cond-> result
       (seq facet-by) (assoc :facets (facet-counts sorted facet-by)))))
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Post-schema-reload handler registration
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; The BM25F caches are schema-derived (per-class field weights from
+;; `:dt/bm25f-weights` declarations); schema changes invalidate them.
+;; Register with the post-schema-reload handler registry per the precedent in
+;; sandbar.db.datatype + the symmetric handler-fire pattern of
+;; decisions/zorp_test_cross_fixture_cache_survival_fix_option_2_2026_05_23.md.
+;; Wave 0 W.0.4 of the metamodel-unification arc.
+(db/register-post-schema-reload-handler! clear-bm25f-cache!)
