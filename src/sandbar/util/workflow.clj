@@ -245,7 +245,7 @@
                                  :states (count states)
                                  :transitions (count transitions)
                                  :version version})
-    (dt/make :workflow/Definition
+    (dt/make :mm/Workflow
       {:workflow/definition-name definition-name
        :workflow/states (mapv :db/id (vals state-entities))
        :workflow/transitions (mapv :db/id transition-entities)

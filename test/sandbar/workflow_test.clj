@@ -117,19 +117,34 @@
   (testing "Core workflow classes exist"
     (is (some? (db/entity :workflow/State)) "State class should exist")
     (is (some? (db/entity :workflow/Transition)) "Transition class should exist")
-    (is (some? (db/entity :workflow/Definition)) "Definition class should exist")
+    (is (some? (db/entity :mm/Workflow)) "Definition class should exist")
     (is (some? (db/entity :workflow/Process)) "Process class should exist")
     (is (some? (db/entity :workflow/History)) "History class should exist"))
 
   (testing "All workflow classes are concrete"
-    (doseq [cls [:workflow/State :workflow/Transition :workflow/Definition
+    (doseq [cls [:workflow/State :workflow/Transition :mm/Workflow
                  :workflow/Process :workflow/History]]
       (is (not (dt/abstract? cls)) (str cls " should be concrete"))))
 
-  (testing "Classes inherit from dt/Ref"
-    (doseq [cls [:workflow/State :workflow/Transition :workflow/Definition
+  ;; Per Stage C of first-class-memorialization arc 2026-05-23:
+  ;; :mm/Workflow was promoted from :dt/Ref ancestry to :mm/Meta
+  ;; (a :mm/Memory descendant) so workflow definitions are first-class
+  ;; memorialized (projected to memory/workflows/<name>.md).  The other
+  ;; workflow classes (:workflow/State / :workflow/Transition /
+  ;; :workflow/Process / :workflow/History) remain :dt/Ref descendants —
+  ;; they're internal substrate constructs, not user-visible memorials.
+  (testing "Non-definition workflow classes inherit from dt/Ref"
+    (doseq [cls [:workflow/State :workflow/Transition
                  :workflow/Process :workflow/History]]
-      (is (dt/subclass-of? :dt/Ref cls) (str cls " should extend dt/Ref")))))
+      (is (dt/subclass-of? :dt/Ref cls) (str cls " should extend dt/Ref"))))
+
+  (testing ":mm/Workflow is a first-class memorial (:mm/Meta descendant)"
+    (is (dt/subclass-of? :mm/Meta :mm/Workflow)
+        ":mm/Workflow should extend :mm/Meta post-pivot")
+    (is (dt/subclass-of? :mm/Memory :mm/Workflow)
+        ":mm/Workflow should be a :mm/Memory descendant (transitively via :mm/Meta)")
+    (is (not (dt/subclass-of? :dt/Ref :mm/Workflow))
+        ":mm/Workflow should NOT extend :dt/Ref any longer")))
 
 (deftest workflow-property-test
   (testing "State properties"
@@ -148,7 +163,7 @@
       (is (contains? slots :workflow/on-transition) "Transitions can have side effects")))
 
   (testing "Definition properties"
-    (let [slots (dt/slots-of :workflow/Definition)]
+    (let [slots (dt/slots-of :mm/Workflow)]
       (is (contains? slots :workflow/definition-name) "Definitions have unique names")
       (is (contains? slots :workflow/states) "Definitions contain states")
       (is (contains? slots :workflow/transitions) "Definitions contain transitions")
@@ -828,7 +843,7 @@
       (is (= :workflow/State (:class body)))))
 
   (testing "Definition slots include states and transitions"
-    (let [{:keys [status body]} (tu/api-get-edn "/api/store/classes/workflow/Definition/slots")]
+    (let [{:keys [status body]} (tu/api-get-edn "/api/store/classes/mm/Workflow/slots")]
       (is (= 200 status))
       ;; API returns slot objects with :ident key
       (let [slot-idents (set (map :ident (:slots body)))]

@@ -12,18 +12,18 @@
 
    Discipline per
    interaction/target_sandbar_introspection_api_layer_not_raw_datomic_2026_05_12.md:
-   uses `dt/all-named-instances-of :workflow/Definition` + the
+   uses `dt/all-named-instances-of :mm/Workflow` + the
    `sandbar.util.workflow/*` abstraction (find-workflow + get-workflow-
    states + get-workflow-transitions + get-initial-state + get-terminal-
    states) — NEVER raw datomic.api.
 
    Stage C.6:
-   - prompts/list walks dt/all-named-instances-of :workflow/Definition
+   - prompts/list walks dt/all-named-instances-of :mm/Workflow
    - prompts/get returns workflow specification structured for MCP
 
    Subsequent stages:
    - C.6.1 Workflow argument schemas (each prompt has parameters per
-     :workflow/Definition's input slots)
+     :mm/Workflow's input slots)
    - C.6.2 Workflow output projection (terminal-state outputs surfaced
      as the prompt's expected response shape)"
   (:require [clojure.string         :as str]
@@ -96,7 +96,7 @@
      :arguments   []})) ;; Stage C.6.1 derives from workflow input slots
 
 (defn all-workflow-prompts
-  "Walk every named `:workflow/Definition` entity + emit MCP prompt
+  "Walk every named `:mm/Workflow` entity + emit MCP prompt
    descriptions.
 
    Uses `dt/named-entities-of` (returns entity maps, per Q1=B Stage A
@@ -106,7 +106,7 @@
    helper silently produced nil-everywhere descriptions (codex
    MUST-FIX #2 at prompts.clj:86)."
   []
-  (->> (dt/named-entities-of :workflow/Definition)
+  (->> (dt/named-entities-of :mm/Workflow)
        (map workflow->prompt-description)
        (sort-by :name)
        vec))
