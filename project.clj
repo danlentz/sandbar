@@ -86,6 +86,7 @@
             "reset-db"            ["run" "-m" "sandbar.scripts.reset-db"]
             "reproject-bootstrap" ["run" "-m" "sandbar.scripts.reproject-bootstrap"]
             "migrate-workflow-definition" ["run" "-m" "sandbar.scripts.migrate-workflow-definition"]
+            "migrate-mm-event-to-hook-event" ["run" "-m" "sandbar.scripts.migrate-mm-event-to-hook-event"]
             "backup-db"           ["run" "-m" "sandbar.scripts.backup-db"]
             "restore-db-from"     ["run" "-m" "sandbar.scripts.restore-db"]
             "verify-backup"       ["run" "-m" "sandbar.scripts.verify-backup"]
