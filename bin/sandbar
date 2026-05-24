@@ -11,11 +11,21 @@
 #   status        — show running state + token + memory-count
 #   rotate-token  — issue a new MCP token + persist to ~/.config/sandbar/token
 #   log           — tail the server log
+#   backup        — incremental Datomic backup-db to .sandbar/backups/<sid>-<TS>-...
+#   restore       — restore-db from a backup dir (preflight verify; :dev keeps transactor up)
+#   verify-backup — verify-backup over latest (or named) backup
+#   backup-list   — enumerate backups + status
+#   backup-prune  — prune backups by age/count (--keep-days N [--keep-count K] [--confirm])
 #
 # Configuration via env:
-#   SANDBAR_HOME    — repo root (default: $HOME/src/sandbar)
-#   SANDBAR_PORT    — MCP port (default: 8080)
-#   SANDBAR_TOKEN   — bearer token (overrides ~/.config/sandbar/token)
+#   SANDBAR_HOME       — repo root (default: $HOME/src/sandbar)
+#   SANDBAR_CLIENT_DIR — client-project root (default: $HOME/claude)
+#                        Per decisions/sandbar_deployment_consumption_cohabitability_strategy_2026_05_24.md D.A
+#                        Propagated to JVM as -Dsandbar.client-dir=<path>
+#   SANDBAR_PORT       — MCP port (default: 8389; was 8080 pre-2026-05-24).
+#                        Layer 3 of the 3-layer config; overrides
+#                        <SANDBAR_CLIENT_DIR>/.sandbar/config.edn :port
+#   SANDBAR_TOKEN      — bearer token (overrides ~/.config/sandbar/token)
 
 set -euo pipefail
 
@@ -25,7 +35,11 @@ SANDBAR_CONFIG="${SANDBAR_CLIENT_DIR}/.sandbar"
 SANDBAR_PID_FILE="${SANDBAR_CONFIG}/sandbar.pid"
 SANDBAR_LOG_FILE="${SANDBAR_CONFIG}/sandbar.log"
 SANDBAR_TOKEN_FILE="${SANDBAR_CONFIG}/token"
-SANDBAR_PORT="${SANDBAR_PORT:-8080}"
+SANDBAR_PORT="${SANDBAR_PORT:-8389}"
+
+# Export so the JVM sees them via System/getenv + as JVM props
+export SANDBAR_CLIENT_DIR SANDBAR_PORT
+export JVM_OPTS="${JVM_OPTS:-} -Dsandbar.client-dir=$SANDBAR_CLIENT_DIR"
 
 mkdir -p "$SANDBAR_CONFIG"
 
@@ -301,6 +315,68 @@ EOF
     tail -f "$SANDBAR_LOG_FILE"
     ;;
 
+  backup)
+    # Forward to lein backup-db; pass through args (optional label).
+    # Shells out to bin/datomic backup-db (admin JVM); live-system safe.
+    # Per memory/libraries/datomic/backup_restore.md §12 + Dan-directive
+    # c-then-a 2026-05-23.
+    shift
+    cd "$SANDBAR_HOME"
+    exec lein backup-db "$@"
+    ;;
+
+  restore)
+    # Backup-dir REQUIRED.  Preflight verify-backup + :dev-transactor-up
+    # checks run inside the script.
+    shift
+    cd "$SANDBAR_HOME"
+    exec lein restore-db-from "$@"
+    ;;
+
+  verify-backup)
+    # Defaults to LATEST backup if no arg.
+    shift
+    cd "$SANDBAR_HOME"
+    exec lein verify-backup "$@"
+    ;;
+
+  backup-list)
+    cd "$SANDBAR_HOME"
+    exec lein list-backups
+    ;;
+
+  backup-prune)
+    # --keep-days N [--keep-count K] [--confirm]
+    shift
+    cd "$SANDBAR_HOME"
+    exec lein prune-backups "$@"
+    ;;
+
+  verify-restore)
+    # Verify the restore path end-to-end via isolated second transactor.
+    # Doesn't touch the live transactor — operationally safe to run anytime.
+    # Per memory/observations/gate_2_restore_path_verified_end_to_end_lifts_no_reset_db_2026_05_24.md
+    shift
+    cd "$SANDBAR_HOME"
+    exec lein verify-restore "$@"
+    ;;
+
+  config-show|config)
+    # Print the resolved 3-layer config (+ provenance with --provenance).
+    # Per ADR sandbar_deployment_consumption_cohabitability_strategy_2026_05_24 D.G
+    shift || true
+    cd "$SANDBAR_HOME"
+    exec lein config-show "$@"
+    ;;
+
+  list-dbs)
+    # Enumerate Datomic databases on the configured transactor.
+    # Reveals ALL consumers' DBs under the F2 shared-transactor cohabitability model.
+    # Per ADR sandbar_deployment_consumption_cohabitability_strategy_2026_05_24 D.G
+    cd "$SANDBAR_HOME"
+    exec lein list-dbs
+    ;;
+
   *)
     cat >&2 <<EOF
 Usage: sandbar <command>
@@ -319,6 +395,25 @@ Commands:
   status                         — show running state + token + memory-count
   rotate-token <service> <key>   — issue a fresh MCP token + persist
   log                            — tail the server log
+  backup [<label>]               — incremental Datomic backup-db to .sandbar/backups/
+                                   <sid>-<TS>[-<label>]-datomic1.0.7482/; writes status.edn
+                                   sidecar.  Live-system safe.  Admin-JVM out-of-band.
+  restore <backup-dir> [<name>]  — restore-db from a backup dir.  Preflights verify-backup +
+                                   :dev-transactor-up.  Target DB name defaults to source
+                                   (per Datomic restore-db invariant).
+  verify-backup [<backup-dir>]   — verify-backup over latest (or named) backup;
+                                   updates status.edn with :verified-at + :verify-exit-code.
+  backup-list                    — list backups + status (newest first).
+  backup-prune [opts]            — prune by age/count.  Opts: --keep-days N, --keep-count K,
+                                   --confirm (DRY RUN without --confirm).
+  verify-restore [<backup-dir>]  — restore-path end-to-end verification via isolated 2nd
+                                   transactor; compares cardinality to live-as-of-t.
+                                   Per Gate 2 ADR; safe (doesn't touch live transactor).
+  config-show [--provenance]     — print the resolved 3-layer config; --provenance shows
+                                   per-layer contributions (bundled defaults + client
+                                   <SANDBAR_CLIENT_DIR>/.sandbar/config.edn + env vars).
+  list-dbs                       — enumerate Datomic databases on the configured transactor;
+                                   reveals all consumers' DBs (F2 cohabitability model).
 
 Config (env):
   SANDBAR_HOME=$SANDBAR_HOME
