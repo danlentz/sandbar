@@ -78,18 +78,32 @@
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Configuration
+;;
+;; Per memory/decisions/sandbar_deployment_consumption_cohabitability_strategy_2026_05_24.md
+;; — config-value is now a thin facade over the 3-layer loader in
+;; sandbar.config (bundled defaults + client `.sandbar/config.edn` +
+;; env vars).  Existing callers see no API change; they get the layered
+;; resolved config automatically.
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;; Lazy require to avoid circular dep + ns load-order issues — sandbar.config
+;; itself only depends on java + clojure.{edn,io,string}.
+(defn- resolve-config-fn []
+  (require 'sandbar.config)
+  (resolve 'sandbar.config/config))
 
 (defn config-value
   ([]
    (config-value nil))
   ([& path]
-   (if (= 1 (count path))
-     (resource-value :config (first path))
-     (resource-value :config (vec path)))))
+   (let [conf ((resolve-config-fn))]
+     (cond
+       (or (nil? path) (empty? path)) conf
+       (= 1 (count path))             (get conf (first path))
+       :else                          (get-in conf (vec path))))))
 
 (defn config-keys []
-  (keys (resource-value :config nil)))
+  (keys ((resolve-config-fn))))
 
 ;; (config-value :required-schema)
 ;; (config-value :db :sid)
