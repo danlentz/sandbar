@@ -41,9 +41,11 @@
                            (secure-headers/secure-headers)]))
 
 (defn- create-connector-map
-  "Create a connector map from service config"
+  "Create a connector map from service config.  Fallback port 8389 per
+   decisions/sandbar_deployment_consumption_cohabitability_strategy_2026_05_24.md
+   D.E (non-conflicting; off the universal-dev-default 8080)."
   [service-config]
-  (let [port (::http/port service-config 8080)]
+  (let [port (::http/port service-config 8389)]
     (-> (conn/default-connector-map port)
         (with-sandbar-interceptors)
         (conn/with-routes routes/routes))))

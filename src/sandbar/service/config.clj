@@ -1,6 +1,7 @@
 (ns sandbar.service.config
   (:require [io.pedestal.http              :as http]
             [io.pedestal.http.body-params  :as body-params]
+            [sandbar.config                :as cfg]
             [sandbar.service.content       :as content]
             [sandbar.service.routes        :refer [routes]]))
 
@@ -58,7 +59,15 @@
               ::http/resource-path "/public"
               ::http/type :jetty
               ;;::http/host "localhost"
-              ::http/port 8080
+              ;; Port is resolved via the 3-layer config loader per
+              ;; decisions/sandbar_deployment_consumption_cohabitability_strategy_2026_05_24.md
+              ;; D.E — bundled default 8389 (non-conflicting; off 8080
+              ;; universal-dev-default); client-project override via
+              ;; <SANDBAR_CLIENT_DIR>/.sandbar/config.edn :port; env-var
+              ;; override via SANDBAR_PORT.  Hardcoded fallback 8389
+              ;; matches the bundled default in case config.edn is
+              ;; missing (defensive).
+              ::http/port (or (cfg/value :port) 8389)
               ::http/container-options {:h2c? true
                                         :h2? false
                                         ;:keystore "test/hp/keystore.jks"
