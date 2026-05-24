@@ -35,6 +35,23 @@ SANDBAR_CONFIG="${SANDBAR_CLIENT_DIR}/.sandbar"
 SANDBAR_PID_FILE="${SANDBAR_CONFIG}/sandbar.pid"
 SANDBAR_LOG_FILE="${SANDBAR_CONFIG}/sandbar.log"
 SANDBAR_TOKEN_FILE="${SANDBAR_CONFIG}/token"
+# Port resolution — walk the layered config (Tier 3 env > Tier 2 client
+# .sandbar/config.edn > Tier 1 bundled config/config.edn > 8389 fallback).
+# Per F.1 follow-up of memory/observations/phase_3b_mm_event_lift_-
+# migration_complete_gate2_verified_with_3_followups_2026_05_24.md —
+# without this, env-default 8389 mismatched the Tier-2-pinned 8080 JVM
+# and bin/sandbar status/stop missed the running JVM entirely.
+if [ -z "${SANDBAR_PORT:-}" ]; then
+  for cfg in "${SANDBAR_CONFIG}/config.edn" "${SANDBAR_HOME}/config/config.edn"; do
+    if [ -f "$cfg" ]; then
+      p=$(grep -E '^\s*:port[[:space:]]+[0-9]+' "$cfg" 2>/dev/null | head -1 | grep -oE '[0-9]+' || true)
+      if [ -n "$p" ]; then
+        SANDBAR_PORT="$p"
+        break
+      fi
+    fi
+  done
+fi
 SANDBAR_PORT="${SANDBAR_PORT:-8389}"
 
 # Export so the JVM sees them via System/getenv + as JVM props
@@ -43,11 +60,26 @@ export JVM_OPTS="${JVM_OPTS:-} -Dsandbar.client-dir=$SANDBAR_CLIENT_DIR"
 
 mkdir -p "$SANDBAR_CONFIG"
 
-# A successful sentinel is "port is listening on a process".  We do NOT
-# tie this to the PID file because the PID file can drift (e.g., from a
-# crashed JVM) — the live port-listener is authoritative.
+# A successful sentinel is "port is listening on a process".  We prefer
+# the live port-listener (authoritative) but fall back to PID-file-if-
+# alive when port resolution might be wrong (e.g., user override
+# mismatches reality, or transactor changed ports unexpectedly).  The
+# PID-file fallback uses `kill -0` for liveness — never echoes a stale
+# PID.  Per F.1 follow-up (2026-05-24).
 running_pid() {
-  lsof -i :"$SANDBAR_PORT" -t 2>/dev/null | head -1
+  local pid=$(lsof -i :"$SANDBAR_PORT" -t 2>/dev/null | head -1)
+  if [ -n "$pid" ]; then
+    echo "$pid"
+    return
+  fi
+  # Fallback: PID file pointing at a live process.
+  if [ -f "$SANDBAR_PID_FILE" ]; then
+    local file_pid=$(cat "$SANDBAR_PID_FILE" 2>/dev/null)
+    if [ -n "$file_pid" ] && kill -0 "$file_pid" 2>/dev/null; then
+      echo "$file_pid"
+      return
+    fi
+  fi
 }
 
 resolve_token() {
