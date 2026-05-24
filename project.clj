@@ -84,7 +84,16 @@
                      "run" "-m" "sandbar.bench.run"]
             "issue-mcp-token"     ["run" "-m" "sandbar.scripts.issue-mcp-token"]
             "reset-db"            ["run" "-m" "sandbar.scripts.reset-db"]
-            "reproject-bootstrap" ["run" "-m" "sandbar.scripts.reproject-bootstrap"]}
+            "reproject-bootstrap" ["run" "-m" "sandbar.scripts.reproject-bootstrap"]
+            "migrate-workflow-definition" ["run" "-m" "sandbar.scripts.migrate-workflow-definition"]
+            "backup-db"           ["run" "-m" "sandbar.scripts.backup-db"]
+            "restore-db-from"     ["run" "-m" "sandbar.scripts.restore-db"]
+            "verify-backup"       ["run" "-m" "sandbar.scripts.verify-backup"]
+            "verify-restore"      ["run" "-m" "sandbar.scripts.verify-restore"]
+            "list-backups"        ["run" "-m" "sandbar.scripts.list-backups"]
+            "prune-backups"       ["run" "-m" "sandbar.scripts.prune-backups"]
+            "config-show"         ["run" "-m" "sandbar.scripts.config-show"]
+            "list-dbs"            ["run" "-m" "sandbar.scripts.list-dbs"]}
 
 
   :asciidoc {:sources ["doc/*.adoc"]
