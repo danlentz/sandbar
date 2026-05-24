@@ -1,0 +1,556 @@
+[
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; mm-temporal.edn — Unified :mm/* Temporal-Substrate Type Lattice
+;;
+;; Phase 3 schema authoring per the c-then-a Dan-directive
+;; (memory/authorizations/c_then_a_backup_restore_foundation_then_job_to_mm_migration_no_parallel_stacks_dan_directive_2026_05_23.md)
+;; + Phase 2 type-lattice ADR
+;; (memory/decisions/unified_mm_type_lattice_workflow_process_activity_run_job_schedule_event_phase_2_2026_05_24.md)
+;; + :mm/Event collision-resolution ADR
+;; (memory/decisions/mm_event_collision_resolution_lift_existing_to_abstract_root_dan_directive_2026_05_24.md)
+;;
+;; LATTICE — three sibling root abstractions under :dt/Resource (informal
+;; positioning; in the implementation :mm/Activity sits under :mm/Artifact,
+;; :mm/Event keeps its existing :mm/Meta parent additively, and :mm/Spec
+;; is parented under :mm/Memory — the SEMANTIC three-root claim is preserved
+;; via the slot families + cross-root typed edges, not strictly via
+;; :dt/subclass-of position):
+;;
+;;   :mm/Spec (NEW abstract; DECLARATIVE — recipe / pattern / type-of-action)
+;;     ├── :mm/Workflow      (existing; ADDITIVE re-parent under :mm/Spec)
+;;     ├── :mm/Fn            (existing; ADDITIVE re-parent under :mm/Spec)
+;;     ├── :mm/Job           (NEW concrete; single-step spec)
+;;     ├── :mm/Schedule      (NEW concrete; recurrence over Workflow/Job)
+;;     └── :mm/EffectSpec    (NEW abstract; frame-problem axiom per ADR D.4)
+;;
+;;   :mm/Activity (existing abstract; PERFORMED — instance / execution / run)
+;;     ├── :mm/Run           (existing concrete; single-step instance of :mm/Job)
+;;     ├── :mm/Log           (existing concrete; log-producing execution)
+;;     ├── :mm/EventLog      (existing concrete; event-log-producing execution)
+;;     └── :mm/Process       (NEW abstract; multi-step instance of :mm/Workflow)
+;;                              └── :workflow/Process (existing; ADDITIVE re-parent under :mm/Process)
+;;
+;;   :mm/Event (LIFTED to abstract per collision-resolution ADR;
+;;              OBSERVED — outside-view happening / news / occurrence)
+;;     ├── :mm/HookEvent     (NEW concrete; receives the 6 existing
+;;                              :mm/Event hook-event-kind instances via the
+;;                              migration tx-fn; carries :mm.hook-event/*
+;;                              slots that are the renamed :mm.event/* slots)
+;;     └── (ADDITIVE re-parent under :mm/Event of the existing :event/*
+;;          family; preserves their existing :dt/Event parent for back-compat)
+;;          :event/SystemEvent, :event/ApiCall, :event/HttpRequest,
+;;          :event/Transaction, :event/ServerEvent, :event/UserEvent
+;;
+;; CROSS-ROOT TYPED EDGES (semantic glue):
+;;   :mm.activity/spec      : Activity → Spec    (this Activity executes this Spec)
+;;   :mm.event/observes     : Event → Activity   (this Event observes this Activity)
+;;   :mm.schedule/target    : Schedule → Spec    (Schedule targets Workflow or Job)
+;;   :mm.run/job            : Run → Job          (this Run is an instance of this Job)
+;;   :mm.run/parent-run     : Run → Run          (existing; nesting; lightweight ProvONE)
+;;   :mm.process/workflow   : Process → Workflow (Process executes Workflow)
+;;
+;; NOTE — :dt/abstract? flip on :mm/Event is DEFERRED to the migration tx-fn
+;; (sandbar.scripts.migrate-mm-temporal) per the collision-resolution ADR §2(a).
+;; Flipping before the 6 existing :mm/Event instances are re-typed to
+;; :mm/HookEvent would violate the abstract-no-direct-instances substrate
+;; discipline.  This file declares only ADDITIVE substrate changes.
+;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Forward Declarations — 6 new classes
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident :mm/Spec        :db/doc "Forward declaration; full definition later — abstract root of the DECLARATIVE family (recipe / pattern / type-of-action) per Phase 2 type-lattice ADR D.1+D.2.  Concrete subtypes: :mm/Workflow (existing; re-parented), :mm/Fn (existing; re-parented), :mm/Job (new), :mm/Schedule (new), :mm/EffectSpec (new abstract sub-root)."}
+  {:db/ident :mm/Process     :db/doc "Forward declaration; full definition later — abstract supertype of :workflow/Process; under :mm/Activity per Phase 2 ADR D.3.  Multi-step running instance of a :mm/Workflow."}
+  {:db/ident :mm/Job         :db/doc "Forward declaration; full definition later — single-step Spec specifying an action to invoke.  Re-target from the legacy :job/{Scheduled,Recurring,Task,Triggered} family via the Phase 3 migration tx-fn.  Carries :mm.job/fn, :mm.job/payload-shape, :mm.job/effect-spec slots per ADR D.2."}
+  {:db/ident :mm/Schedule    :db/doc "Forward declaration; full definition later — recurrence Spec over a :mm/Workflow OR :mm/Job; OWL-Time + RFC 5545 RRULE aligned per the temporal-substrate arc plan §1.1+§1.2 + ADR D.2 + D.8."}
+  {:db/ident :mm/EffectSpec  :db/doc "Forward declaration; full definition later — abstract Spec subtype encoding Reiter-style successor-state axioms as DATA, SHACL-validatable at execution time.  Frame-problem-aware per Phase 2 ADR D.4 (the Cyc agent finding the frame-problem WILL bite Sandbar in workflow-step form)."}
+  {:db/ident :mm/HookEvent   :db/doc "Forward declaration; full definition later — concrete subtype of :mm/Event receiving the 6 existing :mm/Event hook-event-kind instances per the collision-resolution ADR 2026-05-24.  Carries :mm.hook-event/* slots (renamed from existing :mm.event/{lifecycle-position,default-severity,triggered-by-hook,applicable-actor-classes,substrate-correctness-criticality} via the Phase 3 migration tx-fn)."}]
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; :run.status/* — Schema.org actionStatus 4-state vocabulary per ADR D.5
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident :run.status/potential  :db/doc "Schema.org PotentialActionStatus — Run declared but not started.  Per Phase 2 ADR D.5."}
+  {:db/ident :run.status/active     :db/doc "Schema.org ActiveActionStatus — Run currently executing.  Per Phase 2 ADR D.5."}
+  {:db/ident :run.status/completed  :db/doc "Schema.org CompletedActionStatus — Run succeeded; :mm.run/result populated.  Per Phase 2 ADR D.5."}
+  {:db/ident :run.status/failed     :db/doc "Schema.org FailedActionStatus — Run errored; :mm.run/error populated.  Per Phase 2 ADR D.5 (rejected: separate 'cancelled' from 'failed' — Schema.org doesn't; cancellation modeled at workflow/terminal-kind level orthogonally)."}]
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; :mm.activity/* — NEW slots added to :mm/Activity (cross-root edges)
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident       :mm.activity/spec
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Activity
+   :dt/range       :mm/Spec
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/one
+   :db/doc "Reference to the :mm/Spec this Activity executes — PROV-O prov:hadPlan analog.  Cross-root typed edge: Activity → Spec.  For :mm/Run → :mm/Job; for :mm/Process → :mm/Workflow; pure prov:Plan semantics."}
+
+  {:db/ident       :mm.activity/event-kind
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Activity
+   :dt/range       :db.type/keyword
+   :db/valueType   :db.type/keyword
+   :db/cardinality :db.cardinality/one
+   :db/doc "BPMN flow-node event-kind discriminator for Activities that participate in workflow control-flow as events.  Values: :event-kind/start | :event-kind/intermediate | :event-kind/end | :event-kind/signal | :event-kind/timer | :event-kind/message.  Per Phase 2 ADR D.7 — BPMN's 'event' (flow-node sense) is an :mm/Activity sub-shape, NOT a :mm/Event subtype (which is the LODE outside-observed sense)."}]
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; :mm.run/* — NEW slots added to :mm/Run (status + bitemporal + result/error)
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Existing slots on :mm/Run (NOT re-declared): :mm.run/attempt-number,
+;; :mm.run/output, :mm.run/parent-run.  Existing :mm.activity/* inherited
+;; slots: :mm.activity/{agent, ended-at, generated, started-at, status, used,
+;; was-informed-by}.  NEW additions below.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident       :mm.run/job
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Run
+   :dt/range       :mm/Job
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/one
+   :db/doc "Reference to the :mm/Job spec this Run is an instance of.  Per Phase 2 ADR D.3.  Semantic refinement of :mm.activity/spec when the Activity is specifically a Run executing a Job."}
+
+  {:db/ident       :mm.run/status
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Run
+   :dt/range       :db.type/ref
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/one
+   :db/doc "Schema.org actionStatus 4-state for the Run lifecycle.  Values: :run.status/potential, :run.status/active, :run.status/completed, :run.status/failed.  Per Phase 2 ADR D.5.  Distinct from inherited :mm.activity/status (which is the bare PROV-O activity status); :mm.run/status carries the Schema.org-aligned 4-state machine."}
+
+  {:db/ident       :mm.run/phenomenon-time
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Run
+   :dt/range       :db.type/instant
+   :db/valueType   :db.type/instant
+   :db/cardinality :db.cardinality/one
+   :db/doc "SOSA bitemporal phenomenonTime — when the OBSERVED PHENOMENON occurred (e.g., when a sensor reading was sampled), distinct from :mm.activity/started-at (resultTime — when the Activity began executing).  Per Phase 2 ADR D.3 + SOSA-SSN bitemporal distinction memorial."}
+
+  {:db/ident       :mm.run/result
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Run
+   :dt/range       :db.type/ref
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/one
+   :db/doc "Reference to the produced output entity when Run reaches :run.status/completed.  Per Phase 2 ADR D.3.  Distinct from existing :mm.run/output which is the raw return value; :mm.run/result is the semantically-meaningful produced :dt/Resource."}
+
+  {:db/ident       :mm.run/error
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Run
+   :dt/range       :db.type/string
+   :db/valueType   :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/doc "Error message / ex-info edn string when Run reaches :run.status/failed.  Companion to :mm.run/result for the failure branch of the 4-state machine."}]
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; :mm.process/* — slots for :mm/Process (multi-step running instance)
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident       :mm.process/workflow
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Process
+   :dt/range       :mm/Workflow
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/one
+   :db/doc "Reference to the :mm/Workflow spec this Process is executing.  Semantic refinement of :mm.activity/spec when the Activity is specifically a Process executing a Workflow.  Per Phase 2 ADR D.3."}
+
+  {:db/ident       :mm.process/state
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Process
+   :dt/range       :workflow/State
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/one
+   :db/doc "Reference to the current :workflow/State of the Process.  Composes with the existing workflow-substrate state-machine; :workflow/Process becomes a subclass of :mm/Process additively per the collision-resolution ADR §2."}
+
+  {:db/ident       :mm.process/runs
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Process
+   :dt/range       :mm/Run
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/many
+   :db/doc "References to :mm/Run instances spawned by this Process (a multi-step Process spawns N single-step Runs).  Per Phase 2 ADR D.3."}]
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; :mm.job/* — slots for :mm/Job (single-step spec)
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident       :mm.job/fn
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Job
+   :dt/range       :mm/Fn
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/one
+   :db/doc "Reference to the :mm/Fn spec to invoke when this Job executes.  Per Phase 2 ADR D.2.  :mm/Fn is itself a :mm/Spec subtype (re-parented additively); this is a Spec→Spec edge."}
+
+  {:db/ident       :mm.job/payload-shape
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Job
+   :dt/range       :mm/Shape
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/one
+   :db/doc "Reference to the :mm/Shape declaring the input payload structure for this Job.  SHACL-validatable shape definition; checked at Run-create time.  Per Phase 2 ADR D.2."}
+
+  {:db/ident       :mm.job/effect-spec
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Job
+   :dt/range       :mm/EffectSpec
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/one
+   :db/doc "Reference to the :mm/EffectSpec declaring this Job's effect-shape (initiates / terminates / preserves / preconditions per Reiter successor-state axioms).  Per Phase 2 ADR D.4 — the frame-problem-aware slot.  When a :mm/Run of this Job completes, sandbar can VALIDATE the actual tx-data conformed to the declared effect-spec."}]
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; :mm.schedule/* — slots for :mm/Schedule (recurrence spec)
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident       :mm.schedule/target
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Schedule
+   :dt/range       :mm/Spec
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/one
+   :db/doc "Reference to the :mm/Workflow or :mm/Job this Schedule fires.  Each Schedule firing produces a new :mm/Process (if target is :mm/Workflow) or :mm/Run (if target is :mm/Job).  Per Phase 2 ADR D.8 + temporal-substrate plan §2.1."}
+
+  {:db/ident       :mm.schedule/recurrence
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Schedule
+   :dt/range       :db.type/string
+   :db/valueType   :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/doc "RFC 5545 RRULE string (FREQ=...;[INTERVAL=...;][BYDAY=...;]...).  Canonical recurrence form.  Per temporal-substrate plan §1.2."}
+
+  {:db/ident       :mm.schedule/timezone
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Schedule
+   :dt/range       :db.type/string
+   :db/valueType   :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/doc "IANA timezone name (e.g., 'America/New_York').  REQUIRED at schema-validate time per temporal-substrate plan §8.1 — DST transitions silently break naive cron rules."}
+
+  {:db/ident       :mm.schedule/dtstart
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Schedule
+   :dt/range       :db.type/instant
+   :db/valueType   :db.type/instant
+   :db/cardinality :db.cardinality/one
+   :db/doc "RFC 5545 DTSTART anchor — the recurrence start anchor.  OWL-Time time:inXSDDateTimeStamp aligned.  Per temporal-substrate plan §2.1."}
+
+  {:db/ident       :mm.schedule/until
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Schedule
+   :dt/range       :db.type/instant
+   :db/valueType   :db.type/instant
+   :db/cardinality :db.cardinality/one
+   :db/doc "RFC 5545 UNTIL terminator — recurrence end instant.  Mutually exclusive with :mm.schedule/count.  Both absent ⇒ infinite recurrence."}
+
+  {:db/ident       :mm.schedule/count
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Schedule
+   :dt/range       :db.type/long
+   :db/valueType   :db.type/long
+   :db/cardinality :db.cardinality/one
+   :db/doc "RFC 5545 COUNT — bounded recurrence count.  Mutually exclusive with :mm.schedule/until."}
+
+  {:db/ident       :mm.schedule/rdates
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Schedule
+   :dt/range       :db.type/instant
+   :db/valueType   :db.type/instant
+   :db/cardinality :db.cardinality/many
+   :db/doc "RFC 5545 RDATE — additional explicit recurrence instants outside the RRULE pattern."}
+
+  {:db/ident       :mm.schedule/exdates
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Schedule
+   :dt/range       :db.type/instant
+   :db/valueType   :db.type/instant
+   :db/cardinality :db.cardinality/many
+   :db/doc "RFC 5545 EXDATE — explicit recurrence-instant exclusions."}
+
+  {:db/ident       :mm.schedule/source-nl
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Schedule
+   :dt/range       :db.type/string
+   :db/valueType   :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/doc "Original natural-language input string (preserved when lossy NL→RRULE codec was applied).  Per temporal-substrate plan §6."}
+
+  {:db/ident       :mm.schedule/source-cron
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Schedule
+   :dt/range       :db.type/string
+   :db/valueType   :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/doc "Original cron-syntax escape string (preserved for cron-style imports normalized to RRULE).  Per temporal-substrate plan §2.1."}
+
+  {:db/ident       :mm.schedule/next-fire-at
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Schedule
+   :dt/range       :db.type/instant
+   :db/valueType   :db.type/instant
+   :db/cardinality :db.cardinality/one
+   :db/doc "Projected next-firing instant — precomputed from RRULE; refreshable.  Per temporal-substrate plan §2.1."}
+
+  {:db/ident       :mm.schedule/misfire-policy
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Schedule
+   :dt/range       :db.type/keyword
+   :db/valueType   :db.type/keyword
+   :db/cardinality :db.cardinality/one
+   :db/doc "Misfire-handling policy per Quartz-style options.  Values: :misfire/fire-once-now (default conservative), :misfire/ignore, :misfire/reschedule, ...  Per temporal-substrate plan §10.6."}
+
+  {:db/ident       :mm.schedule/concurrency
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Schedule
+   :dt/range       :db.type/keyword
+   :db/valueType   :db.type/keyword
+   :db/cardinality :db.cardinality/one
+   :db/doc "Concurrency policy for overlapping firings.  Values: :concurrency/allow, :concurrency/forbid (default), :concurrency/replace.  Per temporal-substrate plan §2.1."}]
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; :mm.effect/* — slots for :mm/EffectSpec (Reiter successor-state axioms)
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident       :mm.effect/initiates
+   :dt/type        :dt/Property
+   :dt/domain      :mm/EffectSpec
+   :dt/range       :dt/Property
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/many
+   :db/doc "Attribute idents CREATED by Jobs carrying this EffectSpec.  Per Phase 2 ADR D.4 (Reiter successor-state init clause)."}
+
+  {:db/ident       :mm.effect/terminates
+   :dt/type        :dt/Property
+   :dt/domain      :mm/EffectSpec
+   :dt/range       :dt/Property
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/many
+   :db/doc "Attribute idents RETRACTED by Jobs carrying this EffectSpec.  Per Phase 2 ADR D.4 (Reiter successor-state term clause)."}
+
+  {:db/ident       :mm.effect/preserves
+   :dt/type        :dt/Property
+   :dt/domain      :mm/EffectSpec
+   :dt/range       :dt/Property
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/many
+   :db/doc "Attribute idents DECLARED-UNTOUCHED by Jobs carrying this EffectSpec.  The Reiter successor-state frame clause — explicit invariance assertion.  Per Phase 2 ADR D.4."}
+
+  {:db/ident       :mm.effect/preconditions
+   :dt/type        :dt/Property
+   :dt/domain      :mm/EffectSpec
+   :dt/range       :mm/Fn
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/many
+   :db/doc ":mm/Fn predicates that MUST hold for the EffectSpec's owning Job to execute.  Per Phase 2 ADR D.4."}]
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; :mm.event/* — NEW LODE-style slots for the (lifted-to-abstract) :mm/Event
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Per the collision-resolution ADR — the existing :mm.event/{lifecycle-position,
+;; default-severity, triggered-by-hook, applicable-actor-classes,
+;; substrate-correctness-criticality} slots are MIGRATED to :mm.hook-event/*
+;; (with :dt/domain :mm/HookEvent) by the Phase 3 migration tx-fn.  The new
+;; :mm.event/* slots below are the LODE-quadrant slots on the abstract root.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident       :mm.event/at-time
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Event
+   :dt/range       :db.type/instant
+   :db/valueType   :db.type/instant
+   :db/cardinality :db.cardinality/one
+   :db/doc "When the Event occurred (LODE atTime).  Per Phase 2 ADR D.7 + LODE Event quadrant."}
+
+  {:db/ident       :mm.event/at-place
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Event
+   :dt/range       :db.type/string
+   :db/valueType   :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/doc "Where the Event occurred (LODE atPlace).  String form for now; future federation arc may introduce a first-class :mm/Place entity.  Per Phase 2 ADR D.7."}
+
+  {:db/ident       :mm.event/involved-agent
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Event
+   :dt/range       :mm/Actor
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/many
+   :db/doc "Agents involved in the Event (PROV-O prov:wasAssociatedWith analog).  Per Phase 2 ADR D.7."}
+
+  {:db/ident       :mm.event/involved
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Event
+   :dt/range       :dt/Resource
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/many
+   :db/doc "Resources involved in the Event (PROV-O prov:used analog).  Open-domain — any :dt/Resource subtype.  Per Phase 2 ADR D.7."}
+
+  {:db/ident       :mm.event/sub-event
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Event
+   :dt/range       :mm/Event
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/many
+   :db/doc "Nested sub-events (LODE event-decomposition).  Per Phase 2 ADR D.7."}
+
+  {:db/ident       :mm.event/observes
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Event
+   :dt/range       :mm/Activity
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/one
+   :db/doc "Cross-root typed edge: the :mm/Activity this Event observes (outside-view of an inside-performed Activity).  Per Phase 2 ADR D.1+D.9 — Event ⊥ Activity via the observes edge."}]
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; :mm.hook-event/* — NEW slots for :mm/HookEvent (renamed from :mm.event/*)
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; These mirror the EXISTING :mm.event/{lifecycle-position, default-severity,
+;; triggered-by-hook, applicable-actor-classes, substrate-correctness-criticality}
+;; slots by purpose, but with new ident namespace + :dt/domain :mm/HookEvent.
+;; The migration tx-fn copies per-instance values from the old slots to these.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident       :mm.hook-event/lifecycle-position
+   :dt/type        :dt/Property
+   :dt/domain      :mm/HookEvent
+   :dt/range       :db.type/keyword
+   :db/valueType   :db.type/keyword
+   :db/cardinality :db.cardinality/one
+   :db/doc "Hook lifecycle position — when in the Claude Code lifecycle this hook-event class fires.  Values: :pre-grounding, :pre-tool-use, :post-commit, :post-response, :session-start, :session-end, :user-prompt-submit, :corpus-audit, etc.  Migrated from the legacy :mm.event/lifecycle-position slot per the 2026-05-24 collision-resolution ADR."}
+
+  {:db/ident       :mm.hook-event/default-severity
+   :dt/type        :dt/Property
+   :dt/domain      :mm/HookEvent
+   :dt/range       :db.type/keyword
+   :db/valueType   :db.type/keyword
+   :db/cardinality :db.cardinality/one
+   :db/doc "Default severity for rules triggered by this hook-event class.  Values: :audit (informational), :warn (advisory), :block (enforcement).  Migrated from legacy :mm.event/default-severity."}
+
+  {:db/ident       :mm.hook-event/triggered-by-hook
+   :dt/type        :dt/Property
+   :dt/domain      :mm/HookEvent
+   :dt/range       :db.type/string
+   :db/valueType   :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/doc "Path to the hook script that fires this hook-event class (e.g., 'hooks/session_start.sh') OR special-form keyword like ':user-prompt' / ':session-init'.  Migrated from legacy :mm.event/triggered-by-hook."}
+
+  {:db/ident       :mm.hook-event/applicable-actor-classes
+   :dt/type        :dt/Property
+   :dt/domain      :mm/HookEvent
+   :dt/range       :mm/Actor
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/many
+   :db/doc "Actor classes for which rules triggered by this hook-event class apply.  Migrated from legacy :mm.event/applicable-actor-classes."}
+
+  {:db/ident       :mm.hook-event/substrate-correctness-criticality
+   :dt/type        :dt/Property
+   :dt/domain      :mm/HookEvent
+   :dt/range       :db.type/keyword
+   :db/valueType   :db.type/keyword
+   :db/cardinality :db.cardinality/one
+   :db/doc "Substrate-correctness tier classification.  Values: :tier-0 (foundational; substrate breaks without rules at this event), :tier-1 (substrate-critical), :tier-2 (operationally-important), :tier-3 (advisory).  Migrated from legacy :mm.event/substrate-correctness-criticality."}]
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Class definitions — 6 new classes
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident         :mm/Spec
+   :dt/type          :dt/Class
+   :dt/subclass-of   :mm/Memory
+   :dt/context       "mm"
+   :dt/label         "Spec"
+   :dt/abstract?     true
+   :db/doc "Abstract root of the DECLARATIVE family — recipe / pattern / type-of-action / how-to.  Per Phase 2 type-lattice ADR D.1 + D.2.  Concrete subtypes: :mm/Workflow (existing; additively re-parented), :mm/Fn (existing; additively re-parented), :mm/Job (new), :mm/Schedule (new), :mm/EffectSpec (new abstract sub-root).  Specs are TIMELESS + REUSABLE — a Spec can be executed many times; each execution produces an :mm/Activity instance referencing its Spec via :mm.activity/spec."}
+
+  {:db/ident         :mm/Process
+   :dt/type          :dt/Class
+   :dt/subclass-of   :mm/Activity
+   :dt/context       "mm"
+   :dt/label         "Process"
+   :dt/slots         [:mm.process/workflow :mm.process/state :mm.process/runs]
+   :dt/abstract?     true
+   :db/doc "Abstract supertype of :workflow/Process — multi-step running instance of a :mm/Workflow.  Per Phase 2 ADR D.3.  :workflow/Process becomes a subclass additively via the re-parenting at the end of this file.  Composes with the existing workflow-substrate state-machine via :mm.process/state."}
+
+  {:db/ident         :mm/Job
+   :dt/type          :dt/Class
+   :dt/subclass-of   :mm/Spec
+   :dt/context       "mm"
+   :dt/label         "Job"
+   :dt/slots         [:mm.job/fn :mm.job/payload-shape :mm.job/effect-spec]
+   :dt/abstract?     false
+   :db/doc "Single-step Spec specifying an action to invoke.  Per Phase 2 ADR D.2.  Re-target from the legacy :job/{Scheduled, Recurring, Task, Triggered} family via the Phase 3 migration tx-fn (sandbar.scripts.migrate-mm-temporal).  Each :mm/Job firing produces a :mm/Run referencing it via :mm.run/job."}
+
+  {:db/ident         :mm/Schedule
+   :dt/type          :dt/Class
+   :dt/subclass-of   :mm/Spec
+   :dt/context       "mm"
+   :dt/label         "Schedule"
+   :dt/slots         [:mm.schedule/target :mm.schedule/recurrence :mm.schedule/timezone
+                      :mm.schedule/dtstart :mm.schedule/until :mm.schedule/count
+                      :mm.schedule/rdates :mm.schedule/exdates
+                      :mm.schedule/source-nl :mm.schedule/source-cron
+                      :mm.schedule/next-fire-at
+                      :mm.schedule/misfire-policy :mm.schedule/concurrency]
+   :dt/abstract?     false
+   :db/doc "Recurrence Spec firing a :mm/Workflow or :mm/Job per its target.  OWL-Time + RFC 5545 RRULE aligned per the temporal-substrate arc plan §1.1+§1.2.  Each firing produces a new :mm/Process (target=Workflow) or :mm/Run (target=Job).  Per Phase 2 ADR D.2 + D.8."}
+
+  {:db/ident         :mm/EffectSpec
+   :dt/type          :dt/Class
+   :dt/subclass-of   :mm/Spec
+   :dt/context       "mm"
+   :dt/label         "EffectSpec"
+   :dt/slots         [:mm.effect/initiates :mm.effect/terminates
+                      :mm.effect/preserves :mm.effect/preconditions]
+   :dt/abstract?     true
+   :db/doc "Abstract Spec subtype encoding Reiter-style successor-state axioms as DATA, SHACL-validatable at execution time.  Frame-problem-aware per Phase 2 ADR D.4 (Cyc agent finding: the frame problem WILL bite Sandbar in workflow-step form).  When a :mm/Run of a :mm/Job carrying an EffectSpec completes, sandbar can VALIDATE that the actual tx-data conformed to the declared :mm.effect/{initiates, terminates, preserves} sets + that :mm.effect/preconditions held."}
+
+  {:db/ident         :mm/HookEvent
+   :dt/type          :dt/Class
+   :dt/subclass-of   :mm/Event
+   :dt/context       "mm"
+   :dt/label         "HookEvent"
+   :dt/slots         [:mm.hook-event/lifecycle-position :mm.hook-event/default-severity
+                      :mm.hook-event/triggered-by-hook
+                      :mm.hook-event/applicable-actor-classes
+                      :mm.hook-event/substrate-correctness-criticality]
+   :dt/abstract?     false
+   :db/doc "Concrete subtype of :mm/Event capturing the corpus-hook event taxonomy authored 2026-05-11 (per decisions/event_as_first_class_type_2026_05_11.md).  Receives the 6 existing :mm/Event instances (:memory.events/{session_start, post_commit, pre_grounding, corpus_audit, pre_tool_use, user_prompt_submit}) via the 2026-05-24 collision-resolution migration tx-fn.  Carries :mm.hook-event/* slots (renamed from the legacy :mm.event/{lifecycle-position,default-severity,...} family).  Rules continue to reference instances of this class via :triggered-by typed edges (no rule-side migration needed; only :dt/type of the referenced instances changes from :mm/Event to :mm/HookEvent)."}]
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Additive re-parenting — adds :dt/subclass-of edges WITHOUT retracting existing
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; :dt/subclass-of is :db.cardinality/many — adding a new parent does NOT
+;; retract existing parentage.  Per Phase 2 ADR §2 + collision-resolution ADR §2.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [;; :mm/Workflow + :mm/Fn — add :mm/Spec parent (preserves :mm/Meta parent)
+  {:db/ident :mm/Workflow      :dt/subclass-of :mm/Spec}
+  {:db/ident :mm/Fn            :dt/subclass-of :mm/Spec}
+
+  ;; :workflow/Process — add :mm/Process parent (preserves :dt/Ref parent)
+  {:db/ident :workflow/Process :dt/subclass-of :mm/Process}
+
+  ;; :event/* family — add :mm/Event parent (preserves :dt/Event parent for back-compat)
+  {:db/ident :event/SystemEvent :dt/subclass-of :mm/Event}
+  {:db/ident :event/ApiCall     :dt/subclass-of :mm/Event}
+  {:db/ident :event/HttpRequest :dt/subclass-of :mm/Event}
+  {:db/ident :event/Transaction :dt/subclass-of :mm/Event}
+  {:db/ident :event/ServerEvent :dt/subclass-of :mm/Event}
+  {:db/ident :event/UserEvent   :dt/subclass-of :mm/Event}]
+
+]
