@@ -40,7 +40,6 @@
             [clojure.tools.logging :as log]
             [sandbar.codec         :as codec]
             [sandbar.db.datatype   :as dt]
-            [sandbar.db.datomic    :as db]
             [sandbar.mcp.resources :as resources]
             [sandbar.projection    :as pg]))
 
@@ -80,57 +79,11 @@
     (.renameTo tmp target)
     nil))
 
-(defn- memory-class?
-  "Is the given class-ident an `:mm/Memory` descendant (i.e., carries a
-   `:mm.memory/rel-path`)?"
-  [class-ident]
-  (try
-    (dt/type-isa? :mm/Memory class-ident)
-    (catch Throwable _ false)))
-
-(defn- effective-memorial-policy-of
-  "Walk the class hierarchy starting at `class-ident` looking for the
-   nearest `:dt/memorial-policy` declaration.  Per
-   [`memory.decisions/option_b_plus_c_ratified_spec_vs_state_criterion_pivot_to_first_class_memorialization_2026_05_23`](decisions/option_b_plus_c_ratified_spec_vs_state_criterion_pivot_to_first_class_memorialization_2026_05_23.md)
-   + the first-class-memorialization arc Stage B.3 enforcement wiring.
-
-   Returns one of `:first-class` / `:db-only` / `:inline`, or nil if no
-   declaration is found anywhere in the ancestry chain.  Nil means the
-   class is policy-undeclared — for Stage B.3 MVP, treated as
-   `:db-only` (conservative default; future Stage G makes nil a
-   loud-fail at class-registration time).
-
-   Class-hierarchy walk uses `dt/parents-of` (single-step) iterated until
-   policy found or root reached.  Cycles in the hierarchy are unlikely
-   (would be a schema bug) but defended via depth-bound."
-  [class-ident]
-  (loop [current class-ident
-         depth 0]
-    (when (and current (< depth 16))
-      (let [class-entity (try (db/entity current) (catch Throwable _ nil))
-            policy (some-> class-entity :dt/memorial-policy)]
-        (or policy
-            (let [parents (try (some-> class-entity :dt/subclass-of) (catch Throwable _ nil))
-                  ;; :dt/subclass-of returns set of keywords directly (idents),
-                  ;; OR a single keyword/eid, OR an entity-map.  Normalize to
-                  ;; a single keyword ident to recur on.
-                  parent-ident (cond
-                                 (keyword? parents) parents
-                                 (and (set? parents) (seq parents))
-                                 (or (first (filter keyword? parents))
-                                     (some :db/ident parents))
-                                 (and (sequential? parents) (seq parents))
-                                 (or (first (filter keyword? parents))
-                                     (some :db/ident parents))
-                                 (and parents (associative? parents)) (:db/ident parents)
-                                 :else nil)]
-              (when parent-ident
-                (recur parent-ident (inc depth)))))))))
-
 (defn fs-projection-sink
   "Per-drain sink: reactive forward projection (DB → FS).
 
-   For `:mm/Memory` ancestor entities with `:mm.memory/rel-path`:
+   For classes with `:dt/memorial-policy :first-class` (declared on the
+   class or inherited) AND a `:mm.memory/rel-path` slot value:
    - Resolves the entity's class native codec
    - Invokes `(sandbar.projection/realize-and-emit-entity entity)` which
      handles section-tree walking + emit-document via the codec mediator
@@ -140,10 +93,9 @@
      `:REACTIVE/fs-write-skipped` (debug, no-action cases)
 
    Skips:
-   - Entities without `:mm.memory/rel-path` (e.g., :mm/Section — its
-     parent memory's mutation will trigger emission; explicit Section
-     mutations are no-op'd here as MVP; B.1 follow-on can walk to parent)
-   - Non-memory classes (no native-codec to markdown)
+   - Classes with `:db-only` / `:inline` policy (or policy-undeclared,
+     conservatively treated as `:db-only` per Stage B.3 MVP)
+   - Entities without `:mm.memory/rel-path`
 
    Failure semantics: per-entity try/catch.  A failed write doesn't
    propagate; the entity stays drained (will re-enqueue on next
@@ -153,12 +105,16 @@
         class-ident (:dt/type post-tx-slots)
         rel-path    (:mm.memory/rel-path post-tx-slots)
         ;; Stage B.3 of first-class-memorialization arc — consult
-        ;; :dt/memorial-policy (with class-hierarchy walk) before projecting.
-        ;; Replaces the prior `memory-class?` check which was ancestry-based
-        ;; ("is this a :mm/Memory descendant?") with the semantic check
-        ;; ("does this class want fs projection?").  Policy-undeclared
-        ;; classes treated as :db-only (conservative MVP default).
-        policy      (effective-memorial-policy-of class-ident)]
+        ;; :dt/memorial-policy via the dt/* substrate primitive
+        ;; (composes with dt/ancestors-of).  Per
+        ;; interaction/build_on_type_system_reflectively_and_prospectively_dont_reinvent_in_parallel_due_to_tactical_concerns_2026_05_23.md
+        ;; this lookup lives at the dt/* layer rather than as a private
+        ;; hierarchy-walking helper here.  Policy-undeclared classes
+        ;; are conservatively treated as :db-only (skip projection)
+        ;; until Stage G makes nil a class-registration loud-fail.
+        policy      (when class-ident
+                      (try (dt/effective-memorial-policy-of class-ident)
+                           (catch Throwable _ nil)))]
     (cond
       (not= policy :first-class)
       (log/debug :REACTIVE/fs-write-skipped

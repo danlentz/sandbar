@@ -797,3 +797,96 @@
             regression)"
     (let [n (dt/degree-of :dt/Class)]
       (is (pos? n) ":dt/Class has at least some ref-typed edges"))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; :dt/memorial-policy primitives — Phase A foundation (Wave 2 of metamodel-
+;; unification arc; per plans/sandbar_metamodel_unification_arc_… §20.2 +
+;; plans/sandbar_first_class_memorialization_arc_workflows_schedules_contexts_dt_memorial_policy_2026_05_23
+;; Stage B.3 substrate enforcement).
+;;
+;; Two primitives:
+;;   memorial-policy-of            — direct lookup (no ancestor walk)
+;;   effective-memorial-policy-of  — ancestor-walking lookup; scalar
+;;                                   reduction (nearest-declaration wins)
+;;
+;; Sister to bm25f-weights-of / effective-bm25f-weights-of — same shape,
+;; different attribute, different reduction semantic (scalar `some` vs map
+;; `merge`).  Per the SPEC-vs-STATE first-class-memorialization decision
+;; (decisions/option_b_plus_c_ratified_spec_vs_state_criterion_pivot_to_first_class_memorialization_2026_05_23.md).
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(deftest memorial-policy-of-test
+  (testing "memorial-policy-of returns directly-declared policy keyword"
+    (testing ":mm/Memory declares :first-class directly (schema/mm.edn)"
+      (is (= :first-class (dt/memorial-policy-of :mm/Memory))))
+    (testing ":dt/Class declares :db-only directly (schema/meta.edn — schema entity)"
+      (is (= :db-only (dt/memorial-policy-of :dt/Class))))
+    (testing ":dt/Property declares :db-only directly (schema/meta.edn — schema entity)"
+      (is (= :db-only (dt/memorial-policy-of :dt/Property)))))
+  (testing "memorial-policy-of does NOT walk ancestors"
+    ;; :mm/Decision is a :mm/Memory descendant but doesn't declare its own
+    ;; :dt/memorial-policy — it inherits :first-class via ancestor walk only.
+    ;; memorial-policy-of is the DIRECT-LOOKUP primitive; it must return nil
+    ;; for classes that only have policy via inheritance.  Use
+    ;; effective-memorial-policy-of for ancestor-walking lookup.
+    (testing ":mm/Decision (inherits :first-class from :mm/Memory) returns nil"
+      (is (nil? (dt/memorial-policy-of :mm/Decision))
+          ":mm/Decision inherits policy via ancestor walk; direct lookup returns nil"))
+    (testing ":mm/Plan (inherits :first-class from :mm/Memory) returns nil"
+      (is (nil? (dt/memorial-policy-of :mm/Plan)))))
+  (testing "memorial-policy-of return shape is keyword or nil"
+    (testing "returns keyword for declared classes"
+      (is (keyword? (dt/memorial-policy-of :mm/Memory))))
+    (testing "returns nil for nonexistent class (no error)"
+      (is (nil? (dt/memorial-policy-of :nonexistent/Thing))))))
+
+(deftest effective-memorial-policy-of-test
+  ;; Sister to effective-bm25f-weights-of (line 266-312) — same ancestor-walk
+  ;; pattern but SCALAR reduction (first-match wins via `some`) rather than
+  ;; MAP MERGE.  The class-agnostic substrate primitive at the dt/* layer
+  ;; per interaction/no_hardcoded_consumer_class_knowledge_in_substrate_2026_05_13.md.
+  (testing "effective-memorial-policy-of returns directly-declared policy when present"
+    ;; Direct declarations: chain starts with class-ident itself, so direct
+    ;; declarations take precedence over any inherited values.
+    (testing ":mm/Memory returns its directly-declared :first-class"
+      (is (= :first-class (dt/effective-memorial-policy-of :mm/Memory))))
+    (testing ":dt/Class returns its directly-declared :db-only"
+      (is (= :db-only (dt/effective-memorial-policy-of :dt/Class))))
+    (testing ":dt/Property returns its directly-declared :db-only"
+      (is (= :db-only (dt/effective-memorial-policy-of :dt/Property)))))
+  (testing "effective-memorial-policy-of walks :dt/subclass-of ancestors to find inherited policy"
+    ;; :mm/Memory descendants inherit :first-class via ancestor walk.
+    ;; This is the load-bearing behavior — reactive-projection sink consults
+    ;; this primitive on every entity-create to determine whether to project
+    ;; the resulting memorial to the filesystem.
+    (testing ":mm/Decision inherits :first-class from :mm/Memory ancestor"
+      (is (= :first-class (dt/effective-memorial-policy-of :mm/Decision))))
+    (testing ":mm/Plan inherits :first-class from :mm/Memory ancestor"
+      (is (= :first-class (dt/effective-memorial-policy-of :mm/Plan))))
+    (testing ":mm/Observation inherits :first-class from :mm/Memory ancestor"
+      (is (= :first-class (dt/effective-memorial-policy-of :mm/Observation)))))
+  (testing "effective-memorial-policy-of returns nil when no policy declared in chain"
+    ;; A class whose ancestor chain has NO :dt/memorial-policy anywhere returns nil.
+    ;; Reactive sink treats nil as :db-only (conservative — skip projection).
+    (testing "Nonexistent ident returns nil"
+      (is (nil? (dt/effective-memorial-policy-of :nonexistent/Thing)))))
+  (testing "effective-memorial-policy-of composes with ancestors-of (chain construction)"
+    ;; The function walks (cons class-ident (ancestors-of class-ident)).
+    ;; Verify the chain contains the expected policy-declaring ancestor.
+    (let [decision-chain (cons :mm/Decision (dt/ancestors-of :mm/Decision))]
+      (is (some #{:mm/Memory} decision-chain)
+          ":mm/Decision's chain includes :mm/Memory (where :first-class is declared)")))
+  (testing "scalar reduction (specificity wins via `some` short-circuit)"
+    ;; Unlike effective-bm25f-weights-of (which MERGES maps from all ancestors),
+    ;; effective-memorial-policy-of takes the FIRST non-nil from the chain.
+    ;; The chain starts with class-ident itself, so direct declarations win
+    ;; over inherited ones.
+    (testing "Direct declaration on class wins over potential ancestor override"
+      ;; :dt/Class declares :db-only; if any ancestor had :first-class, this
+      ;; would still return :db-only because :dt/Class is first in chain.
+      (is (= :db-only (dt/effective-memorial-policy-of :dt/Class))
+          "Direct :db-only on :dt/Class wins; no ancestor would override")))
+  (testing "return shape is keyword or nil"
+    (is (or (keyword? (dt/effective-memorial-policy-of :mm/Memory))
+            (nil? (dt/effective-memorial-policy-of :mm/Memory)))
+        "Returns keyword (declared) or nil (undeclared)")))

@@ -727,6 +727,21 @@
   [class-ident]
   (into {} (or (:dt/bm25f-weights (db/entity class-ident)) [])))
 
+(defn memorial-policy-of
+  "Returns the `:dt/memorial-policy` keyword declared directly on `class-ident`,
+  or nil if undeclared.  One of `:first-class` / `:db-only` / `:inline`.
+
+  Does NOT walk ancestors — call `effective-memorial-policy-of` for
+  inheritance.  Sister to `bm25f-weights-of` / `codec-aliases-of` —
+  same single-class shape, different attribute.
+
+  Per `decisions/option_b_plus_c_ratified_spec_vs_state_criterion_pivot_to_first_class_memorialization_2026_05_23.md`
+  + first-class-memorialization arc Stage B.3 (substrate enforcement
+  wiring).  Consumed by `sandbar.reactive.sinks/fs-projection-sink`
+  + (future) `sandbar.project.dump-db-only` worker."
+  [class-ident]
+  (:dt/memorial-policy (db/entity class-ident)))
+
 (defn fulltext-indexed?
   "Returns true if `attribute` (a slot/property ident) is declared with
   `:db/fulltext true`, false otherwise.
@@ -1324,6 +1339,41 @@
     (reduce (fn [acc c] (merge acc (bm25f-weights-of c)))
             {}
             (reverse chain))))
+
+(defn effective-memorial-policy-of
+  "Returns the `:dt/memorial-policy` declaration nearest to `class-ident` in
+  the `:dt/subclass-of` ancestry chain, or nil if no declaration is found
+  anywhere in the chain.  One of `:first-class` / `:db-only` / `:inline`.
+
+  Unlike `effective-bm25f-weights-of` (which MERGES across the chain),
+  memorial-policy is scalar — nearest-declaration wins (specificity).
+  `:mm/Memory` declares `:first-class` once; all descendants inherit
+  unless they override (e.g., `:event/HttpRequest` declares `:db-only`).
+
+  Composes with `ancestors-of` (substrate primitive — not yet memoized
+  upward, parallel to memoized downward `subclasses-of-cached`; future
+  optimization if projection hot-path warrants).  Used by
+  `sandbar.reactive.sinks/fs-projection-sink` (Stage B.3 enforcement)
+  + (future) `sandbar.project.dump-db-only` (DB-dump arc Stage B).
+
+  nil return means the class is policy-undeclared.  Caller decides
+  default — current MVP at the fs-projection sink treats nil as
+  `:db-only` (conservative: skip projection rather than spuriously
+  emit).  Stage G of the first-class-memorialization arc will turn
+  policy-undeclared into a class-registration-time loud-fail.
+
+  Added 2026-05-23 per
+  `decisions/option_b_plus_c_ratified_spec_vs_state_criterion_pivot_to_first_class_memorialization_2026_05_23.md`
+  + the SPEC-vs-STATE pivot's substrate-enforcement requirement.
+  Sister to `effective-bm25f-weights-of` — same ancestor-walk pattern
+  but scalar reduction (first-match) rather than map-merge.  Mirrors
+  the `:dt/*` substrate-primitive discipline per
+  `interaction/build_on_type_system_reflectively_and_prospectively_dont_reinvent_in_parallel_due_to_tactical_concerns_2026_05_23.md`
+  — replaces a private hierarchy-walking helper that had been
+  authored inside `sandbar.reactive.sinks`."
+  [class-ident]
+  (let [chain (cons class-ident (ancestors-of class-ident))]
+    (some memorial-policy-of chain)))
 
 (defn direct-subclasses-of
   "Returns the idents of classes that directly extend class dt.

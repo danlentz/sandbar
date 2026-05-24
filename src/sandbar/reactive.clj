@@ -114,7 +114,7 @@
    follow-on if the skip-set grows."
   #{:dt/Class
     :dt/Property
-    :workflow/Definition
+    :mm/Workflow
     :workflow/Process})
 
 (defn skip-class?

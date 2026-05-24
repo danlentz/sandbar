@@ -5,6 +5,7 @@
             [sandbar.codec.markdown :as codec-md]
             [sandbar.db.datatype :as dt]
             [sandbar.db.datomic :as db]
+            [sandbar.logging.init :as logging-init]
             [sandbar.reactive :as reactive]
             [sandbar.reactive.queue :as reactive-queue]
             [sandbar.reactive.sinks :as reactive-sinks]
@@ -30,6 +31,12 @@
   (alter-var-root #'sys/system (constantly (make-system))))
 
 (defn start []
+  ;; FOUNDATION FIRST — initialize Telemere handlers BEFORE any (log/info ...)
+  ;; callsite has a chance to fire silently into a no-handler void.  Per
+  ;; Dan-directive 2026-05-23 + memory/interaction/verify_foundational_subsystem_health_after_substrate_edits_2026_05_23.md
+  ;; — substrate restart leaving handlers unconfigured was the failure mode
+  ;; that motivated the logging-foundation-first authorization.
+  (logging-init/start!)
   (log/info :SYS/START "Starting system components")
   (alter-var-root #'sys/system component/start)
   (log/info :SYS/STARTED "System started successfully")
