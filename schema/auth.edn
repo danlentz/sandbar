@@ -254,7 +254,7 @@
    :db/doc "Permissions granted by this role"}
 
   {:db/ident :auth/inherits-from
-   :dt/type :dt/Property
+   :dt/type :dt/StrictPartialOrderProperty
    :dt/domain :auth/Role
    :dt/range :auth/Role
    :db/valueType :db.type/ref

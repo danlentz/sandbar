@@ -453,7 +453,7 @@
    :dt/range       :mm/Actor
    :db/valueType   :db.type/ref
    :db/cardinality :db.cardinality/many
-   :db/doc "Actor classes for which rules triggered by this hook-event class apply.  Migrated from legacy :mm.event/applicable-actor-classes."}
+   :db/doc "Actor classes for which rules triggered by this hook-event class apply.  Proper :mm/Actor REF per the Actor-as-first-class hierarchy.  Legacy values on :mm.event/applicable-actor-classes (keyword-of-path form like :actors/foo.md) are NOT yet migrated to refs — that's part of the corpus-wide string-of-path → ref normalization in the metamodel-unification arc (Phase B substrate-quality cleanup).  Per Dan-directive 2026-05-24 stop-tactical-spinning ADR: this slot keeps the principled :db.type/ref declaration; the legacy data migrates UP to ref-form rather than the schema migrating DOWN to match the debt."}
 
   {:db/ident       :mm.hook-event/substrate-correctness-criticality
    :dt/type        :dt/Property

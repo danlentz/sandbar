@@ -73,11 +73,23 @@
 (def ^:private slot-mapping
   "Old `:mm.event/*` slot ident → New `:mm.hook-event/*` slot ident.
    Defined by the 2026-05-24 collision-resolution ADR §2 +
-   schema/mm-temporal.edn."
+   schema/mm-temporal.edn.
+
+   NOTE — `:mm.event/applicable-actor-classes` is INTENTIONALLY EXCLUDED
+   from this mapping.  The original slot is `:db.type/keyword`
+   (cardinality-many) but the new `:mm.hook-event/applicable-actor-classes`
+   was authored in schema/mm-temporal.edn as `:db.type/ref` (range
+   `:mm/Actor`) — Datomic rejects copying keyword values into a ref slot
+   AND `:db/valueType` is immutable post-installation, so in-substrate
+   correction requires a separate retraction-and-recreation pass.
+   Pragmatic move: skip the migration for THIS slot in THIS pass; legacy
+   values stay on `:mm.event/applicable-actor-classes` and remain
+   accessible via inheritance from the (post-migration) abstract
+   `:mm/Event` ancestor.  Future follow-up arc will fix the slot-type
+   discrepancy + complete the migration."
   {:mm.event/lifecycle-position                :mm.hook-event/lifecycle-position
    :mm.event/default-severity                  :mm.hook-event/default-severity
    :mm.event/triggered-by-hook                 :mm.hook-event/triggered-by-hook
-   :mm.event/applicable-actor-classes          :mm.hook-event/applicable-actor-classes
    :mm.event/substrate-correctness-criticality :mm.hook-event/substrate-correctness-criticality})
 
 (defn- ref-eid

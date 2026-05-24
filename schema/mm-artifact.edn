@@ -73,7 +73,7 @@
    :db/doc "ISO date the plan completed (only set once status: :complete).  Per memory/types/plan.md."}
 
   {:db/ident       :mm.plan/triggered-by
-   :dt/type        :dt/Property :dt/domain :mm/Plan
+   :dt/type        :dt/DirectedBinaryRelationProperty :dt/domain :mm/Plan
    :dt/range       :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/one
    :db/doc "Free-text — what surfaced this arc (idea, incident, decision, Dan-directive).  Per memory/types/plan.md."}
 
