@@ -424,7 +424,10 @@
     :db/doc "Forward decl: regex pattern constraint on a string-valued property (full def later)."}
 
    {:db/ident :mm.shape/DatatypeConstraint
-    :db/doc "Forward decl: datatype constraint on a property value (full def later)."}]
+    :db/doc "Forward decl: datatype constraint on a property value (full def later)."}
+
+   {:db/ident :mm.shape/XorConstraint
+    :db/doc "Forward decl: mutual-exclusion (XOR) constraint between two slots on the same entity (full def later).  Added pre-0.2.0 β.1.A per Option ε Paired Property Pattern."}]
 
   ;; Batch (ii) — Slot declarations + full sub-entity class declarations.
   ;; The forward-declared idents from batch (i) are now resolvable.
@@ -478,6 +481,14 @@
    :db/valueType   :db.type/ref
    :db/cardinality :db.cardinality/many
    :db/doc "Datatype constraints per property.  Each value is a :mm.shape/DatatypeConstraint sub-entity carrying :mm.shape.datatype/property + :mm.shape.datatype/expected-datatype.  SHACL sh:datatype analog."}
+
+  {:db/ident       :mm.shape/xor-constraints
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Shape
+   :dt/range       :mm.shape/XorConstraint
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/many
+   :db/doc "Mutual-exclusion (XOR) constraints between slot pairs.  Each value is a :mm.shape/XorConstraint sub-entity carrying :mm.shape.xor/slot-a + :mm.shape.xor/slot-b; the constraint requires EXACTLY ONE of the two slots to be populated per entity.  Substrate extension for Option ε Paired Property Pattern per pre-0.2.0 β.0.5 Decision ADR (eid 17592186101815).  Composes with the existing cardinality / pattern / datatype constraint families."}
 
   ;; Sub-entity slot vocabulary — :mm.shape/CardinalityConstraint
   {:db/ident       :mm.shape.cardinality/property
@@ -546,6 +557,23 @@
    :db/cardinality :db.cardinality/one
    :db/doc "The expected :dt/Class or Datomic :db.type/* of the constrained property's value(s)."}
 
+  ;; Sub-entity slot vocabulary — :mm.shape/XorConstraint
+  {:db/ident       :mm.shape.xor/slot-a
+   :dt/type        :dt/Property
+   :dt/domain      :mm.shape/XorConstraint
+   :dt/range       :dt/Property
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/one
+   :db/doc "First slot of the XOR pair.  Exactly one of slot-a or slot-b must be populated per entity (XOR semantics)."}
+
+  {:db/ident       :mm.shape.xor/slot-b
+   :dt/type        :dt/Property
+   :dt/domain      :mm.shape/XorConstraint
+   :dt/range       :dt/Property
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/one
+   :db/doc "Second slot of the XOR pair.  Exactly one of slot-a or slot-b must be populated per entity (XOR semantics)."}
+
   ]
 
   ;; Batch (iii) — Sub-entity full class declarations.  Their :dt/slots
@@ -577,7 +605,16 @@
     :dt/label         "DatatypeConstraint"
     :db/doc "A datatype constraint on a property value.  SHACL sh:datatype analog per shacl arc Stage B."
     :dt/slots         [:mm.shape.datatype/property
-                       :mm.shape.datatype/expected-datatype]}]
+                       :mm.shape.datatype/expected-datatype]}
+
+   {:db/ident         :mm.shape/XorConstraint
+    :dt/type          :dt/Class
+    :dt/subclass-of   :dt/Resource
+    :dt/context       "mm.shape"
+    :dt/label         "XorConstraint"
+    :db/doc "A mutual-exclusion (XOR) constraint between two slots on the same entity.  Requires EXACTLY ONE of :mm.shape.xor/slot-a or :mm.shape.xor/slot-b to be populated (neither both nor neither).  Substrate extension for Option ε Paired Property Pattern per pre-0.2.0 β.0.5 Decision ADR (eid 17592186101815).  Composes with Wave 5 :mm/Shape validator family via sandbar.shape/check-xor-constraints (the 7th check-fn)."
+    :dt/slots         [:mm.shape.xor/slot-a
+                       :mm.shape.xor/slot-b]}]
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; mm.link/* Properties

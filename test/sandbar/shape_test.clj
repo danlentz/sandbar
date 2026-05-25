@@ -343,3 +343,126 @@
       (is (>= (:shape-count report) 1))
       (is (pos? (:passes report)))
       (is (pos? (:failures report))))))
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; check-xor-constraints — Option ε Paired Property Pattern enforcement
+;;
+;; Substrate extension added in pre-0.2.0 β.1.A.  Per β.0.5 Decision ADR
+;; (eid 17592186101815): :mm.shape/XorConstraint sub-entity declares a
+;; mutual-exclusion pair (slot-a, slot-b); check-xor-constraints validates
+;; that EXACTLY ONE of the two slots is populated on the entity (rejecting
+;; both both-populated and both-absent).
+;;
+;; Tests use :mm.memory/name + :mm.memory/description as a synthetic XOR
+;; pair (real semantics don't require XOR; the unit-test only validates
+;; the constraint-check logic mechanics, not the slot-pair semantics).
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defn- create-xor-constraint!
+  "Create a :mm.shape/XorConstraint sub-entity; return its eid."
+  [{:keys [slot-a slot-b]}]
+  (:db/id (dt/make :mm.shape/XorConstraint
+                   {:mm.shape.xor/slot-a slot-a
+                    :mm.shape.xor/slot-b slot-b})))
+
+(deftest check-xor-constraints-slot-a-only-passes
+  (testing "Entity has slot-a populated; slot-b absent — pass"
+    (let [xor-eid    (create-xor-constraint!
+                       {:slot-a :mm.memory/name
+                        :slot-b :mm.memory/description})
+          shape-eid  (create-shape!
+                       {:mm.shape/shape-id        "test-xor-slot-a-only"
+                        :mm.shape/applies-to      :mm/Memory
+                        :mm.shape/description     "test"
+                        :mm.shape/xor-constraints [xor-eid]
+                        :mm.shape/severity        :violation})
+          entity-eid (create-test-memory!
+                       {:mm.memory/rel-path "test/xor-slot-a.md"
+                        :mm.memory/name     "X"})
+          db'        (d/db @db/**conn*)
+          result     (shape/check-xor-constraints db' entity-eid shape-eid)]
+      (is (= :pass (:status result))
+          "Exactly slot-a populated should pass XOR")
+      (is (= :xor-constraints (:check result))))))
+
+(deftest check-xor-constraints-slot-b-only-passes
+  (testing "Entity has slot-b populated; slot-a absent — pass"
+    (let [xor-eid    (create-xor-constraint!
+                       {:slot-a :mm.memory/name
+                        :slot-b :mm.memory/description})
+          shape-eid  (create-shape!
+                       {:mm.shape/shape-id        "test-xor-slot-b-only"
+                        :mm.shape/applies-to      :mm/Memory
+                        :mm.shape/description     "test"
+                        :mm.shape/xor-constraints [xor-eid]
+                        :mm.shape/severity        :violation})
+          entity-eid (create-test-memory!
+                       {:mm.memory/rel-path    "test/xor-slot-b.md"
+                        :mm.memory/description "only-description"})
+          db'        (d/db @db/**conn*)
+          result     (shape/check-xor-constraints db' entity-eid shape-eid)]
+      (is (= :pass (:status result))
+          "Exactly slot-b populated should pass XOR"))))
+
+(deftest check-xor-constraints-both-populated-fails
+  (testing "Entity has BOTH slot-a + slot-b populated — fail with :both-populated"
+    (let [xor-eid    (create-xor-constraint!
+                       {:slot-a :mm.memory/name
+                        :slot-b :mm.memory/description})
+          shape-eid  (create-shape!
+                       {:mm.shape/shape-id        "test-xor-both-populated"
+                        :mm.shape/applies-to      :mm/Memory
+                        :mm.shape/description     "test"
+                        :mm.shape/xor-constraints [xor-eid]
+                        :mm.shape/severity        :violation})
+          entity-eid (create-test-memory!
+                       {:mm.memory/rel-path    "test/xor-both.md"
+                        :mm.memory/name        "X"
+                        :mm.memory/description "Y"})
+          db'        (d/db @db/**conn*)
+          result     (shape/check-xor-constraints db' entity-eid shape-eid)]
+      (is (= :fail (:status result))
+          "Both slots populated should fail XOR")
+      (is (= :xor-constraints (:check result)))
+      (let [violations (:violations result)]
+        (is (= 1 (count violations)))
+        (is (= :both-populated (:reason (first violations))))
+        (is (= :mm.memory/name (:slot-a (first violations))))
+        (is (= :mm.memory/description (:slot-b (first violations))))))))
+
+(deftest check-xor-constraints-both-absent-fails
+  (testing "Entity has NEITHER slot-a nor slot-b populated — fail with :both-absent"
+    (let [xor-eid    (create-xor-constraint!
+                       {:slot-a :mm.memory/name
+                        :slot-b :mm.memory/description})
+          shape-eid  (create-shape!
+                       {:mm.shape/shape-id        "test-xor-both-absent"
+                        :mm.shape/applies-to      :mm/Memory
+                        :mm.shape/description     "test"
+                        :mm.shape/xor-constraints [xor-eid]
+                        :mm.shape/severity        :violation})
+          entity-eid (create-test-memory!
+                       {:mm.memory/rel-path "test/xor-neither.md"
+                        ;; no name, no description
+                        })
+          db'        (d/db @db/**conn*)
+          result     (shape/check-xor-constraints db' entity-eid shape-eid)]
+      (is (= :fail (:status result))
+          "Both slots absent should fail XOR")
+      (is (= 1 (count (:violations result))))
+      (is (= :both-absent (:reason (first (:violations result))))))))
+
+(deftest check-xor-constraints-no-constraints-passes
+  (testing "Shape has no :mm.shape/xor-constraints — pass trivially"
+    (let [shape-eid  (create-shape!
+                       {:mm.shape/shape-id    "test-xor-empty"
+                        :mm.shape/applies-to  :mm/Memory
+                        :mm.shape/description "test"
+                        :mm.shape/severity    :violation})
+          entity-eid (create-test-memory!
+                       {:mm.memory/rel-path "test/xor-empty.md"})
+          db'        (d/db @db/**conn*)
+          result     (shape/check-xor-constraints db' entity-eid shape-eid)]
+      (is (= :pass (:status result))
+          "No XOR constraints declared should pass trivially"))))

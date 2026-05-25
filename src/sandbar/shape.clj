@@ -294,6 +294,38 @@
              :severity (shape-severity shape)}))))))
 
 
+(defdbfn check-xor-constraints [db entity-eid shape-eid]
+  {:dt.fn/purpose      :validate
+   :dt.fn/purity       :pure-total
+   :dt.fn/cost-class   :cheap
+   :dt.fn/installed-as :classpath-fn
+   :dt.fn/description  "Iterate the shape's :mm.shape/xor-constraints sub-entities; for each (slot-a, slot-b) pair, verify EXACTLY ONE is populated on the entity (rejects both-populated AND both-absent).  Substrate extension for Option ε Paired Property Pattern per pre-0.2.0 β.0.5 Decision ADR (eid 17592186101815)."
+   :dt.fn/version      "1.0.0"}
+  (let [entity      (d/entity db entity-eid)
+        shape       (d/entity db shape-eid)
+        constraints (:mm.shape/xor-constraints shape)
+        violations  (vec
+                      (keep
+                        (fn [xc]
+                          (let [slot-a       (->ident (:mm.shape.xor/slot-a xc))
+                                slot-b       (->ident (:mm.shape.xor/slot-b xc))
+                                a-populated? (some? (get entity slot-a))
+                                b-populated? (some? (get entity slot-b))]
+                            (cond
+                              (and a-populated? b-populated?)
+                              {:slot-a slot-a :slot-b slot-b :reason :both-populated}
+                              (and (not a-populated?) (not b-populated?))
+                              {:slot-a slot-a :slot-b slot-b :reason :both-absent}
+                              :else nil)))
+                        constraints))]
+    (if (empty? violations)
+      {:status :pass :check :xor-constraints}
+      {:status     :fail
+       :check      :xor-constraints
+       :violations violations
+       :severity   (shape-severity shape)})))
+
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Top-level walker — composes the per-constraint check fns
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -310,7 +342,8 @@
                   (check-pattern           db entity-eid shape-eid)
                   (check-datatype          db entity-eid shape-eid)
                   (check-closed            db entity-eid shape-eid)
-                  (check-validator-fn      db entity-eid shape-eid)]
+                  (check-validator-fn      db entity-eid shape-eid)
+                  (check-xor-constraints   db entity-eid shape-eid)]
         failures (filter (comp #{:fail} :status) checks)]
     (if (empty? failures)
       {:status :pass :entity entity-eid :shape shape-eid :checks-passed (count checks)}
