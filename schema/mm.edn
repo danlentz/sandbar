@@ -57,7 +57,13 @@
   {:db/ident :mm/Linkset         :db/doc "Inter-dataset typed cross-link metadata (analog of void:Linkset); see ADR §2.2"}
   {:db/ident :mm/Shape           :db/doc "SHACL-semantics shape definition for machine-checkable validation; see ADR §2.2"}
   {:db/ident :mm/ThesaurusArray  :db/doc "Sibling-concept grouping with NodeLabel (analog of iso-thes:ThesaurusArray); see ADR §2.2"}
-  {:db/ident :mm/ConceptGroup    :db/doc "Cross-cutting facet membership (analog of iso-thes:ConceptGroup); see ADR §2.2"}]
+  {:db/ident :mm/ConceptGroup    :db/doc "Cross-cutting facet membership (analog of iso-thes:ConceptGroup); see ADR §2.2"}
+  ;; Forward-decl for :mm/Fn (full def in schema/mm-meta.edn).  Needed here
+  ;; because :mm.shape/validator-fn + :mm.shape/value-constraints (per SHACL
+  ;; arc Stage B.5 D3 2026-05-23) declare :dt/range :mm/Fn — load-order forces
+  ;; mm.edn to see :mm/Fn before mm-meta.edn loads its full declaration.
+  ;; Per substrate-restart friction discovery 2026-05-23.
+  {:db/ident :mm/Fn              :db/doc "Forward decl: first-class function memorial (full def in schema/mm-meta.edn per Stage B.5 ADR 2026-05-23)."}]
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; mm.tag/* Properties
@@ -381,7 +387,197 @@
    :dt/range       :dt/Property
    :db/valueType   :db.type/ref
    :db/cardinality :db.cardinality/many
-   :db/doc "Properties that MUST be present on instances of `applies-to` class.  SHACL `sh:minCount 1` analog.  Per ADR §2.2."}]
+   :db/doc "Properties that MUST be present on instances of `applies-to` class.  SHACL `sh:minCount 1` analog.  Per ADR §2.2."}
+
+  ;; --- Stage B.5 D3 augmentations 2026-05-23: :mm/Shape composes with :mm/Fn by reference
+  ;; per SHACL-AF sh:NodeShape + sh:SPARQLFunction composition pattern.
+
+  {:db/ident       :mm.shape/validator-fn
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Shape
+   :dt/range       :mm/Fn
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/one
+   :db/doc "Optional ref to a :mm/Fn that implements the walker logic for this shape.  When present, sandbar.shape.validate dispatches through this fn rather than the built-in walker.  Per SHACL-AF sh:SPARQLFunction composition pattern + Stage B.5 ADR D3 (decisions/mm_fn_memorial_level_first_class_function_type_companion_to_dt_fn_metamodel_class_2026_05_23.md)."}
+
+  {:db/ident       :mm.shape/value-constraints
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Shape
+   :dt/range       :mm/Fn
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/many
+   :db/doc "Per-slot value-constraint fns.  Each is a :mm/Fn with :dt.fn/purpose :validate that returns true/false (or throws ex-info) for a candidate slot value.  Per SHACL sh:property + sh:datatype + sh:pattern composition + Stage B.5 ADR D3."}
+
+  ]
+
+  ;; --- SHACL arc Stage B (2026-05-23) — :mm/Shape vocabulary expansion to SHACL-spec-aligned coverage.
+  ;; Per plans/shacl_deeply_incorporated_capstone_activation_arc_2026_05_23.md §4.2.
+  ;; Split into TWO batches per substrate-restart friction-discovery 2026-05-23:
+  ;; Datomic can't resolve a forward-declared ident used as :dt/range value
+  ;; within the same transaction batch.
+
+  ;; Batch (i) — Sub-entity class forward decls FIRST
+  [{:db/ident :mm.shape/CardinalityConstraint
+    :db/doc "Forward decl: cardinality constraint on a property within a :mm/Shape (full def later)."}
+
+   {:db/ident :mm.shape/PatternConstraint
+    :db/doc "Forward decl: regex pattern constraint on a string-valued property (full def later)."}
+
+   {:db/ident :mm.shape/DatatypeConstraint
+    :db/doc "Forward decl: datatype constraint on a property value (full def later)."}]
+
+  ;; Batch (ii) — Slot declarations + full sub-entity class declarations.
+  ;; The forward-declared idents from batch (i) are now resolvable.
+  [
+  ;; New scalar shape slots
+  {:db/ident       :mm.shape/scope
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Shape
+   :dt/range       :db.type/keyword
+   :db/valueType   :db.type/keyword
+   :db/cardinality :db.cardinality/one
+   :db/doc "Shape application scope: :tbox (validates class definitions) / :rbox (validates property declarations) / :abox (validates instance data; default).  Per Description-Logic TBox/RBox/ABox separation.  Default :abox if omitted."}
+
+  {:db/ident       :mm.shape/closed?
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Shape
+   :dt/range       :db.type/boolean
+   :db/valueType   :db.type/boolean
+   :db/cardinality :db.cardinality/one
+   :db/doc "Boolean: if true, instances of :mm.shape/applies-to may NOT carry properties beyond those declared by the shape.  SHACL sh:closed analog.  Default false (open-world default; instances may carry additional unconstrained slots)."}
+
+  {:db/ident       :mm.shape/severity
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Shape
+   :dt/range       :db.type/keyword
+   :db/valueType   :db.type/keyword
+   :db/cardinality :db.cardinality/one
+   :db/doc "Severity enum: :violation (error; reject in :strict mode) / :warning (warn but accept) / :info (informational).  SHACL sh:Violation / sh:Warning / sh:Info analog.  Substrate consults this at validation time to decide whether to reject vs. log.  Default :violation for shape-declared constraints; user may downgrade to :warning for tightening-over-time workflows."}
+
+  ;; Ref-slot constraints (set-cardinality of sub-entity instances)
+  {:db/ident       :mm.shape/cardinality-constraints
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Shape
+   :dt/range       :mm.shape/CardinalityConstraint
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/many
+   :db/doc "Cardinality constraints per property.  Each value is a :mm.shape/CardinalityConstraint sub-entity carrying :mm.shape.cardinality/property + :mm.shape.cardinality/min + :mm.shape.cardinality/max.  SHACL sh:minCount + sh:maxCount analog."}
+
+  {:db/ident       :mm.shape/pattern-constraints
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Shape
+   :dt/range       :mm.shape/PatternConstraint
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/many
+   :db/doc "Regex pattern constraints per string-valued property.  Each value is a :mm.shape/PatternConstraint sub-entity carrying :mm.shape.pattern/property + :mm.shape.pattern/regex + optional :mm.shape.pattern/flags.  SHACL sh:pattern analog."}
+
+  {:db/ident       :mm.shape/datatype-constraints
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Shape
+   :dt/range       :mm.shape/DatatypeConstraint
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/many
+   :db/doc "Datatype constraints per property.  Each value is a :mm.shape/DatatypeConstraint sub-entity carrying :mm.shape.datatype/property + :mm.shape.datatype/expected-datatype.  SHACL sh:datatype analog."}
+
+  ;; Sub-entity slot vocabulary — :mm.shape/CardinalityConstraint
+  {:db/ident       :mm.shape.cardinality/property
+   :dt/type        :dt/Property
+   :dt/domain      :mm.shape/CardinalityConstraint
+   :dt/range       :dt/Property
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/one
+   :db/doc "The property whose cardinality is constrained."}
+
+  {:db/ident       :mm.shape.cardinality/min
+   :dt/type        :dt/Property
+   :dt/domain      :mm.shape/CardinalityConstraint
+   :dt/range       :db.type/long
+   :db/valueType   :db.type/long
+   :db/cardinality :db.cardinality/one
+   :db/doc "Minimum cardinality (inclusive).  Default 0 (no minimum)."}
+
+  {:db/ident       :mm.shape.cardinality/max
+   :dt/type        :dt/Property
+   :dt/domain      :mm.shape/CardinalityConstraint
+   :dt/range       :db.type/long
+   :db/valueType   :db.type/long
+   :db/cardinality :db.cardinality/one
+   :db/doc "Maximum cardinality (inclusive).  Omit for no maximum.  Use -1 sentinel to indicate unbounded."}
+
+  ;; Sub-entity slot vocabulary — :mm.shape/PatternConstraint
+  {:db/ident       :mm.shape.pattern/property
+   :dt/type        :dt/Property
+   :dt/domain      :mm.shape/PatternConstraint
+   :dt/range       :dt/Property
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/one
+   :db/doc "The string-valued property whose value(s) must match the regex pattern."}
+
+  {:db/ident       :mm.shape.pattern/regex
+   :dt/type        :dt/Property
+   :dt/domain      :mm.shape/PatternConstraint
+   :dt/range       :db.type/string
+   :db/valueType   :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/doc "Java-flavored regex pattern (java.util.regex.Pattern syntax)."}
+
+  {:db/ident       :mm.shape.pattern/flags
+   :dt/type        :dt/Property
+   :dt/domain      :mm.shape/PatternConstraint
+   :dt/range       :db.type/string
+   :db/valueType   :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/doc "Optional regex flags string (e.g. 'i' for case-insensitive, 'm' for multiline)."}
+
+  ;; Sub-entity slot vocabulary — :mm.shape/DatatypeConstraint
+  {:db/ident       :mm.shape.datatype/property
+   :dt/type        :dt/Property
+   :dt/domain      :mm.shape/DatatypeConstraint
+   :dt/range       :dt/Property
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/one
+   :db/doc "The property whose value type is constrained."}
+
+  {:db/ident       :mm.shape.datatype/expected-datatype
+   :dt/type        :dt/Property
+   :dt/domain      :mm.shape/DatatypeConstraint
+   :dt/range       :dt/Class
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/one
+   :db/doc "The expected :dt/Class or Datomic :db.type/* of the constrained property's value(s)."}
+
+  ]
+
+  ;; Batch (iii) — Sub-entity full class declarations.  Their :dt/slots
+  ;; references resolve cleanly because batch (ii) installed the slots.
+  [{:db/ident         :mm.shape/CardinalityConstraint
+    :dt/type          :dt/Class
+    :dt/subclass-of   :dt/Resource
+    :dt/context       "mm.shape"
+    :dt/label         "CardinalityConstraint"
+    :db/doc "A cardinality constraint on a property within a :mm/Shape.  SHACL sh:minCount + sh:maxCount packaged as a single sub-entity per property.  Per shacl_deeply_incorporated_capstone_activation_arc_2026_05_23 Stage B."
+    :dt/slots         [:mm.shape.cardinality/property
+                       :mm.shape.cardinality/min
+                       :mm.shape.cardinality/max]}
+
+   {:db/ident         :mm.shape/PatternConstraint
+    :dt/type          :dt/Class
+    :dt/subclass-of   :dt/Resource
+    :dt/context       "mm.shape"
+    :dt/label         "PatternConstraint"
+    :db/doc "A regex pattern constraint on a string-valued property.  SHACL sh:pattern analog per shacl arc Stage B."
+    :dt/slots         [:mm.shape.pattern/property
+                       :mm.shape.pattern/regex
+                       :mm.shape.pattern/flags]}
+
+   {:db/ident         :mm.shape/DatatypeConstraint
+    :dt/type          :dt/Class
+    :dt/subclass-of   :dt/Resource
+    :dt/context       "mm.shape"
+    :dt/label         "DatatypeConstraint"
+    :db/doc "A datatype constraint on a property value.  SHACL sh:datatype analog per shacl arc Stage B."
+    :dt/slots         [:mm.shape.datatype/property
+                       :mm.shape.datatype/expected-datatype]}]
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; mm.link/* Properties
@@ -1366,17 +1562,30 @@
    :dt/abstract?     false
    :db/doc "Tag-vocabulary scheme — analog of skos:ConceptScheme.  Per decisions/tag_as_first_class_introspectable_type_in_metamodel_2026_05_20.md ADR §2.2.  Supports the multi-scheme federation pattern (sandbar substrate scheme + consumer corpus scheme + federated schemes) per IPTC NewsCodes operational model + ISO 25964 microthesaurus federation."}
 
-  {:db/ident         :mm/Shape
-   :dt/type          :dt/Class
-   :dt/subclass-of   :dt/Resource
-   :dt/context       "mm"
-   :dt/label         "Shape"
-   :dt/slots         [:mm.shape/shape-id
-                      :mm.shape/applies-to
-                      :mm.shape/description
-                      :mm.shape/required-property]
-   :dt/abstract?     false
-   :db/doc "SHACL-semantics shape definition for machine-checkable validation of mm/* class instances.  Per ADR §2.2 + Dan-affirmation 2026-05-20 ('shacl has been an early commitment and wise investment as a foundational ontology').  Validated by PoolParty's commercial SHACL adoption (Stage 4.C library study).  Currently minimal shape model; future evolution may add :mm.shape/value-constraints + :mm.shape/cardinality-constraints + :mm.shape/scope per the ADR §5.3."}
+  {:db/ident           :mm/Shape
+   :dt/type            :dt/Class
+   :dt/subclass-of     :mm/Meta             ;; was :dt/Resource; per observations/mm_shape_subclass_of_dt_resource_not_mm_memory_inconsistency_2026_05_23.md — re-parented to match first-class-X pattern (sibling of :mm/Rule + :mm/Fn + :mm/Type + ... under :mm/Meta).  Inherits :mm.memory/* via :mm/Meta :dt/subclass-of :mm/Memory.
+   :dt/context         "mm"
+   :dt/label           "Shape"
+   :dt/native-codec       :markdown        ;; added 2026-05-23 — shapes are now first-class memorialized; codec-mediated for markdown ingest + emit
+   :dt/codec-type-keyword :shape            ;; added 2026-05-23 — frontmatter `type: shape` routes to :mm/Shape (Stage 7.C class-routing)
+   :dt/memorial-policy    :first-class      ;; added 2026-05-23 — FS-projected via reactive-projection sink per first-class-memorialization arc
+   :dt/slots           [:mm.shape/shape-id
+                        :mm.shape/applies-to
+                        :mm.shape/description
+                        :mm.shape/required-property
+                        ;; Stage B.5 D3 augmentations 2026-05-23 — SHACL-AF sibling-by-reference with :mm/Fn:
+                        :mm.shape/validator-fn
+                        :mm.shape/value-constraints
+                        ;; SHACL arc Stage B augmentations 2026-05-23 — full vocabulary expansion:
+                        :mm.shape/scope
+                        :mm.shape/closed?
+                        :mm.shape/severity
+                        :mm.shape/cardinality-constraints
+                        :mm.shape/pattern-constraints
+                        :mm.shape/datatype-constraints]
+   :dt/abstract?       false
+   :db/doc "SHACL-semantics shape definition for machine-checkable validation of mm/* class instances.  Per ADR §2.2 + Dan-affirmation 2026-05-20 ('shacl has been an early commitment and wise investment as a foundational ontology').  Validated by PoolParty's commercial SHACL adoption (Stage 4.C library study).  REPARENTED 2026-05-23 from :dt/Resource to :mm/Meta per observations/mm_shape_subclass_of_dt_resource_not_mm_memory_inconsistency_2026_05_23.md — restores consistency with first-class-X pattern (sibling of :mm/Rule / :mm/Fn / :mm/Type / etc.); shapes now inherit :mm.memory/* slots from :mm/Memory via :mm/Meta and are FS-projected via reactive-projection sink per :first-class memorial policy.  SHACL arc Stage B 2026-05-23 expanded constraint vocabulary (cardinality / pattern / datatype / scope / closed? / severity)."}
 
   {:db/ident         :mm/Dataset
    :dt/type          :dt/Class

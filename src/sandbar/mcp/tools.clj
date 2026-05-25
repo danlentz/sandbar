@@ -51,6 +51,7 @@
             [sandbar.projection      :as pg]
             [sandbar.reactive.queue     :as reactive-queue]
             [sandbar.search             :as search]
+            [sandbar.shape              :as shape]
             [sandbar.db.datatype        :as dt]
             [sandbar.db.datomic         :as db]
             [sandbar.mcp.envelope       :as envelope]
@@ -454,7 +455,35 @@
           (catch Exception e
             (log/warn e :MCP/entity-create-cache-failed
                       {:class class-ident :entity-id (:db/id new-entity)})))
-        {:entity (projection/full-projection new-entity)}))))
+        ;; SHACL arc Stage E (2026-05-23) — post-commit shape validation.
+        ;; Default :audit (logs + returns report; does NOT throw); opt
+        ;; :strict via {"validation-mode": "strict"} args to reject (throws
+        ;; ex-info; entity remains committed in v1, caller can react).
+        ;; :disabled skips entirely.  Per plans/shacl_deeply_incorporated_-
+        ;; capstone_activation_arc_2026_05_23.md §4.5.  Pre-commit
+        ;; rejection via entity-pred + d/with is deferred to v2.
+        (let [mode-arg       (or (get args "validation-mode") (get args :validation-mode))
+              validation-mode (or (some-> mode-arg keyword) :audit)
+              shape-results   (try
+                                (shape/validate (db/db) (:db/id new-entity) validation-mode)
+                                (catch clojure.lang.ExceptionInfo e
+                                  ;; :strict mode threw — propagate up to MCP envelope
+                                  (throw e))
+                                (catch Throwable t
+                                  (log/warn t :MCP/entity-create-shape-validation-error
+                                            {:class class-ident :entity-id (:db/id new-entity)})
+                                  []))]
+          (when (seq shape-results)
+            (log/info :MCP/entity-create-shape-validated
+                      {:class class-ident
+                       :entity-id (:db/id new-entity)
+                       :mode validation-mode
+                       :result-count (count shape-results)
+                       :failures (count (filter #(= :fail (:status %)) shape-results))}))
+          (cond-> {:entity (projection/full-projection new-entity)}
+            (seq shape-results) (assoc :shape-validation
+                                       {:mode validation-mode
+                                        :results shape-results})))))))
 
 (defn- entity-find-handler [args]
   ;; Find-or-missing semantic — does NOT throw on not-found; returns a
@@ -1077,10 +1106,37 @@
         (catch Exception e
           (log/warn e :MCP/entity-update-cache-failed
                     {:class class-ident :entity-id (:db/id updated)})))
-      {:entity (or (some-> (:db/ident updated) str)
-                   (:db/id updated))
-       :slots  slot-map
-       :result (projection/apply-projection updated projection-mode)})))
+      ;; SHACL arc Stage E (2026-05-23) — post-commit shape validation
+      ;; mirror of the entity-create-handler hook.  Per Dan-directive
+      ;; 2026-05-23: 'wire up entity-update too while we're here to
+      ;; surface friction early' — captures update-path violations
+      ;; same as create-path.  Mode read from :validation-mode arg;
+      ;; defaults to :audit; :strict throws ex-info post-commit; :disabled skips.
+      (let [mode-arg        (or (get args "validation-mode") (get args :validation-mode))
+            validation-mode (or (some-> mode-arg keyword) :audit)
+            shape-results   (try
+                              (shape/validate (db/db) (:db/id updated) validation-mode)
+                              (catch clojure.lang.ExceptionInfo e
+                                ;; :strict mode threw — propagate up to MCP envelope
+                                (throw e))
+                              (catch Throwable t
+                                (log/warn t :MCP/entity-update-shape-validation-error
+                                          {:class class-ident :entity-id (:db/id updated)})
+                                []))]
+        (when (seq shape-results)
+          (log/info :MCP/entity-update-shape-validated
+                    {:class class-ident
+                     :entity-id (:db/id updated)
+                     :mode validation-mode
+                     :result-count (count shape-results)
+                     :failures (count (filter #(= :fail (:status %)) shape-results))}))
+        (cond-> {:entity (or (some-> (:db/ident updated) str)
+                             (:db/id updated))
+                 :slots  slot-map
+                 :result (projection/apply-projection updated projection-mode)}
+          (seq shape-results) (assoc :shape-validation
+                                     {:mode validation-mode
+                                      :results shape-results}))))))
 
 (defn- entity-validate-handler [args]
   (let [class-arg (or (get args "class") (get args :class))
@@ -1784,6 +1840,71 @@
        :note "Stage 7.D MVP — full BM25F + path-grammar integration follows in 7.F."})))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Shape operations — SHACL arc Stage F (2026-05-23)
+;;
+;; Per plans/shacl_deeply_incorporated_capstone_activation_arc_2026_05_23.md §4.6.
+;; Five verbs: shape.list / shape.validate / shape.conformance-report /
+;; shape.create / shape.update.  The list / validate / conformance-report
+;; verbs are shape-specific; create / update thin-wrap entity.{create,update}
+;; with :class :mm/Shape pre-bound.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defn- shape-list-handler [args]
+  ;; Per interaction/target_sandbar_introspection_api_layer_not_raw_datomic_2026_05_12.md
+  ;; — handlers route through dt/* not raw datomic.api.
+  (let [applies-to-arg (or (get args "applies-to") (get args :applies-to))
+        applies-to     (when applies-to-arg (eref/resolve-ident applies-to-arg))
+        all-shapes     (dt/all-instances-of :mm/Shape)
+        filtered       (if applies-to
+                         (filter #(= applies-to (:db/ident (:mm.shape/applies-to %)))
+                                 all-shapes)
+                         all-shapes)
+        shapes         (mapv projection/full-projection filtered)]
+    {:applies-to-filter (when applies-to (str applies-to))
+     :count             (count shapes)
+     :shapes            shapes}))
+
+(defn- shape-validate-handler [args]
+  (let [entity-arg (or (get args "entity") (get args :entity))
+        mode-arg   (or (get args "mode") (get args :mode))
+        mode       (or (some-> mode-arg keyword) :audit)
+        entity     (eref/resolve entity-arg)
+        db         (db/db)
+        results    (shape/validate db (:db/id entity) mode)]
+    {:entity (str (or (:db/ident entity) (:db/id entity)))
+     :mode   mode
+     :result-count (count results)
+     :results results}))
+
+(defn- shape-conformance-report-handler [args]
+  (let [class-arg   (or (get args "class") (get args :class))
+        _           (when (nil? class-arg)
+                      (throw (ex-info "Missing required argument: class" {:args args})))
+        class-ident (eref/resolve-ident class-arg)
+        db          (db/db)
+        report      (shape/conformance-report db class-ident)]
+    report))
+
+(defn- shape-create-handler [args]
+  ;; Thin wrapper over entity-create-handler with :class :mm/Shape pre-bound.
+  (let [args' (assoc args "class" ":mm/Shape")]
+    (entity-create-handler args')))
+
+(defn- shape-update-handler [args]
+  ;; Thin wrapper over the generic update path.  :entity must already
+  ;; identify a :mm/Shape instance; we don't enforce class-check here
+  ;; (the underlying update path will validate the slot map against the
+  ;; entity's class).
+  (let [entity-arg (or (get args "entity") (get args :entity))
+        slots      (or (get args "slots") (get args :slots) {})
+        _          (when (nil? entity-arg)
+                      (throw (ex-info "Missing required argument: entity" {:args args})))
+        entity     (eref/resolve entity-arg)
+        updated    (dt/update-entity! (:db/id entity) slots)]
+    {:entity (projection/full-projection updated)}))
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Verb catalog — data-driven dispatch
 ;;
 ;; Each entry: tool name + title + description + inputSchema + handler.
@@ -1964,12 +2085,12 @@
    ;; Workflow operations — sandbar's first-class state-machine substrate
    {:name "sandbar.workflow.define"
     :title "Register a new workflow definition (states + transitions)"
-    :description "WHICH: registers a new workflow definition from a spec.  A workflow is a named state machine — states (with terminal-kind classification: `:success` / `:failure` / `:cancel` for terminal states) + transitions (named actions moving between states, optionally guarded).  Per Sandbar's first-class-workflow substrate.\n\nWHEN: use to introduce a new state-machine model — order fulfillment, validation flow, approval pipeline, etc.  Workflows are entities in the substrate (queryable, evolvable).  When NOT to use: (a) inspecting an existing workflow — `sandbar.workflow.find`; (b) starting a process on an existing workflow — `sandbar.workflow.start-process`.\n\nHOW: `:spec` is a JSON object describing the workflow shape — `:workflow/states` vec with `:db/ident` + `:workflow/terminal-kind` (for terminals); `:workflow/transitions` vec with `:db/ident` + source/target state refs + optional guard.\n\nORDER: PRECEDES any `sandbar.workflow.start-process` for this workflow — the workflow must exist before processes can run.  Inspect existing workflows via `sandbar.workflow.find` to avoid duplicate idents.\n\nCOMBINATION: pairs with `sandbar.workflow.find` (lookup), `sandbar.workflow.start-process` (instantiate process), and the validation-service verbs (`sandbar.validation.*`) which are workflow-backed.  Workflows are visible as `:workflow/Definition` instances via `sandbar.class.instances :class :workflow/Definition`."
+    :description "WHICH: registers a new workflow definition from a spec.  A workflow is a named state machine — states (with terminal-kind classification: `:success` / `:failure` / `:cancel` for terminal states) + transitions (named actions moving between states, optionally guarded).  Per Sandbar's first-class-workflow substrate.\n\nWHEN: use to introduce a new state-machine model — order fulfillment, validation flow, approval pipeline, etc.  Workflows are entities in the substrate (queryable, evolvable).  When NOT to use: (a) inspecting an existing workflow — `sandbar.workflow.find`; (b) starting a process on an existing workflow — `sandbar.workflow.start-process`.\n\nHOW: `:spec` is a JSON object describing the workflow shape — `:workflow/states` vec with `:db/ident` + `:workflow/terminal-kind` (for terminals); `:workflow/transitions` vec with `:db/ident` + source/target state refs + optional guard.\n\nORDER: PRECEDES any `sandbar.workflow.start-process` for this workflow — the workflow must exist before processes can run.  Inspect existing workflows via `sandbar.workflow.find` to avoid duplicate idents.\n\nCOMBINATION: pairs with `sandbar.workflow.find` (lookup), `sandbar.workflow.start-process` (instantiate process), and the validation-service verbs (`sandbar.validation.*`) which are workflow-backed.  Workflows are visible as `:mm/Workflow` instances via `sandbar.class.instances :class :mm/Workflow`."
     :inputSchema (one-required {:spec {:type "object" :description "Workflow spec (states + transitions)"}} [:spec])
     :handler workflow-define-handler}
    {:name "sandbar.workflow.find"
     :title "Look up a workflow definition by ident"
-    :description "WHICH: returns the entity-map of a workflow definition (its states + transitions + metadata) given the workflow ident.\n\nWHEN: use to inspect an existing workflow — discover its state-machine shape before starting a process or analyzing process histories.  When NOT to use: (a) you want all workflows — `sandbar.class.instances :class :workflow/Definition`; (b) you want process-state inspection — `sandbar.workflow.process-state`.\n\nHOW: `:workflow` is the workflow ident string.  Optional `:projection` — `full` (default; single-entity lookup ships the full definition) or `metadata-only` (lightweight existence check).  Returns `{:workflow <ident-string> :definition <entity-map>}`.\n\nORDER: typical sequence — `sandbar.class.instances :class :workflow/Definition` (discover) → `sandbar.workflow.find :workflow :foo/wf` (inspect).\n\nCOMBINATION: pairs with `sandbar.workflow.start-process` (start a new process against this definition) and `sandbar.workflow.active-processes` (current processes against this workflow)."
+    :description "WHICH: returns the entity-map of a workflow definition (its states + transitions + metadata) given the workflow ident.\n\nWHEN: use to inspect an existing workflow — discover its state-machine shape before starting a process or analyzing process histories.  When NOT to use: (a) you want all workflows — `sandbar.class.instances :class :mm/Workflow`; (b) you want process-state inspection — `sandbar.workflow.process-state`.\n\nHOW: `:workflow` is the workflow ident string.  Optional `:projection` — `full` (default; single-entity lookup ships the full definition) or `metadata-only` (lightweight existence check).  Returns `{:workflow <ident-string> :definition <entity-map>}`.\n\nORDER: typical sequence — `sandbar.class.instances :class :mm/Workflow` (discover) → `sandbar.workflow.find :workflow :foo/wf` (inspect).\n\nCOMBINATION: pairs with `sandbar.workflow.start-process` (start a new process against this definition) and `sandbar.workflow.active-processes` (current processes against this workflow)."
     :inputSchema (one-required
                    {:workflow   {:type "string"}
                     :projection {:type "string"
@@ -2366,7 +2487,46 @@
     :title "Bulk-harmonization DRY-RUN report — drift clusters + auto-mergeable counts"
     :description "WHICH: runs the full audit + identifies auto-mergeable drift clusters (M.3 candidates).  DRY-RUN report — actual auto-merge requires per-cluster sandbar.tag.consolidate invocations.\n\nWHEN: use during migration M.1-M.5 staging to plan the consolidation pass.  Surfaces which drift clusters are safe to auto-merge (2-variant clusters where canonical choice is obvious) vs. those needing editorial review (3+ variants; ambiguous canonical).  When NOT to use: (a) you want to apply consolidations — call sandbar.tag.consolidate per cluster (this verb is advisory-only at MVP); (b) you want one specific invariant — sandbar.tag.audit returns all 7.\n\nHOW: no arguments.  Returns `:audit-report` (full audit), `:drift-clusters` (M.3 cluster list), `:drift-cluster-count`, `:auto-mergeable-count`, `:note` (explains DRY-RUN + auto-apply policy deferred to Stage 8).\n\nORDER: pre-step for the M.3 phase of vocabulary migration.\n\nCOMBINATION: feeds sandbar.tag.consolidate (per-cluster merges).  Composes with sandbar.tag.audit (deeper audit detail) and sandbar.tag.split (when a cluster reveals partition need)."
     :inputSchema no-args-schema
-    :handler tag-harmonize-handler}])
+    :handler tag-harmonize-handler}
+   ;; ---------- Shape operations (SHACL arc Stage F 2026-05-23) ----------
+   {:name "sandbar.shape.list"
+    :title "List :mm/Shape instances; optional filter by :applies-to class"
+    :description "WHICH: returns all :mm/Shape entities in the substrate, optionally filtered by :applies-to class.  When :applies-to is provided, only shapes that target that class are returned.\n\nWHEN: use to discover what shape-validation invariants apply to a given class, or to enumerate the whole shape catalog.  Foundational SHACL-discovery verb.  When NOT to use: (a) you want to validate a specific entity — sandbar.shape.validate; (b) you want batch conformance over a class — sandbar.shape.conformance-report.\n\nHOW: optional `:applies-to` is a class ident string (e.g. ':mm/Decision').  Returns `{:applies-to-filter <ident-or-nil> :count <int> :shapes [<entity-projection>...]}`.\n\nORDER: leaf call; no prerequisites.\n\nCOMBINATION: feeds sandbar.shape.validate (per-shape validation) and sandbar.shape.conformance-report (batch validation).  Per plans/shacl_deeply_incorporated_capstone_activation_arc_2026_05_23.md §4.6."
+    :inputSchema {:type "object"
+                  :properties {:applies-to {:type "string"
+                                            :description "Optional class ident (e.g. ':mm/Decision') to filter shapes"}}
+                  :required []}
+    :handler shape-list-handler}
+   {:name "sandbar.shape.validate"
+    :title "Validate a single entity against its applicable :mm/Shape instances"
+    :description "WHICH: walks the entity against every shape whose :mm.shape/applies-to matches the entity's class; aggregates per-check results into a structured report.  Per the SHACL walker (sandbar.shape namespace) — abstract-interpreter pattern per the Cousot-Cousot framing.\n\nWHEN: use to verify a single entity conforms to its class invariants.  Most-common SHACL-consumer call.  When NOT to use: (a) batch validation over a class — sandbar.shape.conformance-report; (b) no shape targets the entity's class — the call is a no-op (returns empty results).\n\nHOW: `:entity` is the entity ident OR numeric eid.  Optional `:mode` is one of 'audit' (default; returns results), 'strict' (throws ex-info on :violation-severity failures), or 'disabled' (returns [] without checking).  Returns `{:entity <ref-string> :mode <kw> :result-count <int> :results [<walk-entity-result>...]}`.\n\nORDER: leaf call; prerequisite is the entity exists.\n\nCOMBINATION: paired with sandbar.entity.create (which also auto-invokes validation per Stage E wiring) and sandbar.shape.conformance-report (batch).  Per plans/shacl_deeply_incorporated_capstone_activation_arc_2026_05_23.md §4.6."
+    :inputSchema (one-required {:entity {:type "string"
+                                         :description "Entity ident (e.g. ':memory.decisions/foo') or numeric eid (as string)"}
+                                :mode   {:type "string"
+                                         :description "Validation mode: 'audit' (default) / 'strict' / 'disabled'"}}
+                               [:entity])
+    :handler shape-validate-handler}
+   {:name "sandbar.shape.conformance-report"
+    :title "Batch conformance report — all instances of a class validated against all applicable shapes"
+    :description "WHICH: walks every instance of `:class` against every :mm/Shape whose :mm.shape/applies-to matches; aggregates into a structured violation/warning report.\n\nWHEN: use for class-wide invariant audits — e.g. 'what fraction of my :mm/Decision instances satisfy the decision-shape required-property invariant?'.  Substrate-quality + governance applications.  When NOT to use: (a) single-entity check — sandbar.shape.validate; (b) the class has no applicable shapes — the call returns zero-failure report.\n\nHOW: `:class` is the target class ident string (e.g. ':mm/Decision').  Returns `{:class <ident> :instance-count <int> :shape-count <int> :total-checks <int> :passes <int> :failures <int> :error-count <int> :warning-count <int> :failure-details [<walk-entity-result>...]}`.\n\nORDER: typical sequence — sandbar.shape.list (discover shapes) → sandbar.shape.conformance-report (run batch) → sandbar.shape.validate (drill into a specific violating entity).\n\nCOMBINATION: pairs with sandbar.class.validate-all-instances (the parallel class-level invariant runner) and sandbar.audit.* verbs (the legacy in-code audit surfaces).  Per plans/shacl_deeply_incorporated_capstone_activation_arc_2026_05_23.md §4.6."
+    :inputSchema (one-required class-arg-schema [:class])
+    :handler shape-conformance-report-handler}
+   {:name "sandbar.shape.create"
+    :title "Author a new :mm/Shape entity (thin wrapper over sandbar.entity.create)"
+    :description "WHICH: thin wrapper over sandbar.entity.create with :class :mm/Shape pre-bound.  Accepts the same :slots / :format / :source argument shape as entity.create.\n\nWHEN: use to author new shape memorials.  When NOT to use: (a) you're authoring a non-shape entity — sandbar.entity.create directly; (b) you want to modify an existing shape — sandbar.shape.update.\n\nHOW: `:slots` is the slot-map (e.g. {:mm.shape/shape-id 'foo' :mm.shape/applies-to ':mm/Decision' :mm.shape/required-property [':mm.memory/cites']}).  Returns `{:entity <projection>}`.  Optional `:format` + `:source` for codec-driven creation from markdown.\n\nORDER: same as entity.create.\n\nCOMBINATION: composes with sandbar.shape.list (discover post-creation), sandbar.shape.validate (test against the new shape).  Per plans/shacl_deeply_incorporated_capstone_activation_arc_2026_05_23.md §4.6."
+    :inputSchema {:type "object"
+                  :properties {:slots {:type "object" :description "Slot map for :mm/Shape"}
+                               :format {:type "string" :description "Optional codec format (e.g. 'markdown')"}
+                               :source {:type "string" :description "Optional raw source string parsed via :format"}}
+                  :required []}
+    :handler shape-create-handler}
+   {:name "sandbar.shape.update"
+    :title "Amend an existing :mm/Shape entity (thin wrapper over sandbar.entity.update)"
+    :description "WHICH: applies slot-map updates to an existing :mm/Shape entity.\n\nWHEN: use when an existing shape needs a constraint added/removed/refined (e.g., add a cardinality constraint, change required-property set).  When NOT to use: (a) authoring a new shape — sandbar.shape.create; (b) modifying a non-shape entity — sandbar.entity.update.\n\nHOW: `:entity` is the shape entity ident or eid.  `:slots` is the slot-map of updates.  Returns `{:entity <projection>}`.\n\nORDER: prerequisite — sandbar.shape.list or sandbar.entity.find to confirm the shape exists.\n\nCOMBINATION: same as sandbar.entity.update.  Per plans/shacl_deeply_incorporated_capstone_activation_arc_2026_05_23.md §4.6."
+    :inputSchema (one-required {:entity {:type "string" :description ":mm/Shape entity ident or eid"}
+                                :slots  {:type "object" :description "Slot updates"}}
+                               [:entity :slots])
+    :handler shape-update-handler}])
 
 (def ^:private verb-by-name
   (into {} (map (juxt :name identity)) verb-catalog))
