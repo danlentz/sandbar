@@ -45,7 +45,9 @@
   {:db/ident :mm/MetaType         :db/doc "Forward declaration (sub-abstract); full definition later."}
   {:db/ident :mm/MarkdownMetaType :db/doc "Forward declaration; sub-subtype of :mm/MetaType; full definition later."}
   {:db/ident :mm/CodeMetaType     :db/doc "Forward declaration; sub-subtype of :mm/MetaType; full definition later."}
-  {:db/ident :mm/Session          :db/doc "Forward declaration; full definition later — concrete sub-type of :mm/Meta carrying session-lifecycle slots + workflow.process linkage per session-lifecycle-rebuild ADR cluster 2026-05-22."}]
+  {:db/ident :mm/Session          :db/doc "Forward declaration; full definition later — concrete sub-type of :mm/Meta carrying session-lifecycle slots + workflow.process linkage per session-lifecycle-rebuild ADR cluster 2026-05-22."}
+  {:db/ident :mm/Fn               :db/doc "Forward declaration; full definition later — concrete sub-type of :mm/Meta carrying first-class function memorial slots (parameters / body / lang / purpose / etc.) per Stage B.5 ADR 2026-05-23."}
+  {:db/ident :mm/Spec             :db/doc "Forward declaration; full class definition in schema/mm-temporal.edn (Phase 3a unified temporal-substrate lattice; abstract supertype for declarative behavioral specifications).  Forward-decl'd here to satisfy load-order for :mm/Fn :dt/subclass-of [:mm/Spec :mm/Meta] dual-parent per Q.A.5 ADR 2026-05-24."}]
 
  [{:db/ident         :mm/Meta
    :dt/type          :dt/Class
@@ -470,14 +472,45 @@
    :dt/abstract?     false
    :db/doc "Runtime environment distinguishing authorization-relevant actor instances.  AMENDED (2026-05-21): :dt/subclass-of :mm/Meta.  Existing :mm.context/* slots in schema/mm.edn carry the per-instance field set.  Actors reference contexts via :mm.actor/runs-in-context.  Per memory/types/context.md."}
 
+  {:db/ident         :mm/Fn
+   :dt/type          :dt/Class
+   :dt/subclass-of   [:mm/Spec :mm/Meta]   ;; dual-parent per Q.A.5 ADR 2026-05-24 (mm_fn_multi_inheritance_under_mm_spec_and_mm_meta_dual_parent_…)
+   :dt/context       "mm"
+   :dt/label         "Fn"
+   :dt/native-codec  :markdown
+   :dt/abstract?     false
+   :db/doc "First-class function memorial.  A :mm/Fn entity carries a function definition as a memorial citizen (markdown body + optional EDN-data-blocks; BM25F-searchable; FS-projected to memory/fns/<slug>.md; hook-retrievable).  Slot vocabulary inherits :mm.memory/* from :mm/Memory (via :mm/Meta) plus the :dt.fn/* vocabulary from schema/fn.edn (parameters / return-type / body / lang / purpose / purity / cost-class / source-ns / source-var / version / installed-as / implementation).  Composes with metamodel-level :dt/Fn (instances declare :dt/type :mm/Fn AND conform to :dt/Fn semantics).  :mm/Rule is a subtype-of :mm/Fn with constrained dispatch-spec signature.  Per Stage B.5 ADR 2026-05-23 (decisions/mm_fn_memorial_level_first_class_function_type_companion_to_dt_fn_metamodel_class_2026_05_23.md)."
+   :dt/slots [;; signature axis (Stage C vocabulary; inherited via :dt/Fn):
+              :dt.fn/parameters
+              :dt.fn/return-type
+              :dt.fn/body
+              :dt.fn/lang
+              :dt.fn/description
+              ;; behavioral axes:
+              :dt.fn/purpose
+              :dt.fn/purity
+              :dt.fn/status
+              :dt.fn/cost-class
+              :dt.fn/decidable?
+              ;; source-of-truth (gen-fn bridge):
+              :dt.fn/source-ns
+              :dt.fn/source-var
+              ;; version-axis:
+              :dt.fn/version
+              :dt.fn/superseded-by
+              ;; install-surface:
+              :dt.fn/installed-as
+              ;; multi-implementation:
+              :dt.fn/implementation]}
+
   {:db/ident         :mm/Rule
    :dt/type          :dt/Class
-   :dt/subclass-of   :mm/Meta
+   :dt/subclass-of   :mm/Fn     ;; was :mm/Meta; per Stage B.5 ADR D2 2026-05-23 — rule IS a fn with dispatch-spec; :mm/Meta still reached transitively via :mm/Fn :dt/subclass-of :mm/Meta
    :dt/context       "mm"
    :dt/label         "Rule"
    :dt/native-codec  :markdown
    :dt/abstract?     false
-   :db/doc "Programmable deterministic instruction surfaced at events.  AMENDED (2026-05-21): :dt/subclass-of :mm/Meta.  Existing :mm.rule/* slots in schema/mm.edn carry the per-instance field set (event / enforcement / actor / context / etc.).  Per memory/types/rule.md.  Introduced-in: 0.8.0."}
+   :db/doc "Programmable deterministic instruction surfaced at events.  AMENDED (2026-05-23): :dt/subclass-of :mm/Fn per Stage B.5 ADR (rules-are-fns-with-dispatch-spec).  Transitively still :mm/Meta via :mm/Fn :dt/subclass-of :mm/Meta.  Existing :mm.rule/* slots in schema/mm.edn carry the dispatch-spec field set (event / enforcement / actor / context / etc.) on top of the inherited :dt.fn/* fn-shape slots.  Per memory/types/rule.md.  Introduced-in: 0.8.0."}
 
   {:db/ident         :mm/AIActor
    :dt/type          :dt/Class
@@ -550,6 +583,7 @@
   {:db/ident :mm/SystemActor       :dt/codec-type-keyword :system_actor}
   {:db/ident :mm/MarkdownMetaType  :dt/codec-type-keyword :markdown_meta_type}
   {:db/ident :mm/CodeMetaType      :dt/codec-type-keyword :code_meta_type}
-  {:db/ident :mm/Session           :dt/codec-type-keyword :session}]
+  {:db/ident :mm/Session           :dt/codec-type-keyword :session}
+  {:db/ident :mm/Fn                :dt/codec-type-keyword :fn}]
 
 ]

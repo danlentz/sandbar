@@ -64,3 +64,7 @@
                  (> (count rule#) 2))
         (new-rule (first rule#) (second rule#) (nnext rule#))
         (println (str "Rule '" rule# "' ignored, wrong syntax." )))))
+
+;; NOTE: post-schema-reload handler registration for `clear-rulebase!` lives in
+;; sandbar.db.datomic (which already requires this ns; the inverse would create
+;; a load cycle).

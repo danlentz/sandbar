@@ -58,12 +58,20 @@
 
 (defn load-schema
   "Load schema files into database.
-   schema-names can be a keyword or collection of keywords."
+   schema-names can be a keyword or collection of keywords.
+
+   Mirrors `sandbar.db.datomic/load-all-schema!` by firing the
+   post-schema-reload handler registry after transactions complete —
+   without this, JVM-scoped `defonce` caches (e.g. the type-relation
+   cache in `sandbar.db.datatype`) survive in-memory Datomic DB swaps
+   between test fixtures and serve stale results when a later fixture
+   loads a different schema set."
   [conn schema-names]
   (let [names (if (keyword? schema-names) [schema-names] schema-names)]
     (doseq [schema-name names]
       (doseq [stmt (edn/resource-value schema-name nil)]
-        @(d/transact conn stmt)))))
+        @(d/transact conn stmt))))
+  (db/fire-post-schema-reload-handlers!))
 
 (defn load-required-schema
   "Load all schema files specified in :required-schema config"
