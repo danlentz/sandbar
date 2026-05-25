@@ -40,6 +40,7 @@
             [datomic.api                :as d]
             [sandbar.aggregate          :as aggregate]
             [sandbar.api.projection     :as projection]
+            [sandbar.audit.fs-substrate-drift :as audit-fs-drift]
             [sandbar.audit.tag          :as audit-tag]
             [sandbar.codec              :as codec]
             [sandbar.codec.markdown     :as codec-md]
@@ -1538,6 +1539,14 @@
   [_args]
   (audit-tag/audit-all))
 
+(defn- fs-substrate-drift-audit-handler
+  "Run the FS↔substrate drift audit.  Requires `:from` (corpus root path).
+   Per η.2 substrate execution per the wave-1 ratification ADR
+   (:memory.decisions/iota_eta_q_checkpoint_wave_one_ratification_session_workflow_substrate_design_fs_audit_scope_finalized_2026_05_25)."
+  [args]
+  (let [from (or (get args "from") (get args :from))]
+    (audit-fs-drift/audit-all {:from from})))
+
 (defn- tag-consolidate-handler
   "Merge :from tag INTO :into tag.  Effects:
    (1) :from's :value becomes a :mm.tag/alt-label on :into
@@ -2437,6 +2446,13 @@
     :description "WHICH: runs `sandbar.audit.tag/audit-all` — seven independent invariants over the corpus's tag vocabulary.  Returns per-invariant violations + an aggregate count.\n\nThe seven invariants:\n  1. `:undefined-used`      — tags referenced via :mm.memory/tags lacking :mm.tag/definition\n  2. `:defined-unused`      — tags with :mm.tag/definition but no inbound :mm.memory/tags refs\n  3. `:orphan`              — tags with no :mm.tag/in-scheme membership\n  4. `:date-pattern`        — tags whose :mm.tag/value matches a date pattern\n  5. `:type-pattern`        — tags whose :mm.tag/value overlaps a memorial-type keyword\n  6. `:drift`               — clusters of tags with same normalized form (case + plural)\n  7. `:closure-consistency` — cycles on broader-* / asymmetries on :related / missing inverse pairs on :superseded-by\n\nWHEN: use periodically to monitor vocabulary health.  Foundational pre-step for sandbar.tag.harmonize.  Foundational diagnostic for migration M.1-M.5 staging.  When NOT to use: (a) you want ONE invariant — call sandbar.audit.tag/<invariant-fn> via the in-process API directly (no individual MCP verb yet; aggregate-only at this stage).\n\nHOW: no arguments.  Returns `{:invariants [<map per invariant>] :total-violations N :summary <string>}`.\n\nORDER: no prerequisites; foundational diagnostic.\n\nCOMBINATION: feeds sandbar.tag.harmonize (drift cluster reconciliation), sandbar.tag.consolidate (per-cluster merges), sandbar.tag.define (for :undefined-used findings)."
     :inputSchema no-args-schema
     :handler tag-audit-handler}
+
+   {:name "sandbar.audit.fs-substrate-drift"
+    :title "Audit drift between FS memory/ corpus and substrate :mm/Memory entities"
+    :description "WHICH: audits drift between the FS-side `memory/` corpus and the substrate-side `:mm/Memory` entities.  Returns a structured report across 4 categories: `:missing-from-substrate` (FS file exists, no entity), `:missing-from-fs` (entity exists, no FS file), `:content-divergence` (both exist but `:mm.memory/body-raw` differs), `:ref-slot-mismatch` (FS frontmatter refs vs substrate ref-slots differ — surfaces the ref-slot-writes-rejected fault from `memory.observations/sandbar_substrate_ref_slot_writes_rejected_during_library_memorial_batch_2026_05_23` but does NOT investigate root cause — that's η.4 work).\n\nWHEN: use periodically to monitor FS↔substrate bijection health.  Foundational diagnostic for η arc (recovery + bijection-foundation ADR).  Composes with `sandbar.project.export` (the bijection's forward half) + `sandbar.project.import` (the inverse half).  When NOT to use: (a) you want a single entity check — use `sandbar.entity.find-by-rel-path` + manual compare; (b) you want to investigate a known drift — run + drill into `:content-divergence` or `:ref-slot-mismatch` entries via `sandbar.entity.find-by-rel-path`.\n\nHOW: `:from` is the corpus root directory path (required; matches `sandbar.project.import` / `sandbar.project.export` convention).  No other opts at MVP.  Returns `{:summary {fs-file-count substrate-entity-count missing-from-substrate-count missing-from-fs-count content-divergence-count ref-slot-mismatch-count total-drift-count audit-duration-ms audit-instant corpus-root} :missing-from-substrate [<rel-path>] :missing-from-fs [<entity-ident>] :content-divergence [{rel-path entity-ident diff-summary differing-slots}] :ref-slot-mismatch [{rel-path entity-ident ref-diffs}]}`.\n\nORDER: leaf call; no prerequisites.  Composes with `sandbar.project.export` for round-trip verification (export → audit-clean expected) + `sandbar.project.import` for the inverse-walk (import is the production code-path that produces what audit verifies).\n\nPer the wave-1 ratification ADR Q.η.3 (full-corpus single-shot audit) + Q.η.6 (operational+extensible report) + Q.η.7 (MCP-first not CLI-only)."
+    :inputSchema (one-required {:from {:type "string" :description "Corpus root directory path (matches :from arg of sandbar.project.import / .export)"}}
+                               [:from])
+    :handler fs-substrate-drift-audit-handler}
    {:name "sandbar.tag.consolidate"
     :title "Merge :from tag INTO :into tag; preserves :from as alt-label + lifecycle :superseded"
     :description "WHICH: merges two tags by adding :from's canonical :value as a :mm.tag/alt-label on :into, marking :from with :mm.tag/lifecycle-status :superseded + :mm.tag/superseded-by ref to :into, and rewriting every :mm.memory/tags ref from :from to :into.  The merge preserves history (alt-label + superseded-by) for search-recall + audit trail.\n\nWHEN: use to resolve drift clusters surfaced by sandbar.tag.audit `:drift` invariant — `{tag, tags}` → consolidate \"tags\" into \"tag\".  Also use for editorial vocabulary cleanup (synonyms / variant spellings).  When NOT to use: (a) the tags are NOT synonyms — keep them separate; (b) you want a true rename (no source tag preserved) — use sandbar.tag.rename instead; (c) you want to partition a tag into narrower tags — use sandbar.tag.split.\n\nHOW: `:from` is the variant being merged out; `:into` is the canonical being merged into.  Both are :mm.tag/value strings.  Returns `:from`, `:into`, `:memorials-rewritten` (count of memorials whose :tags ref was rewritten), `:alt-label-added` (the preserved-as-alt-label value), `:lifecycle-status`.\n\nORDER: after sandbar.tag.audit surfaces a drift cluster + editorial decision selects canonical.\n\nCOMBINATION: pairs with sandbar.tag.audit (cluster discovery), sandbar.tag.harmonize (bulk drift-cluster planner), sandbar.tag.rename (when no merge is needed)."
