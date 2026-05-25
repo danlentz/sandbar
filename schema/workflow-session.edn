@@ -1,0 +1,150 @@
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; workflow-session.edn — :workflow/session lifecycle definition (ι.2 substrate)
+;;
+;; First-class source-of-truth EDN for the session-orientation workflow.  Per
+;; :memory.decisions/iota_eta_q_checkpoint_wave_one_ratification_session_workflow_substrate_design_fs_audit_scope_finalized_2026_05_25
+;; Q.ι.4 (EDN file source-of-truth) + Q.ι.6 (add :session/paused + :session/failed
+;; states) + Q.ι.13 (transition guards/effects as :mm/Fn entities) + Q.ι.14
+;; (dual-source history) + Q.ι.15 (STRICT Event Substrate ADR compliance).
+;;
+;; Composes with κ pattern catalog:
+;;   P5 schema-as-data; P6 engine-respected maintenance-mode flag; P7 step/
+;;   jump/resume/pause verb family; P8 hard-fail flag; P10 history-as-events;
+;;   P17 metrics-event vocabulary.
+;;
+;; Pre-existing :workflow/session in DB (introduced 2026-05-22 per
+;; decisions/session_lifecycle_mcp_native_rebuild_q1_q2_q3_q4_resolved_plus_slash_command_deprecation_dan_directive_2026_05_22):
+;;   4 states (:session/opening initial → :session/active → :session/closing →
+;;   :session/closed terminal :success) + 5 transitions (:session/start /
+;;   :session/pause active→opening / :session/resume opening→active /
+;;   :session/close / :session/finalize).  Was seeded via MCP workflow_define
+;;   verb; no static source-of-truth.
+;;
+;; This file establishes the static source-of-truth + extends additively:
+;;   2 NEW states (:session/paused for maintenance-mode + :session/failed for
+;;   hard-fail) + 4 NEW transitions (:session/pause-maintenance active→paused /
+;;   :session/resume-maintenance paused→active / :session/fail active→failed /
+;;   :session/fail-from-paused paused→failed).  Existing :session/pause +
+;;   :session/resume preserved unchanged (now functioning as deprecated-but-
+;;   working ad-hoc pause-to-opening idiom).
+;;
+;; Idempotency: state entities upsert by :workflow/state-name :db.unique/
+;; identity; transition entities use explicit :db/ident for stable reference;
+;; workflow entity upserts by :db/ident :workflow/session.  Re-running schema-
+;; load is safe.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+[
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; STATE ENTITIES (6 total — 4 existing upserted + 2 new)
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+[{:workflow/state-name :session/opening
+  :dt/type :workflow/State
+  :workflow/state-label "Opening"
+  :workflow/initial? true}
+
+ {:workflow/state-name :session/active
+  :dt/type :workflow/State
+  :workflow/state-label "Active"}
+
+ ;; NEW per Q.ι.6 — dedicated maintenance-mode pause state (κ P6).
+ {:workflow/state-name :session/paused
+  :dt/type :workflow/State
+  :workflow/state-label "Paused (maintenance-mode)"
+  :workflow/state-metadata "{:maintenance-mode true :resume-target :session/active :resumes-via :session/resume-maintenance}"}
+
+ {:workflow/state-name :session/closing
+  :dt/type :workflow/State
+  :workflow/state-label "Closing"}
+
+ {:workflow/state-name :session/closed
+  :dt/type :workflow/State
+  :workflow/state-label "Closed (success)"
+  :workflow/terminal? true
+  :workflow/terminal-kind :success}
+
+ ;; NEW per Q.ι.6 + κ P8 — terminal hard-fail state.
+ {:workflow/state-name :session/failed
+  :dt/type :workflow/State
+  :workflow/state-label "Failed (non-recoverable)"
+  :workflow/terminal? true
+  :workflow/terminal-kind :failure}]
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; TRANSITION ENTITIES (NEW; 4 added.  Existing 5 transitions — :session/start
+;; / :session/pause active→opening / :session/resume opening→active /
+;; :session/close / :session/finalize — preserved unchanged in DB without
+;; :db/ident; reachable via :workflow/session :workflow/transitions slot.)
+;;
+;; The 4 NEW transitions are assigned :db/ident for stable reference + to allow
+;; future surgical updates.  Same-name same-from-state ambiguity AVOIDED by
+;; distinct transition-names (:session/pause-maintenance not :session/pause).
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+[;; NEW per κ P6 — maintenance-mode pause (active → paused).
+ {:db/ident :session.transition/pause-maintenance
+  :workflow/transition-name :session/pause-maintenance
+  :dt/type :workflow/Transition
+  :workflow/from-state [:workflow/state-name :session/active]
+  :workflow/to-state [:workflow/state-name :session/paused]
+  :workflow/guard sandbar.workflow.session/can-pause-maintenance?
+  :workflow/on-transition sandbar.workflow.session/on-pause-maintenance
+  :workflow/requires-reason? true}
+
+ ;; NEW per κ P6 — maintenance-mode resume (paused → active).
+ {:db/ident :session.transition/resume-maintenance
+  :workflow/transition-name :session/resume-maintenance
+  :dt/type :workflow/Transition
+  :workflow/from-state [:workflow/state-name :session/paused]
+  :workflow/to-state [:workflow/state-name :session/active]
+  :workflow/on-transition sandbar.workflow.session/on-resume-maintenance}
+
+ ;; NEW per κ P8 — non-recoverable abort from active.
+ {:db/ident :session.transition/fail
+  :workflow/transition-name :session/fail
+  :dt/type :workflow/Transition
+  :workflow/from-state [:workflow/state-name :session/active]
+  :workflow/to-state [:workflow/state-name :session/failed]
+  :workflow/on-transition sandbar.workflow.session/on-fail
+  :workflow/requires-reason? true}
+
+ ;; NEW — fail-while-in-maintenance (paused → failed).  Operators in
+ ;; maintenance-mode can give up on a session without resuming first.
+ {:db/ident :session.transition/fail-from-paused
+  :workflow/transition-name :session/fail-from-paused
+  :dt/type :workflow/Transition
+  :workflow/from-state [:workflow/state-name :session/paused]
+  :workflow/to-state [:workflow/state-name :session/failed]
+  :workflow/on-transition sandbar.workflow.session/on-fail
+  :workflow/requires-reason? true}]
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; WORKFLOW DEFINITION (1) — upsert by :db/ident :workflow/session.  Datomic
+;; cardinality-many merges :workflow/states + :workflow/transitions with the
+;; existing 4 states + 5 transitions.  After this load: 6 states + 9 transitions
+;; (the 5 existing + 4 new) reachable from the workflow.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+[{:db/ident :workflow/session
+  :dt/type :mm/Workflow
+  :workflow/definition-name :workflow/session
+  :workflow/states [[:workflow/state-name :session/opening]
+                    [:workflow/state-name :session/active]
+                    [:workflow/state-name :session/paused]
+                    [:workflow/state-name :session/closing]
+                    [:workflow/state-name :session/closed]
+                    [:workflow/state-name :session/failed]]
+  :workflow/transitions [:session.transition/pause-maintenance
+                         :session.transition/resume-maintenance
+                         :session.transition/fail
+                         :session.transition/fail-from-paused]
+  :workflow/version 2
+  :mm.memory/name "Session-Orientation Workflow"
+  :mm.memory/description "Lifecycle workflow for AI-collaboration sessions. Opens with :session/start (transitioning the initial :session/opening state to :session/active), supports :session/pause-maintenance / :session/resume-maintenance for κ-P6 maintenance-mode pause-without-destroy (active ↔ paused state), and :session/fail / :session/fail-from-paused for κ-P8 non-recoverable abort. Closes with :session/close → :session/finalize chain. Per the wave-1 ratification ADR + the ι sub-arc plan. Existing :session/pause / :session/resume transitions (active ↔ opening) preserved unchanged as deprecated ad-hoc pause idiom; new code uses the :session/pause-maintenance pair."
+  :mm.memory/rel-path "workflows/session.md"
+  :mm.memory/memory-type :workflow
+  :mm.memory/scope :global}]
+
+]

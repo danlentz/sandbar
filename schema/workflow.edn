@@ -259,7 +259,38 @@
    :dt/range :db.type/string
    :db/valueType :db.type/string
    :db/cardinality :db.cardinality/one
-   :db/doc "Process-specific data (EDN string)"}]
+   :db/doc "Process-specific data (EDN string)"}
+
+  ;; ι.2 substrate extension (2026-05-25) per
+  ;; :memory.decisions/iota_eta_q_checkpoint_wave_one_ratification_session_workflow_substrate_design_fs_audit_scope_finalized_2026_05_25
+  ;; Q.ι.6 + κ P6/P8.  Session-workflow-specific slots on :workflow/Process —
+  ;; namespace-tagged :mm.session-process/* by convention; domain remains
+  ;; :workflow/Process (avoids subclass proliferation per the plan's Q.ι.2.A.4
+  ;; recommendation).
+
+  {:db/ident :mm.session-process/paused-from-state
+   :dt/type :dt/Property
+   :dt/domain :workflow/Process
+   :dt/range :db.type/keyword
+   :db/valueType :db.type/keyword
+   :db/cardinality :db.cardinality/one
+   :db/doc "Set by :session/pause-maintenance effect (sandbar.workflow.session/on-pause-maintenance): records the pre-pause :workflow/state-name so :session/resume-maintenance can restore intent. Retracted by :session/resume-maintenance effect. Per κ P6 maintenance-mode + Q.ι.6 ratification."}
+
+  {:db/ident :mm.session-process/failure-reason
+   :dt/type :dt/Property
+   :dt/domain :workflow/Process
+   :dt/range :db.type/string
+   :db/valueType :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/doc "Set by :session/fail / :session/fail-from-paused effects (sandbar.workflow.session/on-fail): free-text rationale captured at fail-time. Per κ P8 hard-fail + Q.ι.6 ratification + the :workflow/requires-reason? gate on the fail transitions."}
+
+  {:db/ident :mm.session-process/failure-instant
+   :dt/type :dt/Property
+   :dt/domain :workflow/Process
+   :dt/range :db.type/instant
+   :db/valueType :db.type/instant
+   :db/cardinality :db.cardinality/one
+   :db/doc "Set by :session/fail / :session/fail-from-paused effects: wall-clock instant of the failure transition. Companion to :mm.session-process/failure-reason."}]
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; History Properties

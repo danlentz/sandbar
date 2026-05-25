@@ -16,10 +16,15 @@
  ;; :twit      - example domain (Twitter user model)
  ;; :auth      - bearer-token auth schema
  ;; :audit     - audit-log primitive types
- ;; :workflow  - state-machine workflow primitives
- ;; :job       - background-job tracking
- ;; :mm        - memory-model substrate (mm/Memory, mm/Section, etc.)
- :required-schema [:meta :ref :literal :fn :any :context :event :user :twit :auth :audit :workflow :job :mm]
+ ;; :workflow         - state-machine workflow primitives (meta-schema)
+ ;; :job              - background-job tracking
+ ;; :mm               - memory-model substrate (mm/Memory, mm/Section, etc.)
+ ;; :workflow-session - :workflow/session lifecycle definition (ι.2 substrate;
+ ;;                     loads AFTER :workflow + :mm-meta — depends on
+ ;;                     :workflow/State + :workflow/Transition + :mm/Workflow
+ ;;                     classes from :workflow, and :mm.memory/* slots from :mm
+ ;;                     family.  Per ι.2 substrate execution 2026-05-25.)
+ :required-schema [:meta :ref :literal :fn :any :context :event :user :twit :auth :audit :workflow :job :mm :workflow-session]
 
  :nrepl   {:port 28888}
  :auth {:twitter
