@@ -51,14 +51,29 @@
 
                  [buddy/buddy-hashers "2.0.167"]
 
-                 [com.taoensso/sente "1.21.0"]
-;                 [com.taoensso/telemere "1.2.1"]
+                 ;; Encore pinned EXPLICITLY — Telemere v1.2.1 + Tufte v3.0.2
+                 ;; need encore >= 3.159.0; Sente 1.21.0 transitively pins
+                 ;; encore 3.157.0 which trips Telemere's load-time
+                 ;; `enc/assert-min-encore-version` check.  Per Telemere
+                 ;; library memorial §14 (Encore version conflict).
+                 [com.taoensso/encore   "3.159.0"]
+                 [com.taoensso/sente    "1.21.0"
+                  :exclusions [com.taoensso/encore]]
+                 [com.taoensso/telemere "1.2.1"]
+                 [com.taoensso/slf4j-telemere "1.0.0-beta21"]
+                 [com.taoensso/tufte    "3.0.2"]
 
+                 ;; Manifold — in-process transport for event-substrate
+                 ;; Phase 1 (sandbar.reactive.tx-source wraps Datomic
+                 ;; d/tx-report-queue and publishes typed events onto a
+                 ;; Manifold stream; Phase 2 sandbar.event/subscribe
+                 ;; consumes via class-hierarchical dispatch).  Per
+                 ;; memory/decisions/sandbar_event_substrate_architecture_*_2026_05_23.md
+                 [manifold "0.4.4"]
 
 ;;                 [datomic-schematode "0.1.0-RC3"]
 
-                 [ch.qos.logback/logback-classic "1.5.25" :exclusions [org.slf4j/slf4j-api]]
-                 [org.slf4j/slf4j-api    "2.0.17"]
+                 [org.slf4j/slf4j-api   "2.0.17"]
 
                  ]
 
@@ -71,7 +86,8 @@
   :resource-paths ["config", "resources", "schema"]
 
   :profiles {:dev {:aliases {"run-dev" ["trampoline" "run" "-m" "sandbar.core/go"]}
-                   :dependencies [[io.pedestal/pedestal.service-tools "0.7.2"]]}
+                   :dependencies [[io.pedestal/pedestal.service-tools "0.7.2"
+                                   :exclusions [ch.qos.logback/logback-classic]]]}
              ;; F-DF-1 Phase 1+2 (Phase R Stage R-6) — bench scaffolding.
              ;; `lein bench` runs the structural-rank + path-grammar
              ;; harnesses at the 10 / 100 / 1k / 10k size ladder and
