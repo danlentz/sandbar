@@ -1,6 +1,6 @@
 # Workflows as Substrate
 
-> Sandbar treats workflows — state machines, running processes, terminal outcomes, cancellation — as **first-class entities in the metamodel**, not as ad-hoc plumbing per long-running operation.  State machines are `:workflow/Definition` instances; running processes are `:workflow/Process` instances; cancellation is encoded as a terminal-kind on the workflow's state nodes.  MCP Tasks (long-running operations in the Model Context Protocol) are workflow processes — `task-id` IS `:db/id`, no parallel registry.
+> Sandbar treats workflows — state machines, running processes, terminal outcomes, cancellation — as **first-class entities in the metamodel**, not as ad-hoc plumbing per long-running operation.  State machines are `:mm/Workflow` instances (the memorial-face classifier); running processes are `:workflow/Process` instances (substrate-runtime; carries PROV-O Activity semantics through its history); cancellation is encoded as a terminal-kind on the workflow's state nodes.  MCP Tasks (long-running operations in the Model Context Protocol) are workflow processes — `task-id` IS `:db/id`, no parallel registry.
 
 ## Thesis
 
@@ -40,11 +40,11 @@ Business Process Model and Notation (OMG 2011) standardizes process modeling for
 
 ## The substrate
 
-Three classes anchor the workflow substrate.
+Three classes anchor the workflow substrate.  Two layers are present in the naming convention.  The classifier — the workflow *definition* — lives in the memorial namespace as `:mm/Workflow` (under `:mm/Meta → :mm/Memory`).  Substrate-runtime entities — running processes and per-step history — stay in their own `:workflow/*` namespace (`:workflow/Process`, `:workflow/History`) alongside sibling substrate-runtime hierarchies like `:event/*` under `:dt/Event`.  This separation is the corpus's standing convention: memorial-classifiers carry the `:mm/` prefix; substrate-runtime carries a domain prefix.  See `decisions/memorial_class_naming_convention_mm_prefix_workflow_definition_to_mm_workflow_2026_05_23.md` for the ratification.
 
-### `:workflow/Definition`
+### `:mm/Workflow`
 
-A workflow definition — a named state machine.  Its slots:
+A workflow definition — a named state machine.  The memorial-classifier (under `:mm/Meta → :mm/Memory`); one entity per workflow shape, not per running instance.  Its slots:
 
 | Slot                       | Meaning                                                                                        |
 |----------------------------|------------------------------------------------------------------------------------------------|
@@ -52,9 +52,11 @@ A workflow definition — a named state machine.  Its slots:
 | `:workflow/initial-state`  | Reference to the state where a fresh process starts.                                           |
 | `:workflow/transitions`    | Set of `:workflow/Transition` entities (the edges of the FSM).                                 |
 
+The slot vocabulary stays in the `:workflow/*` namespace pending a Phase-2 cleanup to `:mm.workflow/*` (deferred — the visible class-level inconsistency was the load-bearing concern).
+
 ### `:workflow/State`
 
-A node in the workflow graph.  Its slots:
+A node in the workflow graph.  Substrate-runtime.  Its slots:
 
 | Slot                       | Meaning                                                                                        |
 |----------------------------|------------------------------------------------------------------------------------------------|
@@ -64,15 +66,19 @@ A node in the workflow graph.  Its slots:
 
 ### `:workflow/Process`
 
-A running (or terminated) instance of a workflow.  Its slots:
+A running (or terminated) instance of a workflow.  Substrate-runtime — analogous to `:event/HttpRequest` under `:dt/Event`.  Its slots:
 
 | Slot                       | Meaning                                                                                        |
 |----------------------------|------------------------------------------------------------------------------------------------|
-| `:workflow/definition`     | Reference to the `:workflow/Definition` this process instantiates.                              |
+| `:workflow/definition`     | Reference to the `:mm/Workflow` this process instantiates.                                     |
 | `:workflow/current-state`  | Reference to the `:workflow/State` the process currently occupies.                            |
 | `:workflow/history`        | Ordered sequence of state-transition records — what happened, in what order, when.            |
 
 The history is itself an entity sequence (each transition record is a `:workflow/Transition-Record` with `:workflow/transition-at` timestamp and `:workflow/transition-via` reference to the transition that fired).  The full history is queryable as data — no parallel log, no out-of-band telemetry.
+
+### PROV-O Activity inheritance
+
+`:mm/Workflow` is itself a memorial under `:mm/Meta`; running processes (`:workflow/Process`) carry the substrate-runtime burden.  When a workflow process completes, it is observable as a `prov:Activity`-shaped artifact through the `:mm/Activity` hierarchy — `:mm/Activity` declares the shared PROV-O slot vocabulary (`:mm.activity/started-at`, `:mm.activity/ended-at`, `:mm.activity/agent`, `:mm.activity/was-informed-by`, `:mm.activity/generated`, `:mm.activity/used`, `:mm.activity/status`) that all activity-shaped memorials inherit.  See [`activity-hierarchy.md`](activity-hierarchy.md) for the cross-arc PROV-O lift that unified `:mm/Log` / `:mm/EventLog` / `:mm/Run` under one Activity supertype.
 
 ## Terminal-kind classification
 
@@ -170,6 +176,10 @@ Job queues handle scheduling, retry, and worker dispatch.  They typically expose
 
 AWS Step Functions, Cadence, and Temporal (Uber → io.temporal) are workflow engines proper — they have the state-machine vocabulary, persistence, and replay semantics.  Sandbar's workflow substrate is similar in shape but smaller in scope: no distributed coordination, no time-skewed replay, no built-in retry logic.  Sandbar's value-add is the *integration with the metamodel* — workflows are typed entities; processes can carry domain references; the same `dt/*` API queries them.  A workflow engine like Temporal could be the execution backend; Sandbar would be the modeling and observation surface.
 
+### Cross-cutting event emission
+
+Workflow transitions are also published to the event substrate (see `decisions/sandbar_event_substrate_architecture_*_2026_05_23.md`).  Each transition emits a `:mm.event/WorkflowTransition` instance on the in-process bus alongside its durable record in `:workflow/History`.  The two are distinct on purpose: `:workflow/History` is the authoritative Process Manager log; `:mm.event/WorkflowTransition` is the cross-cutting notification that arbitrary subscribers — observability, projection, SSE notifiers — can hook without coupling to the workflow Process Manager.
+
 ### vs. Actor models (Erlang / Akka)
 
 Actors encapsulate state and process messages sequentially; the actor's behavior may be modeled as an FSM.  Sandbar's workflows are *observable from outside* in a way actors typically aren't: the process's current state and history are queryable directly via Datalog, no message-passing required.  This is the price of explicit state-as-data — visibility is high; encapsulation is lower.
@@ -212,5 +222,7 @@ Actors encapsulate state and process messages sequentially; the actor's behavior
 
 - [`metamodel.md`](metamodel.md) — workflows + states + processes are typed metamodel entities
 - [`mcp-protocol.md`](mcp-protocol.md) — how MCP Tasks compose with workflow processes
+- [`activity-hierarchy.md`](activity-hierarchy.md) — `:mm/Activity` PROV-O Activity supertype that unifies workflows, runs, logs, and event-logs under one shape
+- [`event-substrate.md`](event-substrate.md) — workflow transitions also emit `:mm.event/WorkflowTransition` on the in-process bus
 - [`doc/api/mcp-verbs.md`](../api/mcp-verbs.md) — the workflow + task verb catalog
 - [`doc/guides/designing-workflows.md`](../guides/designing-workflows.md) — hands-on authoring guide

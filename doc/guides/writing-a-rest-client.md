@@ -203,7 +203,27 @@ curl -X PATCH http://localhost:8080/api/store/entities/event/booking.weekly \
   -d '{"event.booking/location": "Conference Room A"}'
 ```
 
-Only the provided slots are updated; others remain untouched.  Validation runs after the merge.
+Only the provided slots are updated; others remain untouched.  Validation runs after the merge — including any applicable `:mm/Shape` invariants (see [`authoring-shapes.md`](authoring-shapes.md)).
+
+## Shape validation
+
+The metamodel surface mirrors the MCP shape verbs.
+
+```bash
+# List all shapes
+curl http://localhost:8080/api/store/shapes
+
+# Shapes that apply to a class
+curl "http://localhost:8080/api/store/shapes?applies-to=mm/Decision"
+
+# Validate one entity against its applicable shapes
+curl -X POST http://localhost:8080/api/store/shapes/validate \
+  -H "Content-Type: application/json" \
+  -d '{"entity": ":decisions/foo", "mode": "audit"}'
+
+# Batch conformance for a class
+curl http://localhost:8080/api/store/shapes/conformance-report/mm/Decision
+```
 
 ## Error handling
 
@@ -342,5 +362,6 @@ Both project from the same metamodel.  Pick by consumer fit.
 - [`doc/api/http-rest.md`](../api/http-rest.md) — complete endpoint reference
 - [`writing-an-mcp-client.md`](writing-an-mcp-client.md) — MCP alternative
 - [`writing-a-clojure-client.md`](writing-a-clojure-client.md) — in-process Clojure access
+- [`authoring-shapes.md`](authoring-shapes.md) — `:mm/Shape` authoring + validation
 - [`auth.md`](../auth.md) — token issuance + management
 - [`zorp-tutorial.md`](zorp-tutorial.md) — worked example using REST queries

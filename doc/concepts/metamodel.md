@@ -27,7 +27,7 @@ The vocabulary — *class*, *property*, *domain*, *range*, *subClassOf*, *type* 
 | `rdfs:range`              | `:dt/range`          | The property's value type                         |
 | `rdf:List` (cons-cells)   | `:dt/List`           | Inherited form; Sandbar prefers pairwise siblings |
 
-What Sandbar **does not** take from RDFS is the open-world assumption, the entailment regime, or the assumption that every fact is a triple.  Sandbar is closed-world and ground-truth-respecting: if it isn't in the database, it isn't.  There is no inference engine.  RDFS semantics in the strict sense (Hayes & Patel-Schneider 2014) is a *reference point*, not an *implementation target*.
+What Sandbar **does not** take from RDFS wholesale is the open-world assumption.  Sandbar is closed-world and ground-truth-respecting: if it isn't in the database, it isn't.  But the *entailment regime* — the SWCLOS-style metaclass + property-characteristic pattern that materializes RDFS+OWL2RL inferences — IS implemented, composing through Datomic-native recursive Datalog rules without an external reasoner.  See [`rdfs-entailment.md`](rdfs-entailment.md) for the metaclass-driven entailment substrate (Layer 0 of the layered rule subsystem).  RDFS semantics in the strict sense (Hayes & Patel-Schneider 2014) is now an *implementation reference*, not merely a *theoretical reference point*.
 
 ### KL-ONE and frame systems
 
@@ -85,17 +85,33 @@ The consequence: **higher layers do not need a separate schema description forma
 
 ## Core primitives
 
-Five core idents anchor the metamodel.  Every other class derives transitively from these.
+Six core idents anchor the metamodel.  Every other class derives transitively from these.
 
 | Ident            | Role                                                                                  |
 |------------------|---------------------------------------------------------------------------------------|
 | `:dt/Resource`   | Root of the class lattice.  Everything that has a `:dt/type` is a Resource.           |
 | `:dt/Class`      | Class of all classes.  `:dt/type :dt/Class` ⇒ this entity is a class definition.      |
 | `:dt/Property`   | Class of all predicates.  `:dt/type :dt/Property` ⇒ this entity is a predicate.       |
+| `:dt/Fn`         | Class of all first-class functions.  `:dt/type :dt/Fn` ⇒ this entity is a function definition (compiled body persisted at the schema layer; sibling of `:dt/Class` / `:dt/Property` under `:dt/Resource`). |
 | `:dt/List`       | Inherited RDFS cons-cell list shape (`:dt/first` / `:dt/rest`).                       |
 | `:dt/Literal`    | Abstract superclass of scalar types.  Bridges Datomic's `:db.type/*` value types.     |
 
 A class definition is just an entity with `:dt/type :dt/Class` and a vector of `:dt/slots` referencing `:dt/Property` entities.  Inheritance is the transitive closure of `:dt/subclass-of`.  Effective slots are the union of declared slots over the ancestor chain.
+
+### Memorial-level classes
+
+The application-facing memorial namespace `:mm/*` sits on top of the substrate.  Every memorial class descends from `:mm/Memory`.  Six concrete memorials matter for substrate-level orientation:
+
+| Ident            | Role                                                                                  |
+|------------------|---------------------------------------------------------------------------------------|
+| `:mm/Activity`   | Abstract PROV-O `prov:Activity`-shaped supertype (under `:mm/Artifact`).  Concrete subclasses include `:mm/Log` (session/handoff chronicle), `:mm/EventLog` (per-event-firing memorial), `:mm/Run` (scheduler/job execution).  See [`activity-hierarchy.md`](activity-hierarchy.md). |
+| `:mm/Fn`         | Memorial-face for first-class functions.  Documents the body / signature / intent.  Companion to substrate-level `:dt/Fn`.  See [`first-class-fn.md`](first-class-fn.md).  |
+| `:mm/Shape`      | First-class shape/constraint memorial.  Mirrors SHACL `sh:NodeShape` / `sh:PropertyShape` vocabulary.  See [`shape-validation.md`](shape-validation.md). |
+| `:mm/Rule`       | First-class rule memorial.  Carries Datalog rule body + activation policy for the layered rule subsystem.  |
+| `:mm/Workflow`   | Workflow-definition memorial-classifier (under `:mm/Meta`); see [`workflow-substrate.md`](workflow-substrate.md). |
+| `:mm/Event`      | Event-classifier memorial (one per lifecycle position).  Distinct from `:dt/Event` substrate-runtime hierarchy and `:mm/EventLog` per-firing memorial.  See [`event-substrate.md`](event-substrate.md). |
+
+The convention: memorial-classifiers use the `:mm/*` ident; substrate-runtime hierarchies use their own domain namespace (`:dt/*`, `:event/*`, `:workflow/*`).  See `decisions/memorial_class_naming_convention_mm_prefix_workflow_definition_to_mm_workflow_2026_05_23.md`.
 
 ## Validation as a class concern
 
@@ -185,8 +201,13 @@ For any class `T`, the system automatically derives `T*` (1D aggregate of T-inst
 ## See also
 
 - [`codec-layer.md`](codec-layer.md) — how the wire-format boundary is absorbed by the same metamodel
-- [`project-graph.md`](project-graph.md) — Anderson-lineage bidirectional FS↔DB projection of the metamodel
+- [`projection.md`](projection.md) — Anderson-lineage bidirectional FS↔DB projection of the metamodel
+- [`memory-model.md`](memory-model.md) — the `:mm/*` user-domain layer that sits on the `:dt/*` substrate
+- [`rdfs-entailment.md`](rdfs-entailment.md) — SWCLOS-style metaclass entailment over the same metamodel
+- [`first-class-fn.md`](first-class-fn.md) — `:dt/Fn` + `:mm/Fn` first-class function substrate
+- [`shape-validation.md`](shape-validation.md) — `:mm/Shape` SHACL-mirrored constraint memorial
 - [`workflow-substrate.md`](workflow-substrate.md) — workflows + processes are themselves typed metamodel entities
+- [`activity-hierarchy.md`](activity-hierarchy.md) — PROV-O Activity supertype unifying logs, runs, event-logs, workflow processes
 - [`mcp-protocol.md`](mcp-protocol.md) — how the MCP surface bootstraps from `dt/all-classes`
 - [`doc/api/dt-star.md`](../api/dt-star.md) — mechanical API reference
 - [`doc/guides/defining-new-classes.md`](../guides/defining-new-classes.md) — hands-on how-to

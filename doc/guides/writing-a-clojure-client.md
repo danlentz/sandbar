@@ -4,17 +4,17 @@
 
 ## Adding Sandbar to your project
 
-Sandbar publishes to Clojars (after 0.1.0).  In your `project.clj`:
+Sandbar publishes to Clojars.  In your `project.clj`:
 
 ```clojure
 :dependencies [[org.clojure/clojure "1.12.0"]
-               [com.danlentz/sandbar "0.1.0"]]
+               [com.danlentz/sandbar "0.2.0"]]
 ```
 
 Or `deps.edn`:
 
 ```clojure
-{:deps {com.danlentz/sandbar {:mvn/version "0.1.0"}}}
+{:deps {com.danlentz/sandbar {:mvn/version "0.2.0"}}}
 ```
 
 You will also need a Datomic Peer (transactor + library).  Sandbar does not bundle Datomic; bring your own per its license terms.
@@ -25,16 +25,22 @@ You will also need a Datomic Peer (transactor + library).  Sandbar does not bund
 (ns my.app
   (:require [sandbar.db.datatype :as dt]
             [sandbar.codec       :as codec]
-            [sandbar.project-graph :as pg]
-            [sandbar.util.workflow :as wf]))
+            [sandbar.projection  :as projection]
+            [sandbar.util.workflow :as wf]
+            [sandbar.shape       :as shape]
+            [sandbar.logging     :as sb-log]
+            [sandbar.reactive    :as reactive]))
 ```
 
 | Namespace                  | Role                                                                |
 |----------------------------|---------------------------------------------------------------------|
 | `sandbar.db.datatype`      | The `dt/*` API — introspection, creation, validation, queries.      |
 | `sandbar.codec`            | Codec mediator — parse + emit between wire format and entity.       |
-| `sandbar.project-graph`    | Bidirectional projection between DB state and a filesystem hierarchy.|
-| `sandbar.util.workflow`    | Workflow + process operations.                                      |
+| `sandbar.projection`       | Bidirectional projection between DB state and a filesystem hierarchy.|
+| `sandbar.util.workflow`    | Workflow + process operations (`:mm/Workflow` definitions; `:workflow/Process` runs). |
+| `sandbar.shape`            | SHACL-style shape validation — `validate`, `walk-entity`, `conformance-report`. |
+| `sandbar.logging`          | Six-macro observability API (`info` / `warn` / `error` / `debug` / `trace` / `profile`). |
+| `sandbar.reactive`         | Reactive-projection substrate (hook + callback registry for downstream sinks). |
 
 For a complete API surface see [`doc/api/dt-star.md`](../api/dt-star.md).
 
@@ -198,7 +204,7 @@ The convention: use `dt/*` for typed operations against the metamodel; drop to `
 ## Working with workflows
 
 ```clojure
-;; Start a process
+;; Start a process — :validation/Workflow is a :mm/Workflow definition
 (def p
   (wf/start-process! :validation/Workflow
     {:target-class :event/Booking}))
@@ -215,20 +221,61 @@ The convention: use `dt/*` for typed operations against the metamodel; drop to `
   (wf/cancel-process! p))
 ```
 
-For the full workflow design, see [`doc/concepts/workflow-substrate.md`](../concepts/workflow-substrate.md) and [`designing-workflows.md`](designing-workflows.md).
+Workflow definitions are `:mm/Workflow` memorials (per the 2026-05-23 naming-convention ADR); running processes are `:workflow/Process` substrate-runtime entities.  For the full design, see [`doc/concepts/workflow-substrate.md`](../concepts/workflow-substrate.md) and [`designing-workflows.md`](designing-workflows.md).
 
-## project-graph operations
+## Shape validation
+
+`sandbar.shape` provides SHACL-style validation against `:mm/Shape` memorials:
 
 ```clojure
-;; Project all entities to a filesystem hierarchy
-(pg/project-graph (d/db (db/conn)) "/tmp/sandbar-export"
-  {:classes #{:mm/Memory :decisions/Decision}})
+(require '[sandbar.shape :as shape]
+         '[datomic.api :as d]
+         '[sandbar.db :as db])
 
-;; Ingest a hierarchy back into the DB
-(pg/ingest-graph (db/conn) "/tmp/sandbar-export")
+(def db (d/db (db/conn)))
+
+;; Validate one entity against all applicable shapes (audit mode — never throws)
+(shape/validate db [:db/ident :decisions/example])
+;; => [{:status :pass :entity 1234 :shape 5678 :checks-passed 6}]
+
+;; Strict mode throws ex-info on any :violation-severity failure
+(shape/validate db [:db/ident :decisions/example] :strict)
 ```
 
-See [`doc/concepts/project-graph.md`](../concepts/project-graph.md) for the design and [`sandbar-as-substrate.md`](sandbar-as-substrate.md) for the embedding pattern.
+For authoring shape memorials and a guided walk through the validator types (required-property, cardinality, pattern, datatype, closed, validator-fn), see [`authoring-shapes.md`](authoring-shapes.md).
+
+## Logging
+
+`sandbar.logging` is Sandbar's single public observability API — six macros built over Telemere + Tufte:
+
+```clojure
+(require '[sandbar.logging :as sb-log])
+
+(sb-log/info ::booking-created {:booking-id 42})
+(sb-log/warn "queue depth high" {:depth 4096})        ; human-string shorthand
+(sb-log/error ::tx-failed ex {:tx-id 17592186})       ; typed error
+(sb-log/info ::session-handoff {:summary "..."} :first-class)  ; memorial-flag
+
+(sb-log/profile :search-hot-path
+  (do-the-search ...))
+```
+
+See [`using-logging.md`](using-logging.md) for the full surface, the memorial-flag positional, and the discipline.
+
+## Projection operations
+
+```clojure
+(require '[sandbar.projection :as projection])
+
+;; Project all entities to a filesystem hierarchy
+(projection/project-graph (d/db (db/conn)) "/tmp/sandbar-export"
+  {:classes #{:mm/Memory :mm/Decision}})
+
+;; Ingest a hierarchy back into the DB
+(projection/ingest-graph (db/conn) "/tmp/sandbar-export")
+```
+
+See [`doc/concepts/projection.md`](../concepts/projection.md) for the design and [`sandbar-as-substrate.md`](sandbar-as-substrate.md) for the embedding pattern.
 
 ## Testing
 
@@ -295,5 +342,8 @@ Register your application's schema with Sandbar's `:required-schema`:
 - [`zorp-tutorial.md`](zorp-tutorial.md) — worked example using `dt/*`
 - [`defining-new-classes.md`](defining-new-classes.md) — adding your domain's schema
 - [`designing-workflows.md`](designing-workflows.md) — workflow + process API
+- [`authoring-shapes.md`](authoring-shapes.md) — declarative validation via `:mm/Shape`
+- [`using-logging.md`](using-logging.md) — the `sandbar.logging` six-macro API
+- [`subscribing-to-events.md`](subscribing-to-events.md) — event substrate API (in-design)
 - [`sandbar-as-substrate.md`](sandbar-as-substrate.md) — embedding Sandbar in your own application
 - [`doc/api/dt-star.md`](../api/dt-star.md) — full `dt/*` reference

@@ -47,7 +47,7 @@ curl -X POST http://localhost:8080/mcp \
     "method": "initialize",
     "params": {
       "protocolVersion": "2025-11-25",
-      "clientInfo": {"name": "my-client", "version": "0.1.0"},
+      "clientInfo": {"name": "my-client", "version": "0.2.0"},
       "capabilities": {}
     }
   }'
@@ -61,7 +61,7 @@ Response:
   "id": 1,
   "result": {
     "protocolVersion": "2025-11-25",
-    "serverInfo": {"name": "sandbar", "version": "0.1.0"},
+    "serverInfo": {"name": "sandbar", "version": "0.2.0"},
     "capabilities": {
       "tools": {},
       "resources": {"subscribe": true},
@@ -124,6 +124,16 @@ Response contains the operational verb catalog with input schemas:
 ```
 
 The verb catalog is **operational, not per-class**.  `sandbar.entity.create` works for any class; pass `{"class": "..."}` as an argument.  See [`doc/concepts/mcp-protocol.md`](../concepts/mcp-protocol.md#the-verb-catalog-operational-not-per-class) for the rationale.
+
+The 0.2.0 catalog includes (among many others):
+
+- **Schema introspection** — `sandbar.schema.classes`, `sandbar.class.describe`, `sandbar.class.slots`, `sandbar.property.domain`, `sandbar.property.range`
+- **Entity CRUD** — `sandbar.entity.create`, `sandbar.entity.update`, `sandbar.entity.find`, `sandbar.entity.validate`
+- **Navigation** — `sandbar.navigate.outbound-edges`, `sandbar.navigate.inbound-edges`, `sandbar.navigate.path-via`, `sandbar.navigate.siblings-of`
+- **Search + aggregation** — `sandbar.search.bm25f`, `sandbar.aggregate.count`, `sandbar.aggregate.group-by`, `sandbar.aggregate.rank-by`, `sandbar.aggregate.tag-histogram`
+- **Shape validation** — `sandbar.shape.list`, `sandbar.shape.validate`, `sandbar.shape.conformance-report`, `sandbar.shape.create`, `sandbar.shape.update`
+- **Workflow** — `sandbar.workflow.define`, `sandbar.workflow.start-process`, `sandbar.workflow.transition`, `sandbar.workflow.process-state` (workflow *definitions* are `:mm/Workflow` memorials; runs are `:workflow/Process` substrate-runtime instances)
+- **Reactive** — `sandbar.reactive.health`
 
 ## Calling a tool
 
@@ -365,7 +375,7 @@ class SandbarMCP:
 # Usage
 mcp = SandbarMCP("http://localhost:8080/mcp", token)
 mcp.call("initialize", {"protocolVersion": "2025-11-25",
-                        "clientInfo": {"name": "py-client", "version": "0.1.0"},
+                        "clientInfo": {"name": "py-client", "version": "0.2.0"},
                         "capabilities": {}})
 mcp.call("notifications/initialized")
 print(mcp.call("tools/list"))
@@ -431,9 +441,43 @@ Always `resources/unsubscribe` when you no longer need updates.  Server-side sub
 
 For tasks expected to complete in seconds, poll every 500ms.  For minute-scale tasks, every 5s.  For longer, prefer SSE subscription over polling.
 
+### Shape-driven validation as a tool-call
+
+```bash
+# Validate one entity against its applicable shapes (audit mode)
+curl -X POST http://localhost:8080/mcp \
+  -H "Authorization: Bearer $SANDBAR_TOKEN" \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 10,
+    "method": "tools/call",
+    "params": {
+      "name": "sandbar.shape.validate",
+      "arguments": {"entity": ":decisions/foo", "mode": "audit"}
+    }
+  }'
+```
+
+The response (unwrapped from `content[0].text`):
+
+```json
+{
+  "entity": ":decisions/foo",
+  "mode": "audit",
+  "result-count": 1,
+  "results": [
+    {"status": "pass", "entity": 17592186, "shape": 17592345, "checks-passed": 6}
+  ]
+}
+```
+
+For batch class-wide conformance use `sandbar.shape.conformance-report`.  For authoring shapes (`sandbar.shape.create` / `update`) see [`authoring-shapes.md`](authoring-shapes.md).
+
 ## See also
 
 - [`doc/concepts/mcp-protocol.md`](../concepts/mcp-protocol.md) — server-side design and rationale
 - [`doc/api/mcp-verbs.md`](../api/mcp-verbs.md) — complete verb reference
 - [`writing-a-rest-client.md`](writing-a-rest-client.md) — REST alternative for non-AI consumers
+- [`authoring-shapes.md`](authoring-shapes.md) — author `:mm/Shape` constraints + invoke shape verbs
+- [`subscribing-to-events.md`](subscribing-to-events.md) — event substrate subscription API (in-design)
 - [`auth.md`](../auth.md) — issuing service-account tokens

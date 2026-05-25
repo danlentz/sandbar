@@ -20,7 +20,7 @@ Parnas (1972) gave the canonical statement: a module's interface should hide des
 
 James Anderson's `de.setf.rdf` (Datagraph/Dydra-era Common Lisp CLOS-metaclass framework) introduced the *boundary-layer primitive* idiom this codec design adopts wholesale.  In Anderson's model, `project-graph` took the raw state of an RDF graph and projected it into a native-representation hierarchy (filesystem; rendered HTML; etc.), and `ingest-graph` did the inverse — accepting a native-representation hierarchy and re-deriving the graph state.  The translation lived **at the boundary**, neither inside the model nor inside the consumer.
 
-Sandbar adopts the same shape one layer up: `project-graph` / `ingest-graph` operate on collections of entities at the filesystem boundary (see [`project-graph.md`](project-graph.md)); the codec layer operates on individual entities at the wire-format boundary.  Both share the property that translation is a boundary concern, not a model concern.
+Sandbar adopts the same shape one layer up: `project-graph` / `ingest-graph` operate on collections of entities at the filesystem boundary (see [`projection.md`](projection.md)); the codec layer operates on individual entities at the wire-format boundary.  Both share the property that translation is a boundary concern, not a model concern.
 
 ### Postel's robustness principle
 
@@ -59,7 +59,9 @@ This is the same architectural shape as `dt/*` absorbing Datomic.  Consumers do 
 
 ## Reference codecs
 
-Sandbar ships two reference codecs.  Both are in `src/sandbar/codec/`.
+Sandbar ships two reference codecs (markdown, JSON) plus a small number of class-specific codec keys routed through the same mediator.  All live under `src/sandbar/codec/`.
+
+The codec registry includes — alongside the generic `:codec/markdown` and `:codec/json` — a `:codec/workflow` entry, used by `:mm/Workflow` (the workflow-definition memorial-classifier).  The substrate routes through `:dt/codec-type-keyword :workflow` so frontmatter `type: workflow` resolves to `:mm/Workflow` on parse and the same key is emitted on round-trip.  This is the typical pattern: a class with a domain-specific persistence shape declares a codec entry that handles its specifics while the generic mediator and round-trip discipline still apply.  See `decisions/memorial_class_naming_convention_mm_prefix_workflow_definition_to_mm_workflow_2026_05_23.md` §D3 for the workflow codec routing details.
 
 ### markdown
 
@@ -188,7 +190,9 @@ Do **not** author a new codec when:
 ## See also
 
 - [`metamodel.md`](metamodel.md) — the typed-entity shape codecs translate to/from
-- [`project-graph.md`](project-graph.md) — the boundary-layer primitive at the filesystem level; same shape, different scale
+- [`projection.md`](projection.md) — the boundary-layer primitive at the filesystem level; same shape, different scale
+- [`markdown-as-canonical.md`](markdown-as-canonical.md) — why markdown is the corpus's canonical wire form
 - [`mcp-protocol.md`](mcp-protocol.md) — how MCP `tools/call` routes through codecs
+- [`workflow-substrate.md`](workflow-substrate.md) — `:mm/Workflow` is one of the class-specific codec entries
 - [`doc/api/codec-protocol.md`](../api/codec-protocol.md) — mechanical protocol surface
 - [`doc/guides/implementing-a-codec.md`](../guides/implementing-a-codec.md) — hands-on how-to

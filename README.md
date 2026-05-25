@@ -1,49 +1,62 @@
 # Sandbar
 
-> A metamodel and platform for LLM memory systems.
+> A metacircular metamodel platform on Datomic — and a substrate
+> for memory systems that AI clients can reach into through the
+> Model Context Protocol.
 
-Sandbar is a graph data store built on RDFS-style types, classes,
-properties, and inheritance exposed simultaneously through MCP (Model
-Control Protocol), and HTTP REST API.
+Sandbar is a graph data store built on RDFS-style classes,
+properties, and inheritance, equipped with a four-axis retrieval
+surface (BM25F fulltext, structural + temporal aggregation,
+Wilbur-lineage path-grammar navigation, and library-card
+orientation), exposed simultaneously through HTTP REST and MCP.
 
-The graph store is Equipped with a four-axis retrieval surface (fulltext
-search with BM25F, structural + temporal aggregation, typed-edge
-navigation with path-grammar, and orientation).
+The type system is data, queryable and evolvable at runtime
+through the same API you use to query your application's entities
+— `:dt/Class` is itself an instance of `:dt/Class`. RDFS
+entailment is a first-class substrate concern, layered cleanly so
+the boundary toward OWL 2 RL is one composable extension rather
+than a rewrite. Functions, shapes, rules, workflows, schedules,
+and events are first-class memorial entities subject to the same
+retrieval surface as the corpus they help describe.
 
-The type system is data, queryable + evolvable at runtime through the
-same API you use to query your application's entities.  The wire-format
-layer is substrate, not application concern.  Long-running operations
-have history, cancellation, and outcome classification baked in.
+The wire-format layer is substrate, not application concern.
+Long-running operations have history, cancellation, and outcome
+classification baked in. Datomic-specific behavior stays behind
+the `dt/*` boundary so the model is retarget-capable.
 
-The value: a substrate where "find by content," "walk the typed-edge
-graph from this seed," "rank by structural prominence," and "describe
-yourself" are all one-line queries against a single coherent model — not
-four separate libraries glued together.  And this forms the basis of our
-LLM memory store design.
-
-This README is a 5-minute elevator.  For depth, follow the pointers into
-`doc/concepts/` (theoretical reference, citation-rich) and `doc/guides/`
-(hands-on how-to).
+This README is a 5-minute elevator. For depth, follow the
+pointers into `doc/concepts/` (theoretical reference,
+citation-rich) and `doc/guides/` (hands-on how-to).
 
 ## Documentation map
 
-Documentation is layered.  Every entry below is a link; pick the layer that matches your goal.
+Documentation is layered. Every entry below is a link; pick the
+layer that matches your goal.
 
 - **`doc/concepts/`** — Layer 2: theoretical reference (citation-rich)
-  - [`metamodel.md`](doc/concepts/metamodel.md) — The dt/* primitives; RDFS / KL-ONE / CLOS-MOP lineage
+  - [`metamodel.md`](doc/concepts/metamodel.md) — The `dt/*` primitives; RDFS / KL-ONE / CLOS-MOP lineage
+  - [`memory-model.md`](doc/concepts/memory-model.md) — The `mm/*` user-domain layered atop `dt/*`; memorial-policy classification; PROV-O activity-lift
+  - [`rdfs-entailment.md`](doc/concepts/rdfs-entailment.md) — RDFS entailment rules + OWL 2 RL extensions; SWCLOS-style metaclass intersection
+  - [`first-class-fn.md`](doc/concepts/first-class-fn.md) — `:dt/Fn` + `:mm/Fn`; SHACL-AF `sh:SPARQLFunction` lineage; mathematical-mapping + stored-procedure bridge
+  - [`shape-validation.md`](doc/concepts/shape-validation.md) — `:mm/Shape` + SHACL-deeply-incorporated; metacircular self-validation closure
+  - [`event-substrate.md`](doc/concepts/event-substrate.md) — Datomic `tx-report-queue` behind `sandbar.reactive.tx-source`; Manifold transport; class-hierarchical subscription
+  - [`reactive-substrate.md`](doc/concepts/reactive-substrate.md) — Reactive sinks; memorial-projection handler; FS↔DB reactivity
+  - [`logging-substrate.md`](doc/concepts/logging-substrate.md) — Telemere-backed `sandbar.logging` six-macro API; memorial-projection on flagged signals
+  - [`temporal-substrate.md`](doc/concepts/temporal-substrate.md) — OWL-Time + RFC 5545 RRULE + PROV-O alignment; `:mm/Schedule` + `:mm/Job` + `:mm/Run` (in-progress)
   - [`codec-layer.md`](doc/concepts/codec-layer.md) — Boundary-layer abstraction; per-class `:dt/native-codec`
   - [`projection.md`](doc/concepts/projection.md) — Bidirectional FS↔DB projection (Anderson lineage)
   - [`fulltext-search.md`](doc/concepts/fulltext-search.md) — BM25F multi-field weighted scoring; analyzer
   - [`aggregation.md`](doc/concepts/aggregation.md) — count / group-by / structural-rank; 4 ranking axes
   - [`navigation.md`](doc/concepts/navigation.md) — Edges / walk / path-grammar overview
   - [`path-grammar.md`](doc/concepts/path-grammar.md) — Wilbur algebra; 21-operator vocabulary
-  - [`workflow-substrate.md`](doc/concepts/workflow-substrate.md) — First-class workflows; terminal-kind classification
+  - [`workflow-substrate.md`](doc/concepts/workflow-substrate.md) — `:mm/Workflow` + `:workflow/Process`; terminal-kind classification
   - [`mcp-protocol.md`](doc/concepts/mcp-protocol.md) — MCP; bootstrap-by-discovery; operational verb catalog
   - [`multi-store-architecture.md`](doc/concepts/multi-store-architecture.md) — Multi-store topology; hybrid FS/DB experimentation
   - [`markdown-as-canonical.md`](doc/concepts/markdown-as-canonical.md) — Markdown as canonical Layer-1 corpus format
 
 - **`doc/guides/`** — Layer 3: hands-on how-to
-  - [`quickstart.md`](doc/guides/quickstart.md) — Get Sandbar running in 5 minutes
+  - [`getting-started.md`](doc/guides/getting-started.md) — Start here: install, REPL, first entity, first query
+  - [`quickstart.md`](doc/guides/quickstart.md) — Five-minute hands-on tour
   - [`zorp-tutorial.md`](doc/guides/zorp-tutorial.md) — Worked example — classes + validation + queries
   - [`writing-a-clojure-client.md`](doc/guides/writing-a-clojure-client.md) — Embed Sandbar in your Clojure code
   - [`writing-an-mcp-client.md`](doc/guides/writing-an-mcp-client.md) — Connect Claude or other AI client via MCP
@@ -51,93 +64,275 @@ Documentation is layered.  Every entry below is a link; pick the layer that matc
   - [`searching-the-corpus.md`](doc/guides/searching-the-corpus.md) — BM25F fulltext patterns; `:where` + `:facet-by` composition
   - [`navigating-with-paths.md`](doc/guides/navigating-with-paths.md) — Path-grammar worked examples; Canonical-8 + Tier-2
   - [`implementing-a-codec.md`](doc/guides/implementing-a-codec.md) — Author a codec for a new wire format
-  - [`defining-new-classes.md`](doc/guides/defining-new-classes.md) — Extend the schema with new mm/* or domain classes
+  - [`defining-new-classes.md`](doc/guides/defining-new-classes.md) — Extend the schema with new `mm/*` or domain classes
   - [`designing-workflows.md`](doc/guides/designing-workflows.md) — Author state machines with terminal-kind
+  - [`authoring-shapes.md`](doc/guides/authoring-shapes.md) — Write `:mm/Shape` validators against your classes
+  - [`subscribing-to-events.md`](doc/guides/subscribing-to-events.md) — Class-hierarchical subscription via `sandbar.event/subscribe`
+  - [`using-logging.md`](doc/guides/using-logging.md) — The `sandbar.logging/*` callsite API + memorial flagging
   - [`sandbar-as-substrate.md`](doc/guides/sandbar-as-substrate.md) — Embed Sandbar in your own application
 
 - **`doc/api/`** — Layer 4: mechanical reference
-  - [`dt-star.md`](doc/api/dt-star.md) — Every dt/* function signature
+  - [`dt-star.md`](doc/api/dt-star.md) — Every `dt/*` function signature
   - [`http-rest.md`](doc/api/http-rest.md) — Every REST endpoint
   - [`mcp-verbs.md`](doc/api/mcp-verbs.md) — Every MCP verb in the catalog
   - [`codec-protocol.md`](doc/api/codec-protocol.md) — The Codec defprotocol
 
 **Reading order suggestions:**
 
-- **New here, evaluating Sandbar:** [`doc/concepts/metamodel.md`](doc/concepts/metamodel.md) → ["What makes Sandbar interesting"](#what-makes-sandbar-interesting) below → [`doc/guides/quickstart.md`](doc/guides/quickstart.md)
+- **New here, evaluating Sandbar:** [`doc/concepts/metamodel.md`](doc/concepts/metamodel.md) → [`doc/concepts/memory-model.md`](doc/concepts/memory-model.md) → ["What makes Sandbar interesting"](#what-makes-sandbar-interesting) below → [`doc/guides/getting-started.md`](doc/guides/getting-started.md)
 - **AI / MCP client author:** [`doc/concepts/mcp-protocol.md`](doc/concepts/mcp-protocol.md) → [`doc/guides/writing-an-mcp-client.md`](doc/guides/writing-an-mcp-client.md) → [`doc/api/mcp-verbs.md`](doc/api/mcp-verbs.md)
 - **Building a retrieval-heavy consumer:** [`doc/concepts/fulltext-search.md`](doc/concepts/fulltext-search.md) + [`doc/concepts/navigation.md`](doc/concepts/navigation.md) + [`doc/concepts/aggregation.md`](doc/concepts/aggregation.md) → guides in `doc/guides/searching-the-corpus.md` + `navigating-with-paths.md`
+- **Building reactive consumers:** [`doc/concepts/event-substrate.md`](doc/concepts/event-substrate.md) → [`doc/concepts/reactive-substrate.md`](doc/concepts/reactive-substrate.md) → [`doc/guides/subscribing-to-events.md`](doc/guides/subscribing-to-events.md)
 - **Embedding in a Clojure application:** [`doc/guides/sandbar-as-substrate.md`](doc/guides/sandbar-as-substrate.md) → [`doc/api/dt-star.md`](doc/api/dt-star.md)
 - **Adding a new wire format:** [`doc/concepts/codec-layer.md`](doc/concepts/codec-layer.md) → [`doc/guides/implementing-a-codec.md`](doc/guides/implementing-a-codec.md) → [`doc/api/codec-protocol.md`](doc/api/codec-protocol.md)
+- **Authoring validation:** [`doc/concepts/shape-validation.md`](doc/concepts/shape-validation.md) → [`doc/guides/authoring-shapes.md`](doc/guides/authoring-shapes.md)
 
 ## What makes Sandbar interesting
 
-Sandbar's individual ingredients exist elsewhere. The unique value is in the *synthesis* — how these ingredients combine into one substrate with a consistent discipline.
+Sandbar's individual ingredients exist elsewhere. The unique
+value is in the *synthesis* — how these ingredients combine into
+one substrate with a consistent discipline.
 
 ### Metacircular RDFS on Datomic
 
-RDFS gave us a clean vocabulary for classes, properties, inheritance, and predicates. Datomic gave us schema-on-read, first-class time, and expressive query. Sandbar stores its own type system inside Datomic using its own type system — `:dt/Class` is itself an instance of `:dt/Class`. Adding a class is a transaction; introspecting the schema is a query. Application data and metadata flow through the same `dt/*` API.
+RDFS gives a clean vocabulary for classes, properties,
+inheritance, and predicates. Datomic gives schema-on-read,
+first-class time, and expressive query. Sandbar stores its own
+type system inside Datomic using its own type system — `:dt/Class`
+is itself an instance of `:dt/Class`. Adding a class is a
+transaction; introspecting the schema is a query. Application
+data and metadata flow through the same `dt/*` API.
 
 → `doc/concepts/metamodel.md` for theory + citations
 
+### Memorial model (`:mm/*`) layered atop `:dt/*`
+
+The corpus-shaped user domain — decisions, plans, observations,
+tags, syntheses, libraries, sessions, logs — lives in `:mm/*`
+classes that descend from `:mm/Memory`, all governed by
+`:dt/memorial-policy` (which classes get FS-projected, which stay
+DB-only, which are transient). Activities (chronicles, event
+firings, scheduled runs) share a PROV-O-aligned vocabulary via
+`:mm/Activity` and its descendants `:mm/Log`, `:mm/EventLog`,
+`:mm/Run`. The memorial layer is the application; the metamodel
+layer is the substrate; both speak the same query language.
+
+→ `doc/concepts/memory-model.md`
+
+### RDFS entailment as a substrate concern
+
+`sandbar.db.entailment` provides RDFS rules + selected OWL 2 RL
+extensions in a layered architecture: entailment compiles to
+Datalog rules that compose with sandbar's existing query surface;
+no external reasoner; no PhD required to use it. The 4-layer
+rules organization (`:dt/*` substrate / `:mm/*` user-domain /
+codec-projection / client-application) keeps the boundaries
+explicit so each layer's invariants are checked where they
+belong.
+
+→ `doc/concepts/rdfs-entailment.md`
+
 ### Layer-targeting discipline + multi-protocol surface
 
-The same metamodel is exposed simultaneously through HTTP REST, the Model Context Protocol (JSON-RPC + SSE for AI clients), and (incrementally) RDF / TTL. Every protocol layer projects from the same `dt/*` API — there are no parallel schemas to keep in sync. Adding a new protocol means adding a translator, not duplicating the model.
+The same metamodel is exposed simultaneously through HTTP REST,
+the Model Context Protocol (JSON-RPC + SSE for AI clients), and
+(incrementally) RDF / TTL. Every protocol layer projects from the
+same `dt/*` API — there are no parallel schemas to keep in sync.
+Adding a new protocol means adding a translator, not duplicating
+the model.
 
 → `doc/concepts/mcp-protocol.md` · `doc/guides/writing-an-mcp-client.md` · `doc/guides/writing-a-rest-client.md`
 
 ### Codec layer absorbs wire-format complexity
 
-Consumers talk in their native representation. The memory-corpus consumer passes markdown; a future RDF consumer will pass Turtle; an MCP client passes JSON. Sandbar's codec layer absorbs the parse/emit and binds the result to the model — same architectural shape as `dt/*` absorbing Datomic. Per-class `:dt/native-codec` declares the default; the mediator resolves at call time.
+Consumers talk in their native representation. The memory-corpus
+consumer passes markdown; a future RDF consumer will pass
+Turtle; an MCP client passes JSON. Sandbar's codec layer absorbs
+the parse/emit and binds the result to the model — same
+architectural shape as `dt/*` absorbing Datomic. Per-class
+`:dt/native-codec` declares the default; the mediator resolves at
+call time.
 
 → `doc/concepts/codec-layer.md` · `doc/guides/implementing-a-codec.md`
 
 ### Fulltext search via Datomic + Lucene + BM25F
 
-`:db/fulltext` slots are queryable through Datomic's native Lucene integration; Sandbar layers BM25F multi-field weighted scoring on top — same canonical Robertson-Zaragoza form as the corpus's reference implementation, with per-class `:dt/bm25f-weights` declared at the schema layer.  The analyzer (Unicode-aware tokenizer + Porter stemmer) is metamodel-driven; no consumer hardcoding.  Result projection composes with the rest of the retrieval surface — `:where` Datalog clauses, snippets, facets, structural composition — all opts on one verb.
+`:db/fulltext` slots are queryable through Datomic's native
+Lucene integration; Sandbar layers BM25F multi-field weighted
+scoring on top — same canonical Robertson-Zaragoza form as the
+corpus's reference implementation, with per-class
+`:dt/bm25f-weights` declared at the schema layer. The analyzer
+(Unicode-aware tokenizer + Porter stemmer) is metamodel-driven;
+no consumer hardcoding. Result projection composes with the rest
+of the retrieval surface — `:where` Datalog clauses, snippets,
+facets, structural composition — all opts on one verb.
 
 → `doc/concepts/fulltext-search.md` · `doc/guides/searching-the-corpus.md`
 
 ### Aggregation primitives as first-class retrieval
 
-`count` / `group-by` / structural-rank are substrate, not application-layer.  `degree`, `backlink-density`, `recency`, and `freshness` are the four ranking axes — the substrate is class-agnostic (temporal slots are caller-supplied; no hardcoded knowledge of `:mm.memory/last-touched` etc.).  `sandbar.aggregate/{count-by,group-by,rank-by}` opts-shaped API + MCP verbs + REST endpoints.
+`count` / `group-by` / structural-rank are substrate, not
+application-layer. `degree`, `backlink-density`, `recency`, and
+`freshness` are the four ranking axes — the substrate is
+class-agnostic (temporal slots are caller-supplied; no hardcoded
+knowledge of `:mm.memory/last-touched` etc.).
+`sandbar.aggregate/{count-by,group-by,rank-by}` opts-shaped API +
+MCP verbs + REST endpoints.
 
 → `doc/concepts/aggregation.md`
 
 ### Path-grammar navigation (Wilbur lineage)
 
-Sandbar speaks Kleene-algebra-over-binary-relations as a first-class navigation surface.  EDN path expressions like `[:SEQ [:REP* [:OR :cites :evidences]] [:RESTRICT [:type :decision]]]` parse → canonicalize → compile to Datomic recursive rules.  Twenty-one operators committed (eighteen Wilbur-derived from Nokia's 1989-2009 lineage + three SPARQL 1.1 parity additions); the executable Canonical-8 + Tier-2 = thirteen operators today.  Paths are first-class values: `length`, `prefix`, `subpath` compose.  Three-layer DSL/IR/Backend architecture means a future Asami or NFA backend is a translator, not a rewrite.
+Sandbar speaks Kleene-algebra-over-binary-relations as a
+first-class navigation surface. EDN path expressions like
+`[:SEQ [:REP* [:OR :cites :evidences]] [:RESTRICT [:type :decision]]]`
+parse → canonicalize → compile to Datomic recursive rules.
+Twenty-one operators committed (eighteen Wilbur-derived from
+Nokia's 1989-2009 lineage + three SPARQL 1.1 parity additions);
+the executable Canonical-8 + Tier-2 = thirteen operators today.
+Paths are first-class values: `length`, `prefix`, `subpath`
+compose. Three-layer DSL/IR/Backend architecture means a future
+Asami or NFA backend is a translator, not a rewrite.
 
 → `doc/concepts/path-grammar.md` · `doc/concepts/navigation.md` · `doc/guides/navigating-with-paths.md`
 
 ### Bootstrap-by-discovery
 
-Every non-abstract class is automatically discoverable through every protocol. MCP `tools/list` walks `dt/all-classes`; JSON Schema is reflected from `dt/range-of`. Add a class to the schema and it auto-surfaces as a tool, a resource, a REST endpoint — no hand-curated registries, no mapping tables, no server restart.
+Every non-abstract class is automatically discoverable through
+every protocol. MCP `tools/list` walks `dt/all-classes`; JSON
+Schema is reflected from `dt/range-of`. Add a class to the schema
+and it auto-surfaces as a tool, a resource, a REST endpoint — no
+hand-curated registries, no mapping tables, no server restart.
 
 → `doc/concepts/mcp-protocol.md`
 
+### First-class functions and shapes
+
+`:dt/Fn` lifts Datomic database functions into the metamodel as
+typed citizens with mathematical-mapping signatures
+(`:fn/domain` → `:fn/range`) and stored-procedure bodies
+(`defdbfn`-emitted). `:mm/Fn` is the memorial-face — fns that
+warrant corpus-FS visibility. Slot vocabulary mirrors SHACL-AF's
+`sh:SPARQLFunction`. `:mm/Shape` provides SHACL-deeply-
+incorporated validation: shapes declare invariants over classes
+via `:mm.shape/applies-to`, with `:mm.shape/validator-fn` and
+`:mm.shape/value-constraints` as the two composable check
+surfaces. The metacircular closure: there is a shape that
+validates shapes.
+
+→ `doc/concepts/first-class-fn.md` · `doc/concepts/shape-validation.md` · `doc/guides/authoring-shapes.md`
+
 ### Workflows as first-class substrate
 
-State machines are entities. Processes are running instances. MCP Tasks are workflow processes — `task-id` IS `:db/id` (no parallel registry). Terminal states carry an outcome classification (`:success` / `:failure` / `:cancel`) so consumers don't reinvent the "what kind of done is this" projection. Cancellation is workflow-substrate, not per-tool plumbing.
+State machines are entities. `:mm/Workflow` is the
+spec-classifier (memorial); `:workflow/Process` is a running
+instance; MCP Tasks are workflow processes — `task-id` IS
+`:db/id` (no parallel registry). Terminal states carry an outcome
+classification (`:success` / `:failure` / `:cancel`) so consumers
+don't reinvent the "what kind of done is this" projection.
+Cancellation is workflow-substrate, not per-tool plumbing.
 
 → `doc/concepts/workflow-substrate.md` · `doc/guides/designing-workflows.md`
 
+### Event substrate + reactive sinks
+
+Datomic's `tx-report-queue` is the substrate-native source of
+truth for change events; sandbar wraps it behind
+`sandbar.reactive.tx-source` and translates each transaction into
+typed `:dt/Event` instances. Subscribers register interest by
+event class via `sandbar.event/subscribe`; class-hierarchical
+dispatch via `dt/type-isa?` fans out — a subscriber on
+`:event/ServerEvent` sees every `:event/HttpRequest`. Manifold is
+the in-process transport, layered behind the dt/* boundary.
+Memorial-flagged signals (`:data {:memorial :first-class}`)
+project into `:mm/EventLog` corpus entries; transient runtime
+events stay in the in-process bus.
+
+→ `doc/concepts/event-substrate.md` · `doc/concepts/reactive-substrate.md` · `doc/guides/subscribing-to-events.md`
+
+### Telemere-backed logging
+
+`sandbar.logging` exposes six callsite macros (`info` / `warn` /
+`error` / `debug` / `trace` / `profile`) backed by Telemere, with
+compile-time elision, per-handler async buffers, and a curated
+`:xfn` middleware that normalizes signal shape. The
+memorial-projection handler bridges flagged signals onto the same
+event substrate that fans out to reactive sinks — one unified
+event flow, three audiences (operator console, structured
+handlers, corpus memorialization).
+
+→ `doc/concepts/logging-substrate.md` · `doc/guides/using-logging.md`
+
+### Substrate boundary + retarget-capability
+
+Datomic-specific behavior is encapsulated behind `dt/*` (and its
+boundary siblings `sandbar.reactive.tx-source`,
+`sandbar.schedule.recurrence`, etc.). The application-shape model
+is therefore portable: a future XTDB or Asami backend is a
+translator, not a rewrite. The boundary is a design discipline,
+not an artifact — every consumer touchpoint that reaches for a
+backend feature is a boundary violation and a refactor target.
+
+→ `doc/concepts/multi-store-architecture.md`
+
+### Temporal substrate (in design)
+
+Schedules, jobs, and runs as ontology-aligned memorial entities:
+`:mm/Schedule` carries RFC 5545 RRULE recurrence; `:mm/Job` is
+PROV-O `prov:Plan`-shaped; `:mm/Run` is `prov:Activity`-shaped
+with `prov:startedAtTime` / `prov:endedAtTime` /
+`prov:wasInformedBy`. Allen's 13 interval relations from OWL-Time
+become first-class typed-edge predicates. The arc is in design;
+the four ontology alignments (OWL-Time + RFC 5545 + PROV-O +
+Schema.org Schedule JSON-LD) are the load-bearing layer; the
+runtime dispatcher is replaceable.
+
+→ `doc/concepts/temporal-substrate.md`
+
 ### Filesystem-canonical projection (Anderson lineage)
 
-The filesystem format is the canonical ground-truth.  Sandbar's `sandbar.projection/project-graph` + `ingest-graph` primitives are bidirectional — DB state ↔ filesystem hierarchy of native-format files.  Any backend complies with the filesystem format.  Document chunks are addressable entities with their own URIs and sibling-chain navigation (`:next-sibling` / `:previous-sibling`, RDFS-inspired).  The pattern borrows from James Anderson's `de.setf.rdf:project-graph` (Datagraph/Dydra-era CL CLOS-metaclass framework) and applies it to filesystem hierarchies as the native projection target.
+The filesystem format is the canonical ground-truth. Sandbar's
+`sandbar.projection/project-graph` + `ingest-graph` primitives
+are bidirectional — DB state ↔ filesystem hierarchy of
+native-format files. Any backend complies with the filesystem
+format. Document chunks are addressable entities with their own
+URIs and sibling-chain navigation (`:next-sibling` /
+`:previous-sibling`, RDFS-inspired). The pattern borrows from
+James Anderson's `de.setf.rdf:project-graph` (Datagraph/Dydra-era
+CL CLOS-metaclass framework) and applies it to filesystem
+hierarchies as the native projection target.
 
 → `doc/concepts/projection.md`
 
 ### Hybrid filesystem/database topology (experimental)
 
-The partition between what lives on disk and what lives in the runtime DB is an open architectural question we're actively exploring. Filtering primitives on `project.export` / `project.import` exist precisely to enable this experimentation. Today, both sides are first-class. Tomorrow's answer depends on what measurement reveals.
+The partition between what lives on disk and what lives in the
+runtime DB is an open architectural question we're actively
+exploring. Filtering primitives on `project.export` /
+`project.import` exist precisely to enable this experimentation.
+Today, both sides are first-class. Tomorrow's answer depends on
+what measurement reveals.
 
 → `doc/concepts/multi-store-architecture.md`
+
+### Opt-in capabilities — passive memory model first, alive substrate when called for
+
+Reactivity, scheduling, workflows, validation, logging,
+projection — each is a layered capability driven by first-class
+memorial entities. A deployment without `:mm/Schedule` instances
+has no scheduler running. A consumer that only reads memorials
+never has a reactive sink fire. The passive baseline (graph
+store + retrieval surface + MCP server) is preserved; the
+capabilities compose above it. The AI client can introspect and
+adjust the runtime control plane through the same MCP verbs it
+uses to read the corpus.
 
 ## Three concrete examples
 
 ### Example 1 — Clojure, in-process
 
-Define a class hierarchy, create a validated instance, query the metamodel:
+Define a class hierarchy, create a validated instance, query the
+metamodel:
 
 ```clojure
 (require '[sandbar.db.datatype :as dt])
@@ -163,7 +358,8 @@ Define a class hierarchy, create a validated instance, query the metamodel:
 
 ### Example 2 — AI client (Claude or other MCP consumer)
 
-Discover the surface; create an entity from markdown source; read it back:
+Discover the surface; create an entity from markdown source; read
+it back:
 
 ```bash
 export SANDBAR_TOKEN="<your-service-account-token>"
@@ -197,7 +393,8 @@ curl -X POST http://localhost:8080/mcp \
 
 ### Example 3 — The four-axis retrieval surface
 
-Walk a typed-edge graph; rank the result; project paths.  Three composable axes in one short example:
+Walk a typed-edge graph; rank the result; project paths. Three
+composable axes in one short example:
 
 ```clojure
 (require '[sandbar.search    :as search]
@@ -222,7 +419,10 @@ Walk a typed-edge graph; rank the result; project paths.  Three composable axes 
               [:RESTRICT [:dt/type :mm.memory/decision]]]})
 ```
 
-Each axis is also a stable MCP verb (`sandbar.search.bm25f`, `sandbar.aggregate.rank-by`, `sandbar.navigate.path-via`) and a REST endpoint (`GET /api/aggregate/rank-by`, `GET /api/navigate/path`).  Same model, three projections.
+Each axis is also a stable MCP verb (`sandbar.search.bm25f`,
+`sandbar.aggregate.rank-by`, `sandbar.navigate.path-via`) and a
+REST endpoint (`GET /api/aggregate/rank-by`,
+`GET /api/navigate/path`). Same model, three projections.
 
 → `doc/concepts/path-grammar.md` for the algebra · `doc/guides/navigating-with-paths.md` for worked patterns
 
@@ -241,7 +441,8 @@ lein deps && lein repl
 curl http://localhost:8080/api/status
 ```
 
-→ `doc/guides/quickstart.md` for the 5-minute hands-on tour
+→ `doc/guides/getting-started.md` for the full onboarding path
+→ `doc/guides/quickstart.md` for the five-minute hands-on tour
 
 
 ## Project layout
@@ -258,7 +459,16 @@ sandbar/
 │   ├── aggregate.clj   count-by / group-by / rank-by (4 structural axes)
 │   ├── navigate/       edges / walk / path (Wilbur path-grammar)
 │   │   └── path/       ast / ir / datomic / value
+│   ├── shape.clj       :mm/Shape validation; SHACL-deeply-incorporated
+│   ├── reactive.clj    Reactive substrate facade
+│   ├── reactive/       queue + sinks (tx-source bridge layered behind the boundary)
+│   ├── logging.clj     sandbar.logging six-macro callsite API
+│   ├── logging/        Telemere bridge: config / format / handlers / init
 │   ├── db/             dt/* model API + Datomic peer connection
+│   │   ├── datatype.clj  Core dt/* primitives (Class / Property / Ref / Fn / Event)
+│   │   ├── entailment/   RDFS entailment + OWL 2 RL extensions
+│   │   ├── fn.clj        defdbfn + :dt/Fn first-class bridge
+│   │   └── rules.clj     Datalog rules supporting subsumption + entailment
 │   ├── mcp/            MCP server (transport / protocol / tools / resources / prompts / tasks)
 │   ├── api/            REST handlers (store / aggregate / navigate / workflow / event / job / auth)
 │   ├── service/        Routing + validation-as-workflow
@@ -277,19 +487,61 @@ lein test :only sandbar.datatype-test/make-test        # one deftest
 ## FAQ
 
 **Q: Is this OWL/RDF?**
-A: Inspired by RDFS, but simpler. Closed-world; no inference engine; no PhD required. The metamodel is closer to KL-ONE-shaped frames-with-inheritance than to OWL DL.
+A: Inspired by RDFS, with selected OWL 2 RL entailments layered
+in via `sandbar.db.entailment`. Closed-world by default; no
+external reasoner; no PhD required. The metamodel is closer to
+KL-ONE-shaped frames-with-inheritance than to OWL DL.
 
 **Q: Why both REST and MCP?**
-A: Different consumers; same metamodel. Traditional HTTP clients want REST. AI clients want JSON-RPC with reflective tool discovery + push notifications. Both projections come from the same `dt/*` introspection — no parallel models to keep in sync.
+A: Different consumers; same metamodel. Traditional HTTP clients
+want REST. AI clients want JSON-RPC with reflective tool
+discovery + push notifications. Both projections come from the
+same `dt/*` introspection — no parallel models to keep in sync.
 
 **Q: How does the codec layer relate to Datomic's serialization?**
-A: It doesn't. Datomic handles in-store representation; codecs handle wire format at the protocol boundary. The codec layer absorbs format complexity from consumers, the same way `dt/*` absorbs Datomic query complexity.
+A: It doesn't. Datomic handles in-store representation; codecs
+handle wire format at the protocol boundary. The codec layer
+absorbs format complexity from consumers, the same way `dt/*`
+absorbs Datomic query complexity.
 
 **Q: How does path-grammar compare to SPARQL property paths or Cypher relationship patterns?**
-A: Sandbar's path-grammar shares the same Kleene-algebra-over-binary-relations spine.  Wilbur (Lassila 1989, Nokia 2001-2009) is the source-of-truth lineage; SPARQL 1.1 (2013) formalized the same algebra independently; Cypher's variable-length paths converge on the same surface.  Sandbar inherits the algebra, ships subset-first (Canonical-8 + Tier-2 = 13 operators executable today; Tier-3 vocabulary-registered but compilation deferred), and exposes paths as EDN-native first-class values (`length`, `prefix`, `subpath`).  The three-layer DSL/IR/Backend architecture means a future Asami or NFA × graph-product backend is a translator, not a rewrite.
+A: Sandbar's path-grammar shares the same Kleene-algebra-over-
+binary-relations spine. Wilbur (Lassila 1989, Nokia 2001-2009) is
+the source-of-truth lineage; SPARQL 1.1 (2013) formalized the
+same algebra independently; Cypher's variable-length paths
+converge on the same surface. Sandbar inherits the algebra,
+ships subset-first (Canonical-8 + Tier-2 = 13 operators executable
+today; Tier-3 vocabulary-registered but compilation deferred), and
+exposes paths as EDN-native first-class values (`length`, `prefix`,
+`subpath`). The three-layer DSL/IR/Backend architecture means a
+future Asami or NFA × graph-product backend is a translator, not
+a rewrite.
 
 **Q: Why BM25F instead of plain BM25 or Lucene's default Similarity?**
-A: BM25F is the multi-field weighted form that Lucene's single-field BM25 doesn't natively express.  Per-class `:dt/bm25f-weights` declare slot weights at the metamodel layer (e.g., `:mm.memory/name` 12.0 vs `:mm.memory/body-raw` 1.0); the analyzer (Unicode tokenizer + Porter stemmer) is metamodel-driven and matches the corpus's reference implementation byte-for-byte.
+A: BM25F is the multi-field weighted form that Lucene's
+single-field BM25 doesn't natively express. Per-class
+`:dt/bm25f-weights` declare slot weights at the metamodel layer
+(e.g., `:mm.memory/name` 12.0 vs `:mm.memory/body-raw` 1.0); the
+analyzer (Unicode tokenizer + Porter stemmer) is metamodel-driven
+and matches the corpus's reference implementation byte-for-byte.
+
+**Q: Is the event substrate a job queue?**
+A: No. It's a typed-event in-process bus backed by Datomic's
+`tx-report-queue` and Manifold streams. Subscribers register by
+event CLASS (not topic), and class-hierarchical dispatch fans out
+through `dt/type-isa?`. The scheduler / job system (in design)
+uses the event substrate as its emission surface but isn't itself
+the event substrate.
+
+**Q: What's a memorial?**
+A: A first-class entity that participates in the corpus —
+decisions, plans, observations, syntheses, libraries, logs, runs,
+shapes, fns. Memorials descend from `:mm/Memory`; their
+`:dt/memorial-policy` declares whether instances project to the
+filesystem (`:first-class`), stay DB-only (`:db-only`), embed
+inline (`:inline`), or remain transient (nil). The `mm/*`
+classes are the user-facing layer; `dt/*` is the substrate that
+defines them.
 
 ## License
 

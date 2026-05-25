@@ -46,13 +46,27 @@ Sandbar deliberately rejects this for an *operational verb catalog* — one verb
 | `class.*`     | `describe`, `slots`, `direct-slots`, `required-slots`, `instances`, `subclasses`, `parents`, `validate-all-instances` |
 | `types.*`     | `instance-of`, `subclass-of`                                                          |
 | `property.*`  | `domain`, `range`, `cardinality`                                                      |
-| `entity.*`    | `create`, `find`, `update`, `validate`                                                |
+| `entity.*`    | `create`, `find`, `find-by-rel-path`, `update`, `validate`                            |
+| `search.*`    | `bm25f`, `attribute`                                                                  |
+| `aggregate.*` | `count`, `group-by`, `rank-by`, `tag-histogram`                                       |
+| `navigate.*`  | `outbound-edges`, `inbound-edges`, `path-via`, `siblings-of`                          |
+| `orient.*`    | `library-card`, `tree`, `type-tree`                                                   |
+| `shape.*`     | `list`, `create`, `update`, `validate`, `conformance-report`                          |
 | `workflow.*`  | `define`, `find`, `start-process`, `transition`, `process-state`, `process-history`, `active-processes` |
 | `validation.*`| `start`, `run`, `cancel`, `retry`, `results`, `history`                              |
+| `tag.*`       | `lookup`, `define`, `audit`, `consolidate`, `consolidate-all`, `split`, `rename`, `align`, `harmonize` |
+| `reactive.*`  | `health` (in-process event-substrate buffer / dispatch health)                        |
 | `codec.*`     | `list`                                                                                |
 | `project.*`   | `export`, `import`                                                                    |
+| `ground`      | 4-axis type-scoped grounding for predicate / type / pattern / ADR introduction         |
 
 A consumer calling `sandbar.entity.create` provides `{class, format, source}` (or `{class, attributes}`) — the class is an argument, not part of the verb name.  This is the resolution recorded in [`decisions/sandbar_mcp_tool_surface_resolution_operational_verb_catalog_per_adr_b13_2026_05_12`](../../memory/decisions/sandbar_mcp_tool_surface_resolution_operational_verb_catalog_per_adr_b13_2026_05_12.md) — captured as F-B-001's design decision.
+
+### The schema-introspection verbs are load-bearing
+
+`schema.classes` / `schema.properties` / `schema.datatypes` / `class.describe` / `class.slots` / `class.subclasses` / `class.parents` / `property.domain` / `property.range` / `property.cardinality` together constitute the **reflection surface** AI clients use to understand what they're operating on before invoking a state-changing verb.  This is bootstrap-by-discovery's concrete shape: the consumer never receives a separate JSON Schema artifact; instead, every shape-question is answerable through these introspection verbs, computed live from the metamodel.
+
+`ground` is the orientation verb for grounding new concepts — an AI authoring a new ADR, predicate, type, or pattern reaches for `ground` to check whether the concept already exists under another name and to discover the canonical neighbors.  Type-scoped across the four retrieval axes; deterministic across runs for the same DB value.
 
 ### Why operational, not per-class
 
@@ -128,13 +142,14 @@ No parallel registry.  No mapping.  See [`workflow-substrate.md`](workflow-subst
 
 ## Resource subscriptions
 
-MCP supports *resource subscriptions* — a client subscribes to a URI; the server pushes update notifications when the resource changes.  Sandbar implements this via:
+MCP supports *resource subscriptions* — a client subscribes to a URI; the server pushes update notifications when the resource changes.  Sandbar implements this on the event substrate (see [`event-substrate.md`](event-substrate.md)):
 
-1. The MCP `resources/subscribe` handler records the subscription against the URI.
-2. On entity transactions (via the `dt/*` API), `sandbar.mcp.resources/entity-updated!` fires.
-3. The notification routes to subscribed clients over their SSE channel.
+1. The MCP `resources/subscribe` handler records the subscription against the URI as a class-hierarchical subscriber on the in-process event bus.
+2. Every committed transaction reaches the bus through `sandbar.reactive.tx-source` — a boundary primitive that wraps Datomic's `d/tx-report-queue` and translates `TxReport` maps into typed `:mm/Event` (or subclass) values.  No Datomic types leak past the wrap.
+3. Subscribers see events filtered through the class-hierarchical dispatch cache (per `dt/type-isa?`).  An MCP client subscribed to a URI for an `:mm/Memory` instance receives notifications when any descendant class of the entity's class mutates in a way that addresses the URI.
+4. The notification routes over the client's SSE channel.
 
-Subscriptions are **per-session**, not per-client-instance — when the SSE connection closes, the subscriptions associated with that session are cleaned up.
+Subscriptions are **per-session**, not per-client-instance — when the SSE connection closes, the subscriptions associated with that session are cleaned up from the dispatch cache.  The full per-subscriber routing (bound to a concrete SSE subscriber identity rather than the legacy broadcast sentinel) is in active landing as part of the event-substrate migration; see `bugs/resource_subscriptions_are_broadcast_only_and_unwired_2026_05_12.md` for the cutover status.
 
 ## Authentication
 
@@ -283,5 +298,8 @@ LSP and MCP are sibling protocols for different consumer kinds.  LSP serves edit
 - [`metamodel.md`](metamodel.md) — what the MCP surface bootstraps from
 - [`codec-layer.md`](codec-layer.md) — how MCP `tools/call` routes through codecs
 - [`workflow-substrate.md`](workflow-substrate.md) — how MCP Tasks compose with workflow processes
+- [`event-substrate.md`](event-substrate.md) — the `sandbar.reactive.tx-source` substrate that powers `resources/subscribe`
+- [`fulltext-search.md`](fulltext-search.md) / [`aggregation.md`](aggregation.md) / [`navigation.md`](navigation.md) — the four-axis retrieval surface exposed by the `search.*` / `aggregate.*` / `navigate.*` / `orient.*` verb groups
+- [`shape-validation.md`](shape-validation.md) — the `shape.*` verb group
 - [`doc/api/mcp-verbs.md`](../api/mcp-verbs.md) — every MCP verb's mechanical reference
 - [`doc/guides/writing-an-mcp-client.md`](../guides/writing-an-mcp-client.md) — hands-on client patterns

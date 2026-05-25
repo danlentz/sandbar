@@ -69,7 +69,7 @@ curl http://localhost:8080/api/status
 
 ;; All classes registered in the running metamodel
 (dt/all-classes)
-;; => (:dt/Class :dt/Property :dt/Resource :mm/Memory :mm/Section ...)
+;; => (:dt/Class :dt/Property :dt/Resource :mm/Memory :mm/Section :mm/Workflow ...)
 
 ;; Class ancestry — :model/User → :dt/Ref → :dt/Resource
 (dt/ancestors-of :model/User)
@@ -153,3 +153,11 @@ Both projections — MCP and REST — surface the same metamodel; the protocol d
 **Port 8080 already in use.**  Change `:http-port` in `config/config.edn`.
 
 **Schema not loaded.**  Verify `:required-schema` in `config/config.edn` lists every schema file you need (`:meta :literal :ref :fn :any :workflow :mm :user :twit`).
+
+## What's new in 0.2.0
+
+The 0.2.0 release adds three substrate surfaces worth knowing about at orientation time:
+
+- **`sandbar.logging`** — the six-macro observability API (`info` / `warn` / `error` / `debug` / `trace` / `profile`).  See [`using-logging.md`](using-logging.md).
+- **`sandbar.shape`** — SHACL-style shape validation; shapes are first-class `:mm/Shape` memorials and the walker is a family of `:mm/Fn` instances.  See [`authoring-shapes.md`](authoring-shapes.md).
+- **`sandbar.event/subscribe`** (in-design) — a substrate-native event surface wrapping Datomic's `tx-report-queue` behind the `dt/*` boundary.  See [`subscribing-to-events.md`](subscribing-to-events.md) for the API shape; Phases 1 and 2 of the event-substrate arc are not yet built.

@@ -1,10 +1,10 @@
 # Multi-Store Architecture
 
-> An **active research direction**, not a settled design.  The question of how Sandbar's storage tiers — filesystem-canonical hierarchy, runtime DB, optional secondary indices — should partition workload is open.  This document explains the *frame* the question lives inside, the primitives Sandbar exposes to enable empirical investigation, and the trade-off axes the answer must navigate.  For the design rationale on filesystem-canonical commitment see [`project-graph.md`](project-graph.md); for the codec-layer boundary see [`codec-layer.md`](codec-layer.md).
+> An **active research direction**, not a settled design.  The question of how Sandbar's storage tiers — filesystem-canonical hierarchy, runtime DB, optional secondary indices — should partition workload is open.  This document explains the *frame* the question lives inside, the primitives Sandbar exposes to enable empirical investigation, and the trade-off axes the answer must navigate.  For the design rationale on filesystem-canonical commitment see [`projection.md`](projection.md); for the codec-layer boundary see [`codec-layer.md`](codec-layer.md).
 
 ## Thesis
 
-Sandbar's storage layer is not a single store — it is a **topology** of stores held in coherence by `project-graph` / `ingest-graph` (see [`project-graph.md`](project-graph.md)).  The filesystem hierarchy is canonical ground-truth; the runtime database is a projected view; auxiliary indices (full-text, vector embeddings, link graphs) may exist as additional projections.
+Sandbar's storage layer is not a single store — it is a **topology** of stores held in coherence by `project-graph` / `ingest-graph` (see [`projection.md`](projection.md)).  The filesystem hierarchy is canonical ground-truth; the runtime database is a projected view; auxiliary indices (full-text, vector embeddings, link graphs) may exist as additional projections.
 
 Today, the production deployment is a single Datomic Peer paired with one filesystem hierarchy.  That is the *simplest* point in the design space, not the *settled* one.  The frame Sandbar is built around — codec layer absorbs wire format, project-graph absorbs FS↔DB translation, filters constrain projection — is deliberately constructed to make multi-store experimentation cheap.
 
@@ -60,13 +60,24 @@ Three storage tiers, each with a defined role:
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-The discipline: **no class is authoritatively owned by Tier 2 alone**.  Every class's ground-truth lives in Tier 1.  Tier 2 is fast indexed access; Tier 3 is specialized indexed access.  Both are *derivable*.
+The discipline: **no class is authoritatively owned by Tier 2 alone for human-authored content**.  Every class whose canonical form is hand-edited prose lives in Tier 1.  Tier 2 is fast indexed access; Tier 3 is specialized indexed access.  Both are *derivable*.
 
-The exception that proves the rule: workflow processes and MCP subscriptions.  Both are *ephemeral runtime state*, not human-authored content.  These legitimately live in Tier 2 only — there is no canonical filesystem form for a half-running process or an active subscription.  This is a deliberate boundary: ephemeral state lives in Tier 2; content lives in Tier 1.
+### Where ephemeral runtime state lives
+
+Several class families are legitimately Tier-2-resident only — *ephemeral runtime state*, not human-authored content.  These have no canonical filesystem form because they describe in-flight computation:
+
+- `:workflow/Process` instances (running and terminated workflow processes)
+- `:dt/Event` substrate-runtime instances under `:event/*` (per-request OpenTelemetry-shaped events)
+- MCP subscriptions, in-process bus subscribers, dispatch-cache state
+- Some `:mm/Run` instances (`:dt/memorial-policy :db-only` by default; narrative runs opt-in to `:first-class`)
+
+The `:dt/memorial-policy` axis (per the first-class-memorialization arc) declares per-class projection defaults — `:first-class` (FS-projected), `:db-only` (Tier-2 only; covered by DB-dump arc), `:inline` (embedded in parent's body), `nil` (transient).  This is the metamodel-level surface for "which tier owns this class" rather than a hardcoded substrate decision.
+
+For ephemeral *events* with narrative-promotion value, the reactive-projection sink (see [`projection.md`](projection.md#use-cases) and [`event-substrate.md`](event-substrate.md)) bridges Tier 2 → Tier 1 selectively: signals flagged `:memorial :first-class` materialize as `:mm/EventLog` files in `memory/event-logs/`; everything else stays Tier 2.
 
 ## What the filters enable
 
-`project-graph`'s `:filter` option (see [`project-graph.md`](project-graph.md#filtering-primitives)) is the experimentation surface.  The questions it lets us answer empirically:
+`project-graph`'s `:filter` option (see [`projection.md`](projection.md#filtering-primitives)) is the experimentation surface.  The questions it lets us answer empirically:
 
 1. **Which classes deserve full FS-mirror?**  Test by projecting only those classes and measuring developer ergonomics — does external tooling produce useful results?  Does git diff stay readable?
 2. **Which classes deserve DB-resident-only?**  Test by projecting *without* those classes and measuring functionality — does the corpus still work?  Do consumers notice the absence?
@@ -172,8 +183,10 @@ Most consumers don't need to reason about the multi-store frame.  They write to 
 
 ## See also
 
-- [`project-graph.md`](project-graph.md) — the FS↔DB boundary-layer primitive
+- [`projection.md`](projection.md) — the FS↔DB boundary-layer primitive
 - [`codec-layer.md`](codec-layer.md) — per-entity wire format
 - [`markdown-as-canonical.md`](markdown-as-canonical.md) — the canonical form Tier 1 holds
 - [`metamodel.md`](metamodel.md) — the model the tiers project
+- [`event-substrate.md`](event-substrate.md) — the in-process bus that bridges Tier 2 runtime events to Tier 1 narrative event-logs selectively
+- [`activity-hierarchy.md`](activity-hierarchy.md) — `:mm/Activity` PROV-O supertype that anchors which activities project to Tier 1 vs stay in Tier 2
 - [`doc/guides/sandbar-as-substrate.md`](../guides/sandbar-as-substrate.md) — embedding Sandbar in your own application
