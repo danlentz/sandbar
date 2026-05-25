@@ -23,11 +23,16 @@
 
 (deftest count-by-no-where-test
   (testing "count-by returns {:count int} for class instances"
+    ;; Baseline: schema-load adds 2 :mm/Shape entities (transitively :mm/Memory
+    ;; via :mm/Meta) per Phase D Temporal Tier-2 XOR Shape declarations in
+    ;; schema/mm-temporal.edn (:memory.shapes/interval-begins-at-xor +
+    ;; :memory.shapes/interval-ends-at-xor).  Test creates 3 additional
+    ;; :mm/Memory entities; total = baseline-2 + created-3 = 5.
     (make-memory-typed! "alpha" :decision)
     (make-memory-typed! "beta"  :plan)
     (make-memory-typed! "gamma" :decision)
     (let [result (agg/count-by {:class :mm/Memory})]
-      (is (= {:count 3} result)))))
+      (is (= {:count 5} result)))))
 
 (deftest count-by-with-where-test
   (testing "count-by :where restricts by predicate"
@@ -131,9 +136,12 @@
 
 (deftest rank-by-degree-limit-test
   (testing "rank-by :degree honors :limit"
+    ;; Baseline: schema-load adds 2 :mm/Shape entities (transitively :mm/Memory)
+    ;; per Phase D Temporal Tier-2 — see count-by-no-where-test for context.
+    ;; Test creates 5 additional; total = baseline-2 + created-5 = 7.
     (doseq [n (range 5)] (make-memory-typed! (str "mem-" n) :decision))
     (let [result (agg/rank-by {:class :mm/Memory :rank-by :degree :limit 2})]
-      (is (= 5 (:total result)))
+      (is (= 7 (:total result)))
       (is (= 2 (:returned result)))
       (is (= 2 (count (:hits result)))))))
 

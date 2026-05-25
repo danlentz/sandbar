@@ -708,7 +708,15 @@
    :dt/context "meta"
    :dt/slots []
    :dt/label "Functional Irreflexive Property"
-   :db/doc "Intersection class — functional AND irreflexive; used by the corpus for single-valued non-self-loop relations (instance-of).  Activates prp-fp (functional sameAs derivation) + prp-irp (irreflexive integrity) via rdfs9 entailment."}]
+   :db/doc "Intersection class — functional AND irreflexive; used by the corpus for single-valued non-self-loop relations (instance-of).  Activates prp-fp (functional sameAs derivation) + prp-irp (irreflexive integrity) via rdfs9 entailment."}
+
+  {:db/ident :dt/EquivalenceRelationProperty
+   :dt/type :dt/Class
+   :dt/subclass-of [:dt/TransitiveProperty :dt/SymmetricProperty :dt/ReflexiveProperty]
+   :dt/context "meta"
+   :dt/slots []
+   :dt/label "Equivalence Relation Property"
+   :db/doc "Intersection class — transitive AND symmetric AND reflexive; the canonical mathematical 'equivalence relation' shape (the 3 OWL 2 RL characteristics that together define equivalence per OWL 2 semantics).  Used by symmetric Allen interval relations (notably `:mm.interval/equals` per Phase D Temporal Tier-2 — an interval is equal-to itself reflexively, equal-to-X iff X equal-to it symmetrically, and equality is transitive across intervals).  Activates OWL 2 RL rules prp-trp (transitive derivation) + prp-symp (symmetric derivation) + prp-rflp (reflexive derivation) via rdfs9 entailment.  Composes with `:dt/inverse-of` to model self-inverse symmetric relations without requiring an explicit inverse-pair declaration."}]
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Aggregates (WIP/Unnecessary?)

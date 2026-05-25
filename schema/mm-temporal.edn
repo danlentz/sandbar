@@ -553,4 +553,386 @@
   {:db/ident :event/ServerEvent :dt/subclass-of :mm/Event}
   {:db/ident :event/UserEvent   :dt/subclass-of :mm/Event}]
 
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Phase D — Temporal Tier-2 First-Class Entities + Allen's 13 Typed-Edge
+;; Relations + Option ε Paired-Property Pattern + Cross-Axis Composition
+;;
+;; Per pre-0.2.0 release arc β.1.B; resolves Q.D.1 (Compounding-Value Criterion)
+;; + Q.D.2 (Option ε Paired-Property Pattern) ratified in the prior
+;; Q.D.1+Q.D.2 ADR and the Q.D.2 Option ε ADR.  OWL-Time aligned (per
+;; libraries/standards/w3c_owl_time.md) — adopts the canonical
+;; TemporalEntity / Instant / Interval / ProperInterval class hierarchy +
+;; Allen's 13 interval-relations as ObjectProperty typed-edges.
+;;
+;; SUBSTRATE COMPOSITION:
+;;   :dt/StrictPartialOrderProperty       — Wave 1 intersection class; used by Allen's 12 directional relations
+;;   :dt/EquivalenceRelationProperty      — NEW intersection class (added in this β.1.B commit to meta.edn); used by :mm.interval/equals
+;;   :dt/inverse-of                       — meta.edn relation; 6 explicit inverse-pair declarations follow SKOS broaderMatch precedent
+;;   prp-inv1 / prp-inv2 / prp-trp        — existing entailment rules in sandbar.db.entailment.core; Allen relations compose with these
+;;   :mm.shape/XorConstraint              — β.1.A substrate (commit 2424259); 2 XOR Shape entities consume it
+;;
+;; OPTION ε PAIRED-PROPERTY PATTERN: each temporal-consumer concern (begins-at /
+;; ends-at) declares TWO monomorphic slots — one ObjectProperty form
+;; (`-instant` suffix) referencing first-class :mm/Instant + one
+;; DatatypeProperty form (`-time` suffix) carrying primitive :db.type/instant
+;; literal.  A :mm/Shape with :mm.shape/xor-constraints enforces
+;; exactly-one-populated per entity.  Consumer code uses sandbar.temporal
+;; helpers for the polymorphic-reader illusion.
+;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Phase D Forward Declarations — 4 new classes
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident :mm/TemporalEntity :db/doc "Forward declaration; full definition later — abstract root of the Phase D Temporal Tier-2 family per Q.D.1's Compounding-Value Criterion.  OWL-Time `time:TemporalEntity` analog.  Subclasses: :mm/Instant (zero-extent point) + :mm/Interval (abstract; non-zero extent) → :mm/ProperInterval (concrete; start < end)."}
+  {:db/ident :mm/Instant         :db/doc "Forward declaration; full definition later — concrete zero-extent temporal point.  OWL-Time `time:Instant` analog.  RARE per Q.D.1 (first-class promotion only when compounding-value criterion met — generalized + reusable / semantic-anchor / Spec-referenced).  Carries :mm.instant/at-time."}
+  {:db/ident :mm/Interval        :db/doc "Forward declaration; full definition later — abstract non-zero-extent temporal interval.  OWL-Time `time:Interval` analog.  Concrete subclass :mm/ProperInterval.  Carries Option ε paired-property slots (:mm.interval/begins-at-{instant,time} + :mm.interval/ends-at-{instant,time}) + Allen's 13 typed-edge relations."}
+  {:db/ident :mm/ProperInterval  :db/doc "Forward declaration; full definition later — concrete temporal interval with strictly-positive extent (start < end).  OWL-Time `time:ProperInterval` analog (the OWL-Time class explicitly disjoint with `time:Instant` — non-zero extent is the defining property)."}]
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; :mm.instant/* — single slot for :mm/Instant (Q.D.4 minimalism)
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Per Q.D.4 — only :mm.instant/at-time for now.  Timezone / precision /
+;; TRS slots deferred until compounding-value emerges (the Q.D.1 framing).
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident       :mm.instant/at-time
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Instant
+   :dt/range       :db.type/instant
+   :db/valueType   :db.type/instant
+   :db/cardinality :db.cardinality/one
+   :db/doc "The wall-clock instant this :mm/Instant entity names.  OWL-Time `time:inXSDDateTimeStamp` analog — compact xsd:dateTimeStamp encoding.  Per Q.D.4 minimalism (rejected: timezone / precision / TRS slots; defer until compounding-value emerges).  Per Q.D.1 the Instant entity itself is RARE — only promoted to first-class when it satisfies the compounding-value criterion (generalized + reusable OR semantic-anchor-for-correlation OR Spec-referenced)."}]
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; :mm.interval/* — paired-property slots per Option ε (Q.D.2 resolution)
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Per Option ε Paired-Property Pattern — each temporal-consumer concern
+;; (begins-at / ends-at) declares TWO monomorphic slots: one ObjectProperty
+;; form (`-instant` suffix; ref to :mm/Instant) + one DatatypeProperty form
+;; (`-time` suffix; primitive :db.type/instant literal).  Consumer code uses
+;; sandbar.temporal helpers (interval-beginning / interval-end) for the
+;; polymorphic-reader illusion.  Exactly-one-populated enforced by 2
+;; :mm/Shape XOR Shape entities defined later in this file
+;; (:memory.shapes/interval-begins-at-xor + :memory.shapes/interval-ends-at-xor)
+;; using β.1.A's :mm.shape/XorConstraint substrate.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident       :mm.interval/begins-at-instant
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Interval
+   :dt/range       :mm/Instant
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/one
+   :db/doc "ObjectProperty form of the begins-at paired-property pair (Option ε).  References a first-class :mm/Instant entity that names the interval's starting point.  Used when the start instant has compounding value (Q.D.1) — e.g., a named milestone reused across multiple intervals.  XOR-paired with :mm.interval/begins-at-time via :memory.shapes/interval-begins-at-xor (exactly one of the pair must be populated per :mm/Interval instance)."}
+
+  {:db/ident       :mm.interval/begins-at-time
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Interval
+   :dt/range       :db.type/instant
+   :db/valueType   :db.type/instant
+   :db/cardinality :db.cardinality/one
+   :db/doc "DatatypeProperty form of the begins-at paired-property pair (Option ε).  Primitive `:db.type/instant` literal naming the interval's starting wall-clock instant.  Used when the start instant is local-to-this-interval and doesn't satisfy the Q.D.1 compounding-value criterion (most cases).  XOR-paired with :mm.interval/begins-at-instant via :memory.shapes/interval-begins-at-xor."}
+
+  {:db/ident       :mm.interval/ends-at-instant
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Interval
+   :dt/range       :mm/Instant
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/one
+   :db/doc "ObjectProperty form of the ends-at paired-property pair (Option ε).  References a first-class :mm/Instant entity that names the interval's ending point.  Mirror of :mm.interval/begins-at-instant for the closing side.  XOR-paired with :mm.interval/ends-at-time via :memory.shapes/interval-ends-at-xor."}
+
+  {:db/ident       :mm.interval/ends-at-time
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Interval
+   :dt/range       :db.type/instant
+   :db/valueType   :db.type/instant
+   :db/cardinality :db.cardinality/one
+   :db/doc "DatatypeProperty form of the ends-at paired-property pair (Option ε).  Primitive `:db.type/instant` literal naming the interval's ending wall-clock instant.  Mirror of :mm.interval/begins-at-time for the closing side.  XOR-paired with :mm.interval/ends-at-instant via :memory.shapes/interval-ends-at-xor."}]
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; :mm.interval/* — Allen's 13 typed-edge interval relations
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; 12 directional relations carry :dt/type :dt/StrictPartialOrderProperty
+;; (asymmetric + irreflexive + transitive; Wave 1 intersection class; activates
+;; prp-asyp + prp-irp + prp-trp via rdfs9 entailment).
+;;
+;; 1 symmetric relation (`:mm.interval/equals`) carries :dt/type
+;; :dt/EquivalenceRelationProperty (transitive + symmetric + reflexive;
+;; NEW intersection class added to meta.edn in this β.1.B commit; activates
+;; prp-trp + prp-symp + prp-rflp).
+;;
+;; Cardinality-many per Q.D.5 (an interval can be :before multiple other
+;; intervals; aligns with SKOS broaderMatch ↔ narrowerMatch precedent).
+;;
+;; Per Q.D.10 — β.1.B ships ONLY composition with existing prp-inv1 /
+;; prp-inv2 / prp-trp / prp-symp / prp-rflp rules.  Full Allen
+;; path-consistency / interval-algebra composition is DEFERRED to a future arc.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [;; 12 directional Allen relations (StrictPartialOrderProperty: asymmetric + irreflexive + transitive)
+  {:db/ident       :mm.interval/before
+   :dt/type        :dt/StrictPartialOrderProperty
+   :dt/domain      :mm/Interval
+   :dt/range       :mm/Interval
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/many
+   :db/doc "Allen's :before — interval A entirely precedes interval B (end(A) < start(B); no overlap).  OWL-Time `time:intervalBefore` analog.  Inverse-of :mm.interval/after (explicit `:dt/inverse-of` declared separately).  Transitive (A before B + B before C → A before C via prp-trp).  Asymmetric + irreflexive."}
+
+  {:db/ident       :mm.interval/after
+   :dt/type        :dt/StrictPartialOrderProperty
+   :dt/domain      :mm/Interval
+   :dt/range       :mm/Interval
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/many
+   :db/doc "Allen's :after — interval A entirely follows interval B (start(A) > end(B); no overlap).  OWL-Time `time:intervalAfter` analog.  Inverse-of :mm.interval/before (derived via prp-inv1)."}
+
+  {:db/ident       :mm.interval/meets
+   :dt/type        :dt/StrictPartialOrderProperty
+   :dt/domain      :mm/Interval
+   :dt/range       :mm/Interval
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/many
+   :db/doc "Allen's :meets — end(A) coincides with start(B) (touching but not overlapping).  OWL-Time `time:intervalMeets` analog.  Inverse-of :mm.interval/met-by."}
+
+  {:db/ident       :mm.interval/met-by
+   :dt/type        :dt/StrictPartialOrderProperty
+   :dt/domain      :mm/Interval
+   :dt/range       :mm/Interval
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/many
+   :db/doc "Allen's :met-by — start(A) coincides with end(B).  OWL-Time `time:intervalMetBy` analog.  Inverse-of :mm.interval/meets."}
+
+  {:db/ident       :mm.interval/overlaps
+   :dt/type        :dt/StrictPartialOrderProperty
+   :dt/domain      :mm/Interval
+   :dt/range       :mm/Interval
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/many
+   :db/doc "Allen's :overlaps — A starts before B starts AND A ends during B (partial overlap with A's end inside B).  OWL-Time `time:intervalOverlaps` analog.  Inverse-of :mm.interval/overlapped-by."}
+
+  {:db/ident       :mm.interval/overlapped-by
+   :dt/type        :dt/StrictPartialOrderProperty
+   :dt/domain      :mm/Interval
+   :dt/range       :mm/Interval
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/many
+   :db/doc "Allen's :overlapped-by — A starts during B AND A ends after B ends.  OWL-Time `time:intervalOverlappedBy` analog.  Inverse-of :mm.interval/overlaps."}
+
+  {:db/ident       :mm.interval/during
+   :dt/type        :dt/StrictPartialOrderProperty
+   :dt/domain      :mm/Interval
+   :dt/range       :mm/Interval
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/many
+   :db/doc "Allen's :during — A is strictly contained within B (start(B) < start(A) AND end(A) < end(B); no boundary coincidence).  OWL-Time `time:intervalDuring` analog.  Inverse-of :mm.interval/contains.  NOTE: distinct from the proposed :mm.activity/during slot that was REJECTED in Q.D.8 (the cross-axis Activity → Interval slot is :mm.activity/spans-interval instead, to avoid name collision with this Allen relation)."}
+
+  {:db/ident       :mm.interval/contains
+   :dt/type        :dt/StrictPartialOrderProperty
+   :dt/domain      :mm/Interval
+   :dt/range       :mm/Interval
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/many
+   :db/doc "Allen's :contains — A strictly contains B (start(A) < start(B) AND end(B) < end(A)).  OWL-Time `time:intervalContains` analog.  Inverse-of :mm.interval/during."}
+
+  {:db/ident       :mm.interval/starts
+   :dt/type        :dt/StrictPartialOrderProperty
+   :dt/domain      :mm/Interval
+   :dt/range       :mm/Interval
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/many
+   :db/doc "Allen's :starts — A shares a starting point with B AND A ends before B (start(A) = start(B) AND end(A) < end(B)).  OWL-Time `time:intervalStarts` analog.  Inverse-of :mm.interval/started-by."}
+
+  {:db/ident       :mm.interval/started-by
+   :dt/type        :dt/StrictPartialOrderProperty
+   :dt/domain      :mm/Interval
+   :dt/range       :mm/Interval
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/many
+   :db/doc "Allen's :started-by — A shares a starting point with B AND A ends after B (start(A) = start(B) AND end(B) < end(A)).  OWL-Time `time:intervalStartedBy` analog.  Inverse-of :mm.interval/starts."}
+
+  {:db/ident       :mm.interval/finishes
+   :dt/type        :dt/StrictPartialOrderProperty
+   :dt/domain      :mm/Interval
+   :dt/range       :mm/Interval
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/many
+   :db/doc "Allen's :finishes — A shares an ending point with B AND A starts after B (end(A) = end(B) AND start(B) < start(A)).  OWL-Time `time:intervalFinishes` analog.  Inverse-of :mm.interval/finished-by."}
+
+  {:db/ident       :mm.interval/finished-by
+   :dt/type        :dt/StrictPartialOrderProperty
+   :dt/domain      :mm/Interval
+   :dt/range       :mm/Interval
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/many
+   :db/doc "Allen's :finished-by — A shares an ending point with B AND A starts before B (end(A) = end(B) AND start(A) < start(B)).  OWL-Time `time:intervalFinishedBy` analog.  Inverse-of :mm.interval/finishes."}
+
+  ;; 1 symmetric Allen relation (EquivalenceRelationProperty: transitive + symmetric + reflexive)
+  {:db/ident       :mm.interval/equals
+   :dt/type        :dt/EquivalenceRelationProperty
+   :dt/domain      :mm/Interval
+   :dt/range       :mm/Interval
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/many
+   :db/doc "Allen's :equals — A and B coincide exactly (start(A) = start(B) AND end(A) = end(B)).  OWL-Time `time:intervalEquals` analog.  Symmetric (A equals B ↔ B equals A; self-inverse — no separate `:dt/inverse-of` declaration needed because the :dt/EquivalenceRelationProperty intersection-class activates prp-symp for symmetric derivation).  Transitive + reflexive also."}]
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; 6 explicit :dt/inverse-of declarations for Allen's directional pairs
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Separate tx batch per SKOS broaderMatch ↔ narrowerMatch precedent
+;; (mm.edn relations block).  prp-inv1 + prp-inv2 entailment rules derive
+;; the reverse direction automatically once these explicit declarations land.
+;;
+;; :mm.interval/equals is NOT in this batch — its symmetric characteristic
+;; (via :dt/EquivalenceRelationProperty) makes it self-inverse; prp-symp
+;; derives the reverse without needing an explicit inverse-of declaration.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident :mm.interval/before     :dt/inverse-of :mm.interval/after}
+  {:db/ident :mm.interval/meets      :dt/inverse-of :mm.interval/met-by}
+  {:db/ident :mm.interval/overlaps   :dt/inverse-of :mm.interval/overlapped-by}
+  {:db/ident :mm.interval/during     :dt/inverse-of :mm.interval/contains}
+  {:db/ident :mm.interval/starts     :dt/inverse-of :mm.interval/started-by}
+  {:db/ident :mm.interval/finishes   :dt/inverse-of :mm.interval/finished-by}]
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Cross-axis composition slots — additive on Wave 6.1 :mm/Activity + :mm/Event
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Per Q.D.7 — additive cardinality-one optional slots; don't break existing
+;; Wave 6.1 consumers.  Per Q.D.8 — slot named :mm.activity/spans-interval
+;; (NOT :mm.activity/during which would collide with Allen's :during).
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident       :mm.activity/spans-interval
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Activity
+   :dt/range       :mm/Interval
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/one
+   :db/doc "Optional reference to a :mm/Interval this Activity spans.  OWL-Time `time:hasTime` analog (when the time-entity is an interval).  Cross-axis edge: Activity → Interval.  When populated, allows reachability queries like 'what activities span this interval' + composes with Allen-relations on the interval.  Per Q.D.7 (in scope; additive; optional).  Named `spans-interval` per Q.D.8 (avoid collision with Allen's :mm.interval/during which is interval-to-interval)."}
+
+  {:db/ident       :mm.event/at-interval
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Event
+   :dt/range       :mm/Interval
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/one
+   :db/doc "Optional reference to a :mm/Interval during which this Event was observed.  OWL-Time `time:hasTime` analog (for the interval case).  Cross-axis edge: Event → Interval.  Per Q.D.7 (in scope; additive; optional).  Distinct from `:mm.activity/spans-interval` because :mm/Event is the OBSERVED side (LODE outside-view happening) while :mm/Activity is the PERFORMED side (PROV-O execution)."}]
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Phase D full class declarations
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Per Q.D.3 — :mm/TemporalEntity parented under :mm/Spec (the declarative
+;; root; aligns with :mm/Workflow + :mm/Job + :mm/Schedule precedent —
+;; a TemporalEntity IS a Spec declaring a point/interval in time).
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident              :mm/TemporalEntity
+   :dt/type               :dt/Class
+   :dt/subclass-of        :mm/Spec
+   :dt/context            "mm"
+   :dt/label              "TemporalEntity"
+   :dt/slots              []
+   :dt/abstract?          true
+   :dt/native-codec       :markdown
+   :db/doc "Abstract root of the Phase D Temporal Tier-2 family.  OWL-Time `time:TemporalEntity` analog.  Per Q.D.3 parented under :mm/Spec (the declarative root that :mm/Workflow + :mm/Job + :mm/Schedule also sit under) — a TemporalEntity IS a Spec declaring a point/interval in time.  Per Q.D.1 the Tier-2 entities (:mm/Instant + :mm/Interval) are RARE — promoted to first-class only when the Compounding-Value Criterion is met."}
+
+  {:db/ident              :mm/Instant
+   :dt/type               :dt/Class
+   :dt/subclass-of        :mm/TemporalEntity
+   :dt/context            "mm"
+   :dt/label              "Instant"
+   :dt/slots              [:mm.instant/at-time]
+   :dt/abstract?          false
+   :dt/memorial-policy    :first-class
+   :db/doc "Concrete zero-extent temporal point (a named instant).  OWL-Time `time:Instant` analog.  RARE per Q.D.1 — only promoted to first-class when the Compounding-Value Criterion is met (generalized + reusable across multiple consumers / semantic-anchor-for-cross-entity-correlation / Spec-referenced).  Per Q.D.4 minimal slot surface (only :mm.instant/at-time); timezone / precision / TRS slots deferred."}
+
+  {:db/ident              :mm/Interval
+   :dt/type               :dt/Class
+   :dt/subclass-of        :mm/TemporalEntity
+   :dt/context            "mm"
+   :dt/label              "Interval"
+   :dt/slots              [:mm.interval/begins-at-instant
+                           :mm.interval/begins-at-time
+                           :mm.interval/ends-at-instant
+                           :mm.interval/ends-at-time
+                           :mm.interval/before
+                           :mm.interval/after
+                           :mm.interval/meets
+                           :mm.interval/met-by
+                           :mm.interval/overlaps
+                           :mm.interval/overlapped-by
+                           :mm.interval/during
+                           :mm.interval/contains
+                           :mm.interval/starts
+                           :mm.interval/started-by
+                           :mm.interval/finishes
+                           :mm.interval/finished-by
+                           :mm.interval/equals]
+   :dt/abstract?          true
+   :db/doc "Abstract non-zero-extent temporal interval.  OWL-Time `time:Interval` analog.  Concrete subclass :mm/ProperInterval.  Carries the Option ε paired-property slots for begins-at / ends-at endpoints (each as ObjectProperty ref + DatatypeProperty literal + XOR Shape enforcing exactly-one-populated) + Allen's 13 typed-edge relations to other intervals."}
+
+  {:db/ident              :mm/ProperInterval
+   :dt/type               :dt/Class
+   :dt/subclass-of        :mm/Interval
+   :dt/context            "mm"
+   :dt/label              "ProperInterval"
+   :dt/slots              []
+   :dt/abstract?          false
+   :dt/memorial-policy    :first-class
+   :db/doc "Concrete temporal interval with strictly-positive extent (start < end).  OWL-Time `time:ProperInterval` analog — the OWL-Time spec declares this class disjoint with `time:Instant` (non-zero extent is the defining property).  In Allen's interval algebra, ProperInterval is the subject of all 13 interval relations.  All slot-inheritance via :mm/Interval; this class adds no own slots (concrete-vs-abstract distinction is the only structural difference)."}]
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; 2 :mm/Shape XOR Shape entities — enforce Option ε paired-property XOR
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Consumes β.1.A's :mm.shape/XorConstraint substrate (sandbar commit 2424259).
+;; Each shape applies-to :mm/Interval and declares ONE XorConstraint sub-entity
+;; pairing the ObjectProperty form (`-instant`) with the DatatypeProperty
+;; form (`-time`) — :mm.shape.xor/slot-a + :mm.shape.xor/slot-b are EITHER/OR;
+;; exactly one of the pair must be populated per :mm/Interval instance.
+;;
+;; Per Q.D.6 — severity :violation (XOR is a semantic invariant; entity.create
+;; / entity.update boundary rejects in :strict mode; :audit mode logs).
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [;; The 2 :mm.shape/XorConstraint sub-entities — minted with tempids first
+  ;; since :mm.shape/xor-constraints is :db.type/ref WITHOUT :db/isComponent,
+  ;; so nested entities need explicit :db/id (Datomic constraint).
+  {:db/id #db/id[:db.part/user -101]
+   :dt/type :mm.shape/XorConstraint
+   :mm.shape.xor/slot-a :mm.interval/begins-at-instant
+   :mm.shape.xor/slot-b :mm.interval/begins-at-time}
+
+  {:db/id #db/id[:db.part/user -102]
+   :dt/type :mm.shape/XorConstraint
+   :mm.shape.xor/slot-a :mm.interval/ends-at-instant
+   :mm.shape.xor/slot-b :mm.interval/ends-at-time}
+
+  ;; The 2 :mm/Shape entities referencing the sub-entities via tempid
+  {:db/ident                 :memory.shapes/interval-begins-at-xor
+   :dt/type                  :mm/Shape
+   :mm.shape/shape-id        "interval-begins-at-xor"
+   :mm.shape/applies-to      :mm/Interval
+   :mm.shape/description     "XOR constraint enforcing exactly-one of (:mm.interval/begins-at-instant ref form, :mm.interval/begins-at-time literal form) populated per :mm/Interval instance — the begins-at side of the Option ε paired-property pattern for Phase D Temporal Tier-2."
+   :mm.shape/severity        :violation
+   :mm.shape/xor-constraints [#db/id[:db.part/user -101]]}
+
+  {:db/ident                 :memory.shapes/interval-ends-at-xor
+   :dt/type                  :mm/Shape
+   :mm.shape/shape-id        "interval-ends-at-xor"
+   :mm.shape/applies-to      :mm/Interval
+   :mm.shape/description     "XOR constraint enforcing exactly-one of (:mm.interval/ends-at-instant ref form, :mm.interval/ends-at-time literal form) populated per :mm/Interval instance — the ends-at side of the Option ε paired-property pattern for Phase D Temporal Tier-2."
+   :mm.shape/severity        :violation
+   :mm.shape/xor-constraints [#db/id[:db.part/user -102]]}]
+
 ]
