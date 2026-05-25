@@ -185,8 +185,20 @@
      :dt.fn/installed-as   (:dt.fn/installed-as merged)
      :mm.memory/rel-path   (str "fns/" name-symbol ".md")
      :mm.memory/name       (str name-symbol)
-     :mm.memory/memory-type "fn"
-     :mm.memory/scope      "project"}))
+     ;; Keyword values for keyword-typed schema slots (per schema/mm.edn
+     ;; L731-745: :mm.memory/memory-type + :mm.memory/scope are both
+     ;; :db.type/keyword).  Prior string values ("fn" / "project") were a
+     ;; latent substrate bug surfaced when load-all-mm-fn-memorials was first
+     ;; wired into initialize-db! at pre-0.2.0 β.0 — d/transact rejected the
+     ;; strings as :db.error/not-a-keyword.  MCP entity.create boundary
+     ;; auto-coerces strings → keywords, which is why MCP-authored memorials
+     ;; never tripped this; raw d/transact (the load-all-mm-fn-memorials path)
+     ;; doesn't coerce.  Per `interaction/build_on_type_system_reflectively_-
+     ;; and_prospectively_…_2026_05_23` — substrate primitives use the
+     ;; substrate-canonical type form (keywords here); coercion is a boundary
+     ;; concern, not a substrate-author concern.
+     :mm.memory/memory-type :fn
+     :mm.memory/scope      :project}))
 
 (defn new-dbfn+memorial
   "Dual-emit helper: add a :mm/Fn memorial entity (always) PLUS a Datomic

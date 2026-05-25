@@ -12,8 +12,6 @@
             [sandbar.db.fn :as fn]
             [sandbar.test-util :as tu]))
 
-(use-fixtures :each (tu/make-test-db-fixture {:test-name "db-fn-test"}))
-
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Per-test fn-base + memorial-base isolation
 ;;
@@ -33,7 +31,19 @@
         (fn/set-fnbase saved-fn-base)
         (fn/set-mm-fn-base saved-memorial-base)))))
 
-(use-fixtures :each with-fresh-fn-bases)
+;; NOTE: combined fixture call (test-DB + fresh-fn-bases) — clojure.test's
+;; `use-fixtures :each` REPLACES the fixture vector on each invocation
+;; (alter-meta! assoc ::each-fixtures), so two standalone calls silently
+;; cause only the LAST to run.  The existing 9 deftests above don't expose
+;; this because they only check in-memory atoms (no DB needed); the new
+;; load-all-mm-fn-memorials-integration-test below surfaced the latent bug
+;; (it tries to d/connect to the test-DB which was never created without
+;; the make-test-db-fixture firing).  Fix per `foundational_substrate_-
+;; concerns_are_never_follow_up_sub_arcs_2026_05_21` — investigate-to-root-
+;; cause + fix concretely, not defer.  Pre-0.2.0 release arc Phase β.0.
+(use-fixtures :each
+              (tu/make-test-db-fixture {:test-name "db-fn-test"})
+              with-fresh-fn-bases)
 
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -152,8 +162,13 @@
       (is (= "fns/projection-test-fn.md" (:mm.memory/rel-path memorial))
           "rel-path follows the memory/fns/<slug>.md convention")
       (is (= "projection-test-fn" (:mm.memory/name memorial)))
-      (is (= "fn" (:mm.memory/memory-type memorial)))
-      (is (= "project" (:mm.memory/scope memorial))))))
+      ;; KEYWORD values per schema/mm.edn L731-745 (:db.type/keyword for both).
+      ;; Prior assertions pinned string values which were a latent substrate
+      ;; bug in build-mm-fn-memorial — see fn.clj's :mm.memory/memory-type
+      ;; comment block.  Fixed in pre-0.2.0 β.0 (load-all-mm-fn-memorials
+      ;; wire-up surfaced the schema-type mismatch on first transact).
+      (is (= :fn (:mm.memory/memory-type memorial)))
+      (is (= :project (:mm.memory/scope memorial))))))
 
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -176,3 +191,59 @@
       (fn/new-mm-fn-memorial m2)
       (is (= 2 (count (fn/all-mm-fn-memorials))))
       (is (= [m1 m2] (fn/all-mm-fn-memorials))))))
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Live-DB integration — load-all-mm-fn-memorials transacts queued memorials
+;;
+;; Closes the Wave 4 follow-up gap (per memory.observations/wave_4_…/§7 item #1
+;; + pre-0.2.0 release arc plan §3.β.0): the load-all-mm-fn-memorials substrate
+;; primitive (fn.clj L137-146) is now wired into initialize-db! (datomic.clj
+;; L148), so :mm/Fn memorials emitted by defdbfn callsites transact into
+;; Datomic at boot.  This test verifies the live-DB round-trip:
+;;
+;;   defdbfn  →  memorial in *mm-fn-memorial-base*  →  load-all-mm-fn-memorials
+;;            →  :mm/Fn entity queryable via d/entity
+;;
+;; The test is self-contained (defines its own defdbfn inside the test body;
+;; doesn't depend on shape.clj's 8 production callsites, which the
+;; with-fresh-fn-bases fixture would have cleared anyway).
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(deftest load-all-mm-fn-memorials-integration-test
+  (testing "load-all-mm-fn-memorials transacts queued :mm/Fn memorials + entity is queryable"
+    (fn/defdbfn integration-test-fn [db x]
+      {:dt.fn/purpose      :validate
+       :dt.fn/purity       :pure-total
+       :dt.fn/cost-class   :cheap
+       :dt.fn/installed-as :classpath-fn
+       :dt.fn/description  "Test fn for load-all-mm-fn-memorials integration test."
+       :dt.fn/version      "1.0.0"}
+      {:status :pass :x x})
+    (let [uri "datomic:mem://db-fn-test"]
+      ;; Memorial is queued in the atom (defdbfn evaluated above; fixture cleared bases)
+      (is (some #(= :integration-test-fn (:db/ident %))
+                (fn/all-mm-fn-memorials))
+          "integration-test-fn memorial is queued in *mm-fn-memorial-base*")
+      ;; Transact via load-all-mm-fn-memorials (the wire-up point in initialize-db!).
+      ;; Deref the d/transact future — load-all-mm-fn-memorials returns it un-deref'd
+      ;; (fire-and-forget for the boot path where no immediate read follows); tests
+      ;; verifying the post-tx state must force-wait via @.  Substrate-semantics
+      ;; question: should load-all-mm-fn-memorials deref internally?  Deferred
+      ;; consideration; current behavior is consistent with d/transact's contract.
+      @(fn/load-all-mm-fn-memorials uri)
+      ;; Query DB to verify the :mm/Fn entity is now first-class
+      (let [conn   (d/connect uri)
+            entity (d/entity (d/db conn) :integration-test-fn)]
+        (is (some? entity)
+            ":integration-test-fn entity exists in DB after load-all-mm-fn-memorials")
+        (is (= :mm/Fn (:dt/type entity))
+            "Entity has :dt/type :mm/Fn (first-class memorial)")
+        (is (= :validate (:dt.fn/purpose entity))
+            ":dt.fn/purpose preserved through transact")
+        (is (= "1.0.0" (:dt.fn/version entity))
+            ":dt.fn/version preserved through transact")
+        (is (= :classpath-fn (:dt.fn/installed-as entity))
+            ":dt.fn/installed-as preserved through transact")
+        (is (= "sandbar.db.fn-test" (:dt.fn/source-ns entity))
+            ":dt.fn/source-ns captured at macro-expansion time + preserved through transact")))))

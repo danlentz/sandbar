@@ -145,6 +145,7 @@
   (let [created? (ensure-db! uri)]
     (apply load-all-schema! uri schema)
     (fn/load-all-dbfn uri)
+    (fn/load-all-mm-fn-memorials uri)
     (when created?
       (log/info :DB/INIT :uri uri))))
 
