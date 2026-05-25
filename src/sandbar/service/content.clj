@@ -105,23 +105,21 @@
 ;; LOGGING
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-(def +response-print-length+  10)
-(def +response-print-level+   2)
-(def +response-string-length+ 100)
-
 (defafter log-response
-  "Logs the first 100 characters of the pre-encoded HTTP response."
+  "Logs the HTTP response as structured data.
+
+   Per memory/interaction/logs_must_be_self_explanatory_high_signal_not_kv_dump_2026_05_23.md
+   — passes the full response body through unchanged.  The formatter
+   (sandbar.logging.format) decides any truncation policy at display time,
+   not the callsite.  This restores response-content visibility that was
+   previously elided to `#` by *print-level* 2 + *print-length* 10."
   [{:keys [response] :as context}]
   (if (:suppress-logging? context)
     (log/info :HTTP/RESPONSE :REDACTED)
     (log/info :HTTP/RESPONSE
               {:route  (-> context :route :route-name)
                :status (:status response)
-               :body   (let [s (binding [*print-length* +response-print-length+
-                                         *print-level*  +response-print-level+]
-                                 (with-out-str (-> response :body println)))]
-                         s
-                         #_(subs s (inc +response-string-length+)))}))
+               :body   (:body response)}))
   context)
 
 (defbefore suppress-logging

@@ -1,0 +1,45 @@
+;; sandbar.logging — EDN-resident configuration
+;;
+;; Loaded by sandbar.logging.config/load! at sandbar.core/start.
+;; Applied to Telemere via setters (set-min-level!, set-ns-filter!, etc.).
+;; No XML config — lispy/clojurey per Dan-directive 2026-05-23 (verbatim
+;; at memory/ideas/logging_discipline_and_strategy_full_arc_*.md).
+;;
+;; Per logging-arc plan §3.4 + §6.3:
+;;   - This is the SINGLE source of truth for Telemere runtime filters
+;;   - sandbar.logging.init/start! is the canonical reconfiguration site
+;;   - Override the resource via env-var: SANDBAR_LOGGING_CONFIG=/path/to/your.edn
+;;
+;; Schema overview:
+;;   :min-level    — global floor; signals below this are elided at runtime
+;;   :ns-filter    — {:allow #{ns-glob...} :deny #{ns-glob...}}
+;;   :id-filter    — {:allow #{::event-id...} :deny #{::event-id...}}
+;;   :kind-filter  — {:allow #{:log :event :trace ...}}
+;;   :ctx          — base context map merged into every signal's :ctx
+;;
+;; Handler configuration lives in sandbar.logging.init (programmatic);
+;; per-handler dispatch opts (async / buffer-size / per-handler min-level)
+;; are wired there.
+
+{:min-level :info
+
+ ;; ns-filter currently disabled (open allowlist).
+ ;;
+ ;; A prior config carried `:ns-filter {:allow #{"sandbar.*" ...} :deny #{...}}`
+ ;; intending to limit visibility to sandbar + datomic namespaces, but
+ ;; observed behavior 2026-05-23 was that EVERY signal except the very
+ ;; first :SYS/INIT (which fires before this config loads) got dropped
+ ;; — suggesting Telemere v1.2.1's glob-pattern semantics for ns-filter
+ ;; differ from what was assumed, OR the slf4j-telemere bridge populates
+ ;; :ns with a value that doesn't match the patterns.
+ ;;
+ ;; Until that's investigated + the correct ns-filter syntax verified,
+ ;; we leave :ns-filter unset.  Noisy upstream namespaces (jetty/netty/
+ ;; pedestal/etc.) will surface in the log; if their volume becomes
+ ;; intolerable in practice, we'll add ns-filter back with empirically-
+ ;; verified syntax.
+
+ :ctx
+ {:host "sandbar"}}
+
+
