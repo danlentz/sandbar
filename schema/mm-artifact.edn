@@ -490,4 +490,163 @@
   {:db/ident :mm/Codebase     :dt/codec-type-keyword :codebase}
   {:db/ident :mm/Synthesis    :dt/codec-type-keyword :synthesis}]
 
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; :mm/Activity LIFT (D+++; 2026-05-23) — PROV-O Activity-aligned abstract
+;; supertype under :mm/Artifact.  Re-parents :mm/Log (session chronicle) AND
+;; adds :mm/EventLog (per-event-firing memorial) + :mm/Run (scheduler-job
+;; execution record).
+;;
+;; Per:
+;;   - decisions/mm_activity_prov_o_lift_cross_arc_unification_log_eventlog_run_2026_05_23.md
+;;   - syntheses/logging_events_rules_scheduler_arc_alignment_matrix_2026_05_23.md (G.3)
+;;   - W3C PROV-O Recommendation (https://www.w3.org/TR/prov-o/)
+;;
+;; Three batches per the schema-load tx-ordering observation:
+;;   (i)   forward decls for new classes
+;;   (ii)  slot decls (:mm.activity/* + :mm.event-log/* + :mm.run/*)
+;;   (iii) class decls (incl. :mm/Log re-parent + new concrete classes + codec-type-keywords)
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ ;; Batch (i) — Forward declarations
+ [{:db/ident :mm/Activity  :db/doc "Forward declaration; abstract PROV-O Activity supertype under :mm/Artifact.  Full class declaration in batch (iii)."}
+  {:db/ident :mm/EventLog  :db/doc "Forward declaration; per-event-firing memorial under :mm/Activity.  Full class declaration in batch (iii)."}
+  {:db/ident :mm/Run       :db/doc "Forward declaration; scheduler-job execution record under :mm/Activity.  Full class declaration in batch (iii)."}]
+
+ ;; Batch (ii) — Slot declarations
+ ;; :mm.activity/* — PROV-O Activity-shape slot family inherited by all concrete subclasses
+ [{:db/ident       :mm.activity/started-at
+   :dt/type        :dt/Property :dt/domain :mm/Activity
+   :dt/range       :db.type/instant :db/valueType :db.type/instant :db/cardinality :db.cardinality/one
+   :db/doc "PROV-O prov:startedAtTime — wall-clock instant when the activity began.  Composes with Allen's-13 interval relations + scheduler arc temporal predicates.  Per decisions/mm_activity_prov_o_lift_cross_arc_unification_log_eventlog_run_2026_05_23.md."}
+
+  {:db/ident       :mm.activity/ended-at
+   :dt/type        :dt/Property :dt/domain :mm/Activity
+   :dt/range       :db.type/instant :db/valueType :db.type/instant :db/cardinality :db.cardinality/one
+   :db/doc "PROV-O prov:endedAtTime — wall-clock instant when the activity ended.  Absent for in-progress activities.  Per PROV-O specification."}
+
+  {:db/ident       :mm.activity/agent
+   :dt/type        :dt/Property :dt/domain :mm/Activity
+   :dt/range       :mm/Actor :db/valueType :db.type/ref :db/cardinality :db.cardinality/one
+   :db/doc "PROV-O prov:wasAssociatedWith — the actor responsible for this activity.  Ref to :mm/Actor (or subclass: :mm/AIActor / :mm/HumanActor / :mm/SystemActor)."}
+
+  {:db/ident       :mm.activity/was-informed-by
+   :dt/type        :dt/Property :dt/domain :mm/Activity
+   :dt/range       :mm/Activity :db/valueType :db.type/ref :db/cardinality :db.cardinality/many
+   :db/doc "PROV-O prov:wasInformedBy — upstream activities this one depends on (causal lineage).  Cardinality-many for fan-in dependencies."}
+
+  {:db/ident       :mm.activity/generated
+   :dt/type        :dt/Property :dt/domain :mm/Activity
+   :dt/range       :mm/Memory :db/valueType :db.type/ref :db/cardinality :db.cardinality/many
+   :db/doc "PROV-O prov:wasGeneratedBy (inverse) — memorial entities this activity produced.  E.g., a session activity generated decision + plan memorials; a scheduler run generated a result memorial."}
+
+  {:db/ident       :mm.activity/used
+   :dt/type        :dt/Property :dt/domain :mm/Activity
+   :dt/range       :mm/Memory :db/valueType :db.type/ref :db/cardinality :db.cardinality/many
+   :db/doc "PROV-O prov:used — memorial entities this activity consumed.  E.g., a session read library memorials; a scheduler run read the schedule + job entities."}
+
+  {:db/ident       :mm.activity/status
+   :dt/type        :dt/Property :dt/domain :mm/Activity
+   :dt/range       :db.type/keyword :db/valueType :db.type/keyword :db/cardinality :db.cardinality/one
+   :db/doc "Activity lifecycle state — :pending | :running | :succeeded | :failed | :cancelled.  Sandbar extension to PROV-O; supports query 'which activities are currently running' + 'which failed'."}]
+
+ ;; :mm.event-log/* — per-event-firing memorial slot family
+ [{:db/ident       :mm.event-log/runtime-event
+   :dt/type        :dt/Property :dt/domain :mm/EventLog
+   :dt/range       :dt/Event :db/valueType :db.type/ref :db/cardinality :db.cardinality/one
+   :db/doc "Reference to the :dt/Event substrate runtime instance this memorial wraps.  Per the event-substrate keystone ADR D.4 — :mm/EventLog promotes a runtime :dt/Event firing to corpus-FS-projected memorial status when the signal carries :data {:memorial :first-class}."}
+
+  {:db/ident       :mm.event-log/level
+   :dt/type        :dt/Property :dt/domain :mm/EventLog
+   :dt/range       :db.type/keyword :db/valueType :db.type/keyword :db/cardinality :db.cardinality/one
+   :db/doc "Severity level — :trace | :debug | :info | :warn | :error | :fatal.  Mirrors Telemere signal :level."}
+
+  {:db/ident       :mm.event-log/signal-id
+   :dt/type        :dt/Property :dt/domain :mm/EventLog
+   :dt/range       :db.type/keyword :db/valueType :db.type/keyword :db/cardinality :db.cardinality/one
+   :db/doc "The Telemere :id keyword (e.g., :SYS/STARTED, :SANDBAR/CODEC-REGISTER).  Identifies WHAT kind of signal this was."}
+
+  {:db/ident       :mm.event-log/source-ns
+   :dt/type        :dt/Property :dt/domain :mm/EventLog
+   :dt/range       :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+   :db/doc "Calling namespace of the logging callsite (e.g., \"sandbar.core\", \"datomic.peer\").  For SLF4J-bridged signals this is the logger name (from :location :ns per slf4j-telemere)."}
+
+  {:db/ident       :mm.event-log/msg
+   :dt/type        :dt/Property :dt/domain :mm/EventLog
+   :dt/range       :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+   :db/doc "Human-readable message string — resolved :msg / :msg_ from the Telemere signal."}
+
+  {:db/ident       :mm.event-log/data
+   :dt/type        :dt/Property :dt/domain :mm/EventLog
+   :dt/range       :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+   :db/doc "EDN-serialized structured-payload data map from the Telemere signal's :data field.  Stored as string to support arbitrary nesting + heterogenous value types without leaking Datomic schema concerns to logging callsites."}]
+
+ ;; :mm.run/* — scheduler-job execution slot family (minimal; scheduler arc Stage B adds more)
+ [{:db/ident       :mm.run/attempt-number
+   :dt/type        :dt/Property :dt/domain :mm/Run
+   :dt/range       :db.type/long :db/valueType :db.type/long :db/cardinality :db.cardinality/one
+   :db/doc "1-indexed attempt number under retry policy.  First attempt = 1.  Subsequent retries increment.  Composes with PROV-O wasInformedBy for retry-chain navigation."}
+
+  {:db/ident       :mm.run/output
+   :dt/type        :dt/Property :dt/domain :mm/Run
+   :dt/range       :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+   :db/doc "EDN-serialized return value (on success) or error info (on failure).  String storage avoids Datomic schema constraints on arbitrary handler-return shapes."}
+
+  {:db/ident       :mm.run/parent-run
+   :dt/type        :dt/Property :dt/domain :mm/Run
+   :dt/range       :mm/Run :db/valueType :db.type/ref :db/cardinality :db.cardinality/one
+   :db/doc "Parent :mm/Run for sub-run hierarchies (when a job spawns child runs).  Composes with PROV-O wasInformedBy for unified activity-chain navigation."}]
+
+ ;; Batch (iii) — Class declarations + :mm/Log re-parent + codec-type-keyword routing
+ [{:db/ident         :mm/Activity
+   :dt/type          :dt/Class
+   :dt/subclass-of   :mm/Artifact
+   :dt/context       "mm"
+   :dt/label         "Activity"
+   :dt/abstract?     true
+   :dt/slots         [:mm.activity/started-at
+                      :mm.activity/ended-at
+                      :mm.activity/agent
+                      :mm.activity/was-informed-by
+                      :mm.activity/generated
+                      :mm.activity/used
+                      :mm.activity/status]
+   :db/doc "Abstract supertype for memorial types that RECORD an activity (something that happened) with W3C PROV-O alignment.  Concrete subtypes: :mm/Log (session-handoff chronicle), :mm/EventLog (per-event-firing memorial wrapping a :dt/Event runtime instance), :mm/Run (scheduler-job execution record).  Slot vocabulary mirrors PROV-O Activity-shape (:mm.activity/started-at = prov:startedAtTime, :mm.activity/agent = prov:wasAssociatedWith, etc.).  Per decisions/mm_activity_prov_o_lift_cross_arc_unification_log_eventlog_run_2026_05_23.md.  Not instantiated directly.  Composes with: scheduler arc (Allen's-13 relations over Activity intervals); event-substrate keystone D.4 (memorial-face for runtime :dt/Event firings is :mm/EventLog under this hierarchy); rules arc Layer 0 (RDFS-entailment Activity-aware queries)."}
+
+  ;; Re-parent :mm/Log from :mm/Artifact to :mm/Activity (single-attribute mutation;
+  ;; existing :mm/Log instances unchanged — they remain :dt/type :mm/Log and are now
+  ;; transitively :mm/Activity via the new parent).
+  {:db/ident       :mm/Log
+   :dt/subclass-of :mm/Activity}
+
+  {:db/ident         :mm/EventLog
+   :dt/type          :dt/Class
+   :dt/subclass-of   :mm/Activity
+   :dt/context       "mm"
+   :dt/label         "EventLog"
+   :dt/native-codec  :markdown
+   :dt/slots         [:mm.event-log/runtime-event
+                      :mm.event-log/level
+                      :mm.event-log/signal-id
+                      :mm.event-log/source-ns
+                      :mm.event-log/msg
+                      :mm.event-log/data]
+   :dt/abstract?     false
+   :db/doc "Per-event-firing memorial wrapping a :dt/Event substrate runtime instance.  Materialized by sandbar.logging.handlers/memorial-projection-handler when a Telemere signal carries :data {:memorial :first-class}.  Distinguished from :mm/Log (session-handoff chronicle; covers entire sessions) and :mm/Run (scheduler-job execution; covers job invocations).  Default :dt/memorial-policy :first-class — FS-projected to memory/event-logs/<>.md by the reactive-projection substrate.  Per decisions/mm_activity_prov_o_lift_cross_arc_unification_log_eventlog_run_2026_05_23.md.  Composes with sandbar.logging arc Stage D."}
+
+  {:db/ident         :mm/Run
+   :dt/type          :dt/Class
+   :dt/subclass-of   :mm/Activity
+   :dt/context       "mm"
+   :dt/label         "Run"
+   :dt/native-codec  :markdown
+   :dt/slots         [:mm.run/attempt-number
+                      :mm.run/output
+                      :mm.run/parent-run]
+   :dt/abstract?     false
+   :db/doc "Scheduler-job execution record.  Materialized by sandbar.schedule.dispatcher when a :mm/Schedule fires + a :mm/Job handler runs (scheduler arc Stage F).  Default :dt/memorial-policy :db-only — high-volume operational runs covered by the DB-dump arc.  Narrative runs may opt to :first-class via per-instance override.  Per decisions/mm_activity_prov_o_lift_cross_arc_unification_log_eventlog_run_2026_05_23.md.  Additional :mm.run/* slots (:mm.run/job ref to :mm/Job, :mm.run/triggered-by ref to :mm/Schedule, :mm.run/workflow-process ref to :workflow/Process) land when scheduler arc Stage B authors :mm/Schedule + :mm/Job."}]
+
+ ;; Codec-type-keyword routing for the new concrete classes (:mm/Activity is abstract; no codec entry)
+ [{:db/ident :mm/EventLog :dt/codec-type-keyword :event-log}
+  {:db/ident :mm/Run      :dt/codec-type-keyword :run}]
+
 ]

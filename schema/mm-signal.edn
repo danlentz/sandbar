@@ -82,7 +82,7 @@
    :db/doc "When would we pursue this: :now (actively ready; blocking nothing but cycle) | :soon (within a few weeks; relevant to current work) | :someday (nice-to-have; no natural trigger) | :archival (kept for historical context; not expected to be pursued).  Per memory/types/idea.md."}
 
   {:db/ident       :mm.idea/triggered-by
-   :dt/type        :dt/Property
+   :dt/type        :dt/DirectedBinaryRelationProperty
    :dt/domain      :mm/Idea
    :dt/range       :db.type/string
    :db/valueType   :db.type/string
@@ -90,7 +90,7 @@
    :db/doc "Free-text naming the origin context that spawned this idea (a Dan-directive, an arc, an inbox promotion, a prior task's completion, a library being studied).  Helps re-contextualize the idea when picked up later.  Per memory/types/idea.md."}
 
   {:db/ident       :mm.idea/superseded-by
-   :dt/type        :dt/Property
+   :dt/type        :dt/StrictPartialOrderProperty
    :dt/domain      :mm/Idea
    :dt/range       :mm/Idea
    :db/valueType   :db.type/ref
@@ -118,7 +118,7 @@
    :db/doc "How important is answering this question: :low (nice-to-know; no decisions gated on the answer) | :medium (affects an adjacent decision; worth answering eventually) | :high (blocks or substantially shapes future work; prioritize answering).  Per memory/types/question.md."}
 
   {:db/ident       :mm.question/triggered-by
-   :dt/type        :dt/Property
+   :dt/type        :dt/DirectedBinaryRelationProperty
    :dt/domain      :mm/Question
    :dt/range       :db.type/string
    :db/valueType   :db.type/string
