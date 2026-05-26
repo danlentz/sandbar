@@ -73,17 +73,67 @@
   :workflow/terminal-kind :failure}]
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; TRANSITION ENTITIES (NEW; 4 added.  Existing 5 transitions — :session/start
-;; / :session/pause active→opening / :session/resume opening→active /
-;; :session/close / :session/finalize — preserved unchanged in DB without
-;; :db/ident; reachable via :workflow/session :workflow/transitions slot.)
+;; TRANSITION ENTITIES (9 total — 5 original + 4 new).
 ;;
-;; The 4 NEW transitions are assigned :db/ident for stable reference + to allow
-;; future surgical updates.  Same-name same-from-state ambiguity AVOIDED by
-;; distinct transition-names (:session/pause-maintenance not :session/pause).
+;; The 5 ORIGINAL transitions (:session/start / :session/pause active→opening /
+;; :session/resume opening→active / :session/close / :session/finalize) were
+;; originally seeded via MCP `workflow_define` 2026-05-22 without static EDN.
+;; This session's substrate-gap work (2026-05-26) backfilled `:db/ident`
+;; `:session.transition/<verb>` on those 5 in production DB; this EDN now
+;; canonicalizes those declarations + the 4 ι.2 additions as the single
+;; source-of-truth so a fresh DB load reproduces the COMPLETE workflow.
+;; Datomic ident-upsert semantics ensure idempotency — re-loading against
+;; a production DB that already has these transitions is a no-op.
+;;
+;; ORIGINAL preservation note: the legacy `:session/pause` / `:session/resume`
+;; pair (active ↔ opening) is RETAINED as deprecated-but-working idiom per
+;; the ι.2 EDN comment; new code should use the κ P6 maintenance-mode pair
+;; (`:session/pause-maintenance` / `:session/resume-maintenance` — active ↔ paused).
+;;
+;; Same-name ambiguity AVOIDED: each transition has a distinct
+;; :workflow/transition-name keyword + distinct :db/ident.  No clashes with
+;; the 4 NEW ι.2 transitions.
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-[;; NEW per κ P6 — maintenance-mode pause (active → paused).
+[;; ORIGINAL — start the session (opening → active).
+ {:db/ident :session.transition/start
+  :workflow/transition-name :session/start
+  :dt/type :workflow/Transition
+  :workflow/from-state [:workflow/state-name :session/opening]
+  :workflow/to-state [:workflow/state-name :session/active]}
+
+ ;; ORIGINAL — deprecated ad-hoc pause (active → opening).  Retained as
+ ;; historical idiom; new code uses :session.transition/pause-maintenance
+ ;; (active → paused) instead.  Per κ P6 maintenance-mode discipline.
+ {:db/ident :session.transition/pause
+  :workflow/transition-name :session/pause
+  :dt/type :workflow/Transition
+  :workflow/from-state [:workflow/state-name :session/active]
+  :workflow/to-state [:workflow/state-name :session/opening]}
+
+ ;; ORIGINAL — deprecated ad-hoc resume (opening → active).  Retained as
+ ;; historical idiom; pairs with :session.transition/pause above.
+ {:db/ident :session.transition/resume
+  :workflow/transition-name :session/resume
+  :dt/type :workflow/Transition
+  :workflow/from-state [:workflow/state-name :session/opening]
+  :workflow/to-state [:workflow/state-name :session/active]}
+
+ ;; ORIGINAL — close the session (active → closing).
+ {:db/ident :session.transition/close
+  :workflow/transition-name :session/close
+  :dt/type :workflow/Transition
+  :workflow/from-state [:workflow/state-name :session/active]
+  :workflow/to-state [:workflow/state-name :session/closing]}
+
+ ;; ORIGINAL — finalize the session (closing → closed terminal :success).
+ {:db/ident :session.transition/finalize
+  :workflow/transition-name :session/finalize
+  :dt/type :workflow/Transition
+  :workflow/from-state [:workflow/state-name :session/closing]
+  :workflow/to-state [:workflow/state-name :session/closed]}
+
+ ;; NEW per κ P6 — maintenance-mode pause (active → paused).
  {:db/ident :session.transition/pause-maintenance
   :workflow/transition-name :session/pause-maintenance
   :dt/type :workflow/Transition
@@ -136,7 +186,15 @@
                     [:workflow/state-name :session/closing]
                     [:workflow/state-name :session/closed]
                     [:workflow/state-name :session/failed]]
-  :workflow/transitions [:session.transition/pause-maintenance
+  :workflow/transitions [;; 5 original (canonicalized in EDN this session per W4.1
+                         ;; orchestrate-tests-require-complete-fresh-db-workflow):
+                         :session.transition/start
+                         :session.transition/pause
+                         :session.transition/resume
+                         :session.transition/close
+                         :session.transition/finalize
+                         ;; 4 ι.2 additions per Q.ι.6:
+                         :session.transition/pause-maintenance
                          :session.transition/resume-maintenance
                          :session.transition/fail
                          :session.transition/fail-from-paused]

@@ -602,17 +602,26 @@
         (log/warn :WORKFLOW/TRANSITION-NOT-FOUND {:transition transition-name
                                                     :current-state (:workflow/state-name current-state)
                                                     :process-id (:db/id process)})
+        ;; :reason :transition-not-found added 2026-05-26 for ι.3 orchestrator
+        ;; κ P18 bootstrap-robustness fallback — orchestrator distinguishes this
+        ;; (recoverable; compiled-cache-stale shape) from non-recoverable failures
+        ;; (:guard-not-met, :requires-reason).  Per the ι.3 design ratification
+        ;; ADR + the empirical reproduction at
+        ;; observations/workflow_transition_verb_identless_unreachable_2026_05_26.md.
         (throw (ex-info "Transition not found from current state"
-                        {:transition transition-name
+                        {:reason        :transition-not-found
+                         :transition    transition-name
                          :current-state (:workflow/state-name current-state)})))
 
       (and (:workflow/requires-reason? transition) (not reason))
       (throw (ex-info "Transition requires a reason"
-                      {:transition transition-name}))
+                      {:reason     :requires-reason
+                       :transition transition-name}))
 
       (not (check-guard transition process (or context {})))
       (throw (ex-info "Guard condition not met"
-                      {:transition transition-name}))
+                      {:reason     :guard-not-met
+                       :transition transition-name}))
 
       :else
       (let [to-state (resolve-ref (:workflow/to-state transition))
