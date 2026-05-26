@@ -1898,32 +1898,44 @@
    :dt/native-codec  :markdown
    :dt/codec-type-keyword :context
    :dt/codec-aliases [[:type :mm.context/context-type]]
-   :dt/bm25f-weights [[:mm.context/name        12.0]
-                      [:mm.context/description  8.0]
-                      [:mm.context/body-raw     1.0]]
+   ;; β.2.2 Phase I 2026-05-26: bm25f-weights rewritten to canonical
+   ;; :mm.memory/* (was :mm.context/{name,description,body-raw}).
+   :dt/bm25f-weights [[:mm.memory/name        12.0]
+                      [:mm.memory/description  8.0]
+                      [:mm.memory/body-raw     1.0]]
+   ;; β.2.2 Phase I 2026-05-26: codec-slot-order rewritten so the 8
+   ;; doubly-declared semantic positions reference canonical
+   ;; :mm.memory/* slots; 5 context-specific slots (context-type,
+   ;; sandboxed, host, firewall-class, authorization-scope) preserved.
    :dt/codec-slot-order
-   [[:mm.context/name                0]
-    [:mm.context/description         1]
-    [:mm.context/context-type        2]
-    [:mm.context/scope               3]
-    [:mm.context/sandboxed           4]
-    [:mm.context/host                5]
-    [:mm.context/firewall-class      6]
-    [:mm.context/authorization-scope 7]
-    [:mm.context/created             8]
-    [:mm.context/last-reviewed       9]
-    [:mm.context/cites              10]
-    [:mm.context/related            11]
-    [:mm.context/tags               12]]
-   :dt/slots         [:mm.context/identity :mm.context/rel-path :mm.context/name
-                      :mm.context/description :mm.context/context-type :mm.context/scope :mm.context/sandboxed
-                      :mm.context/host :mm.context/firewall-class :mm.context/authorization-scope
-                      :mm.context/created :mm.context/last-reviewed :mm.context/tags
-                      :mm.context/cites :mm.context/related
-                      :mm.context/body-raw :mm.context/first-section :mm.context/links
-                      :mm.context/frontmatter]
+   [[:mm.memory/name                  0]
+    [:mm.memory/description           1]
+    [:mm.context/context-type         2]
+    [:mm.memory/scope                 3]
+    [:mm.context/sandboxed            4]
+    [:mm.context/host                 5]
+    [:mm.context/firewall-class       6]
+    [:mm.context/authorization-scope  7]
+    [:mm.memory/created               8]
+    [:mm.memory/last-reviewed         9]
+    [:mm.memory/cites                10]
+    [:mm.memory/related              11]
+    [:mm.memory/tags                 12]]
+   ;; β.2.2 Phase I 2026-05-26: :dt/slots trimmed from 19 :mm.context/*
+   ;; to the 5 context-specific slots.  The 14 doubly-declared slot
+   ;; surface (name, description, scope, created, last-reviewed, tags,
+   ;; cites, related, body-raw, identity, rel-path, first-section,
+   ;; links, frontmatter) comes from :mm.memory/* via :dt/subclass-of
+   ;; inheritance from :mm/Memory.  Property declarations for those 14
+   ;; :mm.context/* attributes are PRESERVED in this file (no data
+   ;; loss for the existing Context instance's :mm.context/* values)
+   ;; pending further validation of whether inverse-:dt/domain index
+   ;; re-surfaces them in class.slots-of.
+   :dt/slots         [:mm.context/context-type :mm.context/sandboxed
+                      :mm.context/host :mm.context/firewall-class
+                      :mm.context/authorization-scope]
    :dt/abstract?     false
-   :db/doc "A runtime context entity — the unit firewall + authorization rules attach to.  Routes `type: context`.  Per decisions/actor_as_first_class_metamodel_class_with_mm_actor_slots_2026_05_20.md."}
+   :db/doc "A runtime context entity — the unit firewall + authorization rules attach to.  Routes `type: context`.  Per decisions/actor_as_first_class_metamodel_class_with_mm_actor_slots_2026_05_20.md.  β.2.2 Phase I 2026-05-26: doubly-declared slot surface migrated to canonical :mm.memory/* via inheritance from :mm/Memory; 5 context-specific slots retained on this class."}
 
   {:db/ident         :mm/Rule
    :dt/type          :dt/Class
