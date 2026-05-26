@@ -150,10 +150,13 @@
   (let [eid          (:db/id entity-map)
         ident        (:db/ident entity-map)
         existing-id  (:mm/id entity-map)
-        existing-pl  (:mm/pref-label entity-map)]
+        existing-pl  (:mm/pref-label entity-map)
+        ident-ok?    (and (keyword? ident)
+                          (some? (namespace ident))
+                          (some? (name ident)))]
     (cond
-      ;; No ident → cannot derive UUID; skip
-      (nil? ident)
+      ;; No proper ident → cannot derive UUID; skip
+      (not ident-ok?)
       []
 
       ;; Already fully populated → no-op
