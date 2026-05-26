@@ -48,15 +48,108 @@
 (defn required-schema []
   (dedn/config-value :required-schema))
 
+;; Class-level cardinality-many meta-slots whose re-load from schema EDN
+;; should have SET-REPLACE semantics (not the default additive upsert).
+;;
+;; Without this set-replace pre-pass, edits to schema/*.edn that REMOVE
+;; tuples from these slots (e.g., trimming :dt/slots after a Phase I
+;; canonicalization, rewriting :dt/codec-slot-order with new positions)
+;; leave the prior values behind in the DB.  Each new load adds; nothing
+;; retracts.  Cardinality-many ref-typed :dt/slots is hit hardest:
+;; observed accumulation to 19 entries when EDN declared 5.
+;;
+;; Tuple-typed :dt/codec-slot-order + :dt/bm25f-weights are partially
+;; mitigated by Datomic's tuple value-equality (identical tuples don't
+;; duplicate) but unique-by-position tuples can still collide (e.g.,
+;; [:mm.context/name 0] + [:mm.memory/name 0] both present at position 0).
+;;
+;; Per `observations/schema_edn_reload_is_additive_not_set_replace_for_cardinality_many_class_meta_slots_2026_05_26.md`
+;; + `interaction/foundational_substrate_concerns_are_never_follow_up_sub_arcs_2026_05_21.md`.
+;;
+;; Mechanism: before transacting each schema stmt, walk its entity-maps
+;; for the set-replace meta-slots.  For each, compute the symmetric
+;; difference (current DB values not present in new EDN values) and
+;; prepend [:db/retract ...] operations.  Retract-then-add semantics
+;; in a single tx means same-value-redeclarations are no-ops (Datomic
+;; idempotency); strictly-removed values get retracted; strictly-new
+;; values get added.
+
+(def class-set-replace-meta-slots
+  "Cardinality-many class-level meta-slots that the schema-EDN-load
+  mechanism treats with set-replace semantics.  Adding to this set
+  extends the discipline to other class meta-slots that should be
+  fully-declared per EDN (versus accumulated across loads).
+
+  Public for testability + extensibility — consumers can rebind in
+  scoped contexts via `(with-redefs ...)` to exercise alternative sets."
+  #{:dt/slots :dt/codec-slot-order :dt/bm25f-weights})
+
+(defn normalize-slot-value-for-set
+  "Normalize a DB-side slot value for set-membership comparison with an
+  EDN-side value.  Ref-typed slots come back as Entity instances; we
+  compare by :db/ident.  Tuple- + scalar-typed values compare directly.
+
+  Public for testability."
+  [v]
+  (if (and (associative? v) (contains? v :db/ident))
+    (:db/ident v)
+    v))
+
+(defn class-meta-slot-retracts
+  "Given current DB + an entity-map being asserted, return [:db/retract ...]
+  operations for any class-set-replace meta-slot whose current DB value
+  contains entries not present in the new EDN declaration.  Returns nil
+  when no entity exists yet (first-time load) or no relevant slot is
+  being asserted.
+
+  Public for testability."
+  [db ent-map]
+  (when-let [ident (:db/ident ent-map)]
+    (when-let [current (d/entity db ident)]
+      (mapcat
+       (fn [slot]
+         (when (contains? ent-map slot)
+           (let [new-values (set (map normalize-slot-value-for-set
+                                      (get ent-map slot)))
+                 cur-values (get current slot)]
+             (for [v cur-values
+                   :let [v-norm (normalize-slot-value-for-set v)]
+                   :when (not (contains? new-values v-norm))]
+               [:db/retract ident slot
+                ;; For ref-typed slots, retract by :db/id (Datomic
+                ;; accepts :db/ident lookup-ref too but :db/id is the
+                ;; canonical form post-resolution).
+                (if (and (associative? v) (contains? v :db/id))
+                  (:db/id v)
+                  v)]))))
+       class-set-replace-meta-slots))))
+
+(defn with-class-meta-slot-set-replace
+  "Augment a schema-load stmt with retract operations for class-set-replace
+  meta-slots that are being redeclared.  Retracts are prepended to the
+  stmt so they execute before the new asserts in the same tx.  Per the
+  set-replace mechanism documented above class-set-replace-meta-slots.
+
+  Public for testability."
+  [db stmt]
+  (let [retracts (vec (mapcat #(class-meta-slot-retracts db %) stmt))]
+    (if (seq retracts)
+      (vec (concat retracts stmt))
+      stmt)))
+
 (defn load-schema
   ([schema-designator]
      (load-schema (db-uri) schema-designator))
   ([uri schema-designator]
    (log/info :DB/SCHEMA (str "Load " schema-designator))
    (doseq [stmt (schema-value schema-designator)]
-     (do
+     (let [c (conn uri)
+           tx (with-class-meta-slot-set-replace (d/db c) stmt)]
        (log/info :DB/STMT stmt)
-       (-> uri conn (d/transact stmt) deref)))))
+       (when (not= tx stmt)
+         (log/info :DB/SET-REPLACE-RETRACTS
+                   {:retract-count (- (count tx) (count stmt))}))
+       @(d/transact c tx)))))
 
 ;(schema-value :literal)
 ;(schema-value :resource)
