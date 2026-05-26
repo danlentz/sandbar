@@ -67,7 +67,21 @@
   {:db/ident :mm/Job         :db/doc "Forward declaration; full definition later — single-step Spec specifying an action to invoke.  Re-target from the legacy :job/{Scheduled,Recurring,Task,Triggered} family via the Phase 3 migration tx-fn.  Carries :mm.job/fn, :mm.job/payload-shape, :mm.job/effect-spec slots per ADR D.2."}
   {:db/ident :mm/Schedule    :db/doc "Forward declaration; full definition later — recurrence Spec over a :mm/Workflow OR :mm/Job; OWL-Time + RFC 5545 RRULE aligned per the temporal-substrate arc plan §1.1+§1.2 + ADR D.2 + D.8."}
   {:db/ident :mm/EffectSpec  :db/doc "Forward declaration; full definition later — abstract Spec subtype encoding Reiter-style successor-state axioms as DATA, SHACL-validatable at execution time.  Frame-problem-aware per Phase 2 ADR D.4 (the Cyc agent finding the frame-problem WILL bite Sandbar in workflow-step form)."}
-  {:db/ident :mm/HookEvent   :db/doc "Forward declaration; full definition later — concrete subtype of :mm/Event receiving the 6 existing :mm/Event hook-event-kind instances per the collision-resolution ADR 2026-05-24.  Carries :mm.hook-event/* slots (renamed from existing :mm.event/{lifecycle-position,default-severity,triggered-by-hook,applicable-actor-classes,substrate-correctness-criticality} via the Phase 3 migration tx-fn)."}]
+  {:db/ident :mm/HookEvent   :db/doc "Forward declaration; full definition later — concrete subtype of :mm/Event receiving the 6 existing :mm/Event hook-event-kind instances per the collision-resolution ADR 2026-05-24.  Carries :mm.hook-event/* slots (renamed from existing :mm.event/{lifecycle-position,default-severity,triggered-by-hook,applicable-actor-classes,substrate-correctness-criticality} via the Phase 3 migration tx-fn)."}
+
+  ;; :mm.event/WorkflowTransition hierarchy — Q.ι.3.9 of the ι.3 design ratification
+  ;; (memory/decisions/iota_3_substrate_orchestrator_design_ratification_2026_05_26.md).
+  ;; Abstract umbrella :mm.event/WorkflowTransition + 5 concrete subtypes covering
+  ;; the phase-completion + degraded-path + hard-fail emission shapes the ι.3
+  ;; orchestrator (sandbar.workflow.orchestrate) emits.  STRICT Event Substrate
+  ;; ADR compliance — no parallel bus; class-hierarchical subscription via
+  ;; `:dt/type-isa?` cache.  Authored 2026-05-26 W4.1 Increment A.
+  {:db/ident :mm.event/WorkflowTransition         :db/doc "Forward declaration; abstract umbrella for the workflow.transition event family emitted by the ι.3 substrate orchestrator.  Full definition later."}
+  {:db/ident :mm.event/WorkflowSessionOpened      :db/doc "Forward declaration; emitted at :phase/activate completion (workflow.process advances from :session/opening to :session/active).  Full definition later."}
+  {:db/ident :mm.event/WorkflowSessionHandoffAuthored :db/doc "Forward declaration; emitted at :phase/author completion (:mm/Log handoff entity created).  Full definition later."}
+  {:db/ident :mm.event/WorkflowSessionClosed      :db/doc "Forward declaration; emitted at :phase/finalize completion (workflow.process reaches :session/closed terminal :success).  Full definition later."}
+  {:db/ident :mm.event/WorkflowSessionDegraded    :db/doc "Forward declaration; emitted when κ P18 bootstrap-robustness fallback engages (e.g., :transition-not-found per compiled-cache-stale).  Full definition later."}
+  {:db/ident :mm.event/WorkflowSessionFailed      :db/doc "Forward declaration; emitted on hard-fail (workflow.process advances to :session/failed terminal :failure per any of `hard-fail-criteria`).  Full definition later."}]
 
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -465,6 +479,57 @@
 
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; :mm.workflow-event/* — NEW slots for the :mm.event/WorkflowTransition family
+;;
+;; Workflow-process-specific context for the events emitted by the ι.3 substrate
+;; orchestrator (sandbar.workflow.orchestrate) per Q.ι.3.9 STRICT Event Substrate
+;; ADR compliance.  Slot-namespace convention mirrors :mm.hook-event/* (slug-of-
+;; class-tail as namespace prefix).  All slots :db.cardinality/one (single-event-
+;; emission shape).
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident       :mm.workflow-event/process
+   :dt/type        :dt/Property
+   :dt/domain      :mm.event/WorkflowTransition
+   :dt/range       :workflow/Process
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/one
+   :db/doc "Reference to the :workflow/Process whose phase boundary triggered this event.  Cross-typed-edge from the event back to the process — enables 'all events for this process' queries via inbound traversal."}
+
+  {:db/ident       :mm.workflow-event/phase
+   :dt/type        :dt/Property
+   :dt/domain      :mm.event/WorkflowTransition
+   :dt/range       :db.type/keyword
+   :db/valueType   :db.type/keyword
+   :db/cardinality :db.cardinality/one
+   :db/doc "The orchestrator phase whose completion (or degraded-path / hard-fail engagement) emitted this event.  Values: one of `sandbar.workflow.orchestrate/open-phases` (`:phase/orient` / `:phase/initialize` / `:phase/activate` / `:phase/imprint`) OR `handoff-phases` (`:phase/capture` / `:phase/author` / `:phase/link` / `:phase/finalize`)."}
+
+  {:db/ident       :mm.workflow-event/transition
+   :dt/type        :dt/Property
+   :dt/domain      :mm.event/WorkflowTransition
+   :dt/range       :db.type/keyword
+   :db/valueType   :db.type/keyword
+   :db/cardinality :db.cardinality/one
+   :db/doc "The workflow.transition name applied at the phase boundary that triggered this event (e.g., :session/start, :session/close, :session/finalize).  Nil/absent for phase boundaries that don't bear transitions (orient / initialize / imprint / capture / author / link) — those events carry only :mm.workflow-event/phase context."}
+
+  {:db/ident       :mm.workflow-event/degraded-reason
+   :dt/type        :dt/Property
+   :dt/domain      :mm.event/WorkflowSessionDegraded
+   :dt/range       :db.type/keyword
+   :db/valueType   :db.type/keyword
+   :db/cardinality :db.cardinality/one
+   :db/doc "Keyword classifying WHY the κ P18 bootstrap-robustness fallback engaged.  Canonical value: :transition-not-found (compiled-cache stale per the empirical reproduction in observations/workflow_transition_verb_identless_unreachable_2026_05_26.md).  Future expansion: :substrate-unreachable, etc."}
+
+  {:db/ident       :mm.workflow-event/failure-reason
+   :dt/type        :dt/Property
+   :dt/domain      :mm.event/WorkflowSessionFailed
+   :dt/range       :db.type/keyword
+   :db/valueType   :db.type/keyword
+   :db/cardinality :db.cardinality/one
+   :db/doc "Keyword classifying WHY the workflow.process hard-failed.  Canonical values per `sandbar.workflow.orchestrate/hard-fail-criteria`: :schema-corrupt, :substrate-unreachable-persistent, :phase-timeout, :consecutive-transition-rejects-n."}]
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Class definitions — 6 new classes
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
@@ -528,7 +593,67 @@
                       :mm.hook-event/applicable-actor-classes
                       :mm.hook-event/substrate-correctness-criticality]
    :dt/abstract?     false
-   :db/doc "Concrete subtype of :mm/Event capturing the corpus-hook event taxonomy authored 2026-05-11 (per decisions/event_as_first_class_type_2026_05_11.md).  Receives the 6 existing :mm/Event instances (:memory.events/{session_start, post_commit, pre_grounding, corpus_audit, pre_tool_use, user_prompt_submit}) via the 2026-05-24 collision-resolution migration tx-fn.  Carries :mm.hook-event/* slots (renamed from the legacy :mm.event/{lifecycle-position,default-severity,...} family).  Rules continue to reference instances of this class via :triggered-by typed edges (no rule-side migration needed; only :dt/type of the referenced instances changes from :mm/Event to :mm/HookEvent)."}]
+   :db/doc "Concrete subtype of :mm/Event capturing the corpus-hook event taxonomy authored 2026-05-11 (per decisions/event_as_first_class_type_2026_05_11.md).  Receives the 6 existing :mm/Event instances (:memory.events/{session_start, post_commit, pre_grounding, corpus_audit, pre_tool_use, user_prompt_submit}) via the 2026-05-24 collision-resolution migration tx-fn.  Carries :mm.hook-event/* slots (renamed from the legacy :mm.event/{lifecycle-position,default-severity,...} family).  Rules continue to reference instances of this class via :triggered-by typed edges (no rule-side migration needed; only :dt/type of the referenced instances changes from :mm/Event to :mm/HookEvent)."}
+
+  ;; :mm.event/WorkflowTransition hierarchy per ι.3 design ratification Q.ι.3.9.
+  ;; Abstract umbrella + 5 concrete subtypes covering the phase-completion +
+  ;; degraded-path + hard-fail emission shapes the orchestrator emits.  Class-
+  ;; hierarchical subscription via `:dt/type-isa?` cache enables subscribers to
+  ;; listen for ALL workflow events via :mm.event/WorkflowTransition without
+  ;; enumerating the concrete subtypes.
+
+  {:db/ident         :mm.event/WorkflowTransition
+   :dt/type          :dt/Class
+   :dt/subclass-of   :mm/Event
+   :dt/context       "mm"
+   :dt/label         "WorkflowTransition"
+   :dt/slots         [:mm.workflow-event/process
+                      :mm.workflow-event/phase
+                      :mm.workflow-event/transition]
+   :dt/abstract?     true
+   :db/doc "Abstract umbrella for the workflow.transition event family emitted by the ι.3 substrate orchestrator (sandbar.workflow.orchestrate).  Per the ι.3 design ratification §Q.ι.3.9 (memory/decisions/iota_3_substrate_orchestrator_design_ratification_2026_05_26.md).  Carries the common workflow-process context slots (:mm.workflow-event/process, :phase, :transition) inherited by all concrete subtypes.  STRICT Event Substrate ADR compliance — emitted via sandbar.util.event/log! per Keystone ADR D.4; class-hierarchical subscription via :dt/type-isa? cache.  Concrete subtypes: :mm.event/WorkflowSessionOpened (phase/activate completion), :mm.event/WorkflowSessionHandoffAuthored (phase/author completion), :mm.event/WorkflowSessionClosed (phase/finalize completion), :mm.event/WorkflowSessionDegraded (κ P18 bootstrap-fallback engagement), :mm.event/WorkflowSessionFailed (hard-fail per `hard-fail-criteria`)."}
+
+  {:db/ident         :mm.event/WorkflowSessionOpened
+   :dt/type          :dt/Class
+   :dt/subclass-of   :mm.event/WorkflowTransition
+   :dt/context       "mm"
+   :dt/label         "WorkflowSessionOpened"
+   :dt/abstract?     false
+   :db/doc "Emitted at :phase/activate completion when the workflow.process advances from :session/opening to :session/active via the :session/start transition.  Indicates the orientation ceremony has cleared the live-work threshold.  Per ι.3 design ratification §Q.ι.3.9.  Inherits :mm.workflow-event/{process, phase, transition} from :mm.event/WorkflowTransition."}
+
+  {:db/ident         :mm.event/WorkflowSessionHandoffAuthored
+   :dt/type          :dt/Class
+   :dt/subclass-of   :mm.event/WorkflowTransition
+   :dt/context       "mm"
+   :dt/label         "WorkflowSessionHandoffAuthored"
+   :dt/abstract?     false
+   :db/doc "Emitted at :phase/author completion when the handoff :mm/Log entity is created.  Indicates the session's narrative-state has been captured + persisted, ready for the linking + finalization phases.  Per ι.3 design ratification §Q.ι.3.9.  Refined further at ι.6 implementation."}
+
+  {:db/ident         :mm.event/WorkflowSessionClosed
+   :dt/type          :dt/Class
+   :dt/subclass-of   :mm.event/WorkflowTransition
+   :dt/context       "mm"
+   :dt/label         "WorkflowSessionClosed"
+   :dt/abstract?     false
+   :db/doc "Emitted at :phase/finalize completion when the workflow.process reaches the :session/closed terminal :success state via the :session/close + :session/finalize transition chain.  Indicates the session lifecycle has reached canonical closure.  Per ι.3 design ratification §Q.ι.3.9."}
+
+  {:db/ident         :mm.event/WorkflowSessionDegraded
+   :dt/type          :dt/Class
+   :dt/subclass-of   :mm.event/WorkflowTransition
+   :dt/context       "mm"
+   :dt/label         "WorkflowSessionDegraded"
+   :dt/slots         [:mm.workflow-event/degraded-reason]
+   :dt/abstract?     false
+   :db/doc "Emitted when the κ P18 bootstrap-robustness fallback engages — typically `:transition-not-found` per compiled-cache-stale (see observations/workflow_transition_verb_identless_unreachable_2026_05_26.md for the empirical reproduction).  The workflow.process does NOT advance to :session/failed; the orchestrator returns `:degraded? true` to the caller which may retry, fall back to text-protocol, or surface to operator.  Per ι.3 design ratification §Q.ι.3.9 + Q.ι.3.2 (detect-and-fallback per Dan-directive 'we don't want to brick')."}
+
+  {:db/ident         :mm.event/WorkflowSessionFailed
+   :dt/type          :dt/Class
+   :dt/subclass-of   :mm.event/WorkflowTransition
+   :dt/context       "mm"
+   :dt/label         "WorkflowSessionFailed"
+   :dt/slots         [:mm.workflow-event/failure-reason]
+   :dt/abstract?     false
+   :db/doc "Emitted on hard-fail — workflow.process advances to :session/failed terminal :failure per any of `sandbar.workflow.orchestrate/hard-fail-criteria` (:schema-corrupt / :substrate-unreachable-persistent / :phase-timeout / :consecutive-transition-rejects-n).  Per ι.3 design ratification §Q.ι.3.4 (4 hard-fail conditions sufficient for ι.3) + §Q.ι.3.9."}]
 
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;

@@ -18,6 +18,7 @@
    Per `:memory.decisions/iota_3_substrate_orchestrator_design_ratification_2026_05_26`
    + the W4.1 entry in `:memory.plans/sandbar_0_2_0_release_comprehensive_strategic_re_plan_wave_2_revision_2026_05_26`."
   (:require [clojure.test :refer :all]
+            [sandbar.db.datomic :as db]
             [sandbar.test-util :as tu]
             [sandbar.util.workflow :as wf]
             [sandbar.workflow.orchestrate :as orchestrate]))
@@ -274,3 +275,98 @@
           reason  (ex-info-with-reason
                    #(wf/transition! process :session/close))]
       (is (= :transition-not-found reason)))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; :mm.event/WorkflowTransition hierarchy schema invariants — Q.ι.3.9
+;;
+;; Per the ι.3 design ratification ADR §Q.ι.3.9: 1 abstract umbrella
+;; (:mm.event/WorkflowTransition) + 5 concrete subtypes
+;; (:mm.event/WorkflowSessionOpened / -HandoffAuthored / -Closed / -Degraded /
+;; -Failed).  These tests verify the schema authored in schema/mm-temporal.edn
+;; loads with correct hierarchy + abstract flags + slot domain declarations.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(def ^:private workflow-event-concrete-subclasses
+  [:mm.event/WorkflowSessionOpened
+   :mm.event/WorkflowSessionHandoffAuthored
+   :mm.event/WorkflowSessionClosed
+   :mm.event/WorkflowSessionDegraded
+   :mm.event/WorkflowSessionFailed])
+
+(defn- ident-set
+  "Coerce a slot value to a set of keyword idents.  Handles both shapes Datomic
+   returns for :db.type/ref slots: (a) collection of entity-maps with :db/ident
+   keys; (b) collection of keyword idents directly (sandbar's class accessors
+   return idents for some ref slots).  Returns #{} for nil input."
+  [v]
+  (cond
+    (nil? v) #{}
+    (keyword? v) #{v}
+    (map? v) (if-let [k (:db/ident v)] #{k} #{})
+    (coll? v) (into #{}
+                    (keep (fn [x]
+                            (cond
+                              (keyword? x) x
+                              (map? x)     (:db/ident x))))
+                    v)
+    :else #{}))
+
+(deftest mm-event-workflow-transition-abstract-base-loads
+  (testing ":mm.event/WorkflowTransition class loads with abstract? true + :mm/Event parent"
+    (let [cls (db/entity :mm.event/WorkflowTransition)]
+      (is (some? cls) ":mm.event/WorkflowTransition class entity should exist after schema-load")
+      (is (true? (:dt/abstract? cls))
+          ":mm.event/WorkflowTransition is the abstract umbrella (no direct instances)")
+      (let [parent-idents (ident-set (:dt/subclass-of cls))]
+        (is (contains? parent-idents :mm/Event)
+            ":mm.event/WorkflowTransition is a subclass of :mm/Event")))))
+
+(deftest mm-event-workflow-concrete-subclasses-load
+  (testing "All 5 concrete :mm.event/WorkflowSession* classes load with correct shape"
+    (doseq [ident workflow-event-concrete-subclasses]
+      (let [cls (db/entity ident)]
+        (is (some? cls) (str ident " should exist after schema-load"))
+        (is (false? (boolean (:dt/abstract? cls)))
+            (str ident " is concrete (not abstract)"))
+        (let [parent-idents (ident-set (:dt/subclass-of cls))]
+          (is (contains? parent-idents :mm.event/WorkflowTransition)
+              (str ident " is a subclass of :mm.event/WorkflowTransition")))))))
+
+(deftest mm-event-workflow-degraded-has-degraded-reason-slot
+  (testing ":mm.event/WorkflowSessionDegraded carries :mm.workflow-event/degraded-reason"
+    (let [cls   (db/entity :mm.event/WorkflowSessionDegraded)
+          slots (ident-set (:dt/slots cls))]
+      (is (contains? slots :mm.workflow-event/degraded-reason)
+          ":mm.event/WorkflowSessionDegraded declares :mm.workflow-event/degraded-reason in its slot set"))))
+
+(deftest mm-event-workflow-failed-has-failure-reason-slot
+  (testing ":mm.event/WorkflowSessionFailed carries :mm.workflow-event/failure-reason"
+    (let [cls   (db/entity :mm.event/WorkflowSessionFailed)
+          slots (ident-set (:dt/slots cls))]
+      (is (contains? slots :mm.workflow-event/failure-reason)
+          ":mm.event/WorkflowSessionFailed declares :mm.workflow-event/failure-reason in its slot set"))))
+
+(deftest mm-workflow-event-process-slot-domain-correct
+  (testing ":mm.workflow-event/process slot has :dt/domain :mm.event/WorkflowTransition + :db.type/ref valueType"
+    (let [slot         (db/entity :mm.workflow-event/process)
+          domain-idents (ident-set (:dt/domain slot))]
+      (is (some? slot))
+      (is (contains? domain-idents :mm.event/WorkflowTransition)
+          "domain includes :mm.event/WorkflowTransition")
+      (is (= :db.type/ref (:db/valueType slot))))))
+
+(deftest mm-workflow-event-phase-slot-loads
+  (testing ":mm.workflow-event/phase slot loads with correct shape"
+    (let [slot (db/entity :mm.workflow-event/phase)]
+      (is (some? slot))
+      (is (= :db.type/keyword (:db/valueType slot)))
+      ;; :db/cardinality slot returns the keyword directly (not an entity wrapping)
+      (is (= :db.cardinality/one (:db/cardinality slot))))))
+
+(deftest mm-event-workflow-transition-base-carries-common-slots
+  (testing ":mm.event/WorkflowTransition abstract base declares common slots (:process, :phase, :transition)"
+    (let [cls   (db/entity :mm.event/WorkflowTransition)
+          slots (ident-set (:dt/slots cls))]
+      (is (contains? slots :mm.workflow-event/process))
+      (is (contains? slots :mm.workflow-event/phase))
+      (is (contains? slots :mm.workflow-event/transition)))))
