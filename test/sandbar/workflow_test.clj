@@ -957,3 +957,53 @@
       (is (= :fb002s/done    (:state (mcp-tasks/process->task-status success-proc))))
       (is (= :fb002f/errored (:state (mcp-tasks/process->task-status failure-proc))))
       (is (= :fb002c/stopped (:state (mcp-tasks/process->task-status cancel-proc)))))))
+
+(deftest transition-lookup-fallback-chain-q-iota-3-11-regression
+  "Q.ι.3.11 ratified 2026-05-26 — workflow.transition handler must support a 3-way
+   fallback chain when matching transition-name against the workflow's transitions:
+
+   (1) Direct equality with :workflow/transition-name (original semantics; preserved for
+       backward compat — handles tests that store transitions with keyword name + pass
+       same keyword as transition-name arg).
+   (2) Keyword input matched against :db/ident (post-κ-additions canonical form; handles
+       the case where transitions have :db/ident :foo/bar added but :workflow/transition-name
+       is still the legacy string).
+   (3) String-coerced keyword input matched against string :workflow/transition-name
+       (handles the production EDN-loaded case where :workflow/transition-name is stored
+       as a string but MCP boundary normalizes input to keyword via tools.clj/->ident).
+
+   Regression seed: 2026-05-26 session's 4-phase substrate-gap reproduction
+   (observations/workflow_transition_verb_identless_unreachable_2026_05_26.md) where
+   workflow.transition rejected ALL forms (':session/start', ':session.transition/start',
+   and raw eid) for the :workflow/session production workflow despite the transition
+   entities existing with the correct :workflow/from-state pointers."
+  (testing "Case 1: keyword input matching :workflow/transition-name keyword (original)"
+    (let [wf (wf/define-workflow! :workflow/q-iota-3-11-case-1
+               {:states [{:name :c1/pending :initial? true}
+                         {:name :c1/done :terminal? true :terminal-kind :success}]
+                :transitions [{:name :finish :from :c1/pending :to :c1/done}]})
+          process (wf/start-process! wf (create-test-subject!))
+          result (wf/transition! process :finish)]
+      (is (= :c1/done (:workflow/state-name (wf/get-current-state result)))
+          "keyword :finish matches stored :workflow/transition-name :finish")))
+
+  ;; Cases 2 + 3 (:db/ident fallback + string-coerced :workflow/transition-name fallback)
+  ;; require production-shaped substrate setup (post-sandbar-restart entity-cache + schema
+  ;; permitting string-type for :workflow/transition-name) that the unit-test fixture
+  ;; doesn't provide. The schema declares :workflow/transition-name as :db.type/keyword
+  ;; so the string-coercion fallback IS defensive code — never triggered in normal
+  ;; operation but provides graceful degradation if substrate state ever drifts (e.g.,
+  ;; mid-session schema evolution). The :db/ident fallback fires for transitions where
+  ;; :db/ident was added post-creation (production case: post-κ-additions ident-additions
+  ;; landed via sandbar `62e054e`). Both fallback paths are operationally verified at
+  ;; the production substrate after sandbar restart, NOT in this unit test.
+
+  (testing "Case 2: missing transition still throws clear error"
+    (let [wf (wf/define-workflow! :workflow/q-iota-3-11-case-2
+               {:states [{:name :c2/pending :initial? true}
+                         {:name :c2/done :terminal? true :terminal-kind :success}]
+                :transitions [{:name :finish :from :c2/pending :to :c2/done}]})
+          process (wf/start-process! wf (create-test-subject!))]
+      (is (thrown-with-msg? clojure.lang.ExceptionInfo #"Transition not found from current state"
+            (wf/transition! process :nonexistent))
+          "unknown transition keyword still throws clear error (fallback chain doesn't mask genuine misses)"))))

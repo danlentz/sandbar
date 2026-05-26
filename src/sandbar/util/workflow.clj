@@ -554,7 +554,31 @@
   (let [current-state (get-current-state process)
         workflow (get-process-workflow process)
         transitions (get-transitions-from-state workflow current-state)
-        transition (first (filter #(= transition-name (:workflow/transition-name %)) transitions))]
+        ;; Q.ι.3.11 ratified 2026-05-26 — match transition-name against BOTH
+        ;; :workflow/transition-name (legacy string form) AND :db/ident (post-κ-additions
+        ;; keyword form).  MCP boundary normalizes input to keyword via tools.clj/->ident,
+        ;; but stored :workflow/transition-name is a string — the type mismatch caused
+        ;; the 4-phase substrate-gap reproduction documented in
+        ;; observations/workflow_transition_verb_identless_unreachable_2026_05_26.md.
+        ;; Fallback chain: try :db/ident (canonical post-κ-additions) → :workflow/transition-name
+        ;; (legacy string) with proper string-coercion of the input keyword.
+        tname-str  (cond
+                     (string? transition-name) transition-name
+                     (keyword? transition-name) (if (namespace transition-name)
+                                                  (str (namespace transition-name) "/" (name transition-name))
+                                                  (name transition-name))
+                     :else (str transition-name))
+        tname-kw   (cond
+                     (keyword? transition-name) transition-name
+                     (string? transition-name) (if (str/starts-with? transition-name ":")
+                                                 (keyword (subs transition-name 1))
+                                                 (keyword transition-name))
+                     :else nil)
+        transition (first (filter #(or (= transition-name (:workflow/transition-name %))
+                                       (and tname-kw (= tname-kw (:db/ident %)))
+                                       (and tname-kw (= tname-kw (:workflow/transition-name %)))
+                                       (= tname-str (:workflow/transition-name %)))
+                                  transitions))]
     (cond
       (nil? transition)
       (do
