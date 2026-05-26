@@ -1857,14 +1857,22 @@
    :dt/native-codec  :markdown
    :dt/codec-type-keyword [:ai-actor :human-actor]
    :dt/codec-aliases [[:type :mm.actor/actor-type]]
-   :dt/bm25f-weights [[:mm.actor/name        12.0]
-                      [:mm.actor/description  8.0]
-                      [:mm.actor/body-raw     1.0]]
+   ;; β.2.2 Phase I 2026-05-26: bm25f-weights rewritten to canonical
+   ;; :mm.memory/* (was :mm.actor/{name, description, body-raw}).
+   ;; Inherited by :mm/AIActor / :mm/HumanActor / :mm/SystemActor.
+   :dt/bm25f-weights [[:mm.memory/name        12.0]
+                      [:mm.memory/description  8.0]
+                      [:mm.memory/body-raw     1.0]]
+   ;; β.2.2 Phase I 2026-05-26: codec-slot-order rewritten so the 10
+   ;; doubly-declared positions reference canonical :mm.memory/* slots;
+   ;; 8 actor-specific positions (actor-type, role, model-family,
+   ;; version, context-window, runs-in-context, belongs-to, capabilities)
+   ;; preserved on :mm.actor/*.
    :dt/codec-slot-order
-   [[:mm.actor/name              0]
-    [:mm.actor/description       1]
+   [[:mm.memory/name             0]
+    [:mm.memory/description      1]
     [:mm.actor/actor-type        2]
-    [:mm.actor/scope             3]
+    [:mm.memory/scope            3]
     [:mm.actor/role              4]
     [:mm.actor/model-family      5]
     [:mm.actor/version           6]
@@ -1872,23 +1880,30 @@
     [:mm.actor/runs-in-context   8]
     [:mm.actor/belongs-to        9]
     [:mm.actor/capabilities     10]
-    [:mm.actor/created          11]
-    [:mm.actor/last-touched     12]
-    [:mm.actor/last-reviewed    13]
-    [:mm.actor/created-by       14]
-    [:mm.actor/cites            15]
-    [:mm.actor/related          16]
-    [:mm.actor/tags             17]]
-   :dt/slots         [:mm.actor/identity :mm.actor/rel-path :mm.actor/name
-                      :mm.actor/description :mm.actor/actor-type :mm.actor/scope :mm.actor/role
-                      :mm.actor/model-family :mm.actor/version :mm.actor/context-window
-                      :mm.actor/capabilities :mm.actor/runs-in-context :mm.actor/belongs-to
-                      :mm.actor/created :mm.actor/last-touched :mm.actor/last-reviewed
-                      :mm.actor/created-by :mm.actor/tags :mm.actor/cites :mm.actor/related
-                      :mm.actor/body-raw :mm.actor/first-section :mm.actor/links
-                      :mm.actor/frontmatter]
-   :dt/abstract?     false
-   :db/doc "A first-class agent/actor entity.  Routes both `type: ai-actor` and `type: human-actor` from the corpus via the cardinality-many :dt/codec-type-keyword.  Per decisions/actor_as_first_class_metamodel_class_with_mm_actor_slots_2026_05_20.md."}
+    [:mm.memory/created         11]
+    [:mm.memory/last-touched    12]
+    [:mm.memory/last-reviewed   13]
+    [:mm.memory/created-by      14]
+    [:mm.memory/cites           15]
+    [:mm.memory/related         16]
+    [:mm.memory/tags            17]]
+   ;; β.2.2 Phase I 2026-05-26: :dt/slots trimmed from 24 :mm.actor/*
+   ;; to the 8 actor-specific slots.  The 16 doubly-declared slot
+   ;; surface (identity, rel-path, name, description, scope, created,
+   ;; last-touched, last-reviewed, created-by, tags, cites, related,
+   ;; body-raw, first-section, links, frontmatter) comes from :mm.memory/*
+   ;; via :dt/subclass-of inheritance up the chain to :mm/Memory.
+   :dt/slots         [:mm.actor/actor-type :mm.actor/role
+                      :mm.actor/model-family :mm.actor/version
+                      :mm.actor/context-window :mm.actor/capabilities
+                      :mm.actor/runs-in-context :mm.actor/belongs-to]
+   ;; :dt/abstract? deliberately omitted here — mm-meta.edn loads later
+   ;; with :dt/abstract? true (the canonical post-2026-05-21-amendment
+   ;; value), and a conflicting :dt/abstract? false here would be a
+   ;; race condition.  Concrete subtypes :mm/AIActor / :mm/HumanActor /
+   ;; :mm/SystemActor (declared in mm-meta.edn) are the instantiable
+   ;; classes.
+   :db/doc "A first-class agent/actor entity.  Routes both `type: ai-actor` and `type: human-actor` from the corpus via the cardinality-many :dt/codec-type-keyword.  Per decisions/actor_as_first_class_metamodel_class_with_mm_actor_slots_2026_05_20.md.  β.2.2 Phase I 2026-05-26: doubly-declared slot surface migrated to canonical :mm.memory/* via inheritance; 8 actor-specific slots retained.  Concrete subtypes (AIActor / HumanActor / SystemActor) declared in mm-meta.edn inherit this slot/codec surface."}
 
   {:db/ident         :mm/Context
    :dt/type          :dt/Class
