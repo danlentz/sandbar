@@ -90,7 +90,9 @@
       (is (contains? names "sandbar.workflow.transition"))
       (is (contains? names "sandbar.workflow.process-state"))
       (is (contains? names "sandbar.workflow.process-history"))
-      (is (contains? names "sandbar.workflow.active-processes"))))
+      (is (contains? names "sandbar.workflow.active-processes"))
+      (is (contains? names "sandbar.workflow.orchestrate")
+          "ι.3 substrate orchestrator MCP verb (W4.1 Increment C)")))
 
   (testing "validation service verbs"
     (let [names (set (map :name tools/verb-catalog))]

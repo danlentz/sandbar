@@ -61,7 +61,8 @@
             [sandbar.mcp.resources      :as resources]
             [sandbar.util.jsonrpc-status :as jsonrpc-status]
             [sandbar.service.validation :as validation]
-            [sandbar.util.workflow      :as workflow]))
+            [sandbar.util.workflow      :as workflow]
+            [sandbar.workflow.orchestrate :as orchestrate]))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Projection helpers
@@ -1307,6 +1308,54 @@
                         (workflow/active-processes :workflow w)
                         (workflow/active-processes)))}))
 
+;; ---------- ι.3 substrate orchestrator (sandbar.workflow.orchestrate) ----------
+;;
+;; MCP-facing handler for the ι.3 substrate orchestrator implemented in
+;; `sandbar.workflow.orchestrate`.  Closes the ι.4/ι.6 skill-rewrite dependency
+;; surface — slash commands + AI clients can drive the session-lifecycle
+;; ceremony via this verb per the ι.3 design ratification Q.ι.3.10 naming.
+;;
+;; Per Q.ι.3.1 (dual-surface design): the Clojure fn AND this MCP verb both
+;; resolve to `orchestrate/orchestrate` — same code path, different entry.
+
+(defn- orchestrate-handler [args]
+  (let [workflow-ident (or (->ident (get args "workflow")) (->ident (get args :workflow)))
+        process-id-raw (or (get args "process-id") (get args :process-id))
+        phase          (->workflow-kw (or (get args "phase") (get args :phase)))
+        context        (or (get args "context") (get args :context))
+        actor-raw      (or (get args "actor") (get args :actor))
+        reason         (or (get args "reason") (get args :reason))
+        timeouts       (or (get args "timeouts") (get args :timeouts))
+        audit?         (or (get args "audit-on-open?") (get args :audit-on-open?))]
+    (when (nil? workflow-ident)
+      (throw (ex-info "Missing required argument: workflow" {:args args})))
+    (when (nil? process-id-raw)
+      (throw (ex-info "Missing required argument: process-id" {:args args})))
+    (when (nil? phase)
+      (throw (ex-info "Missing required argument: phase" {:args args})))
+    (let [process-id (if (number? process-id-raw)
+                       process-id-raw
+                       (Long/parseLong (str process-id-raw)))
+          actor      (when actor-raw (eref/resolve actor-raw))
+          result     (orchestrate/orchestrate
+                       (cond-> {:workflow   workflow-ident
+                                :process-id process-id
+                                :phase      phase}
+                         context  (assoc :context context)
+                         actor    (assoc :actor actor)
+                         reason   (assoc :reason reason)
+                         timeouts (assoc :timeouts timeouts)
+                         (some? audit?) (assoc :audit-on-open? audit?)))]
+      ;; JSON-safe projection of the result — keywords preserved as strings;
+      ;; eids preserved as numbers for clients that need to re-fetch the events.
+      {:phase-completed    (str (:phase-completed result))
+       :next-phase         (when-let [p (:next-phase result)] (str p))
+       :transition-applied (mapv str (:transition-applied result))
+       :events-emitted     (vec (:events-emitted result))  ;; numeric eids; JSON-safe
+       :duration-ms        (:duration-ms result)
+       :degraded?          (:degraded? result)
+       :phase-work-result  (:phase-work-result result)})))
+
 ;; ---------- Validation service ----------
 
 (defn- validation-start-handler [args]
@@ -2282,6 +2331,21 @@
                                             :description "Per-process entity shape — 'metadata-only' (default for MCP — :db/id + :db/ident + :dt/type only) or 'full' (all slots; ~10-300x larger payload).  Opt to 'full' when consumers need slot bodies."}}
                   :required []}
     :handler workflow-active-processes-handler}
+
+   {:name "sandbar.workflow.orchestrate"
+    :title "ι.3 substrate orchestrator — drive a workflow.process through a phase of its ceremony"
+    :description "WHICH: invokes the ι.3 substrate orchestrator (`sandbar.workflow.orchestrate/orchestrate`) on a workflow.process — drives it through ONE phase of its ceremony per the canonical phase vocabulary.  Returns the phase outcome including the workflow.transition(s) applied, events emitted, duration, and degraded-path flag.\n\nWHEN: use to advance a session-lifecycle workflow.process through its phases (orient → initialize → activate → imprint for /memory-open; capture → author → link → finalize for /memory-handoff).  One MCP call per phase — the caller (slash command body or skill) iterates over `open-phases` / `handoff-phases` and invokes this verb for each.  When NOT to use: (a) direct workflow.transition application without the orchestrator's phase semantics — use `sandbar.workflow.transition`; (b) inspecting current state — `sandbar.workflow.process-state`; (c) starting a process — `sandbar.workflow.start-process` (this verb assumes the process already exists).\n\nHOW: `:workflow` is the workflow definition ident (REQUIRED; typically `:workflow/session`).  `:process-id` is the numeric workflow.process eid (REQUIRED).  `:phase` is the phase keyword (REQUIRED; one of `:phase/orient` / `:phase/initialize` / `:phase/activate` / `:phase/imprint` for open OR `:phase/capture` / `:phase/author` / `:phase/link` / `:phase/finalize` for handoff).  Optional: `:context` (map passed to phase-work + transition guards/effects), `:actor` (ident or eid for workflow.history actor slot), `:reason` (string for transitions whose `:workflow/requires-reason?` is true), `:timeouts` (per-phase override map; falls back to `default-phase-timeouts-ms`), `:audit-on-open?` (bool; invoke audit_fs-substrate-drift in :phase/orient — default false per Q.ι.3.5).\n\nORDER: PREREQUISITE — workflow.process must exist (created via `sandbar.workflow.start-process`).  Phases SHOULD be invoked in canonical order per ceremony (orient → initialize → activate → imprint).  No strict enforcement — caller MAY skip phases for testing or re-invoke a phase, subject to the underlying workflow.transition guard constraints.\n\nCOMBINATION: pairs with `sandbar.workflow.start-process` (creates the process this verb drives), `sandbar.workflow.process-state` (read current state between phase calls), `sandbar.workflow.process-history` (audit transitions after orchestrate completes).  Per ι.3 design ratification ADR + Q.ι.3.9 STRICT Event Substrate ADR compliance — events emit via `:mm.event/Workflow*` hierarchy.\n\nReturns: `{:phase-completed :next-phase :transition-applied :events-emitted :duration-ms :degraded? :phase-work-result}` — see the `sandbar.workflow.orchestrate/orchestrate` Clojure fn docstring for slot semantics."
+    :inputSchema (one-required
+                   {:workflow       {:type "string"  :description "Workflow definition ident (typically ':workflow/session')"}
+                    :process-id     {:type "integer" :description "Numeric workflow.process eid"}
+                    :phase          {:type "string"  :description "Phase keyword — one of :phase/orient :phase/initialize :phase/activate :phase/imprint (open ceremony) OR :phase/capture :phase/author :phase/link :phase/finalize (handoff ceremony)"}
+                    :context        {:type "object"  :description "Optional context map passed to phase-work + transition guards/effects"}
+                    :actor          {:type "string"  :description "Optional actor ident/eid for the workflow.history actor slot"}
+                    :reason         {:type "string"  :description "Optional reason string for transitions whose :workflow/requires-reason? is true"}
+                    :timeouts       {:type "object"  :description "Optional per-phase timeout override map (else default-phase-timeouts-ms applies)"}
+                    :audit-on-open? {:type "boolean" :description "Optional — invoke audit_fs-substrate-drift in :phase/orient (default false per Q.ι.3.5)"}}
+                   [:workflow :process-id :phase])
+    :handler orchestrate-handler}
 
    ;; Validation service — workflow-backed long-running validation
    {:name "sandbar.validation.start"

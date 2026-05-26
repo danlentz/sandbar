@@ -570,3 +570,58 @@
   (let [response (call "sandbar.ground" {})]
     (is (user-error? response))
     (is (re-find #"concept" (error-text response)))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; ---------- sandbar.workflow.orchestrate (ι.3 W4.1 Increment C) ----------
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defn- start-orchestrate-test-process!
+  "Bootstrap a :workflow/session process for orchestrate handler tests.
+   Returns the numeric process eid."
+  []
+  (require '[sandbar.util.workflow :as wf])
+  (require '[sandbar.test-util :as tu])
+  (let [subject (tu/create-test-user! {:username (str "orch-mcp-" (System/nanoTime))
+                                       :email    (str "orch-mcp-" (System/nanoTime) "@sandbar.test")})
+        process ((resolve 'sandbar.util.workflow/start-process!) :workflow/session subject)]
+    (:db/id process)))
+
+(deftest orchestrate-handler-dispatches-phase-activate
+  (testing ":phase/activate via MCP verb returns success envelope with expected shape"
+    (let [pid      (start-orchestrate-test-process!)
+          response (call "sandbar.workflow.orchestrate"
+                         {"workflow"   ":workflow/session"
+                          "process-id" pid
+                          "phase"      ":phase/activate"})]
+      (is (success? response))
+      (let [payload (result-content-edn response)]
+        (is (= ":phase/activate" (:phase-completed payload)))
+        (is (= ":phase/imprint" (:next-phase payload)))
+        (is (= [":session/start"] (:transition-applied payload)))
+        (is (= 1 (count (:events-emitted payload)))
+            ":events-emitted carries the :mm.event/WorkflowSessionOpened eid")
+        (is (false? (:degraded? payload)))))))
+
+(deftest orchestrate-handler-validates-missing-args
+  (testing "Missing :phase produces a structured user-error envelope"
+    (let [pid      (start-orchestrate-test-process!)
+          response (call "sandbar.workflow.orchestrate"
+                         {"workflow"   ":workflow/session"
+                          "process-id" pid})]
+      (is (user-error? response))
+      (is (re-find #"(?i)phase" (error-text response))))))
+
+(deftest orchestrate-handler-degraded-path
+  (testing "κ P18 fallback engaged when transition unreachable from current state"
+    (let [pid      (start-orchestrate-test-process!)  ;; in :session/opening
+          ;; :phase/finalize tries :session/close — not reachable from :opening
+          response (call "sandbar.workflow.orchestrate"
+                         {"workflow"   ":workflow/session"
+                          "process-id" pid
+                          "phase"      ":phase/finalize"})]
+      (is (success? response)
+          "Degraded path returns SUCCESS envelope — :degraded? signals the condition, NOT user-error")
+      (let [payload (result-content-edn response)]
+        (is (true? (:degraded? payload)))
+        (is (= [] (:transition-applied payload))
+            "No transitions successfully applied (all degraded)")))))
