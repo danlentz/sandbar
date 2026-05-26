@@ -370,3 +370,94 @@
       (is (contains? slots :mm.workflow-event/process))
       (is (contains? slots :mm.workflow-event/phase))
       (is (contains? slots :mm.workflow-event/transition)))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Event emission tests (Q.ι.3.9; W4.1 Increment B)
+;;
+;; Verify that orchestrate populates :events-emitted with real eids pointing
+;; at correctly-shaped :mm.event/Workflow* entities matching the phase context.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(deftest orchestrate-phase-activate-emits-workflow-session-opened
+  (testing ":phase/activate emits :mm.event/WorkflowSessionOpened with correct slots"
+    (let [process (start-test-session-process!)
+          result  (orchestrate/orchestrate {:workflow   :workflow/session
+                                            :process-id (:db/id process)
+                                            :phase      :phase/activate})]
+      (is (= 1 (count (:events-emitted result)))
+          ":phase/activate emits exactly 1 event")
+      (let [event-eid    (first (:events-emitted result))
+            event-entity (db/entity event-eid)
+            event-type   (let [t (:dt/type event-entity)]
+                           (cond (keyword? t) t
+                                 :else (:db/ident t)))]
+        (is (= :mm.event/WorkflowSessionOpened event-type)
+            "Emitted event is a :mm.event/WorkflowSessionOpened")
+        (is (= :phase/activate (:mm.workflow-event/phase event-entity))
+            ":mm.workflow-event/phase slot populated correctly")
+        (is (= :session/start (:mm.workflow-event/transition event-entity))
+            ":mm.workflow-event/transition slot populated correctly")
+        (let [event-process (:mm.workflow-event/process event-entity)
+              process-eid   (or (:db/id event-process)  ;; works for Datomic Entity OR map
+                                (when (number? event-process) event-process))]
+          (is (= (:db/id process) process-eid)
+              ":mm.workflow-event/process slot points at the right workflow.process"))))))
+
+(deftest orchestrate-phase-finalize-emits-workflow-session-closed
+  (testing ":phase/finalize emits :mm.event/WorkflowSessionClosed"
+    (let [process (start-test-session-process!)
+          ;; Advance to :session/active first
+          _       (wf/transition! process :session/start)
+          process (wf/find-process (:db/id process))
+          result  (orchestrate/orchestrate {:workflow   :workflow/session
+                                            :process-id (:db/id process)
+                                            :phase      :phase/finalize})]
+      (is (= 1 (count (:events-emitted result))))
+      (let [event-entity (db/entity (first (:events-emitted result)))
+            event-type   (let [t (:dt/type event-entity)]
+                           (cond (keyword? t) t :else (:db/ident t)))]
+        (is (= :mm.event/WorkflowSessionClosed event-type))
+        (is (= :phase/finalize (:mm.workflow-event/phase event-entity)))
+        ;; :transition should be the LAST applied transition (:session/finalize)
+        (is (= :session/finalize (:mm.workflow-event/transition event-entity)))))))
+
+(deftest orchestrate-phase-orient-emits-no-event
+  (testing ":phase/orient is pure-read with no registered emission class → empty :events-emitted"
+    (let [process (start-test-session-process!)
+          result  (orchestrate/orchestrate {:workflow   :workflow/session
+                                            :process-id (:db/id process)
+                                            :phase      :phase/orient})]
+      (is (= [] (:events-emitted result))
+          ":phase/orient does not emit a phase-completion event"))))
+
+(deftest orchestrate-degraded-emits-workflow-session-degraded
+  (testing "κ P18 fallback emits :mm.event/WorkflowSessionDegraded with :degraded-reason"
+    (let [process (start-test-session-process!)  ;; in :session/opening
+          ;; :phase/finalize tries :session/close from opening → not found → degraded
+          result  (orchestrate/orchestrate {:workflow   :workflow/session
+                                            :process-id (:db/id process)
+                                            :phase      :phase/finalize})]
+      (is (true? (:degraded? result)))
+      (is (= 1 (count (:events-emitted result)))
+          "Degraded path emits exactly 1 :Degraded event")
+      (let [event-entity (db/entity (first (:events-emitted result)))
+            event-type   (let [t (:dt/type event-entity)]
+                           (cond (keyword? t) t :else (:db/ident t)))]
+        (is (= :mm.event/WorkflowSessionDegraded event-type))
+        (is (= :phase/finalize (:mm.workflow-event/phase event-entity)))
+        (is (= :transition-not-found
+               (:mm.workflow-event/degraded-reason event-entity))
+            ":mm.workflow-event/degraded-reason carries the recoverable failure mode")))))
+
+(deftest phase-completion-event-class-canonical-mapping
+  (testing "phase-completion-event-class maps only the 3 emission-bearing phases"
+    (is (= :mm.event/WorkflowSessionOpened
+           (get orchestrate/phase-completion-event-class :phase/activate)))
+    (is (= :mm.event/WorkflowSessionHandoffAuthored
+           (get orchestrate/phase-completion-event-class :phase/author)))
+    (is (= :mm.event/WorkflowSessionClosed
+           (get orchestrate/phase-completion-event-class :phase/finalize)))
+    (is (nil? (get orchestrate/phase-completion-event-class :phase/orient))
+        ":phase/orient is pure-read; no emission registered")
+    (is (nil? (get orchestrate/phase-completion-event-class :phase/imprint))
+        ":phase/imprint is pure-write banner; no emission registered")))

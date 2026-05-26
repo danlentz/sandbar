@@ -99,6 +99,7 @@
    `sandbar.workflow.orchestrate`."
   (:require [clojure.string :as str]
             [clojure.tools.logging :as log]
+            [sandbar.util.event :as event]
             [sandbar.util.workflow :as wf]))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -265,6 +266,86 @@
           (throw e))))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Event emission (Q.ι.3.9 STRICT Event Substrate ADR compliance)
+;;
+;; The orchestrator emits one :mm.event/Workflow* event per phase boundary:
+;;   - Successful phase completion → emit the phase-completion event registered
+;;     in `phase-completion-event-class` (no entry → no emission for that phase)
+;;   - κ P18 bootstrap-robustness fallback engaged → emit :mm.event/WorkflowSessionDegraded
+;;     carrying :mm.workflow-event/degraded-reason
+;;
+;; Emission happens via `sandbar.util.event/log-event!` which creates a typed-
+;; :dt/Event subclass instance via `dt/make` + applies the substrate event-
+;; logging pipeline (timestamp, level, etc.).  Emission is best-effort
+;; observability — failure to emit does NOT prevent the orchestrate fn from
+;; returning its result map; emission errors are logged but swallowed.
+;;
+;; Event subclasses are declared in `schema/mm-temporal.edn` per the
+;; :mm.event/WorkflowTransition hierarchy authored in W4.1 Increment A.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(def phase-completion-event-class
+  "Map of phase keyword → :mm.event/Workflow* event class to emit on successful
+   (non-degraded) phase completion.  Phases NOT in this map don't emit a
+   phase-completion event from orchestrate — caller-side work emits its own
+   events (or the phase is pure-read with no emission needed).
+
+   Canonical per the ι.3 design ratification §Q.ι.3.9:
+   - `:phase/activate` → `:mm.event/WorkflowSessionOpened`
+   - `:phase/author`   → `:mm.event/WorkflowSessionHandoffAuthored`
+   - `:phase/finalize` → `:mm.event/WorkflowSessionClosed`
+
+   The other 5 phases (:orient, :initialize, :imprint, :capture, :link) do not
+   currently emit phase-completion events from orchestrate — they fold into
+   the lifecycle envelope of the 3 emission-bearing phases above.  Future
+   evolution may add per-phase events for richer observability."
+  {:phase/activate :mm.event/WorkflowSessionOpened
+   :phase/author   :mm.event/WorkflowSessionHandoffAuthored
+   :phase/finalize :mm.event/WorkflowSessionClosed})
+
+(defn- try-emit!
+  "Wrap an event emission in try/catch — emission failure logs but does NOT
+   propagate.  Returns the event entity-map on success, nil on failure.
+   Per `no_race_highest_quality` + κ P18 spirit: observability is best-effort,
+   not blocking."
+  [event-class slot-map]
+  (try
+    (event/log-event! event-class slot-map)
+    (catch Exception e
+      (log/warn e :ORCHESTRATE/EVENT-EMIT-FAILED
+                {:event-class event-class
+                 :slot-map    slot-map})
+      nil)))
+
+(defn- emit-phase-completion-event!
+  "Emit the phase-completion event for `phase` (when registered in
+   `phase-completion-event-class`).  Returns the event entity-map, or nil
+   if the phase doesn't register an emission class.  `transition` may be
+   nil for phases that don't bear transitions."
+  [phase {:keys [process-id transition]}]
+  (when-let [event-class (get phase-completion-event-class phase)]
+    (try-emit! event-class
+               (cond-> {:mm.workflow-event/process process-id
+                        :mm.workflow-event/phase   phase
+                        :event/name                (str (name event-class))
+                        :event/level               :info
+                        :event/kind                :workflow/phase-completion}
+                 transition (assoc :mm.workflow-event/transition transition)))))
+
+(defn- emit-degraded-event!
+  "Emit :mm.event/WorkflowSessionDegraded when κ P18 bootstrap-robustness
+   fallback engages.  Returns the event entity-map."
+  [{:keys [process-id phase transition reason]}]
+  (try-emit! :mm.event/WorkflowSessionDegraded
+             (cond-> {:mm.workflow-event/process         process-id
+                      :mm.workflow-event/phase           phase
+                      :mm.workflow-event/degraded-reason (or reason :transition-not-found)
+                      :event/name                        "WorkflowSessionDegraded"
+                      :event/level                       :warn
+                      :event/kind                        :workflow/degraded}
+               transition (assoc :mm.workflow-event/transition transition))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Phase-work multimethod (extensible via :mm/Fn entry/exit per κ P4)
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
@@ -394,19 +475,37 @@
                                 transitions)
         applied         (->> outcomes (keep :applied) vec)
         degraded?       (boolean (some :degraded? outcomes))
+        ;; Q.ι.3.9 event emission — one event per phase boundary:
+        ;;   degraded? true  → :mm.event/WorkflowSessionDegraded (carries reason)
+        ;;   degraded? false → phase-completion event if registered (else nothing)
+        emitted-event   (if degraded?
+                          (let [degraded-outcome (some #(when (:degraded? %) %) outcomes)]
+                            (emit-degraded-event!
+                             {:process-id (:process-id args)
+                              :phase      phase
+                              :transition (:transition degraded-outcome)
+                              :reason     (:reason degraded-outcome)}))
+                          (emit-phase-completion-event!
+                           phase
+                           {:process-id (:process-id args)
+                            :transition (last applied)}))
+        events-emitted  (if emitted-event
+                          [(:db/id emitted-event)]
+                          [])
         duration-ms     (- (System/currentTimeMillis) start-instant)]
     (log/info :ORCHESTRATE/PHASE-COMPLETE
               {:phase             phase
                :ceremony          (ceremony-of phase)
                :transitions       applied
                :degraded?         degraded?
+               :events-emitted    events-emitted
                :duration-ms       duration-ms
                :process-id        (:process-id args)
                :workflow          (:workflow args)})
     {:phase-completed    phase
      :next-phase         (next-phase-of phase)
      :transition-applied applied
-     :events-emitted     []  ;; W4.1: emission is transitive via wf/transition! → event/log!
+     :events-emitted     events-emitted
      :duration-ms        duration-ms
      :degraded?          degraded?
      :phase-work-result  phase-result}))
