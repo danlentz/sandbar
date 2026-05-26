@@ -263,12 +263,21 @@
 
 (defn- resolve-ref
   "Resolve an entity reference to a full entity using the current database.
-   Handles: numbers, {:db/id N} maps, and datomic.Entity refs.
-   Always returns a fresh entity from the current database snapshot."
+   Handles: numbers, keywords (`:db/ident` refs), {:db/id N} maps, and datomic.Entity refs.
+   Always returns a fresh entity from the current database snapshot.
+
+   Per Q.ι.3.11 follow-on fix 2026-05-26 — also handles keyword inputs (the dt/ wrapper
+   layer returns ref-slot values as the target's `:db/ident` keyword when available; prior
+   to this fix, those keyword values fell through `:else` and returned as-is, causing
+   downstream `(:workflow/state-name current-state)` to return nil because keywords don't
+   carry slot data. Symptom: workflow.transition reported `current-state: null` despite
+   workflow.process-state returning the correct state-ident.)"
   [ref]
   (cond
     (nil? ref) nil
     (number? ref) (d/entity (db/db) ref)
+    ;; NEW (Q.ι.3.11 follow-on): keyword refs are :db/ident lookups
+    (keyword? ref) (d/entity (db/db) ref)
     ;; Check for :db/id key - works for both maps AND datomic entities
     ;; (datomic entities implement ILookup, so (:db/id entity) works)
     (:db/id ref) (d/entity (db/db) (:db/id ref))
@@ -276,11 +285,19 @@
 
 (defn- get-entity-id
   "Extract entity ID from various reference types.
-   Handles: numbers, {:db/id N} maps, and datomic.Entity refs."
+   Handles: numbers, keywords (`:db/ident` refs), {:db/id N} maps, and datomic.Entity refs.
+
+   Per Q.ι.3.11 follow-on fix 2026-05-26 — also handles keyword inputs (the dt/ wrapper
+   layer returns ref-slot values as the target's `:db/ident` keyword when available;
+   prior to this fix, keyword inputs fell through `:else` and were returned as-is,
+   causing the `get-transitions-from-state` filter to compare a keyword against an eid
+   `(= :session.state/opening 17592186093092)` → false → no transitions returned)."
   [ref]
   (cond
     (nil? ref) nil
     (number? ref) ref
+    ;; NEW (Q.ι.3.11 follow-on): keyword refs are :db/ident lookups
+    (keyword? ref) (:db/id (d/entity (db/db) ref))
     ;; Check for :db/id key (works for both maps and Datomic entities)
     (:db/id ref) (:db/id ref)
     :else ref))
