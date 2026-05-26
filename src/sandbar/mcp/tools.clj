@@ -45,6 +45,7 @@
             [sandbar.codec              :as codec]
             [sandbar.codec.markdown     :as codec-md]
             [sandbar.entity-ref         :as eref]
+            [sandbar.identifier         :as id]
             [sandbar.navigate.edges     :as nav-edges]
             [sandbar.navigate.path      :as nav-path]
             [sandbar.navigate.siblings  :as nav-siblings]
@@ -1930,6 +1931,144 @@
 (def ^:private no-args-schema
   {:type "object" :properties {} :required []})
 
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; ζ Scope B substrate-primitive verbs — namespace.policy + resolve
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;
+;; Per ζ Scope B ADR §6 (Q.ζ.B.8 + Q.ζ.B.9 RATIFIED 2026-05-26).
+;; Build-prove-promote phase: BUILD here in sandbar; PROVE via MCP-client
+;; consumption; PROMOTE patterns to broader libraries if/when stable.
+
+(defn- namespace-policy-handler
+  "Look up the :mm.namespace/CommitmentStatement entity for `:namespace`.
+   ARK `??`-inflection pattern: 'what's the policy under this namespace?'
+
+   `:namespace` is a string like \"decisions\" or \"libraries.clojure\".
+   The handler queries for a CommitmentStatement entity whose rel-path
+   matches `namespaces/<namespace>_commitment_*.md`.
+
+   Read-only.  Authoring a new CommitmentStatement is via the standard
+   sandbar.entity.create with class :mm.namespace/CommitmentStatement."
+  [args]
+  (let [ns-name (or (get args "namespace") (get args :namespace))]
+    (when (str/blank? (str ns-name))
+      (throw (ex-info "Missing required argument: namespace" {:args args})))
+    (let [db    (db/db)
+          ;; Query for CommitmentStatement entities whose rel-path starts
+          ;; with namespaces/<ns>_commitment_
+          rel-prefix (str "namespaces/" ns-name "_commitment_")
+          matches    (d/q '[:find [?e ...]
+                            :in $ ?prefix
+                            :where [?e :dt/type :mm.namespace/CommitmentStatement]
+                                   [?e :mm.memory/rel-path ?rp]
+                                   [(clojure.string/starts-with? ?rp ?prefix)]]
+                          db rel-prefix)]
+      (if (empty? matches)
+        {:namespace            ns-name
+         :commitment-statement nil
+         :commitment-statement-entity-ident nil
+         :ark-question-inflection-form (str ns-name "/?")
+         :note (str "No CommitmentStatement exists for namespace '" ns-name
+                    "'.  Author via sandbar.entity.create with "
+                    ":mm.namespace/CommitmentStatement class.")}
+        (let [ent  (d/entity db (first matches))
+              cs   {:identity-stability (:mm.namespace/identity-stability ent)
+                    :content-stability  (:mm.namespace/content-stability ent)
+                    :service-stability  (:mm.namespace/service-stability ent)
+                    :authority-uuid     (:mm.namespace/authority-uuid ent)
+                    :first-issued       (:mm.namespace/first-issued ent)}]
+          {:namespace            ns-name
+           :commitment-statement cs
+           :commitment-statement-entity-ident (str (:db/ident ent))
+           :ark-question-inflection-form (str ns-name "/?")
+           :commitment-statement-name (:mm.memory/name ent)})))))
+
+
+(defn- resolve-handler
+  "Resolve an entity-reference of any wire form to its canonical entity.
+   PURL-style indirection: federation-shaped references resolve to canonical
+   entities regardless of which wire form was used.
+
+   Accepted input forms (detected by pattern):
+   - urn:uuid:<v5>          → lookup by :mm/id
+   - :memory.X/Y (kw form)  → eref/resolve as ident
+   - memory.X/Y  (str form) → coerced to keyword + resolved
+   - <dir>/<slug>.md        → corpus rel-path lookup
+   - <dir>/<slug>           → corpus rel-path lookup (extension optional)
+   - numeric string         → eref/resolve as eid
+
+   Returns: {:reference :resolved-entity :resolution-path}.
+   :resolution-path is :urn-uuid | :substrate-ident | :rel-path | :eid."
+  [args]
+  (let [ref-str (or (get args "reference") (get args :reference))]
+    (when (str/blank? (str ref-str))
+      (throw (ex-info "Missing required argument: reference" {:args args})))
+    (let [db (db/db)]
+      (cond
+        ;; URN form: urn:uuid:<v5>
+        (str/starts-with? ref-str "urn:uuid:")
+        (let [uuid-str (subs ref-str (count "urn:uuid:"))
+              uuid-val (try (java.util.UUID/fromString uuid-str)
+                            (catch IllegalArgumentException _ nil))]
+          (if uuid-val
+            (let [eid (d/q '[:find ?e .
+                             :in $ ?u
+                             :where [?e :mm/id ?u]]
+                           db uuid-val)]
+              (if eid
+                {:reference        ref-str
+                 :resolved-entity  (into {} (d/entity db eid))
+                 :resolution-path  :urn-uuid}
+                {:reference ref-str
+                 :resolved-entity nil
+                 :resolution-path :urn-uuid
+                 :error "No entity found with this :mm/id"}))
+            {:reference ref-str
+             :resolved-entity nil
+             :resolution-path :urn-uuid
+             :error "Invalid UUID in urn:uuid: form"}))
+
+        ;; rel-path form: contains "/" + doesn't start with ":" + doesn't look like memory.X/Y
+        (and (str/includes? ref-str "/")
+             (not (str/starts-with? ref-str ":"))
+             (not (str/starts-with? ref-str "memory.")))
+        (let [;; Strip .md if present
+              rel-path (if (str/ends-with? ref-str ".md")
+                         ref-str
+                         (str ref-str ".md"))
+              ;; Convert dir/slug.md to :memory.<dir>/<slug>
+              [dir slug] (str/split (subs rel-path 0
+                                          (- (count rel-path) 3))  ; strip .md
+                                    #"/" 2)
+              ident-kw (when (and dir slug)
+                         (keyword (str "memory." (str/replace dir "/" "."))
+                                  slug))
+              ent (when ident-kw
+                    (try (eref/resolve ident-kw)
+                         (catch Exception _ nil)))]
+          (if (and ent (:db/id ent))
+            {:reference       ref-str
+             :resolved-entity (into {} ent)
+             :resolution-path :rel-path
+             :resolved-ident  (str ident-kw)}
+            {:reference ref-str
+             :resolved-entity nil
+             :resolution-path :rel-path
+             :error (str "No entity found for rel-path: " ref-str)}))
+
+        ;; ident form: keyword or memory.X/Y string → eref/resolve
+        :else
+        (let [ent (try (eref/resolve ref-str)
+                       (catch Exception e
+                         (throw (ex-info (.getMessage e)
+                                         (assoc (ex-data e)
+                                                :reference ref-str
+                                                :resolution-path :substrate-ident)))))]
+          {:reference       ref-str
+           :resolved-entity (into {} ent)
+           :resolution-path :substrate-ident})))))
+
+
 (defn- one-required [props required-keys]
   {:type "object" :properties props :required (mapv name required-keys)})
 
@@ -2542,7 +2681,21 @@
     :inputSchema (one-required {:entity {:type "string" :description ":mm/Shape entity ident or eid"}
                                 :slots  {:type "object" :description "Slot updates"}}
                                [:entity :slots])
-    :handler shape-update-handler}])
+    :handler shape-update-handler}
+
+   {:name "sandbar.namespace.policy"
+    :title "Look up the per-namespace policy commitment statement (ARK ??-inflection)"
+    :description "WHICH: returns the :mm.namespace/CommitmentStatement entity declaring identity-stability + content-stability + service-stability covenants + authority-UUID + first-issued instant for the named namespace.\n\nWHEN: use as the ARK `??`-inflection pattern — ask 'what's the policy under this namespace?' before authoring an entity into it. Useful for federation-aware consumers to discover persistence guarantees per-namespace.  When NOT to use: (a) you want to ASSERT a new CommitmentStatement — use sandbar.entity.create with class :mm.namespace/CommitmentStatement; (b) you want to look up the namespace's UUID (computed deterministically from the deployment's authority-UUID + namespace-name; not a stored slot).\n\nHOW: `:namespace` is the namespace-name string (e.g., 'decisions' / 'libraries.clojure' / 'observations').  Returns `{:namespace :commitment-statement :commitment-statement-entity-ident :ark-question-inflection-form}`.  Returns `:commitment-statement nil` + a :note if no CommitmentStatement exists for the namespace.\n\nORDER: leaf-call.  Authoring CommitmentStatements: sandbar.entity.create with :mm.namespace/CommitmentStatement class.  Per ζ Scope B ADR §6.1 + §2.\n\nCOMPOSES with sandbar.resolve (the resolution path for federation-shaped references). Per ζ Scope B ADR Q.ζ.B.9 RATIFIED 2026-05-26 (read-only verb)."
+    :inputSchema (one-required {:namespace {:type "string" :description "Namespace name (e.g., 'decisions' / 'libraries.clojure')"}}
+                               [:namespace])
+    :handler namespace-policy-handler}
+
+   {:name "sandbar.resolve"
+    :title "Resolve an entity-reference of any wire form (URN / ident / rel-path / eid)"
+    :description "WHICH: resolves a reference of any wire form to its canonical entity. PURL-style indirection — federation-shaped references resolve to canonical entities regardless of which wire form was used.\n\nWHEN: use to resolve federation-shaped references (URN form `urn:uuid:<v5>`) into substrate entities; sister verb to sandbar.entity.find (ident form) + sandbar.entity.find-by-rel-path (rel-path form).  When NOT to use: (a) you already know the wire form is an ident — sandbar.entity.find is more direct; (b) you have a rel-path string + know it's that form — sandbar.entity.find-by-rel-path.\n\nHOW: `:reference` is the input string in any of:\n  - `urn:uuid:<v5>` — federation wire form; resolves via :mm/id lookup\n  - `:memory.X/Y` or `memory.X/Y` — substrate ident form; resolves via eref/resolve\n  - `<dir>/<slug>.md` or `<dir>/<slug>` — corpus rel-path form; resolves via memory.<dir>/<slug> ident derivation\n  - numeric string — eid form; resolves via eref/resolve\n\nReturns `{:reference :resolved-entity :resolution-path}` where :resolution-path is one of :urn-uuid | :substrate-ident | :rel-path | :eid.  Returns :resolved-entity nil + :error string if the reference cannot be resolved.\n\nCOMPOSES with sandbar.namespace.policy (each resolution can be policy-checked against the namespace's CommitmentStatement).  Per ζ Scope B ADR §6.2 + Q.ζ.B.8 RATIFIED 2026-05-26."
+    :inputSchema (one-required {:reference {:type "string" :description "URN form (urn:uuid:...), substrate ident (memory.X/Y), rel-path (dir/slug.md), or eid (numeric string)"}}
+                               [:reference])
+    :handler resolve-handler}])
 
 (def ^:private verb-by-name
   (into {} (map (juxt :name identity)) verb-catalog))
