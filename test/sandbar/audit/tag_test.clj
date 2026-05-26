@@ -161,6 +161,37 @@
       (doseq [[_norm variants] by-norm-form]
         (is (>= (count variants) 2) "every cluster has 2+ variants")))))
 
+(deftest drift-clusters-excludes-already-superseded-variants
+  ;; Verifies that drift-clusters does NOT surface variants whose
+  ;; :mm.tag/lifecycle-status is :superseded (already consolidated via
+  ;; sandbar.tag.consolidate / .consolidate-all).  Per
+  ;; observations/phase_h_M3_drift_consolidation_…_2026_05_26.md
+  ;; substrate-quality follow-up.
+  (tx [(make-tag "decision")
+       (make-tag "decisions")
+       (make-tag "observation")
+       (make-tag "observations")
+       (make-tag "pattern")
+       (make-tag "patterns")])
+  ;; Mark "decisions" + "observations" as superseded.  After this,
+  ;; drift-clusters should NOT include the decision/decisions and
+  ;; observation/observations clusters — only pattern/patterns
+  ;; (which has no superseded variant).
+  (tx [{:mm.tag/value "decisions"
+        :mm.tag/lifecycle-status :superseded}
+       {:mm.tag/value "observations"
+        :mm.tag/lifecycle-status :superseded}])
+
+  (let [report (audit/drift-clusters)
+        by-norm-form (into {} (map (juxt :normalized-form :variants)
+                                   (:violations report)))]
+    (is (not (contains? by-norm-form "decision"))
+        "decision/decisions cluster excluded (decisions is :superseded)")
+    (is (not (contains? by-norm-form "observation"))
+        "observation/observations cluster excluded (observations is :superseded)")
+    (is (contains? by-norm-form "pattern")
+        "pattern/patterns cluster retained (no superseded variant)")))
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Invariant 7 — closure-consistency
 

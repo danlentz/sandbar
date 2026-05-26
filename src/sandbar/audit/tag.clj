@@ -328,6 +328,14 @@
    normalize to the same form.  Migration M.3 auto-merges clusters by
    choosing a canonical + declaring others as :mm.tag/alt-label.
 
+   EXCLUDES already-superseded variants (`:mm.tag/lifecycle-status
+   :superseded`) — these have already been consolidated via
+   `sandbar.tag.consolidate` / `.consolidate-all`; surfacing them again
+   in the drift invariant produces false-positive findings that the
+   editorial review cannot act on (already-acted-on).  Per
+   `observations/phase_h_M3_drift_consolidation_69_of_71_clusters_landed_…_2026_05_26.md`
+   substrate-quality follow-up.
+
    Returns:
      {:invariant :drift
       :violation-count N-clusters
@@ -335,7 +343,9 @@
                     :variants [{:tag <ref> :value <string>} ...]} ...]
       :description \"...\"}"
   []
-  (let [tags     (all-tag-entities)
+  (let [tags     (->> (all-tag-entities)
+                      ;; Exclude superseded variants (already consolidated).
+                      (remove #(= :superseded (:mm.tag/lifecycle-status %))))
         groups   (->> tags
                       (group-by #(normalize-tag-form (tag-value %)))
                       (filter (fn [[k vs]]
