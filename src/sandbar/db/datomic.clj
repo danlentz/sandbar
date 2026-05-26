@@ -142,8 +142,18 @@
   ;; Composes with `ideas/sandbar_reflective_schema_from_type_memorials_-
   ;; for_dynamic_client_type_evolution_2026_05_22.md` as the substrate-
   ;; evolution discipline.
+  ;;
+  ;; β.2.0 pre-work (2026-05-26): after schema-load, validate the
+  ;; :dt/subclass-of + :dt/subproperty-of entailment graphs are acyclic
+  ;; (S.8 mitigation).  Q.B.0.b ratification: loud-fail on cycle detect.
+  ;; Per the β.2 plan (`/Users/dan/.claude/plans/wise-splashing-stardust.md`)
+  ;; + master pre-0.2.0 plan §3.β.2 + metamodel-unification arc §10.B.0.
+  ;; Resolved late-binding to avoid load-time cyclic dependency between
+  ;; sandbar.db.datomic and sandbar.db.entailment.quality (which requires
+  ;; this ns for db/conn + db/db-uri).
   (let [created? (ensure-db! uri)]
     (apply load-all-schema! uri schema)
+    ((requiring-resolve 'sandbar.db.entailment.quality/validate-entailment-graph!) uri)
     (fn/load-all-dbfn uri)
     (fn/load-all-mm-fn-memorials uri)
     (when created?
