@@ -1960,44 +1960,63 @@
    :dt/native-codec  :markdown
    :dt/codec-type-keyword :rule
    :dt/codec-aliases [[:type :mm.rule/rule-type]]
-   :dt/bm25f-weights [[:mm.rule/name        12.0]
-                      [:mm.rule/description  8.0]
-                      [:mm.rule/body-raw     1.0]]
+   ;; β.2.2 Phase I 2026-05-26: bm25f-weights rewritten to canonical
+   ;; :mm.memory/*.  Note three-way namespace overlap exists with
+   ;; :dt.fn/description (inherited from :mm/Fn) — see amendment-2
+   ;; §1.3 "3 nuanced :dt.fn/* triple-inheritance cases".  The
+   ;; canonical-direction (:mm.memory/*) is authoritative for codec
+   ;; routing; :dt.fn/description / :mm.rule/description shadow
+   ;; values preserved.
+   :dt/bm25f-weights [[:mm.memory/name        12.0]
+                      [:mm.memory/description  8.0]
+                      [:mm.memory/body-raw     1.0]]
+   ;; β.2.2 Phase I 2026-05-26: codec-slot-order rewritten so the 9
+   ;; doubly-declared positions present here reference canonical
+   ;; :mm.memory/*; 13 Rule-specific positions stay on :mm.rule/*
+   ;; (rule-type, event, enforcement, actor, context, priority,
+   ;; engine, dispatch-strategy, lifecycle, governed-by, triggered-by,
+   ;; applies-in, derives-from).  Note: triggered-by has both a
+   ;; :mm.rule/triggered-by AND a :mm.memory/triggered-by; here we
+   ;; keep the :mm.rule/* form for rule-event-specific routing.
    :dt/codec-slot-order
-   [[:mm.rule/name               0]
-    [:mm.rule/description        1]
-    [:mm.rule/rule-type          2]
-    [:mm.rule/scope              3]
-    [:mm.rule/event              4]
-    [:mm.rule/enforcement        5]
-    [:mm.rule/actor              6]
-    [:mm.rule/context            7]
-    [:mm.rule/priority           8]
-    [:mm.rule/engine             9]
-    [:mm.rule/dispatch-strategy 10]
-    [:mm.rule/lifecycle         11]
-    [:mm.rule/created           12]
-    [:mm.rule/last-reviewed     13]
-    [:mm.rule/created-by        14]
-    [:mm.rule/cites             15]
-    [:mm.rule/related           16]
-    [:mm.rule/governed-by       17]
-    [:mm.rule/triggered-by      18]
-    [:mm.rule/applies-in        19]
-    [:mm.rule/derives-from      20]
-    [:mm.rule/tags              21]]
-   :dt/slots         [:mm.rule/identity :mm.rule/rel-path :mm.rule/name
-                      :mm.rule/description :mm.rule/rule-type :mm.rule/scope :mm.rule/event
-                      :mm.rule/enforcement :mm.rule/actor :mm.rule/context
-                      :mm.rule/priority :mm.rule/engine :mm.rule/dispatch-strategy
-                      :mm.rule/lifecycle :mm.rule/created :mm.rule/last-reviewed
-                      :mm.rule/created-by :mm.rule/tags :mm.rule/cites :mm.rule/related
-                      :mm.rule/governed-by :mm.rule/triggered-by :mm.rule/applies-in
-                      :mm.rule/derives-from
-                      :mm.rule/body-raw :mm.rule/first-section :mm.rule/links
-                      :mm.rule/frontmatter]
+   [[:mm.memory/name              0]
+    [:mm.memory/description       1]
+    [:mm.rule/rule-type           2]
+    [:mm.memory/scope             3]
+    [:mm.rule/event               4]
+    [:mm.rule/enforcement         5]
+    [:mm.rule/actor               6]
+    [:mm.rule/context             7]
+    [:mm.rule/priority            8]
+    [:mm.rule/engine              9]
+    [:mm.rule/dispatch-strategy  10]
+    [:mm.rule/lifecycle          11]
+    [:mm.memory/created          12]
+    [:mm.memory/last-reviewed    13]
+    [:mm.memory/created-by       14]
+    [:mm.memory/cites            15]
+    [:mm.memory/related          16]
+    [:mm.rule/governed-by        17]
+    [:mm.rule/triggered-by       18]
+    [:mm.rule/applies-in         19]
+    [:mm.rule/derives-from       20]
+    [:mm.memory/tags             21]]
+   ;; β.2.2 Phase I 2026-05-26: :dt/slots trimmed from 28 :mm.rule/*
+   ;; to 12 Rule-specific slots.  The 16 doubly-declared slot surface
+   ;; (identity, rel-path, name, description, scope, created,
+   ;; last-reviewed, created-by, tags, cites, related, triggered-by,
+   ;; body-raw, first-section, links, frontmatter) comes from
+   ;; :mm.memory/* via inheritance.  Function-shape :dt.fn/* slots
+   ;; (body, parameters, return-type, etc.) come from :mm/Fn
+   ;; inheritance (Rule is :dt/subclass-of :mm/Fn per the Stage B.5
+   ;; ADR 2026-05-23).
+   :dt/slots         [:mm.rule/rule-type :mm.rule/event :mm.rule/enforcement
+                      :mm.rule/actor :mm.rule/context :mm.rule/priority
+                      :mm.rule/engine :mm.rule/dispatch-strategy
+                      :mm.rule/lifecycle :mm.rule/governed-by
+                      :mm.rule/applies-in :mm.rule/derives-from]
    :dt/abstract?     false
-   :db/doc "A first-class discipline rule entity.  Routes `type: rule`.  Per decisions/actor_as_first_class_metamodel_class_with_mm_actor_slots_2026_05_20.md + decisions/firewall_procedure_as_first_class_type_2026_05_11.md."}
+   :db/doc "A first-class discipline rule entity.  Routes `type: rule`.  Per decisions/actor_as_first_class_metamodel_class_with_mm_actor_slots_2026_05_20.md + decisions/firewall_procedure_as_first_class_type_2026_05_11.md.  β.2.2 Phase I 2026-05-26: doubly-declared slot surface migrated to canonical :mm.memory/* via inheritance; 12 Rule-specific slots retained.  Subclass of :mm/Fn (per Stage B.5 ADR 2026-05-23) — inherits :dt.fn/* fn-shape slots in addition to :mm.memory/* slots; the 3 namespace-overlap cases (description / status / superseded-by between :mm.memory and :dt.fn) are nuanced per amendment-2 §1.3."}
 
   {:db/ident         :mm/BootstrapSource
    :dt/type          :dt/Class
