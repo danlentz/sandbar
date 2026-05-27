@@ -505,7 +505,14 @@
     (when (nil? ident-or-id)
       (throw (ex-info "Missing required argument: ident (or id)" {:args args})))
     (let [{:keys [valid? entity reasons]} (eref/validate ident-or-id)
-          projection (projection/->projection-mode projection-raw)]
+          ;; Gap #1 fix 2026-05-27 — default to :metadata-only at the MCP
+          ;; boundary (mirrors entity-update-handler Gap #7 fix landed
+          ;; 2026-05-23).  Opt-in `:projection :full` still works for
+          ;; consumers who want the body.  Per
+          ;; observations/substrate_projection_shape_round_trip_gaps_consolidated_2026_05_23.md §2
+          ;; + plans/open_ceremony_quality_pass_phase_gamma_5_sub_plan_…2026_05_27 Stage A.
+          projection (or (projection/->projection-mode projection-raw)
+                         :metadata-only)]
       (if valid?
         {:entity (projection/apply-projection entity projection)}
         {:entity nil :missing? true :lookup (str ident-or-id) :reasons reasons}))))
@@ -529,7 +536,11 @@
     (when (nil? rel-path)
       (throw (ex-info "Missing required argument: rel-path" {:args args})))
     (let [ident (codec-md/rel-path->memory-ident rel-path)
-          projection (projection/->projection-mode projection-raw)]
+          ;; Gap #1 fix 2026-05-27 — sibling of entity-find-handler fix.
+          ;; Default :metadata-only at MCP boundary; opt-in `:projection :full`
+          ;; preserved.  See entity-find-handler above for rationale.
+          projection (or (projection/->projection-mode projection-raw)
+                         :metadata-only)]
       (if (nil? ident)
         {:entity nil :missing? true :lookup rel-path
          :reasons #{:rel-path/unparseable}}
