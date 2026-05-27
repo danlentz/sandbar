@@ -168,6 +168,22 @@
   :workflow/from-state [:workflow/state-name :session/paused]
   :workflow/to-state [:workflow/state-name :session/failed]
   :workflow/on-transition sandbar.workflow.session/on-fail
+  :workflow/requires-reason? true}
+
+ ;; NEW per W4.1 Increment E (κ P8 :phase-timeout hard-fail detection)
+ ;; — fail-while-still-opening (opening → failed).  Required for the ι.3
+ ;; orchestrator to advance the process to :session/failed when a phase-
+ ;; timeout fires DURING the :phase/activate boundary (which transitions
+ ;; opening → active).  Without this transition the orchestrator can emit
+ ;; :mm.event/WorkflowSessionFailed observability but the process is
+ ;; stuck in :opening because no fail-shaped transition is reachable.
+ ;; Per ι.3 design ratification ADR §Q.ι.3.4 (4 hard-fail conditions).
+ {:db/ident :session.transition/fail-from-opening
+  :workflow/transition-name :session/fail-from-opening
+  :dt/type :workflow/Transition
+  :workflow/from-state [:workflow/state-name :session/opening]
+  :workflow/to-state [:workflow/state-name :session/failed]
+  :workflow/on-transition sandbar.workflow.session/on-fail
   :workflow/requires-reason? true}]
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -197,7 +213,9 @@
                          :session.transition/pause-maintenance
                          :session.transition/resume-maintenance
                          :session.transition/fail
-                         :session.transition/fail-from-paused]
+                         :session.transition/fail-from-paused
+                         ;; W4.1 Increment E: phase-timeout fail-shape coverage
+                         :session.transition/fail-from-opening]
   :workflow/version 2
   :mm.memory/name "Session-Orientation Workflow"
   :mm.memory/description "Lifecycle workflow for AI-collaboration sessions. Opens with :session/start (transitioning the initial :session/opening state to :session/active), supports :session/pause-maintenance / :session/resume-maintenance for κ-P6 maintenance-mode pause-without-destroy (active ↔ paused state), and :session/fail / :session/fail-from-paused for κ-P8 non-recoverable abort. Closes with :session/close → :session/finalize chain. Per the wave-1 ratification ADR + the ι sub-arc plan. Existing :session/pause / :session/resume transitions (active ↔ opening) preserved unchanged as deprecated ad-hoc pause idiom; new code uses the :session/pause-maintenance pair."

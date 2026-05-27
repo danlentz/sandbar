@@ -345,6 +345,63 @@
                       :event/kind                        :workflow/degraded}
                transition (assoc :mm.workflow-event/transition transition))))
 
+(defn- emit-failed-event!
+  "Emit :mm.event/WorkflowSessionFailed when a hard-fail criterion is
+   detected (per `hard-fail-criteria`).  Returns the event entity-map.
+   Per Q.ι.3.4 + Q.ι.3.9."
+  [{:keys [process-id phase reason]}]
+  (try-emit! :mm.event/WorkflowSessionFailed
+             {:mm.workflow-event/process        process-id
+              :mm.workflow-event/phase          phase
+              :mm.workflow-event/failure-reason (or reason :phase-timeout)
+              :event/name                       "WorkflowSessionFailed"
+              :event/level                      :error
+              :event/kind                       :workflow/failed
+              :event/status                     :failure}))
+
+(def ^:private current-state-to-fail-transition
+  "Per the :workflow/session lifecycle, the fail-shaped transition canonical
+   for a given current state.  Used by `try-transition-to-failed!` to pick
+   the right transition based on where the process is in its lifecycle."
+  {:session/opening :session/fail-from-opening
+   :session/active  :session/fail
+   :session/paused  :session/fail-from-paused})
+
+(defn- try-transition-to-failed!
+  "Best-effort: advance `process-id` to `:session/failed` via the
+   state-appropriate fail-transition.  Returns true on success, false
+   if no fail-transition is reachable from the current state OR the
+   transition itself fails for any reason.
+
+   The orchestrator emits `:mm.event/WorkflowSessionFailed` BEFORE
+   calling this — observability is preserved even when the underlying
+   transition fails.  Per κ P8 + the principle that hard-fail
+   detection is independent of the substrate's ability to model the
+   failed state.
+
+   `reason-str` is the human-readable rationale carried in the
+   workflow.history (the underlying `:session.transition/fail*` has
+   `:workflow/requires-reason? true`)."
+  [process-id reason-str]
+  (try
+    (let [process (wf/find-process process-id)]
+      (when process
+        (let [current-state-name (:workflow/state-name (wf/get-current-state process))
+              fail-transition    (get current-state-to-fail-transition current-state-name)]
+          (if fail-transition
+            (do (wf/transition! process fail-transition :reason reason-str)
+                true)
+            (do (log/warn :ORCHESTRATE/FAIL-TRANSITION-NOT-REACHABLE
+                          {:process-id    process-id
+                           :current-state current-state-name
+                           :reason        reason-str})
+                false)))))
+    (catch Exception e
+      (log/warn e :ORCHESTRATE/FAIL-TRANSITION-FAILED
+                {:process-id process-id
+                 :reason     reason-str})
+      false)))
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Phase-work multimethod (extensible via :mm/Fn entry/exit per κ P4)
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -459,53 +516,99 @@
   [args]
   (validate-args! args)
   (let [{:keys [phase context actor reason timeouts]} args
-        start-instant   (System/currentTimeMillis)
-        _timeout-ms     (effective-timeout-ms phase timeouts)  ;; reserved for future timeout wiring
-        ;; Run phase-work multimethod (default no-op; per-phase methods extend).
-        phase-result    (phase-work args)
-        ;; Apply the per-phase workflow.transition chain (often empty).
-        transitions     (get phase-transitions phase [])
-        outcomes        (reduce (fn [acc tname]
-                                  (conj acc
-                                        (safe-transition! (:process-id args) tname
-                                                          :context context
-                                                          :actor   actor
-                                                          :reason  reason)))
-                                []
-                                transitions)
-        applied         (->> outcomes (keep :applied) vec)
-        degraded?       (boolean (some :degraded? outcomes))
-        ;; Q.ι.3.9 event emission — one event per phase boundary:
-        ;;   degraded? true  → :mm.event/WorkflowSessionDegraded (carries reason)
-        ;;   degraded? false → phase-completion event if registered (else nothing)
-        emitted-event   (if degraded?
-                          (let [degraded-outcome (some #(when (:degraded? %) %) outcomes)]
-                            (emit-degraded-event!
-                             {:process-id (:process-id args)
-                              :phase      phase
-                              :transition (:transition degraded-outcome)
-                              :reason     (:reason degraded-outcome)}))
-                          (emit-phase-completion-event!
-                           phase
-                           {:process-id (:process-id args)
-                            :transition (last applied)}))
-        events-emitted  (if emitted-event
-                          [(:db/id emitted-event)]
-                          [])
-        duration-ms     (- (System/currentTimeMillis) start-instant)]
-    (log/info :ORCHESTRATE/PHASE-COMPLETE
-              {:phase             phase
-               :ceremony          (ceremony-of phase)
-               :transitions       applied
-               :degraded?         degraded?
-               :events-emitted    events-emitted
-               :duration-ms       duration-ms
-               :process-id        (:process-id args)
-               :workflow          (:workflow args)})
-    {:phase-completed    phase
-     :next-phase         (next-phase-of phase)
-     :transition-applied applied
-     :events-emitted     events-emitted
-     :duration-ms        duration-ms
-     :degraded?          degraded?
-     :phase-work-result  phase-result}))
+        start-instant (System/currentTimeMillis)
+        timeout-ms    (effective-timeout-ms phase timeouts)
+        ;; Wrap the phase-work + transition-application in a future + timeout.
+        ;; On TimeoutException → emit :mm.event/WorkflowSessionFailed +
+        ;; try-transition-to-failed + throw ex-info :reason :phase-timeout
+        ;; per κ P8 hard-fail.  Per Q.ι.3.4 + Q.ι.3.9.
+        ;;
+        ;; Test injection: `(:test/sleep-ms context)` triggers a Thread/sleep
+        ;; before phase-work — lets tests deterministically exercise the
+        ;; timeout path with a tiny override (`:timeouts {phase 50}`).  This
+        ;; hook is test-only; production phase-work does not check it.
+        work-future   (future
+                        (when-let [sleep-ms (get context :test/sleep-ms)]
+                          (Thread/sleep ^long sleep-ms))
+                        (let [phase-result (phase-work args)
+                              transitions  (get phase-transitions phase [])
+                              outcomes     (reduce (fn [acc tname]
+                                                     (conj acc
+                                                           (safe-transition!
+                                                             (:process-id args) tname
+                                                             :context context
+                                                             :actor   actor
+                                                             :reason  reason)))
+                                                   []
+                                                   transitions)]
+                          {:phase-result phase-result :outcomes outcomes}))
+        work-result   (try
+                        (.get ^java.util.concurrent.Future work-future
+                              ^long timeout-ms
+                              java.util.concurrent.TimeUnit/MILLISECONDS)
+                        (catch java.util.concurrent.TimeoutException _
+                          (.cancel ^java.util.concurrent.Future work-future true)
+                          ::phase-timeout)
+                        (catch java.util.concurrent.ExecutionException e
+                          ;; Unwrap to surface the underlying cause to the caller
+                          (throw (or (.getCause e) e))))]
+    (cond
+      ;; ---- Hard-fail: :phase-timeout ----
+      (= work-result ::phase-timeout)
+      (let [reason-str (str "Phase timeout — " phase " exceeded " timeout-ms "ms")
+            emitted    (emit-failed-event!
+                         {:process-id (:process-id args)
+                          :phase      phase
+                          :reason     :phase-timeout})]
+        (try-transition-to-failed! (:process-id args) reason-str)
+        (log/error :ORCHESTRATE/PHASE-TIMEOUT
+                   {:phase       phase
+                    :timeout-ms  timeout-ms
+                    :process-id  (:process-id args)
+                    :event-eid   (:db/id emitted)})
+        (throw (ex-info reason-str
+                        {:reason        :phase-timeout
+                         :phase         phase
+                         :timeout-ms    timeout-ms
+                         :process-id    (:process-id args)
+                         :event-emitted (:db/id emitted)})))
+
+      ;; ---- Normal path: success or κ P18 degraded ----
+      :else
+      (let [{:keys [phase-result outcomes]} work-result
+            applied        (->> outcomes (keep :applied) vec)
+            degraded?      (boolean (some :degraded? outcomes))
+            ;; Q.ι.3.9 event emission — one event per phase boundary:
+            ;;   degraded? true  → :mm.event/WorkflowSessionDegraded
+            ;;   degraded? false → phase-completion event if registered
+            emitted-event  (if degraded?
+                             (let [degraded-outcome (some #(when (:degraded? %) %) outcomes)]
+                               (emit-degraded-event!
+                                {:process-id (:process-id args)
+                                 :phase      phase
+                                 :transition (:transition degraded-outcome)
+                                 :reason     (:reason degraded-outcome)}))
+                             (emit-phase-completion-event!
+                              phase
+                              {:process-id (:process-id args)
+                               :transition (last applied)}))
+            events-emitted (if emitted-event
+                             [(:db/id emitted-event)]
+                             [])
+            duration-ms    (- (System/currentTimeMillis) start-instant)]
+        (log/info :ORCHESTRATE/PHASE-COMPLETE
+                  {:phase             phase
+                   :ceremony          (ceremony-of phase)
+                   :transitions       applied
+                   :degraded?         degraded?
+                   :events-emitted    events-emitted
+                   :duration-ms       duration-ms
+                   :process-id        (:process-id args)
+                   :workflow          (:workflow args)})
+        {:phase-completed    phase
+         :next-phase         (next-phase-of phase)
+         :transition-applied applied
+         :events-emitted     events-emitted
+         :duration-ms        duration-ms
+         :degraded?          degraded?
+         :phase-work-result  phase-result}))))

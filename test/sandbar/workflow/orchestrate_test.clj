@@ -461,3 +461,83 @@
         ":phase/orient is pure-read; no emission registered")
     (is (nil? (get orchestrate/phase-completion-event-class :phase/imprint))
         ":phase/imprint is pure-write banner; no emission registered")))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Schema regression — :session.transition/fail-from-opening (W4.1 Increment E)
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(deftest workflow-session-has-fail-from-opening-transition
+  (testing ":session.transition/fail-from-opening exists with opening → failed shape"
+    (let [fail-tx (wf/find-transition :session/fail-from-opening :session/opening)]
+      (is (some? fail-tx)
+          ":session/fail-from-opening should be reachable from :session/opening")
+      (is (= :session/failed
+             (:workflow/state-name (:workflow/to-state fail-tx)))
+          "to-state is :session/failed"))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Phase-timeout hard-fail tests (κ P8; Q.ι.3.4; W4.1 Increment E)
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(deftest orchestrate-completes-within-timeout
+  (testing "Normal-fast phase completes well under the default timeout"
+    (let [process (start-test-session-process!)
+          result  (orchestrate/orchestrate {:workflow   :workflow/session
+                                            :process-id (:db/id process)
+                                            :phase      :phase/orient})]
+      (is (= :phase/orient (:phase-completed result)))
+      (is (< (:duration-ms result) 10000)
+          ":phase/orient default 90s timeout — fast phase completes well under it"))))
+
+(deftest orchestrate-phase-timeout-fires-on-slow-phase-work
+  (testing "Slow phase-work triggers :reason :phase-timeout hard-fail"
+    (let [process (start-test-session-process!)
+          thrown  (try
+                    (orchestrate/orchestrate {:workflow   :workflow/session
+                                              :process-id (:db/id process)
+                                              :phase      :phase/activate
+                                              :timeouts   {:phase/activate 50}
+                                              :context    {:test/sleep-ms 500}})
+                    nil
+                    (catch clojure.lang.ExceptionInfo e e))]
+      (is (some? thrown) "Should throw on timeout")
+      (is (= :phase-timeout (:reason (ex-data thrown))))
+      (is (= :phase/activate (:phase (ex-data thrown))))
+      (is (= 50 (:timeout-ms (ex-data thrown))))
+      ;; :event-emitted carries the :mm.event/WorkflowSessionFailed eid
+      (is (some? (:event-emitted (ex-data thrown)))
+          ":mm.event/WorkflowSessionFailed event was emitted before throw"))))
+
+(deftest orchestrate-phase-timeout-emits-failed-event
+  (testing ":phase-timeout fires :mm.event/WorkflowSessionFailed with :failure-reason"
+    (let [process    (start-test-session-process!)
+          thrown     (try
+                       (orchestrate/orchestrate {:workflow   :workflow/session
+                                                 :process-id (:db/id process)
+                                                 :phase      :phase/activate
+                                                 :timeouts   {:phase/activate 50}
+                                                 :context    {:test/sleep-ms 500}})
+                       nil
+                       (catch clojure.lang.ExceptionInfo e e))
+          event-eid  (:event-emitted (ex-data thrown))
+          event-ent  (db/entity event-eid)
+          event-type (let [t (:dt/type event-ent)]
+                       (cond (keyword? t) t :else (:db/ident t)))]
+      (is (= :mm.event/WorkflowSessionFailed event-type))
+      (is (= :phase/activate (:mm.workflow-event/phase event-ent)))
+      (is (= :phase-timeout (:mm.workflow-event/failure-reason event-ent))))))
+
+(deftest orchestrate-phase-timeout-advances-process-to-failed
+  (testing ":phase-timeout best-effort transitions process to :session/failed when reachable"
+    (let [process (start-test-session-process!)  ;; in :session/opening
+          _       (try
+                    (orchestrate/orchestrate {:workflow   :workflow/session
+                                              :process-id (:db/id process)
+                                              :phase      :phase/activate
+                                              :timeouts   {:phase/activate 50}
+                                              :context    {:test/sleep-ms 500}})
+                    (catch clojure.lang.ExceptionInfo _ nil))
+          process-after (wf/find-process (:db/id process))
+          current-state (:workflow/state-name (wf/get-current-state process-after))]
+      (is (= :session/failed current-state)
+          "fail-from-opening transition advances process to :session/failed terminal state"))))
