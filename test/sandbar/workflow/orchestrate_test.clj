@@ -602,4 +602,93 @@
     ;; :phase/initialize doesn't have a phase-work method yet (lands in follow-on increment)
     (is (nil? (orchestrate/phase-work {:phase :phase/initialize}))
         ":phase/initialize falls through to :default no-op until its method lands")
-    (is (nil? (orchestrate/phase-work {:phase :phase/imprint})))))
+    ;; :phase/capture / :author / :link also still default no-op
+    (is (nil? (orchestrate/phase-work {:phase :phase/capture})))
+    (is (nil? (orchestrate/phase-work {:phase :phase/author})))
+    (is (nil? (orchestrate/phase-work {:phase :phase/link})))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; phase-work :phase/imprint tests (W4.1 Increment H — banner composition)
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(deftest phase-work-imprint-returns-string
+  (testing "phase-work :phase/imprint always returns a string"
+    (let [result (orchestrate/phase-work {:phase :phase/imprint})]
+      (is (string? result)))
+    (let [result (orchestrate/phase-work {:phase   :phase/imprint
+                                          :context {:orient-state {:memory-count 100}}})]
+      (is (string? result)))))
+
+(deftest phase-work-imprint-handles-missing-orient-state
+  (testing "Missing :orient-state in context → graceful placeholder banner"
+    (let [result (orchestrate/phase-work {:phase :phase/imprint})]
+      (is (re-find #"(?i)orient-state was not supplied" result)
+          "Banner mentions missing orient-state when context is absent"))
+    (let [result (orchestrate/phase-work {:phase   :phase/imprint
+                                          :context {}})]
+      (is (re-find #"(?i)orient-state was not supplied" result)))))
+
+(deftest phase-work-imprint-includes-memory-count
+  (testing "Banner includes the corpus memory count when orient-state supplied"
+    (let [result (orchestrate/phase-work
+                   {:phase   :phase/imprint
+                    :context {:orient-state {:memory-count   12345
+                                             :type-histogram {}}}})]
+      (is (re-find #"12345" result)
+          "Memory count appears in banner"))))
+
+(deftest phase-work-imprint-includes-prior-session-name
+  (testing "Banner includes prior-session name when present"
+    (let [result (orchestrate/phase-work
+                   {:phase   :phase/imprint
+                    :context {:orient-state
+                              {:prior-session  {:mm.memory/name "Session 2026-05-26T1430"}
+                               :memory-count   100
+                               :type-histogram {}}}})]
+      (is (re-find #"Session 2026-05-26T1430" result)))))
+
+(deftest phase-work-imprint-includes-active-plans
+  (testing "Banner includes active-plans names when present"
+    (let [result (orchestrate/phase-work
+                   {:phase   :phase/imprint
+                    :context {:orient-state
+                              {:memory-count   100
+                               :type-histogram {}
+                               :active-plans   [{:mm.memory/name "Plan Alpha"}
+                                                {:mm.memory/name "Plan Beta"}]}}})]
+      (is (re-find #"Active arcs" result))
+      (is (re-find #"Plan Alpha" result))
+      (is (re-find #"Plan Beta" result)))))
+
+(deftest phase-work-imprint-handles-empty-active-collections
+  (testing "Empty active-plans / active-tasks → those banner lines omitted"
+    (let [result (orchestrate/phase-work
+                   {:phase   :phase/imprint
+                    :context {:orient-state
+                              {:memory-count     100
+                               :type-histogram   {}
+                               :active-plans     []
+                               :active-tasks     []
+                               :active-processes []}}})]
+      (is (string? result))
+      (is (not (re-find #"Active arcs" result))
+          "No 'Active arcs' line when active-plans is empty")
+      (is (not (re-find #"Ready queue" result))
+          "No 'Ready queue' line when active-tasks is empty")
+      (is (not (re-find #"In-flight workflows" result))
+          "No 'In-flight workflows' line when active-processes is empty"))))
+
+(deftest phase-work-imprint-integrates-with-orchestrate
+  (testing "orchestrate :phase/imprint with orient-state in context returns banner via :phase-work-result"
+    (let [process (start-test-session-process!)
+          orient-state {:memory-count 100
+                        :type-histogram {}
+                        :active-plans [{:mm.memory/name "Test Plan"}]}
+          result  (orchestrate/orchestrate {:workflow   :workflow/session
+                                            :process-id (:db/id process)
+                                            :phase      :phase/imprint
+                                            :context    {:orient-state orient-state}})]
+      (is (= :phase/imprint (:phase-completed result)))
+      (is (nil? (:next-phase result)) ":phase/imprint is terminal in open ceremony")
+      (is (string? (:phase-work-result result)))
+      (is (re-find #"Test Plan" (:phase-work-result result))))))

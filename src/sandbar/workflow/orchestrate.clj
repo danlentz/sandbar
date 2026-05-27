@@ -511,6 +511,101 @@
      :active-processes active-procs}))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; phase-work :phase/imprint — SECOND multimethod method (Increment H)
+;;
+;; Pure data formatting — composes the orientation banner string from the
+;; orient-state collected at :phase/orient (carried via `(:context args)
+;; :orient-state`).  Returns the markdown-formatted banner via
+;; `:phase-work-result` for the caller (skill body) to display.
+;;
+;; No DB queries, no transitions — banner composition only.  This is the
+;; SECOND step in the multi-increment phase-work multimethod migration arc
+;; toward Q.ι.3.12 thin-wrapper realization.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defn- banner-prior-session-line
+  "Compose the 'Last session' banner line.  Returns the string, or nil if
+   no prior-session in orient-state."
+  [orient-state]
+  (when-let [prior (:prior-session orient-state)]
+    (let [n        (:mm.memory/name prior)
+          ended    (:mm.session/ended-at prior)
+          log-ref  (:prior-log orient-state)
+          log-name (some-> log-ref :mm.memory/name)]
+      (str "- **Last session**: " (or n "<unnamed>")
+           (when ended (str " (closed " ended ")"))
+           (when log-name (str " → handoff log `" log-name "`"))))))
+
+(defn- banner-corpus-state-line
+  "Compose the 'Corpus state' banner line with top-3 memorial types."
+  [orient-state]
+  (let [cnt   (:memory-count orient-state)
+        hist  (:type-histogram orient-state)
+        top-3 (->> hist
+                   (sort-by val >)
+                   (take 3)
+                   (map (fn [[k v]]
+                          (str (if (keyword? k) (str k) (str k)) ": " v)))
+                   (str/join ", "))]
+    (str "- **Corpus state**: " (or cnt 0) " :mm/Memory entities"
+         (when (seq top-3) (str " (top types: " top-3 ")")))))
+
+(defn- entity-name
+  "Extract a human-readable name from an entity-map.  Falls back to :db/ident
+   string form, then :db/id."
+  [entity]
+  (or (:mm.memory/name entity)
+      (some-> (:db/ident entity) str)
+      (some-> (:db/id entity) str)
+      "<unnamed>"))
+
+(defn- banner-active-plans-line
+  [orient-state]
+  (when-let [plans (seq (:active-plans orient-state))]
+    (str "- **Active arcs** (top " (count plans) "): "
+         (str/join "; " (map entity-name plans)))))
+
+(defn- banner-ready-queue-line
+  [orient-state]
+  (when-let [tasks (seq (:active-tasks orient-state))]
+    (str "- **Ready queue** (top " (count tasks) "): "
+         (str/join "; " (map entity-name tasks)))))
+
+(defn- banner-active-processes-line
+  [orient-state]
+  (let [procs (:active-processes orient-state)
+        n     (count procs)]
+    (when (pos? n)
+      (str "- **In-flight workflows**: " n " active process(es)"))))
+
+(defn- compose-banner
+  "Compose the full orientation banner from orient-state.  Returns a
+   newline-joined markdown string.  Each section line is included only
+   when its source data is present (graceful degradation)."
+  [orient-state]
+  (let [lines (filter some?
+                      [(banner-prior-session-line orient-state)
+                       (banner-corpus-state-line orient-state)
+                       (banner-active-plans-line orient-state)
+                       (banner-ready-queue-line orient-state)
+                       (banner-active-processes-line orient-state)])]
+    (if (seq lines)
+      (str/join "\n" lines)
+      "(No orientation data available.)")))
+
+(defmethod phase-work :phase/imprint
+  [args]
+  (let [orient-state (get-in args [:context :orient-state])]
+    (if orient-state
+      (compose-banner orient-state)
+      ;; No orient-state supplied — return a placeholder banner so the
+      ;; caller can detect the gap + supply orient-state via :context.
+      (str "## Session orientation\n\n"
+           "(Banner cannot be composed — :context :orient-state was not "
+           "supplied.  Caller should invoke `:phase/orient` first and pass "
+           "the result map as `(:context args) :orient-state` to this phase.)"))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Orchestrator entry point — W4.1 dispatcher loop
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
