@@ -26,6 +26,15 @@
  ;;                     family.  Per ι.2 substrate execution 2026-05-25.)
  :required-schema [:meta :ref :literal :fn :any :context :event :user :twit :auth :audit :workflow :job :mm :mm-namespace :workflow-session]
 
+ ;; γ.3 — scheduler config.  Defaults: :enabled? false (opt-in safety
+ ;; per Q.γ.5 of the γ.1 ADR).  When true, sandbar.core/start invokes
+ ;; sandbar.schedule/enable! + sandbar.schedule/start! (allocates the
+ ;; handler-pool + spawns the fire-thread + registers the job-dispatcher
+ ;; subscriber).  :jobs is an enumeration slot for Schedule idents to
+ ;; autostart at boot (γ.5+ populates this with the demo DB-stats job).
+ :scheduler {:enabled? false
+             :jobs     []}
+
  :nrepl   {:port 28888}
  :auth {:twitter
         {:consumer-key    ""

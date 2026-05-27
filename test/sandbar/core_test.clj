@@ -5,6 +5,9 @@
             [sandbar.core :as core]
             [sandbar.sys :as sys]
             [sandbar.db.datomic :as db]
+            [sandbar.schedule :as sched]
+            [sandbar.schedule.state :as sched-state]
+            [sandbar.event :as event]
             [sandbar.server.pedestal :as pedestal]
             [sandbar.server.nrepl :as nrepl]))
 
@@ -225,3 +228,55 @@
           (try
             (db/delete-db (:uri peer))
             (catch Exception _)))))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; γ.3 — start-scheduler-if-enabled! lifecycle wiring tests
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;
+;; Tests the conditional wiring of sandbar.schedule into sandbar.core/start
+;; per γ.3.  Uses fresh scheduler-state binding (atom-inside-dyn-var) +
+;; faked sys/system carrying a :config slot with the relevant :scheduler
+;; sub-map.  Verifies the conditional outcome WITHOUT exercising the full
+;; sandbar.core/start (which is a heavyweight integration test).
+
+(defn scheduler-isolation-fixture
+  "Fresh scheduler-state per test + tear-down."
+  [f]
+  (binding [sched-state/*scheduler-state* (atom (sched-state/initial-state))]
+    (event/clear!)
+    (try (f)
+         (finally
+           (try (sched/stop! {:drain-timeout-ms 200}) (catch Exception _ nil))
+           (event/clear!)))))
+
+(deftest start-scheduler-if-enabled-respects-disabled-config
+  (scheduler-isolation-fixture
+    (fn []
+      (testing "When :scheduler {:enabled? false}, no scheduler activation"
+        (alter-var-root #'sys/system
+                        (constantly {:config {:scheduler {:enabled? false}}}))
+        (let [outcome ((resolve 'sandbar.core/start-scheduler-if-enabled!))]
+          (is (= :scheduler-disabled-by-config outcome))
+          (is (false? (sched/enabled?)))
+          (is (= :scheduler.state/inactive (sched/state))))))))
+
+(deftest start-scheduler-if-enabled-activates-when-config-true
+  (scheduler-isolation-fixture
+    (fn []
+      (testing "When :scheduler {:enabled? true}, scheduler enables + starts"
+        (alter-var-root #'sys/system
+                        (constantly {:config {:scheduler {:enabled? true
+                                                          :jobs []}}}))
+        (let [outcome ((resolve 'sandbar.core/start-scheduler-if-enabled!))]
+          (is (= :scheduler-started outcome))
+          (is (sched/enabled?))
+          (is (= :scheduler.state/active (sched/state))))))))
+
+(deftest start-scheduler-if-enabled-default-disabled-when-no-config
+  (scheduler-isolation-fixture
+    (fn []
+      (testing "Missing :scheduler config defaults to disabled (opt-in safety per Q.γ.5)"
+        (alter-var-root #'sys/system (constantly {:config {}}))
+        (let [outcome ((resolve 'sandbar.core/start-scheduler-if-enabled!))]
+          (is (= :scheduler-disabled-by-config outcome))
+          (is (false? (sched/enabled?))))))))

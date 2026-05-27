@@ -9,12 +9,17 @@
             [sandbar.reactive :as reactive]
             [sandbar.reactive.queue :as reactive-queue]
             [sandbar.reactive.sinks :as reactive-sinks]
+            [sandbar.schedule :as sched]
             [sandbar.search :as search]
             [sandbar.server.nrepl :as nrepl]
             [sandbar.server.pedestal :as pedestal]
             [sandbar.sys :as sys]
             [sandbar.util.common :as util]
             [sandbar.util.edn :as edn]))
+
+;; γ.3 — forward-declared so `start` can refer to it (definition follows
+;; `start` because it logically belongs to the lifecycle section).
+(declare start-scheduler-if-enabled!)
 
 (defn make-system
   ([] (make-system :config))
@@ -92,10 +97,52 @@
                :corpus-root (reactive-sinks/corpus-root)})
     (catch Exception e
       (log/warn e :SYS/REACTIVE-PROJECTION-STARTUP-FAILED
-                "Reactive-projection worker failed to start; dt/* mutations will skip the hook"))))
+                "Reactive-projection worker failed to start; dt/* mutations will skip the hook")))
+  ;; γ.3 — autostart the scheduler if config opts in (:scheduler {:enabled? true}).
+  ;; Default is :enabled? false (per Q.γ.5 opt-in safety) so this is a no-op
+  ;; in the standard dev workflow until a project explicitly turns it on via
+  ;; .sandbar/config.edn override.  When enabled, allocates the handler-pool +
+  ;; spawns the fire-thread + registers the :mm.event/Scheduled subscriber.
+  ;; Schedule auto-loading from :jobs is handled separately in γ.5+ (demo
+  ;; DB-stats job).
+  (try
+    (start-scheduler-if-enabled!)
+    (catch Exception e
+      (log/warn e :SYS/SCHEDULER-STARTUP-FAILED
+                "Scheduler autostart failed; sandbar.schedule/start! can be called manually"))))
+
+(defn- start-scheduler-if-enabled!
+  "Read `:scheduler` config; if `:enabled?` is true, enable + start the
+   scheduler via sandbar.schedule/enable! + start!.  Returns the
+   outcome keyword (`:scheduler-started` | `:scheduler-disabled-by-config`).
+
+   Extracted from `start` for testability — tests can bind a fake
+   `:config` system value + call this fn directly."
+  []
+  (let [config           (get-in sys/system [:config])
+        scheduler-config (get config :scheduler {})
+        enabled?         (boolean (:enabled? scheduler-config))]
+    (if enabled?
+      (do (sched/enable!)
+          (sched/start!)
+          (log/info :SYS/SCHEDULER-STARTED
+                    {:enabled? true
+                     :jobs     (count (get scheduler-config :jobs []))})
+          :scheduler-started)
+      (do (log/info :SYS/SCHEDULER-DISABLED-BY-CONFIG)
+          :scheduler-disabled-by-config))))
 
 (defn stop []
   (log/info :SYS/STOP "Stopping system components")
+  ;; γ.3 — drain + stop the scheduler BEFORE component/stop tears down
+  ;; sandbar.db.datomic (the scheduler's :handler-pool jobs may still
+  ;; write to Datomic during drain).  Idempotent — no-op when scheduler
+  ;; is not running.
+  (try
+    (sched/stop! {:drain-timeout-ms 5000})
+    (catch Exception e
+      (log/warn e :SYS/SCHEDULER-STOP-FAILED
+                "Scheduler stop failed; proceeding with component shutdown")))
   (alter-var-root #'sys/system (fn [s] (when s (component/stop s))))
   (log/info :SYS/STOPPED "System stopped"))
 
