@@ -319,20 +319,26 @@
 
 (deftest pause-and-resume-preserve-queue
   (testing "Pause preserves queue + handler-pool; resume re-allocates fire-thread"
-    (with-fixed-now (.minusSeconds reference-dtstart 60)
-      (let [eid (make-schedule! {:rrule "FREQ=HOURLY"})]
-        (dispatcher/add-schedule! eid)
-        (dispatcher/start!)
-        (let [queued-pre (count (dispatcher/snapshot-queue))]
-          (is (pos? queued-pre) "Queue has at least one entry pre-pause")
-          (is (= :paused (dispatcher/pause!)))
-          (is (= :scheduler.state/paused (:state (state/snapshot))))
-          (is (= queued-pre (count (dispatcher/snapshot-queue)))
-              "Queue preserved across pause")
-          (is (= :resumed (dispatcher/resume!)))
-          (is (= :scheduler.state/active (:state (state/snapshot))))
-          (is (some? (:fire-thread (state/snapshot)))
-              "New fire-thread allocated on resume"))))))
+    ;; Use a FUTURE dtstart (1h after real-time now) so the fire-thread
+    ;; PARKS instead of rapidly firing past events during pause/resume.
+    ;; Past-event rapid-fire creates a race against the test assertions
+    ;; (the fire-thread's catch path may transition state to :draining if
+    ;; any iteration throws under concurrent state mutations).
+    (let [future-dtstart (.plusSeconds (Instant/now) 3600)
+          eid (make-schedule! {:rrule   "FREQ=HOURLY"
+                               :dtstart future-dtstart})]
+      (dispatcher/add-schedule! eid)
+      (dispatcher/start!)
+      (let [queued-pre (count (dispatcher/snapshot-queue))]
+        (is (pos? queued-pre) "Queue has at least one entry pre-pause")
+        (is (= :paused (dispatcher/pause!)))
+        (is (= :scheduler.state/paused (:state (state/snapshot))))
+        (is (= queued-pre (count (dispatcher/snapshot-queue)))
+            "Queue preserved across pause")
+        (is (= :resumed (dispatcher/resume!)))
+        (is (= :scheduler.state/active (:state (state/snapshot))))
+        (is (some? (:fire-thread (state/snapshot)))
+            "New fire-thread allocated on resume")))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Recovery

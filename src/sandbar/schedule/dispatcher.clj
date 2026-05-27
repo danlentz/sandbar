@@ -451,7 +451,9 @@
       (catch InterruptedException _
         ;; Per Java best-practice — clear the interrupted-flag the
         ;; .interrupt set on us (we've handled it by waking up).
-        (.. Thread currentThread interrupted)
+        ;; Thread/interrupted is the STATIC method that both reads +
+        ;; clears the flag; NOT .interrupted (no such instance method).
+        (Thread/interrupted)
         :interrupted))))
 
 (defn- fire-loop!
