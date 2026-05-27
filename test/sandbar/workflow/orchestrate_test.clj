@@ -881,3 +881,128 @@
                                           :process-id 1
                                           :context    {:session-eid 42}}))
         "Missing :log-eid → throws")))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; End-to-end integration tests — full open + handoff ceremonies
+;;
+;; These exercise the EXACT flow the rewritten /memory-open + /memory-handoff
+;; skills will execute via the MCP verb in the next session.  Close the
+;; A6 acceptance criterion of the Dan-directive 2026-05-27 (W4.1 readiness):
+;; the NEXT session can confidently boot through the orchestrator-driven
+;; flow without bricking.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(deftest end-to-end-open-ceremony-orient-initialize-activate-imprint
+  (testing "Full /memory-open ceremony: orient → initialize → activate → imprint"
+    ;; Phase 1: :phase/orient (no process-id)
+    (let [orient-result (orchestrate/orchestrate
+                          {:workflow :workflow/session
+                           :phase    :phase/orient})]
+      (is (= :phase/orient (:phase-completed orient-result)))
+      (is (= :phase/initialize (:next-phase orient-result)))
+      (is (map? (:phase-work-result orient-result)))
+      (let [orient-state (:phase-work-result orient-result)]
+        ;; Phase 2: :phase/initialize (no process-id; CREATES the process)
+        (let [init-result (orchestrate/orchestrate
+                            {:workflow :workflow/session
+                             :phase    :phase/initialize
+                             :context  {:rel-path    (str "sessions/e2e-open-" (System/nanoTime) ".md")
+                                        :name        "E2E open test session"
+                                        :description "End-to-end /memory-open ceremony test"}})]
+          (is (= :phase/initialize (:phase-completed init-result)))
+          (is (number? (:created-process-id init-result))
+              ":phase/initialize surfaces :created-process-id at top level")
+          (let [process-id (:created-process-id init-result)]
+            ;; Phase 3: :phase/activate (consumes process-id from initialize)
+            (let [activate-result (orchestrate/orchestrate
+                                    {:workflow   :workflow/session
+                                     :process-id process-id
+                                     :phase      :phase/activate
+                                     :reason     "E2E test orientation complete"})]
+              (is (= :phase/activate (:phase-completed activate-result)))
+              (is (= [:session/start] (:transition-applied activate-result)))
+              (is (false? (:degraded? activate-result)))
+              (is (= 1 (count (:events-emitted activate-result)))
+                  ":WorkflowSessionOpened event emitted")
+              ;; Verify process advanced to :session/active
+              (let [process       (wf/find-process process-id)
+                    current-state (:workflow/state-name (wf/get-current-state process))]
+                (is (= :session/active current-state)
+                    "Process advances to :session/active after :phase/activate"))
+              ;; Phase 4: :phase/imprint (composes banner from orient-state)
+              (let [imprint-result (orchestrate/orchestrate
+                                     {:workflow   :workflow/session
+                                      :process-id process-id
+                                      :phase      :phase/imprint
+                                      :context    {:orient-state orient-state}})]
+                (is (= :phase/imprint (:phase-completed imprint-result)))
+                (is (nil? (:next-phase imprint-result)) "imprint is terminal in open ceremony")
+                (is (string? (:phase-work-result imprint-result))
+                    "Banner returned via :phase-work-result")))))))))
+
+(deftest end-to-end-handoff-ceremony-capture-author-link-finalize
+  (testing "Full /memory-handoff ceremony: capture → author → link → finalize"
+    ;; Setup: bootstrap a session + activate it (so handoff has a real session to close)
+    (let [init-result (orchestrate/orchestrate
+                        {:workflow :workflow/session
+                         :phase    :phase/initialize
+                         :context  {:rel-path    (str "sessions/e2e-handoff-" (System/nanoTime) ".md")
+                                    :name        "E2E handoff test session"
+                                    :description "End-to-end /memory-handoff ceremony test"}})
+          process-id  (:created-process-id init-result)
+          session-eid (-> init-result :phase-work-result :session-eid)
+          _           (orchestrate/orchestrate
+                        {:workflow   :workflow/session
+                         :process-id process-id
+                         :phase      :phase/activate
+                         :reason     "E2E setup"})]
+      ;; Phase 1: :phase/capture
+      (let [capture-result (orchestrate/orchestrate
+                             {:workflow   :workflow/session
+                              :process-id process-id
+                              :phase      :phase/capture})]
+        (is (= :phase/capture (:phase-completed capture-result)))
+        (is (= :phase/author (:next-phase capture-result)))
+        ;; Phase 2: :phase/author
+        (let [author-result (orchestrate/orchestrate
+                              {:workflow   :workflow/session
+                               :process-id process-id
+                               :phase      :phase/author
+                               :context    {:narrative    "# E2E test handoff\n\nNarrative body."
+                                            :rel-path     (str "logs/e2e-handoff-" (System/nanoTime) ".md")
+                                            :name         "E2E handoff log"
+                                            :description  "End-to-end handoff test log"}})
+              log-eid       (-> author-result :phase-work-result :log-eid)]
+          (is (= :phase/author (:phase-completed author-result)))
+          (is (number? log-eid) ":mm/Log created with eid")
+          ;; Phase 3: :phase/link
+          (let [link-result (orchestrate/orchestrate
+                              {:workflow   :workflow/session
+                               :process-id process-id
+                               :phase      :phase/link
+                               :context    {:session-eid session-eid
+                                            :log-eid     log-eid}})]
+            (is (= :phase/link (:phase-completed link-result)))
+            ;; Verify the session entity has :mm.session/log + :mm.session/ended-at set
+            (let [session (db/entity session-eid)
+                  log-ref (:mm.session/log session)
+                  log-id  (or (:db/id log-ref)
+                              (when (number? log-ref) log-ref))]
+              (is (= log-eid log-id) ":mm.session/log links to the new :mm/Log")
+              (is (some? (:mm.session/ended-at session))))
+            ;; Phase 4: :phase/finalize
+            (let [finalize-result (orchestrate/orchestrate
+                                    {:workflow   :workflow/session
+                                     :process-id process-id
+                                     :phase      :phase/finalize
+                                     :reason     "E2E test handoff complete"})]
+              (is (= :phase/finalize (:phase-completed finalize-result)))
+              (is (nil? (:next-phase finalize-result)) "finalize is terminal in handoff ceremony")
+              (is (= [:session/close :session/finalize] (:transition-applied finalize-result)))
+              (is (false? (:degraded? finalize-result)))
+              ;; Verify process reached :session/closed terminal :success
+              (let [process       (wf/find-process process-id)
+                    current-state (wf/get-current-state process)]
+                (is (= :session/closed (:workflow/state-name current-state)))
+                (is (true? (:workflow/terminal? current-state)))
+                (is (= :success (:workflow/terminal-kind current-state)))))))))))
