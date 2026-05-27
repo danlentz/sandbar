@@ -100,8 +100,11 @@
   (:require [clojure.string :as str]
             [clojure.tools.logging :as log]
             [sandbar.aggregate :as aggregate]
+            [sandbar.db.datatype :as dt]
+            [sandbar.db.datomic :as db]
             [sandbar.util.event :as event]
-            [sandbar.util.workflow :as wf]))
+            [sandbar.util.workflow :as wf])
+  (:import [java.util Date]))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Phase vocabulary (canonical per the ι.3 design ratification)
@@ -665,17 +668,167 @@
            {:recent-memorials recent-memos})))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; phase-work :phase/initialize — FOURTH multimethod method (Increment J)
+;;
+;; Bootstraps a new :mm/Session entity + starts a workflow.process attached
+;; to it.  This is the ONLY phase that CREATES the process (rather than
+;; advancing an existing one), so it accepts no :process-id (the value is
+;; emitted as the result).
+;;
+;; Inputs (via `(:context args)`):
+;;   :rel-path             — :mm.memory/rel-path for the new :mm/Session
+;;                           (REQUIRED; e.g., "sessions/<YYYY-MM-DD>T<HHMM>_<slug>.md")
+;;   :name                 — :mm.memory/name (REQUIRED)
+;;   :description          — :mm.memory/description (REQUIRED)
+;;   :focus                — :mm.memory/description shorthand (alternate)
+;;   :previous-session     — prior session :db/ident or eid (optional; sets
+;;                           :mm.session/previous-session)
+;;   :actor-ident          — :memory.actors/* ident (optional; sets
+;;                           :mm.memory/created-by [single-element vec])
+;;   :workflow             — workflow definition ident (optional; defaults to
+;;                           the workflow already in args)
+;;
+;; Outputs (via :phase-work-result):
+;;   :session-eid          — eid of the created :mm/Session
+;;   :session-ident        — :db/ident of the created :mm/Session
+;;   :process-id           — eid of the started workflow.process
+;;
+;; The orchestrate fn body surfaces :process-id at the top level of the
+;; result map as :created-process-id so subsequent phases can extract it
+;; without digging into :phase-work-result.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defn- create-session-entity!
+  "Create a new :mm/Session entity from context-supplied bootstrap data.
+   Returns the entity-map (with :db/id + :db/ident)."
+  [{:keys [rel-path name description focus previous-session actor-ident]}]
+  (let [now (Date.)]
+    (dt/make :mm/Session
+             (cond-> {:mm.memory/rel-path        rel-path
+                      :mm.memory/name            name
+                      :mm.memory/description     (or description focus)
+                      :mm.memory/memory-type     :session
+                      :mm.memory/scope           :project
+                      :mm.session/started-at     now}
+               actor-ident      (assoc :mm.memory/created-by [actor-ident])
+               previous-session (assoc :mm.session/previous-session previous-session)))))
+
+(defmethod phase-work :phase/initialize
+  [args]
+  (let [context        (:context args)
+        workflow-ident (or (:workflow args) :workflow/session)
+        session-entity (create-session-entity! context)
+        session-eid    (:db/id session-entity)
+        process        (wf/start-process! workflow-ident session-entity)]
+    {:session-eid    session-eid
+     :session-ident  (:db/ident session-entity)
+     :session-entity session-entity
+     :process-id     (:db/id process)
+     :process-entity process}))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; phase-work :phase/author — FIFTH multimethod method (Increment J)
+;;
+;; Creates the handoff :mm/Log entity from context-supplied narrative.
+;; The narrative itself is composed by the caller (LLM-side) from the
+;; capture-state collected at :phase/capture — passed through context.
+;;
+;; Inputs (via `(:context args)`):
+;;   :narrative    — :mm.memory/body-raw content (REQUIRED; the
+;;                   markdown-formatted handoff narrative)
+;;   :rel-path     — :mm.memory/rel-path (REQUIRED; e.g.,
+;;                   "logs/<YYYY-MM-DD>T<HHMM>_<slug>.md")
+;;   :name         — :mm.memory/name (REQUIRED)
+;;   :description  — :mm.memory/description (REQUIRED)
+;;   :cites        — vec of memory-idents this log cites (optional)
+;;   :actor-ident  — :memory.actors/* ident (optional)
+;;
+;; Outputs (via :phase-work-result):
+;;   :log-eid    — eid of the created :mm/Log
+;;   :log-ident  — :db/ident of the created :mm/Log
+;;   :log-entity — the full entity-map
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defn- create-log-entity!
+  "Create a new :mm/Log entity from context-supplied handoff data.
+   Returns the entity-map (with :db/id + :db/ident)."
+  [{:keys [narrative rel-path name description cites actor-ident]}]
+  (let [now (Date.)]
+    (dt/make :mm/Log
+             (cond-> {:mm.memory/rel-path      rel-path
+                      :mm.memory/name          name
+                      :mm.memory/description   description
+                      :mm.memory/body-raw      narrative
+                      :mm.memory/memory-type   :log
+                      :mm.memory/scope         :global
+                      :mm.memory/last-touched  now}
+               actor-ident (assoc :mm.memory/created-by [actor-ident])
+               (seq cites) (assoc :mm.memory/cites cites)))))
+
+(defmethod phase-work :phase/author
+  [args]
+  (let [context    (:context args)
+        log-entity (create-log-entity! context)]
+    {:log-eid    (:db/id log-entity)
+     :log-ident  (:db/ident log-entity)
+     :log-entity log-entity}))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; phase-work :phase/link — SIXTH multimethod method (Increment J)
+;;
+;; Updates the session entity to reference the handoff :mm/Log + records
+;; :mm.session/ended-at.  This is the LAST mutation before :phase/finalize
+;; advances the workflow.process to its terminal state.
+;;
+;; Inputs (via `(:context args)`):
+;;   :session-eid       — eid (or :db/ident) of the session to update
+;;                        (REQUIRED)
+;;   :log-eid           — eid (or :db/ident) of the handoff :mm/Log
+;;                        (REQUIRED; comes from :phase/author's
+;;                        :phase-work-result)
+;;   :ended-at          — Instant for :mm.session/ended-at (optional;
+;;                        defaults to NOW)
+;;
+;; Outputs (via :phase-work-result):
+;;   :session-entity    — the refreshed session entity post-update
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defmethod phase-work :phase/link
+  [args]
+  (let [context     (:context args)
+        session-ref (or (:session-eid context) (:session-ident context))
+        log-ref     (or (:log-eid context) (:log-ident context))
+        ended-at    (or (:ended-at context) (Date.))]
+    (when-not session-ref
+      (throw (ex-info "phase-work :phase/link missing :session-eid (or :session-ident)"
+                      {:reason :missing-required-arg :key :session-eid :context context})))
+    (when-not log-ref
+      (throw (ex-info "phase-work :phase/link missing :log-eid (or :log-ident)"
+                      {:reason :missing-required-arg :key :log-eid :context context})))
+    (let [updated (dt/update-entity! session-ref
+                                     {:mm.session/log         log-ref
+                                      :mm.session/ended-at    ended-at})]
+      {:session-entity updated})))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Orchestrator entry point — W4.1 dispatcher loop
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (def ^:private phases-not-requiring-process-id
   "Phases that do NOT require an existing :workflow/Process — pure-read or
    bootstrap phases.  These can be invoked before a process exists OR with
-   no process at all (e.g., :phase/orient querying corpus state for the
-   orientation banner).
+   no process at all:
 
-   Per Increment G — first step of the phase-work multimethod migration arc."
-  #{:phase/orient})
+   - `:phase/orient` (Increment G) — pure-read; queries corpus state for
+     the orientation banner; no process needed
+   - `:phase/initialize` (Increment J) — bootstrap; CREATES the workflow.process
+     itself via phase-work; emits :created-process-id in the orchestrate
+     result map for downstream phases to consume
+
+   Other phases (`:activate` / `:imprint` / `:capture` / `:author` / `:link`
+   / `:finalize`) require `:process-id` because they reference / mutate the
+   active workflow.process."
+  #{:phase/orient :phase/initialize})
 
 (defn- validate-args!
   "Validate required orchestrate args.  Throws ex-info on missing keys or
@@ -836,37 +989,51 @@
       (let [{:keys [phase-result outcomes]} work-result
             applied        (->> outcomes (keep :applied) vec)
             degraded?      (boolean (some :degraded? outcomes))
+            ;; Per Increment J — :phase/initialize creates the process via
+            ;; phase-work; surface :created-process-id at the top level of
+            ;; the result map so downstream phases (skill body iteration)
+            ;; can extract it without digging into :phase-work-result.
+            created-process-id (when (and (= phase :phase/initialize)
+                                          (map? phase-result))
+                                 (:process-id phase-result))
+            ;; Effective process-id for emission slots: caller-supplied OR
+            ;; just-created (for :phase/initialize bootstrap path).
+            effective-process-id (or (:process-id args) created-process-id)
             ;; Q.ι.3.9 event emission — one event per phase boundary:
             ;;   degraded? true  → :mm.event/WorkflowSessionDegraded
             ;;   degraded? false → phase-completion event if registered
             emitted-event  (if degraded?
                              (let [degraded-outcome (some #(when (:degraded? %) %) outcomes)]
                                (emit-degraded-event!
-                                {:process-id (:process-id args)
+                                {:process-id effective-process-id
                                  :phase      phase
                                  :transition (:transition degraded-outcome)
                                  :reason     (:reason degraded-outcome)}))
                              (emit-phase-completion-event!
                               phase
-                              {:process-id (:process-id args)
+                              {:process-id effective-process-id
                                :transition (last applied)}))
             events-emitted (if emitted-event
                              [(:db/id emitted-event)]
                              [])
             duration-ms    (- (System/currentTimeMillis) start-instant)]
         (log/info :ORCHESTRATE/PHASE-COMPLETE
-                  {:phase             phase
-                   :ceremony          (ceremony-of phase)
-                   :transitions       applied
-                   :degraded?         degraded?
-                   :events-emitted    events-emitted
-                   :duration-ms       duration-ms
-                   :process-id        (:process-id args)
-                   :workflow          (:workflow args)})
-        {:phase-completed    phase
-         :next-phase         (next-phase-of phase)
-         :transition-applied applied
-         :events-emitted     events-emitted
-         :duration-ms        duration-ms
-         :degraded?          degraded?
-         :phase-work-result  phase-result}))))
+                  {:phase              phase
+                   :ceremony           (ceremony-of phase)
+                   :transitions        applied
+                   :degraded?          degraded?
+                   :events-emitted     events-emitted
+                   :duration-ms        duration-ms
+                   :process-id         effective-process-id
+                   :created-process-id created-process-id
+                   :workflow           (:workflow args)})
+        (cond-> {:phase-completed    phase
+                 :next-phase         (next-phase-of phase)
+                 :transition-applied applied
+                 :events-emitted     events-emitted
+                 :duration-ms        duration-ms
+                 :degraded?          degraded?
+                 :phase-work-result  phase-result}
+          ;; Surface :created-process-id only when :phase/initialize bootstrapped
+          ;; a new process — caller extracts it for downstream phase calls
+          created-process-id (assoc :created-process-id created-process-id))))))

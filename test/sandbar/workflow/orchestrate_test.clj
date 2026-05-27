@@ -597,13 +597,20 @@
       (is (<= (count (:active-tasks orient-state)) 5)
           "Top-5 cap on active-tasks"))))
 
-(deftest phase-work-default-still-returns-nil
-  (testing "Default phase-work (for phases without registered methods) still returns nil"
-    ;; :phase/initialize doesn't have a phase-work method yet
-    (is (nil? (orchestrate/phase-work {:phase :phase/initialize}))
-        ":phase/initialize falls through to :default no-op until its method lands")
-    (is (nil? (orchestrate/phase-work {:phase :phase/author})))
-    (is (nil? (orchestrate/phase-work {:phase :phase/link})))))
+(deftest phase-work-no-remaining-default-fallthroughs
+  (testing "All 6 phase-work methods landed (Increment J completes the migration)"
+    ;; All open + handoff phases now have registered methods
+    (is (some? (.getMethod ^clojure.lang.MultiFn @#'orchestrate/phase-work :phase/orient)))
+    (is (some? (.getMethod ^clojure.lang.MultiFn @#'orchestrate/phase-work :phase/initialize)))
+    (is (some? (.getMethod ^clojure.lang.MultiFn @#'orchestrate/phase-work :phase/imprint)))
+    (is (some? (.getMethod ^clojure.lang.MultiFn @#'orchestrate/phase-work :phase/capture)))
+    (is (some? (.getMethod ^clojure.lang.MultiFn @#'orchestrate/phase-work :phase/author)))
+    (is (some? (.getMethod ^clojure.lang.MultiFn @#'orchestrate/phase-work :phase/link)))
+    ;; :phase/activate + :phase/finalize have NO phase-work method — they're pure-transition phases
+    ;; where the orchestrate body's transition application is the entirety of the work.
+    ;; These fall through to :default (nil) — by design.
+    (is (nil? (orchestrate/phase-work {:phase :phase/activate})))
+    (is (nil? (orchestrate/phase-work {:phase :phase/finalize})))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; phase-work :phase/imprint tests (W4.1 Increment H — banner composition)
@@ -752,3 +759,125 @@
           "No transitions on :phase/capture (pure read)")
       (is (map? (:phase-work-result result)))
       (is (contains? (:phase-work-result result) :process-history)))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; phase-work :phase/initialize tests (W4.1 Increment J — bootstrap)
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defn- bootstrap-context
+  "Minimal :context for :phase/initialize tests — supplies required slots."
+  []
+  (let [stamp (System/nanoTime)]
+    {:rel-path    (str "sessions/2026-05-27-init-test-" stamp ".md")
+     :name        (str "Init test " stamp)
+     :description "Phase-work :phase/initialize unit-test session"}))
+
+(deftest phase-work-initialize-creates-session-and-process
+  (testing "phase-work :phase/initialize creates :mm/Session + workflow.process; returns ids"
+    (let [result (orchestrate/phase-work {:phase    :phase/initialize
+                                          :workflow :workflow/session
+                                          :context  (bootstrap-context)})]
+      (is (map? result))
+      (is (number? (:session-eid result)))
+      (is (number? (:process-id result)))
+      (is (associative? (:session-entity result))
+          ":session-entity is a Datomic Entity (implements ILookup; not map?)")
+      (is (associative? (:process-entity result))))))
+
+(deftest orchestrate-phase-initialize-accepts-no-process-id
+  (testing "orchestrate :phase/initialize succeeds WITHOUT a :process-id arg"
+    (let [result (orchestrate/orchestrate {:workflow :workflow/session
+                                           :phase    :phase/initialize
+                                           :context  (bootstrap-context)})]
+      (is (= :phase/initialize (:phase-completed result)))
+      (is (= :phase/activate (:next-phase result)))
+      (is (number? (:created-process-id result))
+          ":created-process-id surfaces at top level of result map for downstream phases")
+      (is (= (:created-process-id result)
+             (-> result :phase-work-result :process-id))
+          ":created-process-id matches the :process-id in :phase-work-result"))))
+
+(deftest orchestrate-phase-initialize-creates-process-in-session-opening
+  (testing "Created process starts in :session/opening (initial state)"
+    (let [result        (orchestrate/orchestrate {:workflow :workflow/session
+                                                  :phase    :phase/initialize
+                                                  :context  (bootstrap-context)})
+          process-id    (:created-process-id result)
+          process       (wf/find-process process-id)
+          current-state (wf/get-current-state process)]
+      (is (= :session/opening (:workflow/state-name current-state))
+          "Bootstrap produces a process in :session/opening; :phase/activate then advances"))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; phase-work :phase/author tests (W4.1 Increment J — log creation)
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defn- author-context
+  "Minimal :context for :phase/author tests — supplies required slots."
+  []
+  (let [stamp (System/nanoTime)]
+    {:narrative    (str "# Test handoff log " stamp "\n\nNarrative body.")
+     :rel-path     (str "logs/2026-05-27-author-test-" stamp ".md")
+     :name         (str "Author test " stamp)
+     :description  "Phase-work :phase/author unit-test handoff log"}))
+
+(deftest phase-work-author-creates-mm-log
+  (testing "phase-work :phase/author creates :mm/Log entity; returns log-eid + entity"
+    (let [process (start-test-session-process!)
+          result  (orchestrate/phase-work {:phase      :phase/author
+                                           :process-id (:db/id process)
+                                           :context    (author-context)})]
+      (is (map? result))
+      (is (number? (:log-eid result)))
+      (is (associative? (:log-entity result)))
+      (let [log-entity (db/entity (:log-eid result))
+            log-type   (let [t (:dt/type log-entity)]
+                         (cond (keyword? t) t :else (:db/ident t)))]
+        (is (= :mm/Log log-type) "Entity is a :mm/Log")
+        (is (string? (:mm.memory/body-raw log-entity)))
+        (is (re-find #"Narrative body" (:mm.memory/body-raw log-entity))
+            ":mm.memory/body-raw carries the supplied narrative")))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; phase-work :phase/link tests (W4.1 Increment J — session linkage)
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(deftest phase-work-link-updates-session-log-and-ended-at
+  (testing "phase-work :phase/link sets :mm.session/log + :mm.session/ended-at on the session"
+    (let [;; Bootstrap a session + process to be linked
+          init-result (orchestrate/phase-work {:phase    :phase/initialize
+                                               :workflow :workflow/session
+                                               :context  (bootstrap-context)})
+          session-eid (:session-eid init-result)
+          ;; Author a :mm/Log
+          author-result (orchestrate/phase-work {:phase      :phase/author
+                                                 :process-id (:process-id init-result)
+                                                 :context    (author-context)})
+          log-eid       (:log-eid author-result)
+          ;; Link them
+          link-result   (orchestrate/phase-work {:phase      :phase/link
+                                                 :process-id (:process-id init-result)
+                                                 :context    {:session-eid session-eid
+                                                              :log-eid     log-eid}})]
+      (is (associative? (:session-entity link-result)))
+      ;; Re-read the session and verify the slots are set
+      (let [session (db/entity session-eid)
+            log-ref (:mm.session/log session)
+            log-id  (or (:db/id log-ref)
+                        (when (number? log-ref) log-ref))]
+        (is (= log-eid log-id) ":mm.session/log points at the new :mm/Log")
+        (is (some? (:mm.session/ended-at session))
+            ":mm.session/ended-at is set")))))
+
+(deftest phase-work-link-rejects-missing-args
+  (testing "phase-work :phase/link rejects missing :session-eid + :log-eid"
+    (is (thrown? clojure.lang.ExceptionInfo
+                 (orchestrate/phase-work {:phase      :phase/link
+                                          :process-id 1
+                                          :context    {}}))
+        "Missing both → throws")
+    (is (thrown? clojure.lang.ExceptionInfo
+                 (orchestrate/phase-work {:phase      :phase/link
+                                          :process-id 1
+                                          :context    {:session-eid 42}}))
+        "Missing :log-eid → throws")))
