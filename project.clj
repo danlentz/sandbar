@@ -71,6 +71,16 @@
                  ;; memory/decisions/sandbar_event_substrate_architecture_*_2026_05_23.md
                  [manifold "0.4.4"]
 
+                 ;; lib-recur — RFC 5545 RRULE iterator.  Apache 2.0;
+                 ;; small focused Java library (~100KB closure incl.
+                 ;; org.dmfs/{jems2, rfc5545-datetime} transitives;
+                 ;; orders-of-magnitude smaller than Quartz's ~6MB tree).
+                 ;; Consumed BEHIND sandbar.schedule.recurrence per the
+                 ;; ontology-alignment ADR R.2(a) layered-discipline.
+                 ;; Per γ.1 ADR §2.3
+                 ;; (memory/decisions/gamma_1_scheduler_path_a_native_min_heap_dispatcher_q_gamma_1_through_6_resolved_2026_05_27.md).
+                 [org.dmfs/lib-recur "0.17.1"]
+
 ;;                 [datomic-schematode "0.1.0-RC3"]
 
                  [org.slf4j/slf4j-api   "2.0.17"]

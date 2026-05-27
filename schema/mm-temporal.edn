@@ -657,6 +657,214 @@
 
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; γ scheduler arc — forward declarations for :mm.event/ScheduleEvent family
+;;
+;; Minimal :db/ident stubs so the cross-referencing :dt/domain (slot → class)
+;; and :dt/slots (class → slot) refs in the subsequent full declarations
+;; resolve at tx time.  Same idiom as :mm/TemporalEntity family below
+;; (~line 720).  Per γ.1 ADR §6.1.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident :mm.event/ScheduleEvent              :db/doc "Forward declaration; full definition follows."}
+  {:db/ident :mm.event/Scheduled                  :db/doc "Forward declaration; full definition follows."}
+  {:db/ident :mm.event/JobStarted                 :db/doc "Forward declaration; full definition follows."}
+  {:db/ident :mm.event/JobCompleted               :db/doc "Forward declaration; full definition follows."}
+  {:db/ident :mm.event/JobFailed                  :db/doc "Forward declaration; full definition follows."}
+  {:db/ident :mm.event/JobCancelled               :db/doc "Forward declaration; full definition follows."}
+  {:db/ident :mm.event/SchedulerClockDrift        :db/doc "Forward declaration; full definition follows."}
+  {:db/ident :mm.event/JobRejected                :db/doc "Forward declaration; full definition follows."}
+  {:db/ident :mm.event/ScheduleConcurrencyViolation :db/doc "Forward declaration; full definition follows."}]
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; :mm.schedule-event/* — slot family for the :mm.event/ScheduleEvent hierarchy
+;;
+;; Scheduler-emitted event context for the γ scheduler arc's native min-heap
+;; dispatcher (sandbar.schedule.dispatcher).  Slot-namespace convention
+;; mirrors :mm.workflow-event/* + :mm.hook-event/*.  All slots are
+;; :db.cardinality/one + populated only on event subtypes that need them
+;; (concrete classes' :dt/slots list per-class consumption).
+;;
+;; ORDER: declared AFTER the forward-decl block (above) — :dt/domain refs to
+;; class idents resolve via the stubs — but BEFORE the full class
+;; declarations (next block) — :dt/slots refs to these slot idents resolve
+;; at class-tx time.
+;;
+;; Per γ.1 library-vs-build ADR §6.1 + Event Substrate ADR Phase 8.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident       :mm.schedule-event/schedule
+   :dt/type        :dt/Property
+   :dt/domain      :mm.event/ScheduleEvent
+   :dt/range       :mm/Schedule
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/one
+   :db/doc "Reference to the :mm/Schedule entity whose firing (or attempted firing) emitted this event.  Cross-typed-edge from event back to schedule — enables 'all events for this schedule' queries via inbound traversal.  Populated on most :mm.event/ScheduleEvent subtypes; nil on scheduler-internal events like :SchedulerClockDrift."}
+
+  {:db/ident       :mm.schedule-event/job
+   :dt/type        :dt/Property
+   :dt/domain      :mm.event/ScheduleEvent
+   :dt/range       :mm/Job
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/one
+   :db/doc "Reference to the :mm/Job entity the event references.  Populated on :JobStarted / :JobCompleted / :JobFailed / :JobCancelled events."}
+
+  {:db/ident       :mm.schedule-event/run
+   :dt/type        :dt/Property
+   :dt/domain      :mm.event/ScheduleEvent
+   :dt/range       :mm/Run
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/one
+   :db/doc "Reference to the :mm/Run entity the event references.  Populated on :JobStarted / :JobCompleted / :JobFailed / :JobCancelled events."}
+
+  {:db/ident       :mm.schedule-event/duration-ms
+   :dt/type        :dt/Property
+   :dt/domain      :mm.event/JobCompleted
+   :dt/range       :db.type/long
+   :db/valueType   :db.type/long
+   :db/cardinality :db.cardinality/one
+   :db/doc "Wall-clock elapsed milliseconds between :mm.activity/started-at and :mm.activity/ended-at on the referenced :mm/Run.  Convenience for downstream metrics consumers (avoids re-deriving from activity timestamps)."}
+
+  {:db/ident       :mm.schedule-event/error-message
+   :dt/type        :dt/Property
+   :dt/domain      :mm.event/JobFailed
+   :dt/range       :db.type/string
+   :db/valueType   :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/doc "Human-readable error description from the failed :mm.job/fn invocation.  For structured error info, consult the :mm/EventLog memorial routed via sandbar.logging/error."}
+
+  {:db/ident       :mm.schedule-event/cancellation-reason
+   :dt/type        :dt/Property
+   :dt/domain      :mm.event/JobCancelled
+   :dt/range       :db.type/keyword
+   :db/valueType   :db.type/keyword
+   :db/cardinality :db.cardinality/one
+   :db/doc "Keyword classifying why the run was cancelled.  Canonical values: :operator-cancel (MCP verb), :shutdown-drain (scheduler stop!), :concurrency-replace (newer fire bumped in-flight run per :concurrency/replace)."}
+
+  {:db/ident       :mm.schedule-event/drift-ms
+   :dt/type        :dt/Property
+   :dt/domain      :mm.event/SchedulerClockDrift
+   :dt/range       :db.type/long
+   :db/valueType   :db.type/long
+   :db/cardinality :db.cardinality/one
+   :db/doc "Observed clock-drift in milliseconds — delta between wall-clock and monotonic-clock derived elapsed time.  Captures magnitude at detection."}
+
+  {:db/ident       :mm.schedule-event/threshold-ms
+   :dt/type        :dt/Property
+   :dt/domain      :mm.event/SchedulerClockDrift
+   :dt/range       :db.type/long
+   :db/valueType   :db.type/long
+   :db/cardinality :db.cardinality/one
+   :db/doc "Configured clock-drift threshold-ms at the moment the event fired.  Captures the trip-condition for retrospective analysis."}
+
+  {:db/ident       :mm.schedule-event/rejection-reason
+   :dt/type        :dt/Property
+   :dt/domain      :mm.event/JobRejected
+   :dt/range       :db.type/keyword
+   :db/valueType   :db.type/keyword
+   :db/cardinality :db.cardinality/one
+   :db/doc "Keyword classifying why the handler-pool rejected a Scheduled event's job-dispatch.  Canonical values: :pool-saturated (all workers busy), :pool-shutdown (pool draining), :job-missing (referenced :mm/Job not found)."}
+
+  {:db/ident       :mm.schedule-event/in-flight-run
+   :dt/type        :dt/Property
+   :dt/domain      :mm.event/ScheduleConcurrencyViolation
+   :dt/range       :mm/Run
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/one
+   :db/doc "Reference to the :mm/Run instance that was already active when a new Scheduled event tried to start a second run under :concurrency/forbid policy.  Surfaces the conflict's other side."}]
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; γ scheduler arc — :mm.event/ScheduleEvent class hierarchy
+;;
+;; Abstract umbrella + 8 concrete subtypes covering scheduler-emission shapes.
+;; Class-hierarchical subscription via :dt/type-isa? cache enables subscribers
+;; to catch ALL scheduler events via :mm.event/ScheduleEvent without
+;; enumerating concretes.  Per γ.1 ADR §6.1 + Event Substrate ADR Phase 8.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident         :mm.event/ScheduleEvent
+   :dt/type          :dt/Class
+   :dt/subclass-of   :mm/Event
+   :dt/context       "mm"
+   :dt/label         "ScheduleEvent"
+   :dt/slots         [:mm.schedule-event/schedule]
+   :dt/abstract?     true
+   :db/doc "Abstract umbrella for events emitted by the γ scheduler arc's native dispatcher (sandbar.schedule).  Carries :mm.schedule-event/schedule as the common inherited slot (scheduler-internal subtypes like :SchedulerClockDrift may omit it).  Per γ.1 ADR §6.1.  Class-hierarchical subscription: `(event/subscribe! :mm.event/ScheduleEvent handler-fn)` catches all 8 concrete subtypes."}
+
+  {:db/ident         :mm.event/Scheduled
+   :dt/type          :dt/Class
+   :dt/subclass-of   :mm.event/ScheduleEvent
+   :dt/context       "mm"
+   :dt/label         "Scheduled"
+   :dt/abstract?     false
+   :db/doc "Emitted when a :mm/Schedule's next-fire-at instant elapses + the dispatcher's fire-thread fires the Schedule.  Subscribers (notably sandbar.schedule.job-dispatcher) react to this event to start the matching :mm/Job's :mm/Run.  Per γ.1 ADR §1.6 (fire-thread → event → handler-pool architecture)."}
+
+  {:db/ident         :mm.event/JobStarted
+   :dt/type          :dt/Class
+   :dt/subclass-of   :mm.event/ScheduleEvent
+   :dt/context       "mm"
+   :dt/label         "JobStarted"
+   :dt/slots         [:mm.schedule-event/job :mm.schedule-event/run]
+   :dt/abstract?     false
+   :db/doc "Emitted when the job-dispatcher begins a :mm/Run for a :mm/Job.  Run is in :mm.activity/status :run.status/active at emission time."}
+
+  {:db/ident         :mm.event/JobCompleted
+   :dt/type          :dt/Class
+   :dt/subclass-of   :mm.event/ScheduleEvent
+   :dt/context       "mm"
+   :dt/label         "JobCompleted"
+   :dt/slots         [:mm.schedule-event/job :mm.schedule-event/run :mm.schedule-event/duration-ms]
+   :dt/abstract?     false
+   :db/doc "Emitted on successful :mm/Run completion (:mm.activity/status advances to :run.status/completed).  Carries duration-ms convenience slot for metrics consumers."}
+
+  {:db/ident         :mm.event/JobFailed
+   :dt/type          :dt/Class
+   :dt/subclass-of   :mm.event/ScheduleEvent
+   :dt/context       "mm"
+   :dt/label         "JobFailed"
+   :dt/slots         [:mm.schedule-event/job :mm.schedule-event/run :mm.schedule-event/error-message]
+   :dt/abstract?     false
+   :db/doc "Emitted when a :mm/Run terminates with :mm.activity/status :run.status/failed (after exhausting retries, if retry-policy lands later).  Structured error info routed separately to :mm/EventLog via sandbar.logging/error."}
+
+  {:db/ident         :mm.event/JobCancelled
+   :dt/type          :dt/Class
+   :dt/subclass-of   :mm.event/ScheduleEvent
+   :dt/context       "mm"
+   :dt/label         "JobCancelled"
+   :dt/slots         [:mm.schedule-event/job :mm.schedule-event/run :mm.schedule-event/cancellation-reason]
+   :dt/abstract?     false
+   :db/doc "Emitted when a :mm/Run is cancelled mid-flight — operator action (MCP verb), scheduler shutdown-drain, or :concurrency/replace bump."}
+
+  {:db/ident         :mm.event/SchedulerClockDrift
+   :dt/type          :dt/Class
+   :dt/subclass-of   :mm.event/ScheduleEvent
+   :dt/context       "mm"
+   :dt/label         "SchedulerClockDrift"
+   :dt/slots         [:mm.schedule-event/drift-ms :mm.schedule-event/threshold-ms]
+   :dt/abstract?     false
+   :db/doc "Emitted when the dispatcher's clock-drift detection (wall-vs-monotonic delta) exceeds the configured threshold.  R.γ.2 mitigation per γ.1 ADR §5.  Scheduler-internal event — does not carry :mm.schedule-event/schedule."}
+
+  {:db/ident         :mm.event/JobRejected
+   :dt/type          :dt/Class
+   :dt/subclass-of   :mm.event/ScheduleEvent
+   :dt/context       "mm"
+   :dt/label         "JobRejected"
+   :dt/slots         [:mm.schedule-event/rejection-reason]
+   :dt/abstract?     false
+   :db/doc "Emitted when the handler-pool rejects a Scheduled event's job-dispatch — pool saturated / shutdown / job-missing.  R.γ.4 mitigation per γ.1 ADR §5."}
+
+  {:db/ident         :mm.event/ScheduleConcurrencyViolation
+   :dt/type          :dt/Class
+   :dt/subclass-of   :mm.event/ScheduleEvent
+   :dt/context       "mm"
+   :dt/label         "ScheduleConcurrencyViolation"
+   :dt/slots         [:mm.schedule-event/in-flight-run]
+   :dt/abstract?     false
+   :db/doc "Emitted when a Schedule with :concurrency/forbid fires while an in-flight :mm/Run for the same Schedule is still active.  R.γ.5 mitigation per γ.1 ADR §5.  Carries :mm.schedule-event/in-flight-run pointing at the conflicting Run."}]
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Additive re-parenting — adds :dt/subclass-of edges WITHOUT retracting existing
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; :dt/subclass-of is :db.cardinality/many — adding a new parent does NOT
