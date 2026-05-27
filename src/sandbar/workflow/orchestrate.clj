@@ -606,6 +606,65 @@
            "the result map as `(:context args) :orient-state` to this phase.)"))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; phase-work :phase/capture — THIRD multimethod method (Increment I)
+;;
+;; Handoff-side counterpart to :phase/orient.  Captures the active session's
+;; workflow.process history + recent memorial activity for the handoff log's
+;; narrative-state summary.
+;;
+;; Inputs:
+;;   :process-id  (required; the active workflow.process)
+;;   :context     (optional) carrying :memorial-limit override (default 20)
+;;
+;; Outputs (via :phase-work-result):
+;;   :process-history          vec of readable history entries (from wf/get-readable-history)
+;;   :process-current-state    keyword (current :workflow/state-name)
+;;   :process-completed?       boolean (true when terminal)
+;;   :recent-memorials         vec of top-N :mm/Memory by :last-touched
+;;                             (defaults to 20; bounds the payload)
+;;
+;; This is the THIRD step in the phase-work multimethod migration arc.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(def ^:private capture-default-memorial-limit
+  "Default cap on :recent-memorials count for the capture-state map.
+   Bounded so the handoff narrative author has manageable scope.  Per-call
+   override via `(:context args) :memorial-limit`."
+  20)
+
+(defn- capture-process-state
+  "Extract workflow.process state info (history + current state + terminal)
+   for the capture-state.  Returns {:process-history :process-current-state
+   :process-completed?} or nil if the process doesn't exist."
+  [process-id]
+  (when-let [process (wf/find-process process-id)]
+    {:process-history       (vec (wf/get-readable-history process))
+     :process-current-state (some-> process wf/get-current-state :workflow/state-name)
+     :process-completed?    (boolean (wf/process-completed? process))}))
+
+(defn- capture-recent-memorials
+  "Return top-N most-recently-touched :mm/Memory entities (metadata-only
+   projection for payload economy).  N defaults to
+   `capture-default-memorial-limit`."
+  [limit]
+  (let [{:keys [hits]} (aggregate/rank-by {:class         :mm/Memory
+                                           :rank-by       :recency
+                                           :temporal-slot :mm.memory/last-touched
+                                           :limit         limit
+                                           :projection    :metadata-only})]
+    (mapv :entity hits)))
+
+(defmethod phase-work :phase/capture
+  [args]
+  (let [process-id      (:process-id args)
+        context         (:context args)
+        memorial-limit  (or (:memorial-limit context) capture-default-memorial-limit)
+        process-state   (capture-process-state process-id)
+        recent-memos    (capture-recent-memorials memorial-limit)]
+    (merge process-state
+           {:recent-memorials recent-memos})))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Orchestrator entry point — W4.1 dispatcher loop
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 

@@ -599,11 +599,9 @@
 
 (deftest phase-work-default-still-returns-nil
   (testing "Default phase-work (for phases without registered methods) still returns nil"
-    ;; :phase/initialize doesn't have a phase-work method yet (lands in follow-on increment)
+    ;; :phase/initialize doesn't have a phase-work method yet
     (is (nil? (orchestrate/phase-work {:phase :phase/initialize}))
         ":phase/initialize falls through to :default no-op until its method lands")
-    ;; :phase/capture / :author / :link also still default no-op
-    (is (nil? (orchestrate/phase-work {:phase :phase/capture})))
     (is (nil? (orchestrate/phase-work {:phase :phase/author})))
     (is (nil? (orchestrate/phase-work {:phase :phase/link})))))
 
@@ -692,3 +690,65 @@
       (is (nil? (:next-phase result)) ":phase/imprint is terminal in open ceremony")
       (is (string? (:phase-work-result result)))
       (is (re-find #"Test Plan" (:phase-work-result result))))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; phase-work :phase/capture tests (W4.1 Increment I — handoff-side queries)
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(deftest phase-work-capture-returns-canonical-shape
+  (testing "phase-work :phase/capture returns map with expected keys"
+    (let [process       (start-test-session-process!)
+          capture-state (orchestrate/phase-work {:phase      :phase/capture
+                                                 :process-id (:db/id process)})]
+      (is (map? capture-state))
+      (is (contains? capture-state :process-history))
+      (is (contains? capture-state :process-current-state))
+      (is (contains? capture-state :process-completed?))
+      (is (contains? capture-state :recent-memorials)))))
+
+(deftest phase-work-capture-process-history-shape
+  (testing ":process-history is sequential + :process-current-state is a keyword"
+    (let [process       (start-test-session-process!)
+          ;; Advance one transition to populate history
+          _             (wf/transition! process :session/start)
+          capture-state (orchestrate/phase-work {:phase      :phase/capture
+                                                 :process-id (:db/id process)})]
+      (is (sequential? (:process-history capture-state)))
+      (is (= :session/active (:process-current-state capture-state))
+          "Current state reflects post-transition state")
+      (is (false? (:process-completed? capture-state))
+          ":process-completed? false for non-terminal state"))))
+
+(deftest phase-work-capture-recent-memorials-bounded
+  (testing ":recent-memorials is bounded by limit (default 20)"
+    (let [process       (start-test-session-process!)
+          capture-state (orchestrate/phase-work {:phase      :phase/capture
+                                                 :process-id (:db/id process)})]
+      (is (vector? (:recent-memorials capture-state)))
+      (is (<= (count (:recent-memorials capture-state)) 20)
+          "Default cap is 20"))))
+
+(deftest phase-work-capture-memorial-limit-override
+  (testing ":context :memorial-limit overrides the default cap"
+    (let [process       (start-test-session-process!)
+          capture-state (orchestrate/phase-work {:phase      :phase/capture
+                                                 :process-id (:db/id process)
+                                                 :context    {:memorial-limit 5}})]
+      (is (<= (count (:recent-memorials capture-state)) 5)
+          "Override cap respected"))))
+
+(deftest phase-work-capture-integrates-with-orchestrate
+  (testing "orchestrate :phase/capture with valid process-id returns capture-state via :phase-work-result"
+    (let [process (start-test-session-process!)
+          ;; Advance to :session/active so :phase/capture isn't operating on a stuck process
+          _       (wf/transition! process :session/start)
+          result  (orchestrate/orchestrate {:workflow   :workflow/session
+                                            :process-id (:db/id process)
+                                            :phase      :phase/capture})]
+      (is (= :phase/capture (:phase-completed result)))
+      (is (= :phase/author (:next-phase result))
+          ":phase/capture → :phase/author is the canonical handoff progression")
+      (is (= [] (:transition-applied result))
+          "No transitions on :phase/capture (pure read)")
+      (is (map? (:phase-work-result result)))
+      (is (contains? (:phase-work-result result) :process-history)))))
