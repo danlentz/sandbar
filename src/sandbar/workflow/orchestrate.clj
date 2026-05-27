@@ -100,6 +100,7 @@
   (:require [clojure.string :as str]
             [clojure.tools.logging :as log]
             [sandbar.aggregate :as aggregate]
+            [sandbar.api.projection :as projection]
             [sandbar.db.datatype :as dt]
             [sandbar.db.datomic :as db]
             [sandbar.util.event :as event]
@@ -463,17 +464,61 @@
                                            :projection    :full})]
     (some-> hits first :entity)))
 
+(defn- pull-full
+  "Pull a full-projection entity-map for `ref` (eid, ident, or map carrying
+   :db/id).  Returns nil when `ref` doesn't resolve.
+
+   Used by orient phase to deepen `:prior-log` and `:in-flight-plan` beyond
+   the metadata-only nested-ref shape that `:full` top-level projection
+   bounds nested ref-slots to (per sandbar.api.projection
+   `project-nested-value` one-hop-deep recursion rule).  Body-raw +
+   :mm.plan/stage + :mm.memory/description live on the realized full
+   entity-map, which `:phase/imprint` needs for trajectory extraction."
+  [ref]
+  (let [eid (cond
+              (number? ref)  ref
+              (keyword? ref) ref                    ;; ident — db/entity resolves
+              (map? ref)     (:db/id ref)
+              :else          nil)]
+    (when eid
+      (some-> (db/entity eid) projection/full-projection))))
+
 (defn- orient-prior-log
-  "Resolve the prior session's :mm.session/log ref to a :mm/Log entity-map.
-   Returns nil if the prior session has no log (closed-without-handoff case
-   OR first-session edge)."
+  "Resolve the prior session's :mm.session/log ref to a FULL-projection
+   :mm/Log entity-map.  The prior session is fetched at :full top-level
+   projection — but per the one-hop-deep recursion rule, its :mm.session/log
+   ref-slot ships as metadata-only ({:db/id N :dt/type :mm/Log}).  We
+   re-pull at :full here so :phase/imprint can extract the §\"next move\"
+   narrative + .claude plan-file pointer from the log's body-raw.
+
+   Returns nil if the prior session has no log (closed-without-handoff
+   case OR first-session edge)."
   [prior-session]
   (when-let [log-ref (:mm.session/log prior-session)]
-    ;; log-ref may be an entity-map (resolved) or an ident (string/keyword)
-    (cond
-      (map? log-ref)     log-ref
-      (keyword? log-ref) (wf/find-process log-ref)  ;; placeholder; not used; resolved by Datomic
-      :else              log-ref)))
+    (pull-full log-ref)))
+
+(defn- orient-in-flight-plan
+  "Return the #1 most-recently-touched :mm/Plan at :full projection.
+
+   The in-flight plan is the head of the active-plans list (which the rest
+   of orient pulls at :metadata-only for bandwidth economy).  Surfaced at
+   :full so :phase/imprint can render arc trajectory: plan name +
+   :mm.plan/stage + .claude plan-file path (regex-extracted from body-raw)
+   + 'next move' (regex-extracted from prior-log body-raw).
+
+   Returns nil when no plans exist (first-session-ever edge).
+
+   Bandwidth bound: ~5-10KB per typical in-flight plan (body-raw).  Well
+   under the wire-limit overflow case Gap #1 surfaced; bounded to top-1
+   only, not top-N."
+  []
+  (let [{:keys [hits]} (aggregate/rank-by
+                         {:class         :mm/Plan
+                          :rank-by       :recency
+                          :temporal-slot :mm.memory/last-touched
+                          :limit         1
+                          :projection    :full})]
+    (some-> hits first :entity)))
 
 (defn- orient-corpus-stats
   "Returns {:memory-count <int> :type-histogram {<type-eid-or-ident> <count>}}.
@@ -499,14 +544,16 @@
 
 (defmethod phase-work :phase/orient
   [_args]
-  (let [prior-session (orient-prior-session)
-        prior-log     (orient-prior-log prior-session)
-        stats         (orient-corpus-stats)
-        active-plans  (orient-top-recent :mm/Plan 5)
-        active-tasks  (orient-top-recent :mm/Task 5)
-        active-procs  (wf/list-active-processes)]
+  (let [prior-session   (orient-prior-session)
+        prior-log       (orient-prior-log prior-session)
+        in-flight-plan  (orient-in-flight-plan)
+        stats           (orient-corpus-stats)
+        active-plans    (orient-top-recent :mm/Plan 5)
+        active-tasks    (orient-top-recent :mm/Task 5)
+        active-procs    (wf/list-active-processes)]
     {:prior-session    prior-session
      :prior-log        prior-log
+     :in-flight-plan   in-flight-plan
      :memory-count     (:memory-count stats)
      :type-histogram   (:type-histogram stats)
      :active-plans     active-plans
@@ -581,14 +628,111 @@
     (when (pos? n)
       (str "- **In-flight workflows**: " n " active process(es)"))))
 
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Mid-arc trajectory extractors (per plans/precious-whistling-toast Stage B)
+;;
+;; The banner needs to surface arc trajectory when a session is mid-flight
+;; through an active arc — NOT just the metadata-only top-5 plan names.
+;; These extractors read body-raw from the in-flight-plan + prior-log
+;; (both pulled at :full projection by phase-work :phase/orient) and
+;; surface:
+;;
+;;   - The .claude implementation-plan file path (resolves to the active
+;;     plan-mode artifact for the current sub-stage)
+;;   - The 'Next move' narrative from the prior log's §5 (or equivalent
+;;     heading) — what the prior session said to pick up here
+;;
+;; Failure mode that motivated this — `:memory.interaction/orientation_must_
+;; surface_arc_trajectory_when_mid_flight_not_canned_top_5_lists_dan_correction_2026_05_27`:
+;; the orient phase returns metadata-only top-5 plans (names only); the
+;; banner formats names only; mid-arc trajectory invisible.  After this
+;; landing the banner surfaces stage + plan-file + next-move when the
+;; in-flight plan + prior log carry the corresponding markers.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(def ^:private claude-plan-file-re
+  "Matches `/Users/dan/.claude/plans/<slug>.md` paths referenced in
+   body-raw (the canonical convention for plan-mode artifact pointers
+   across the corpus)."
+  #"/Users/dan/\.claude/plans/[\w-]+\.md")
+
+(def ^:private next-move-section-re
+  "Matches a markdown heading like '## §5 The next move' or '## Next
+   move' (case-insensitive; optional '§N ' prefix; optional 'The ')
+   followed by the section body up to the NEXT heading or end-of-string.
+   Group 1 captures the section body."
+  #"(?im)^##\s+(?:§\d+\s+)?(?:The\s+)?[Nn]ext\s+[Mm]ove\s*$\s*([\s\S]+?)(?=^##\s|\z)")
+
+(defn- extract-claude-plan-file
+  "Search the in-flight-plan body-raw FIRST, then the prior-log body-raw,
+   for a `/Users/dan/.claude/plans/<slug>.md` path.  Returns the first
+   match (a string) or nil if neither source carries one.
+
+   The in-flight-plan body sometimes carries a 'Harness plan-file synthesis
+   pointer' line; the prior-log §5 'next move' often cites the plan-mode
+   artifact.  Either source is acceptable."
+  [orient-state]
+  (let [in-flight-body (some-> orient-state :in-flight-plan :mm.memory/body-raw)
+        prior-log-body (some-> orient-state :prior-log :mm.memory/body-raw)]
+    (some #(when % (re-find claude-plan-file-re %))
+          [in-flight-body prior-log-body])))
+
+(defn- extract-next-move
+  "Extract the 'Next move' narrative from the prior log's body-raw.  The
+   regex matches §5 'The next move' (the conventional handoff-log shape
+   per the /memory-handoff skill's authoring template) OR variants like
+   '## Next move' / '## §3 Next Move'.
+
+   Returns the first PARAGRAPH (text up to the first blank line) of the
+   matched section, trimmed.  Returns nil when no matching heading is
+   present in the prior-log body-raw OR when prior-log is absent."
+  [orient-state]
+  (when-let [body (some-> orient-state :prior-log :mm.memory/body-raw)]
+    (when-let [[_ block] (re-find next-move-section-re body)]
+      (let [trimmed (str/trim block)
+            first-para (-> trimmed (str/split #"\n\n" 2) first str/trim)]
+        (when-not (str/blank? first-para)
+          first-para)))))
+
+(defn- banner-in-flight-arc-line
+  "Compose the 'In-flight arc' banner block.  Renders a multi-line
+   markdown bullet with sub-bullets for stage / implementation plan /
+   next move.  Returns nil when the in-flight plan is absent — banner
+   composer filters nils.
+
+   Per `:memory.interaction/orientation_must_surface_arc_trajectory_when_
+   mid_flight_not_canned_top_5_lists_dan_correction_2026_05_27` — the
+   core mid-arc-deepening behavior the banner now carries."
+  [orient-state]
+  (when-let [plan (:in-flight-plan orient-state)]
+    (let [n     (or (:mm.memory/name plan) (some-> (:db/ident plan) str) "<unnamed>")
+          stage (:mm.plan/stage plan)
+          file  (extract-claude-plan-file orient-state)
+          nxt   (extract-next-move orient-state)
+          lines (filter some?
+                        [(str "- **In-flight arc**: " n)
+                         (when stage (str "  - Stage: `" stage "`"))
+                         (when file  (str "  - Implementation plan: `" file "`"))
+                         (when nxt   (str "  - Next move: " nxt))])]
+      (str/join "\n" lines))))
+
 (defn- compose-banner
   "Compose the full orientation banner from orient-state.  Returns a
    newline-joined markdown string.  Each section line is included only
-   when its source data is present (graceful degradation)."
+   when its source data is present (graceful degradation).
+
+   Section order:
+     1. Last session
+     2. Corpus state
+     3. In-flight arc (NEW — Stage B; surfaces mid-arc trajectory)
+     4. Active arcs (top-5 metadata-only)
+     5. Ready queue (top-5 metadata-only)
+     6. In-flight workflows (count of active workflow.processes)"
   [orient-state]
   (let [lines (filter some?
                       [(banner-prior-session-line orient-state)
                        (banner-corpus-state-line orient-state)
+                       (banner-in-flight-arc-line orient-state)
                        (banner-active-plans-line orient-state)
                        (banner-ready-queue-line orient-state)
                        (banner-active-processes-line orient-state)])]

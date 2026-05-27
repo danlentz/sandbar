@@ -571,11 +571,24 @@
     (let [orient-state (orchestrate/phase-work {:phase :phase/orient})]
       (is (contains? orient-state :prior-session))
       (is (contains? orient-state :prior-log))
+      (is (contains? orient-state :in-flight-plan)
+          ":in-flight-plan slot landed per precious-whistling-toast Stage A — top-1 :mm/Plan at :full projection")
       (is (contains? orient-state :memory-count))
       (is (contains? orient-state :type-histogram))
       (is (contains? orient-state :active-plans))
       (is (contains? orient-state :active-tasks))
       (is (contains? orient-state :active-processes)))))
+
+(deftest phase-work-orient-in-flight-plan-is-map-or-nil
+  (testing ":in-flight-plan is either a map (when plans exist) or nil (first-session-ever edge)"
+    (let [orient-state (orchestrate/phase-work {:phase :phase/orient})
+          plan         (:in-flight-plan orient-state)]
+      (is (or (nil? plan) (map? plan))
+          ":in-flight-plan is map-or-nil — graceful first-session degradation")
+      (when (map? plan)
+        ;; If populated, it's a :full-projection entity-map carrying at minimum :db/id
+        (is (some? (:db/id plan))
+            ":in-flight-plan carries :db/id when populated (full-projection contract)")))))
 
 (deftest phase-work-orient-corpus-stats-populated
   (testing "Corpus stats slots are well-shaped"
@@ -697,6 +710,110 @@
       (is (nil? (:next-phase result)) ":phase/imprint is terminal in open ceremony")
       (is (string? (:phase-work-result result)))
       (is (re-find #"Test Plan" (:phase-work-result result))))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; phase-work :phase/imprint — mid-arc trajectory section
+;; (per plans/precious-whistling-toast Stage B; addresses
+;; :memory.interaction/orientation_must_surface_arc_trajectory_when_mid_flight_…)
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(deftest phase-work-imprint-includes-in-flight-arc-line
+  (testing "Banner includes 'In-flight arc' line + 'Stage' sub-bullet when :in-flight-plan populated"
+    (let [result (orchestrate/phase-work
+                   {:phase   :phase/imprint
+                    :context {:orient-state
+                              {:memory-count   100
+                               :type-histogram {}
+                               :in-flight-plan {:mm.memory/name "γ Scheduler Arc"
+                                                :mm.plan/stage  "stage-2-partial-step-3-recurrence-next"}}}})]
+      (is (re-find #"In-flight arc" result)
+          "'In-flight arc' section header present")
+      (is (re-find #"γ Scheduler Arc" result)
+          "In-flight plan name surfaced")
+      (is (re-find #"Stage:" result)
+          "Stage sub-bullet present when :mm.plan/stage populated")
+      (is (re-find #"stage-2-partial-step-3-recurrence-next" result)
+          "Stage value surfaced verbatim"))))
+
+(deftest phase-work-imprint-extracts-claude-plan-file
+  (testing "Banner extracts /Users/dan/.claude/plans/<slug>.md path from in-flight-plan body-raw"
+    (let [result (orchestrate/phase-work
+                   {:phase   :phase/imprint
+                    :context {:orient-state
+                              {:memory-count   100
+                               :type-histogram {}
+                               :in-flight-plan {:mm.memory/name "γ Scheduler"
+                                                :mm.plan/stage  "stage-2-partial"
+                                                :mm.memory/body-raw
+                                                "## Context\n\nImplementation plan lives at `/Users/dan/.claude/plans/golden-squishing-flamingo.md`.\n"}}}})]
+      (is (re-find #"Implementation plan:" result)
+          "Implementation plan sub-bullet emitted")
+      (is (re-find #"golden-squishing-flamingo\.md" result)
+          ".claude plan-file path extracted from body-raw"))))
+
+(deftest phase-work-imprint-extracts-claude-plan-file-from-prior-log
+  (testing "Falls back to prior-log body-raw when in-flight-plan body has no .claude path"
+    (let [result (orchestrate/phase-work
+                   {:phase   :phase/imprint
+                    :context {:orient-state
+                              {:memory-count   100
+                               :type-histogram {}
+                               :in-flight-plan {:mm.memory/name "γ Scheduler"
+                                                :mm.memory/body-raw "## Context\n\nNo plan-mode pointer here.\n"}
+                               :prior-log      {:mm.memory/name "Prior log"
+                                                :mm.memory/body-raw
+                                                "## §5 Next move\n\nResume per `/Users/dan/.claude/plans/golden-squishing-flamingo.md`.\n"}}}})]
+      (is (re-find #"golden-squishing-flamingo\.md" result)
+          ".claude plan-file path extracted from prior-log body-raw fallback"))))
+
+(deftest phase-work-imprint-extracts-next-move
+  (testing "Banner extracts 'Next move' first-paragraph from prior-log body-raw §5"
+    (let [result (orchestrate/phase-work
+                   {:phase   :phase/imprint
+                    :context {:orient-state
+                              {:memory-count   100
+                               :type-histogram {}
+                               :in-flight-plan {:mm.memory/name "γ Scheduler"}
+                               :prior-log      {:mm.memory/name "Prior log"
+                                                :mm.memory/body-raw
+                                                "## §1 Context\n\nLorem.\n\n## §5 The next move\n\nResume γ.2 at Step 3 — author sandbar.schedule.recurrence.\n\n## §6 Open questions\n\n..."}}}})]
+      (is (re-find #"Next move:" result)
+          "Next-move sub-bullet emitted")
+      (is (re-find #"Resume γ\.2 at Step 3" result)
+          "First paragraph of next-move section surfaced"))))
+
+(deftest phase-work-imprint-graceful-when-no-in-flight-plan
+  (testing "No :in-flight-plan in orient-state → no In-flight arc line; banner still composes"
+    (let [result (orchestrate/phase-work
+                   {:phase   :phase/imprint
+                    :context {:orient-state
+                              {:memory-count   100
+                               :type-histogram {}
+                               :active-plans   [{:mm.memory/name "Sibling Plan"}]}}})]
+      (is (string? result))
+      (is (not (re-find #"In-flight arc" result))
+          "No 'In-flight arc' line when :in-flight-plan absent")
+      (is (re-find #"Sibling Plan" result)
+          "Active arcs line still emitted from active-plans"))))
+
+(deftest phase-work-imprint-graceful-when-in-flight-plan-has-no-body
+  (testing ":in-flight-plan without body-raw / next-move → trajectory sub-bullets gracefully omitted"
+    (let [result (orchestrate/phase-work
+                   {:phase   :phase/imprint
+                    :context {:orient-state
+                              {:memory-count   100
+                               :type-histogram {}
+                               :in-flight-plan {:mm.memory/name "Plan With No Body"
+                                                :mm.plan/stage  "stage-1"}}}})]
+      (is (re-find #"In-flight arc" result)
+          "Top-level In-flight arc line still emitted")
+      (is (re-find #"Plan With No Body" result))
+      (is (re-find #"Stage:" result)
+          "Stage line emitted when :mm.plan/stage present")
+      (is (not (re-find #"Implementation plan:" result))
+          "No Implementation plan line when no .claude path extractable")
+      (is (not (re-find #"Next move:" result))
+          "No Next move line when prior-log absent / has no §next-move heading"))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; phase-work :phase/capture tests (W4.1 Increment I — handoff-side queries)
