@@ -146,9 +146,10 @@
           #(orchestrate/orchestrate {:process-id 1 :phase :phase/orient})))))
 
 (deftest orchestrate-rejects-missing-process-id
+  ;; :phase/activate REQUIRES :process-id (per Increment G, only :phase/orient is exempt).
   (is (= :missing-required-arg
          (ex-info-with-reason
-          #(orchestrate/orchestrate {:workflow :workflow/session :phase :phase/orient})))))
+          #(orchestrate/orchestrate {:workflow :workflow/session :phase :phase/activate})))))
 
 (deftest orchestrate-rejects-missing-phase
   (is (= :missing-required-arg
@@ -541,3 +542,64 @@
           current-state (:workflow/state-name (wf/get-current-state process-after))]
       (is (= :session/failed current-state)
           "fail-from-opening transition advances process to :session/failed terminal state"))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; phase-work :phase/orient tests (W4.1 Increment G — first multimethod method)
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(deftest orchestrate-phase-orient-accepts-no-process-id
+  (testing ":phase/orient succeeds WITHOUT a :process-id arg per Increment G"
+    (let [result (orchestrate/orchestrate {:workflow :workflow/session
+                                           :phase    :phase/orient})]
+      (is (= :phase/orient (:phase-completed result)))
+      (is (= :phase/initialize (:next-phase result)))
+      (is (= [] (:transition-applied result)) "Pure-read; no transitions")
+      (is (= [] (:events-emitted result)) "No phase-completion event for :orient")
+      (is (false? (:degraded? result)))
+      (is (map? (:phase-work-result result))
+          ":phase-work-result carries the orient-state map from phase-work :phase/orient"))))
+
+(deftest orchestrate-rejects-missing-process-id-for-non-orient-phase
+  (testing "Other phases STILL reject missing :process-id"
+    (is (= :missing-required-arg
+           (ex-info-with-reason
+            #(orchestrate/orchestrate {:workflow :workflow/session
+                                       :phase    :phase/activate}))))))
+
+(deftest phase-work-orient-returns-canonical-shape
+  (testing "phase-work :phase/orient returns map with all expected keys"
+    (let [orient-state (orchestrate/phase-work {:phase :phase/orient})]
+      (is (contains? orient-state :prior-session))
+      (is (contains? orient-state :prior-log))
+      (is (contains? orient-state :memory-count))
+      (is (contains? orient-state :type-histogram))
+      (is (contains? orient-state :active-plans))
+      (is (contains? orient-state :active-tasks))
+      (is (contains? orient-state :active-processes)))))
+
+(deftest phase-work-orient-corpus-stats-populated
+  (testing "Corpus stats slots are well-shaped"
+    (let [orient-state (orchestrate/phase-work {:phase :phase/orient})]
+      (is (integer? (:memory-count orient-state)))
+      (is (>= (:memory-count orient-state) 0)
+          "Memory count is non-negative")
+      (is (map? (:type-histogram orient-state))
+          ":type-histogram is a map of class→count"))))
+
+(deftest phase-work-orient-active-collections-are-vecs
+  (testing "Active arcs / tasks / processes return vecs (queryable JSON-safe)"
+    (let [orient-state (orchestrate/phase-work {:phase :phase/orient})]
+      (is (vector? (:active-plans orient-state)))
+      (is (vector? (:active-tasks orient-state)))
+      (is (sequential? (:active-processes orient-state)))
+      (is (<= (count (:active-plans orient-state)) 5)
+          "Top-5 cap on active-plans")
+      (is (<= (count (:active-tasks orient-state)) 5)
+          "Top-5 cap on active-tasks"))))
+
+(deftest phase-work-default-still-returns-nil
+  (testing "Default phase-work (for phases without registered methods) still returns nil"
+    ;; :phase/initialize doesn't have a phase-work method yet (lands in follow-on increment)
+    (is (nil? (orchestrate/phase-work {:phase :phase/initialize}))
+        ":phase/initialize falls through to :default no-op until its method lands")
+    (is (nil? (orchestrate/phase-work {:phase :phase/imprint})))))

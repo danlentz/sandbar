@@ -99,6 +99,7 @@
    `sandbar.workflow.orchestrate`."
   (:require [clojure.string :as str]
             [clojure.tools.logging :as log]
+            [sandbar.aggregate :as aggregate]
             [sandbar.util.event :as event]
             [sandbar.util.workflow :as wf]))
 
@@ -427,19 +428,113 @@
 (defmethod phase-work :default [_args] nil)
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; phase-work :phase/orient — FIRST multimethod method (Increment G)
+;;
+;; Encapsulates the orientation queries currently performed imperatively in
+;; the /memory-open skill body Steps 1-3:
+;;   1. Latest :mm/Session by :mm.session/started-at descending → prior session
+;;   2. Prior session's :mm.session/log ref → handoff log
+;;   3. :mm/Memory corpus count + group-by :dt/type → memorial histogram
+;;   4. Top-5 :mm/Plan by :mm.memory/last-touched → active arcs
+;;   5. Top-5 :mm/Task by :mm.memory/last-touched → ready queue
+;;   6. All active (non-terminal) workflow.processes
+;;
+;; The returned map is bubbled up through orchestrate's `:phase-work-result`
+;; slot — the future thin-wrapper /memory-open invocation extracts orient-
+;; state from there for banner composition.
+;;
+;; This is the FIRST step in the multi-increment phase-work multimethod
+;; migration arc.  When all 8 phase-work methods land + the skills are
+;; rewritten as thin wrappers, /memory-open + /memory-handoff collapse to
+;; ~10 lines per Q.ι.3.12.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defn- orient-prior-session
+  "Look up the chronologically-latest :mm/Session entity.  Returns the
+   entity-map (or nil if no sessions exist yet — first-session edge case)."
+  []
+  (let [{:keys [hits]} (aggregate/rank-by {:class         :mm/Session
+                                           :rank-by       :recency
+                                           :temporal-slot :mm.session/started-at
+                                           :limit         1
+                                           :projection    :full})]
+    (some-> hits first :entity)))
+
+(defn- orient-prior-log
+  "Resolve the prior session's :mm.session/log ref to a :mm/Log entity-map.
+   Returns nil if the prior session has no log (closed-without-handoff case
+   OR first-session edge)."
+  [prior-session]
+  (when-let [log-ref (:mm.session/log prior-session)]
+    ;; log-ref may be an entity-map (resolved) or an ident (string/keyword)
+    (cond
+      (map? log-ref)     log-ref
+      (keyword? log-ref) (wf/find-process log-ref)  ;; placeholder; not used; resolved by Datomic
+      :else              log-ref)))
+
+(defn- orient-corpus-stats
+  "Returns {:memory-count <int> :type-histogram {<type-eid-or-ident> <count>}}.
+   Per the imperative /memory-open Steps 3.1 + 3.2."
+  []
+  (let [count-result   (aggregate/count-by {:class :mm/Memory})
+        group-result   (aggregate/group-by {:class    :mm/Memory
+                                            :group-by :dt/type})]
+    {:memory-count   (:count count-result)
+     :type-histogram (:groups group-result)}))
+
+(defn- orient-top-recent
+  "Return top-N most-recently-touched entities of `class` by
+   :mm.memory/last-touched.  Returns vec of entity-maps (projection
+   :metadata-only for lightweight payloads)."
+  [class n]
+  (let [{:keys [hits]} (aggregate/rank-by {:class         class
+                                           :rank-by       :recency
+                                           :temporal-slot :mm.memory/last-touched
+                                           :limit         n
+                                           :projection    :metadata-only})]
+    (mapv :entity hits)))
+
+(defmethod phase-work :phase/orient
+  [_args]
+  (let [prior-session (orient-prior-session)
+        prior-log     (orient-prior-log prior-session)
+        stats         (orient-corpus-stats)
+        active-plans  (orient-top-recent :mm/Plan 5)
+        active-tasks  (orient-top-recent :mm/Task 5)
+        active-procs  (wf/list-active-processes)]
+    {:prior-session    prior-session
+     :prior-log        prior-log
+     :memory-count     (:memory-count stats)
+     :type-histogram   (:type-histogram stats)
+     :active-plans     active-plans
+     :active-tasks     active-tasks
+     :active-processes active-procs}))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Orchestrator entry point — W4.1 dispatcher loop
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
+(def ^:private phases-not-requiring-process-id
+  "Phases that do NOT require an existing :workflow/Process — pure-read or
+   bootstrap phases.  These can be invoked before a process exists OR with
+   no process at all (e.g., :phase/orient querying corpus state for the
+   orientation banner).
+
+   Per Increment G — first step of the phase-work multimethod migration arc."
+  #{:phase/orient})
+
 (defn- validate-args!
   "Validate required orchestrate args.  Throws ex-info on missing keys or
-   unknown phase."
+   unknown phase.
+
+   Per Increment G — `:process-id` is OPTIONAL for phases in
+   `phases-not-requiring-process-id` (currently just `:phase/orient`).
+   This unblocks the eventual thin-wrapper rewrite where the skill can
+   call orchestrate `:phase/orient` BEFORE a workflow.process exists."
   [{:keys [workflow process-id phase] :as args}]
   (when-not workflow
     (throw (ex-info "Missing required arg :workflow"
                     {:reason :missing-required-arg :key :workflow :args args})))
-  (when-not process-id
-    (throw (ex-info "Missing required arg :process-id"
-                    {:reason :missing-required-arg :key :process-id :args args})))
   (when-not phase
     (throw (ex-info "Missing required arg :phase"
                     {:reason :missing-required-arg :key :phase :args args})))
@@ -448,7 +543,16 @@
                     {:reason :unknown-phase
                      :phase  phase
                      :known  {:open-phases    open-phases
-                              :handoff-phases handoff-phases}}))))
+                              :handoff-phases handoff-phases}})))
+  ;; :process-id required for all phases EXCEPT those in phases-not-requiring-process-id
+  (when (and (not process-id)
+             (not (contains? phases-not-requiring-process-id phase)))
+    (throw (ex-info (str "Missing required arg :process-id (required for phase " phase ")")
+                    {:reason          :missing-required-arg
+                     :key             :process-id
+                     :phase           phase
+                     :phases-exempt   phases-not-requiring-process-id
+                     :args            args}))))
 
 (defn orchestrate
   "ι.3 substrate orchestrator entry-point.  Drives a workflow.process through
