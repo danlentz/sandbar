@@ -750,3 +750,62 @@
                  "---\n# Body\n")]
     (is (round-trip-stable? src "memory/actors/test-actor.md")
         "combined-bug-class fixture must round-trip stably")))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; η.4 Target #1 (2026-05-28) — rel-path->memory-ident handles ident-string
+;; form correctly + does NOT produce the double-prefix bug.
+;;
+;; Pre-fix behavior: input `"memory.actors/foo"` → `:memory.memory.actors/foo`
+;; (double-prefix bug) because the path-form parse prepended `memory/` then
+;; split on `/`.  Post-fix: ident-string form is detected via regex + parsed
+;; directly → `:memory.actors/foo`.
+;;
+;; The η.3 audit surfaced 233 entities / 464 occurrences affected by this
+;; bug across 8 ref-slot families (created-by, cites, related, composes-with,
+;; superseded-by, motivated-by, evidences, parent).
+
+(deftest rel-path->memory-ident-handles-path-form
+  (testing "Path-form (FS rel-path) inputs parse correctly"
+    (is (= :memory.actors/claude-opus-4-7-1m
+           (md/rel-path->memory-ident "actors/claude-opus-4-7-1m.md")))
+    (is (= :memory.actors/claude-opus-4-7-1m
+           (md/rel-path->memory-ident "memory/actors/claude-opus-4-7-1m.md")))
+    (is (= :memory.decisions/foo
+           (md/rel-path->memory-ident "decisions/foo.md")))
+    (is (= :memory.patterns.architectural.sandbar/x
+           (md/rel-path->memory-ident "patterns/architectural/sandbar/x.md")))))
+
+(deftest rel-path->memory-ident-handles-ident-string-form
+  (testing "Ident-string form (memory.dotted-ns/name) parses directly without double-prefix"
+    ;; The η.4 Target #1 regression case
+    (is (= :memory.actors/claude-opus-4-7-1m
+           (md/rel-path->memory-ident "memory.actors/claude-opus-4-7-1m"))
+        "ident-string form must NOT become :memory.memory.actors/...")
+    (is (= :memory.libraries.patterns/scheduler_substrate_synthesis
+           (md/rel-path->memory-ident
+            "memory.libraries.patterns/scheduler_substrate_synthesis")))
+    (is (= :memory.decisions/foo
+           (md/rel-path->memory-ident "memory.decisions/foo")))
+    (is (= :memory.patterns.architectural.sandbar/x
+           (md/rel-path->memory-ident "memory.patterns.architectural.sandbar/x")))))
+
+(deftest rel-path->memory-ident-ident-form-with-md-extension
+  (testing "Defensive: ident-string form with stray .md extension still parses correctly"
+    (is (= :memory.actors/foo
+           (md/rel-path->memory-ident "memory.actors/foo.md")))))
+
+(deftest rel-path->memory-ident-edge-cases
+  (testing "Empty input → nil (no name + no namespace derivable)"
+    (is (nil? (md/rel-path->memory-ident ""))))
+  (testing "Slashless input parses as single-segment :memory/<name> (existing behavior preserved)"
+    (is (= :memory/foo (md/rel-path->memory-ident "foo")))))
+
+(deftest rel-path->memory-ident-non-memory-prefix-path-form-still-works
+  (testing "Path-form inputs not starting with memory/ get the memory/ prefix prepended (existing behavior preserved)"
+    (is (= :memory.actors/foo
+           (md/rel-path->memory-ident "actors/foo.md")))
+    ;; A path that LOOKS like an ident-string but doesn't start with memory.
+    ;; falls through to path-form: "auth.X/foo" doesn't match the ident-form
+    ;; regex (which requires `^memory\.`), so it parses as a path.
+    (is (= :memory.auth.X/foo
+           (md/rel-path->memory-ident "auth.X/foo")))))

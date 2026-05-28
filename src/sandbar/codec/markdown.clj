@@ -548,6 +548,21 @@
    'memory/decisions/foo.md'  → :memory.decisions/foo
    'patterns/x/y.md'          → :memory.patterns.x/y
 
+   ALSO HANDLES THE IDENT-STRING FORM (per η.4 Target #1 fix 2026-05-28):
+   Some FS frontmatter ref-slots historically were authored in ident-
+   string form (`memory.<dotted-ns>/<name>` — dots in namespace, single
+   `/` separating namespace from name, NO .md extension).  The naive
+   path-form parse on this input produces a SPURIOUS DOUBLE-PREFIX
+   ident (`:memory.memory.<dotted-ns>/<name>`) because it prepends
+   `memory/` then splits on `/`.
+
+   The fix: detect the ident-string form via regex (`^memory\\.[^/]+/.+`)
+   and parse it directly as a keyword.  Other path-form inputs fall
+   through to the original split-on-`/` logic unchanged.
+
+   'memory.actors/foo'                      → :memory.actors/foo (NEW; was :memory.memory.actors/foo)
+   'memory.libraries.patterns/scheduler'    → :memory.libraries.patterns/scheduler (NEW)
+
    Returns nil for unparseable input.
 
    Public per Gap 1 — consumers (MCP `sandbar.entity.find-by-rel-path`
@@ -555,15 +570,28 @@
    re-implementing it.  Per MCP cutover exercise 2026-05-22 (inbox
    capture)."
   [rel-path]
-  (let [no-ext     (str/replace rel-path #"\.md$" "")
-        with-mem   (if (str/starts-with? no-ext "memory/")
-                     no-ext
-                     (str "memory/" no-ext))
-        parts      (str/split with-mem #"/")
-        ns-parts   (butlast parts)
-        local-name (last parts)]
-    (when (and (seq ns-parts) local-name)
-      (keyword (str/join "." ns-parts) local-name))))
+  (let [no-ext (str/replace rel-path #"\.md$" "")
+        ;; η.4 Target #1 fix (2026-05-28): detect ident-string form to
+        ;; avoid the double-prefix bug that surfaced 233 entities / 464
+        ;; ref-slot-mismatches in the η.3 audit.  Ident-string form is
+        ;; `memory.<dotted-ns>/<name>` where the namespace has DOTS not
+        ;; slashes between segments.  Detection: starts with `memory.`
+        ;; (NOT `memory/`) AND has exactly one `/` separating ns from name.
+        ident-form (re-matches #"^(memory(?:\.[^/]+)+)/([^/]+)$" no-ext)]
+    (if ident-form
+      ;; Ident-string form: parse directly as keyword (no path-form
+      ;; reconciliation).
+      (let [[_ ns-str nm-str] ident-form]
+        (keyword ns-str nm-str))
+      ;; Path form: prepend `memory/` if absent + derive keyword.
+      (let [with-mem   (if (str/starts-with? no-ext "memory/")
+                         no-ext
+                         (str "memory/" no-ext))
+            parts      (str/split with-mem #"/")
+            ns-parts   (butlast parts)
+            local-name (last parts)]
+        (when (and (seq ns-parts) local-name)
+          (keyword (str/join "." ns-parts) local-name))))))
 
 (defn- coerce-rel-path->ident-upsert
   "Coerce a rel-path string (or vec) to a `:db/ident` upsert map for
