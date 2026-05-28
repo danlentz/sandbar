@@ -548,18 +548,33 @@
 (defn- orient-type-lattice
   "Per-branch instance counts for the direct subclasses of :mm/Memory — the
    top-level type-lattice summary (Artifact / Guidance / Meta / Signal / Spec
-   / …).  Each branch count INCLUDES its subtree (count-by counts instances-of
-   recursively).  Returns a vec of [branch-ident count] pairs, count-desc."
+   / …), EACH enriched with its own direct subclasses + counts (surface B of
+   the deep-grounding ceremony — the type-STRUCTURE existence resident at
+   orientation, not just top-level totals).  Every count INCLUDES its subtree
+   (count-by counts instances-of recursively).  Returns a vec of
+   [branch-ident count subclasses] triples (count-desc), where subclasses is a
+   vec of [subclass-ident count] pairs (count-desc)."
   []
   (->> (dt/direct-subclasses-of :mm/Memory)
-       (map (fn [branch] [branch (:count (aggregate/count-by {:class branch}))]))
+       (map (fn [branch]
+              (let [n    (:count (aggregate/count-by {:class branch}))
+                    subs (->> (dt/direct-subclasses-of branch)
+                              (map (fn [s] [s (:count (aggregate/count-by {:class s}))]))
+                              (sort-by second >)
+                              vec)]
+                [branch n subs])))
        (sort-by second >)
        vec))
 
 (defn- arc-plan-node
   "Lazy-read the forest-relevant slots for a plan eid (cheap attribute access
    on a Datomic entity — no full projection).  Parent resolves to
-   :mm.plan/primary-parent first, then the general :mm.memory/parent."
+   :mm.plan/primary-parent first, then the general :mm.memory/parent, and is
+   normalized to a numeric eid so build-arc-tree can match parent→child.  A
+   ref may surface as a numeric eid, an entity map, OR a :db/ident keyword
+   (the shape a ref set via the MCP entity.update boundary reads back as) —
+   all three normalize to the eid; a keyword that doesn't resolve degrades to
+   nil (node stays a root), never throws."
   [eid]
   (let [e      (db/entity eid)
         parent (or (:mm.plan/primary-parent e) (:mm.memory/parent e))]
@@ -571,6 +586,7 @@
      :rel-path (:mm.memory/rel-path e)
      :parent   (cond (nil? parent)         nil
                      (number? parent)      parent
+                     (keyword? parent)     (some-> (db/entity parent) :db/id)
                      (associative? parent) (:db/id parent)
                      :else                 nil)}))
 
@@ -722,15 +738,25 @@
       "<unnamed>"))
 
 (defn- banner-type-lattice-line
-  "Compose the 'Type lattice' banner line — the :mm/Memory top-level branches
-   with per-subtree instance counts."
+  "Compose the 'Type lattice' banner block — the :mm/Memory top-level branches
+   with per-subtree counts, EACH expanded to its direct subclasses + counts
+   (surface B: the type-structure existence resident at orientation; deepen
+   further via `class.subclasses` / `types.subclass-of` / `class.describe`).
+   Tolerates both the enriched [branch n subs] triple shape and the legacy
+   [branch n] pair shape (a pair simply renders without a subclass tail)."
   [orient-state]
   (when-let [lattice (seq (:type-lattice orient-state))]
-    (str "- **Type lattice**: "
-         (str/join " · "
-                   (map (fn [[branch n]]
-                          (str (if (keyword? branch) (name branch) (str branch)) " " n))
-                        lattice)))))
+    (let [nm (fn [k] (if (keyword? k) (name k) (str k)))]
+      (str "- **Type lattice** (`:mm/Memory` branches → subclasses; deepen via `class.subclasses` / `types.subclass-of`):\n"
+           (str/join "\n"
+                     (map (fn [[branch n subs]]
+                            (str "  - " (nm branch) " " n
+                                 (when (seq subs)
+                                   (str " — "
+                                        (str/join " · "
+                                                  (map (fn [[s sc]] (str (nm s) " " sc))
+                                                       (take 6 subs)))))))
+                           lattice))))))
 
 (defn- truncate-stage
   "Trim a stage string to its first line / ~70 chars for compact rendering."
