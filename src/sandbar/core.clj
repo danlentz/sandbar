@@ -36,6 +36,25 @@
   (log/info :SYS/INIT "Initializing system")
   (alter-var-root #'sys/system (constantly (make-system))))
 
+(defn- bm25f-warmable-class?
+  "True if `class-ident` should be cold-warmed in the startup BM25F sweep:
+   it declares effective bm25f-weights AND is NOT a runtime-event class.
+
+   The `:dt/Event` subtree (`:event/SystemEvent`, `:event/ServerEvent`,
+   `:event/UserEvent`, …) carries bm25f-weights but is operational
+   telemetry — NOT corpus-retrieval content.  The `:db-only` system jobs
+   emit `:event/SystemEvent` (~240/day), so warming that subtree bloats
+   startup unboundedly for zero corpus-search value.  Per Dan-directive
+   2026-05-28.
+
+   NB: the `:mm.event/*` memory-model events are a DIFFERENT hierarchy
+   (`:mm.event/* → :mm/Event → :mm/Meta → :mm/Memory`) — genuine corpus
+   members — and remain warmable.  BM25F is a corpus-retrieval tool;
+   `:dt/Event` runtime events have no business in the startup warm."
+  [class-ident]
+  (and (seq (dt/effective-bm25f-weights-of class-ident))
+       (not (dt/type-isa? :dt/Event class-ident))))
+
 (defn start []
   ;; FOUNDATION FIRST — initialize Telemere handlers BEFORE any (log/info ...)
   ;; callsite has a chance to fire silently into a no-handler void.  Per
@@ -65,7 +84,7 @@
   ;; declared.  Per-class warm is independent; failure on one class doesn't
   ;; block others (per-class try/catch).
   (try
-    (let [searchable (filter #(seq (dt/effective-bm25f-weights-of %)) (dt/all-classes))]
+    (let [searchable (filter bm25f-warmable-class? (dt/all-classes))]
       (doseq [class searchable]
         (try
           (let [{:keys [count ms]} (search/warm-bm25f-cache! class)]
