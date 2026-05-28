@@ -120,7 +120,8 @@
             "list-backups"        ["run" "-m" "sandbar.scripts.list-backups"]
             "prune-backups"       ["run" "-m" "sandbar.scripts.prune-backups"]
             "config-show"         ["run" "-m" "sandbar.scripts.config-show"]
-            "list-dbs"            ["run" "-m" "sandbar.scripts.list-dbs"]}
+            "list-dbs"            ["run" "-m" "sandbar.scripts.list-dbs"]
+            "seed-verb-catalog"   ["run" "-m" "sandbar.scripts.seed-verb-catalog"]}
 
 
   :asciidoc {:sources ["doc/*.adoc"]

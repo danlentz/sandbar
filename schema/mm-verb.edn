@@ -1,0 +1,152 @@
+[
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; :mm/Verb — the MCP verb surface modeled as first-class substrate entities
+;;
+;; S2 of the MCP-Surface-Mastery arc
+;; (memory.plans/mcp_surface_mastery_and_utilization_arc_2026_05_28).
+;; Source of truth: the live `verb-catalog` (src/sandbar/mcp/tools.clj).
+;; This class lets the substrate describe its OWN MCP interface
+;; (metacircular) and makes the surface queryable / BM25F-retrievable /
+;; graph-navigable — the foundation for the affordance map (P1) and
+;; per-task verb retrieval (P2).  Seeded by
+;; sandbar.scripts.seed-verb-catalog.
+;;
+;; INHERITANCE: :mm/Verb :dt/subclass-of :mm/Meta (operational /
+;; self-describing axis; siblings :mm/Predicate / :mm/Shape / :mm/Type).
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ ;; Forward declaration — enables slot :dt/domain references before the full class definition.
+ [{:db/ident :mm/Verb :db/doc "Forward declaration; full class definition later in this file."}]
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; :mm.verb/* scalar properties
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident       :mm.verb/name
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Verb
+   :dt/range       :db.type/string
+   :db/valueType   :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/unique      :db.unique/identity
+   :db/doc "Canonical verb name (e.g. \"sandbar.entity.find\"), namespace.name form matching the MCP tool name. Unique-identity → idempotent re-seed (asserting the same name upserts the entity)."}
+
+  {:db/ident       :mm.verb/title
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Verb
+   :dt/range       :db.type/string
+   :db/valueType   :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/doc "Short one-line title (the verb-catalog :title)."}
+
+  {:db/ident       :mm.verb/description
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Verb
+   :dt/range       :db.type/string
+   :db/valueType   :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/doc "Full LLM-facing description (the verb-catalog :description; WHICH/WHEN/HOW/ORDER/COMBINATION prose). Density-optimized in S8."}
+
+  {:db/ident       :mm.verb/axis
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Verb
+   :dt/range       :db.type/keyword
+   :db/valueType   :db.type/keyword
+   :db/cardinality :db.cardinality/one
+   :db/doc "Verb axis/family derived from the name's second segment (e.g. :entity / :search / :navigate / :aggregate / :tag / :workflow / :schedule). Group-by axis for the affordance map + breadth metrics."}
+
+  {:db/ident       :mm.verb/arg-summary
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Verb
+   :dt/range       :db.type/string
+   :db/valueType   :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/doc "Distilled argument summary from the verb's :inputSchema (required* + optional param names). Lean signal for the affordance map."}
+
+  {:db/ident       :mm.verb/which
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Verb
+   :dt/range       :db.type/string
+   :db/valueType   :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/doc "The WHICH: section (what the verb returns), split from :description. High BM25F weight."}
+
+  {:db/ident       :mm.verb/when
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Verb
+   :dt/range       :db.type/string
+   :db/valueType   :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/doc "The WHEN: section (when to use / when not to), split from :description. High BM25F weight — the strongest retrieval signal for task→verb matching."}
+
+  {:db/ident       :mm.verb/how
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Verb
+   :dt/range       :db.type/string
+   :db/valueType   :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/doc "The HOW: section (args + return shape), split from :description."}]
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; :mm.verb/* typed-edge predicates (verb→verb dependency graph)
+;; Promoted from the ORDER:/COMBINATION: prose. The dependency graph that
+;; Graph-RAG-Tool-Fusion shows is the highest-leverage retrieval lever.
+;; combines-with is logically symmetric; asserted bidirectionally by the
+;; generator (modeled as DirectedBinaryRelationProperty for robustness).
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident       :mm.verb/prereq-of
+   :dt/type        :dt/DirectedBinaryRelationProperty
+   :dt/domain      :mm/Verb
+   :dt/range       :mm/Verb
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/many
+   :db/doc "This verb is a prerequisite for the target verb (from the target's ORDER: section). E.g. sandbar.schema.classes :prereq-of sandbar.class.describe."}
+
+  {:db/ident       :mm.verb/combines-with
+   :dt/type        :dt/DirectedBinaryRelationProperty
+   :dt/domain      :mm/Verb
+   :dt/range       :mm/Verb
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/many
+   :db/doc "This verb composes with the target (from the COMBINATION: section). Logically symmetric — asserted both directions by the seeder."}
+
+  {:db/ident       :mm.verb/produces-input-for
+   :dt/type        :dt/DirectedBinaryRelationProperty
+   :dt/domain      :mm/Verb
+   :dt/range       :mm/Verb
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/many
+   :db/doc "This verb's output feeds the target verb (data-flow dependency; e.g. search.bm25f :produces-input-for aggregate.rank-by). Reserved for explicit data-flow edges; may be sparse at first seed."}]
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; :mm/Verb full class definition
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident             :mm/Verb
+   :dt/type              :dt/Class
+   :dt/subclass-of       :mm/Meta
+   :dt/context           "mm"
+   :dt/label             "Verb"
+   :dt/native-codec      :markdown
+   :dt/slots             [:mm.verb/name
+                          :mm.verb/title
+                          :mm.verb/description
+                          :mm.verb/axis
+                          :mm.verb/arg-summary
+                          :mm.verb/which
+                          :mm.verb/when
+                          :mm.verb/how
+                          :mm.verb/prereq-of
+                          :mm.verb/combines-with
+                          :mm.verb/produces-input-for]
+   :dt/bm25f-weights     [[:mm.verb/name        12.0]
+                          [:mm.verb/title        8.0]
+                          [:mm.verb/when         7.0]
+                          [:mm.verb/which        6.0]
+                          [:mm.verb/arg-summary  4.0]
+                          [:mm.verb/description  3.0]
+                          [:mm.verb/how          2.0]]
+   :dt/abstract?         false
+   :db/doc "An MCP verb in sandbar's tool surface, modeled as a first-class substrate entity (a projection of the live `verb-catalog` in src/sandbar/mcp/tools.clj). Makes the ~80-verb surface queryable, BM25F-retrievable, and graph-navigable via verb→verb dependency edges (:mm.verb/prereq-of / :combines-with / :produces-input-for). Foundation for the affordance map (P1) + per-task verb retrieval (P2) of the MCP-Surface-Mastery arc. Seeded/refreshed by sandbar.scripts.seed-verb-catalog. Metacircular: the substrate describing its own interface."}]
+]

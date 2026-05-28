@@ -24,7 +24,7 @@
  ;;                     :workflow/State + :workflow/Transition + :mm/Workflow
  ;;                     classes from :workflow, and :mm.memory/* slots from :mm
  ;;                     family.  Per ι.2 substrate execution 2026-05-25.)
- :required-schema [:meta :ref :literal :fn :any :context :event :user :twit :auth :audit :workflow :job :mm :mm-namespace :workflow-session]
+ :required-schema [:meta :ref :literal :fn :any :context :event :user :twit :auth :audit :workflow :job :mm :mm-artifact :mm-signal :mm-guidance :mm-meta :mm-verb :mm-temporal :mm-namespace :workflow-session]
 
  ;; γ scheduler config.  Per Dan-directive 2026-05-28 the two system jobs
  ;; are scheduled by default (amends the original Q.γ.5 :enabled? false
