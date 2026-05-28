@@ -55,7 +55,7 @@
  [{:db/ident       :mm.plan/status
    :dt/type        :dt/Property :dt/domain :mm/Plan
    :dt/range       :db.type/keyword :db/valueType :db.type/keyword :db/cardinality :db.cardinality/one
-   :db/doc "Plan lifecycle state: :draft (plan being written; work not started) | :active (work in progress; updated as stages complete) | :complete (all stages landed; status: complete; completed: date set; retrospective written) | :paused (work deferred; resumable) | :cancelled (work abandoned; rationale documented) | :abandoned (alias for cancelled; mid-work abandonment).  Per memory/types/plan.md."}
+   :db/doc "Plan lifecycle state (CLOSED canonical vocab per decisions/canonical_plan_status_vocabulary_and_synonym_normalization_2026_05_28.md): :draft (plan being written; work not started) | :active (work in progress; updated as stages complete) | :complete (all stages landed; completed: date set; retrospective written) | :paused (work deferred; resumable) | :superseded (replaced by a better approach / folded into another arc; distinct from :cancelled) | :cancelled (work abandoned; rationale documented; :abandoned is an alias).  Do NOT leak stage-strings or synonyms (closed/completed/in-progress/open/proposed/...) into this slot.  Per memory/types/plan.md."}
 
   {:db/ident       :mm.plan/stage
    :dt/type        :dt/Property :dt/domain :mm/Plan

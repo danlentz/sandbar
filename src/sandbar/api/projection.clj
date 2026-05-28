@@ -141,17 +141,31 @@
       (cond-> slots
         (:db/id touched) (assoc :db/id (:db/id touched))))))
 
+(defn frontmatter-projection
+  "Project a Datomic Entity to its FRONTMATTER — all scalar + ref slots
+  EXCEPT the bulky `:mm.memory/body-raw`.  Refs project to metadata-only
+  (idents/eids), same as `:full`.  The lean MIDDLE GROUND between
+  `:metadata-only` (idents only — no stage/status/dates/edges) and `:full`
+  (entire body — risks MCP wire-limit / transcript brick on large memorials
+  like arc plans with multi-KB stage-logs; a single arc plan full-projected
+  hit 65KB + offloaded, the brick vector).  Use to survey
+  stage/status/last-touched/edges across many entities (curation,
+  orientation, arc-forest) without hydrating bodies."
+  [entity]
+  (some-> (full-projection entity) (dissoc :mm.memory/body-raw)))
+
 (defn projection-fn-for
   "Return the projection function for a `:projection` mode keyword.
   Fails loud on unknown modes rather than silently misshaping output."
   [projection-mode]
   (case projection-mode
     :full          full-projection
+    :frontmatter   frontmatter-projection
     :metadata-only metadata-projection
     (throw (ex-info (str "Unknown :projection mode `" projection-mode
-                         "`.  Valid: :full, :metadata-only.")
+                         "`.  Valid: :full, :frontmatter, :metadata-only.")
                     {:projection-mode projection-mode
-                     :valid-modes #{:full :metadata-only}}))))
+                     :valid-modes #{:full :frontmatter :metadata-only}}))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Edge projection
