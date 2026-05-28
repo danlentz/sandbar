@@ -397,3 +397,71 @@
         (finally
           (dispatcher/stop! {:drain-timeout-ms 1000})
           (unsub))))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; REGRESSION — fire-thread interrupt resilience (2026-05-28)
+;;
+;; The fire-thread's .interrupt wakeup (add-schedule! / remove-schedule! /
+;; stop!) can land while the thread is inside an interruptible blocking call
+;; OUTSIDE park-until! — notably resolve-schedule → datomic.api/db, which
+;; awaits the connection cstate promise via CountDownLatch.await.  That
+;; throws InterruptedException.  Before the fix it propagated to the fatal
+;; catch → ::fire-thread-died → scheduler :inactive.  Symptom observed at
+;; boot: seed-system-jobs! adds 2 schedules; the 2nd add-schedule!'s
+;; .interrupt landed during the 1st schedule's resolve and killed the
+;; fire-thread.  The fix treats such an interrupt as a benign 're-evaluate
+;; head' wakeup (see dispatcher/interrupt-wakeup? + fire-loop!).
+
+(deftest interrupt-wakeup?-detects-raw-and-wrapped-interrupts
+  (testing "interrupt-wakeup? sees a raw + a cause-chain-wrapped InterruptedException; rejects unrelated throwables"
+    (let [f @#'dispatcher/interrupt-wakeup?]
+      (is (true?  (f (InterruptedException. "raw"))))
+      (is (true?  (f (RuntimeException. "wrap" (InterruptedException. "inner")))))
+      (is (true?  (f (RuntimeException. "outer"
+                       (IllegalStateException. "mid"
+                         (InterruptedException. "deep"))))))
+      (is (false? (f (RuntimeException. "no interrupt in this chain"))))
+      (is (false? (f (IllegalStateException. "nope"))))
+      (is (false? (f nil))))))
+
+(deftest fire-loop-survives-interrupt-during-resolve
+  (testing "An InterruptedException raised inside resolve-schedule (the .interrupt wakeup landing mid-DB-call) is benign — the fire-thread survives + the schedule still fires"
+    (let [[!events unsub] (collect-events! :mm.event/Scheduled)
+          real-resolve    @#'dispatcher/resolve-schedule
+          first-call?     (atom true)
+          ;; Simulate the boot race: the FIRE-THREAD's first :elapsed entry
+          ;; into resolve-schedule throws InterruptedException (as if the
+          ;; .interrupt landed mid-datomic.api/db).  Guarded by thread name
+          ;; so the main-thread resolve calls inside add-schedule! / start!
+          ;; are NOT affected; subsequent fire-thread calls delegate to the
+          ;; real resolver so the schedule can actually fire on the next loop.
+          fire-thread?    (fn [] (.startsWith (.getName (Thread/currentThread))
+                                              "sandbar.schedule.dispatcher.fire-thread"))
+          flaky-resolve   (fn [eid]
+                            (if (and (fire-thread?)
+                                     (compare-and-set! first-call? true false))
+                              (throw (InterruptedException.
+                                       "simulated .interrupt wakeup mid-resolve"))
+                              (real-resolve eid)))
+          now-real        (Instant/now)
+          dtstart         (.plusMillis now-real 400)
+          eid             (make-schedule! {:rrule   "FREQ=SECONDLY;COUNT=1"
+                                           :dtstart dtstart})]
+      (with-redefs [dispatcher/resolve-schedule flaky-resolve]
+        (try
+          (dispatcher/add-schedule! eid)
+          (dispatcher/start!)
+          ;; Bounded wait: poll up to 4s for the event to appear.
+          (let [deadline (.plusMillis (Instant/now) 4000)]
+            (while (and (.isBefore (Instant/now) deadline)
+                        (empty? @!events))
+              (Thread/sleep 100)))
+          (is (false? @first-call?)
+              "resolve-schedule was entered (the simulated interrupt fired)")
+          (is (= :scheduler.state/active (:state (state/snapshot)))
+              "Fire-thread survived the interrupt — scheduler still :active (NOT :inactive)")
+          (is (pos? (count @!events))
+              "After recovering from the interrupt, the schedule still fired")
+          (finally
+            (dispatcher/stop! {:drain-timeout-ms 1000})
+            (unsub)))))))

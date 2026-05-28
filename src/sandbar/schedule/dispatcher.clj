@@ -456,6 +456,27 @@
         (Thread/interrupted)
         :interrupted))))
 
+(defn- interrupt-wakeup?
+  "True if `t` is, or wraps via its cause chain, an InterruptedException.
+
+   The fire-thread's wakeup mechanism (`.interrupt` from add-schedule! /
+   remove-schedule! / stop!) is designed to wake the thread out of
+   `park-until!`'s `Thread/sleep`.  But `.interrupt` is asynchronous: it
+   can also land while the thread is inside ANOTHER interruptible
+   blocking call — notably `resolve-schedule` → `datomic.api/db`, which
+   awaits the connection cstate promise via `CountDownLatch.await`.  That
+   surfaces as an InterruptedException (raw, or wrapped by an enclosing
+   ex).  Such an interrupt is a benign 're-evaluate the queue head'
+   signal — identical in intent to a park-until! interrupt — NOT a fatal
+   fire-thread error.  fire-loop! uses this to distinguish wakeup
+   interrupts (continue) from genuine faults (die + log)."
+  [^Throwable t]
+  (loop [c t]
+    (cond
+      (nil? c)                           false
+      (instance? InterruptedException c) true
+      :else                              (recur (.getCause c)))))
+
 (defn- fire-loop!
   "The fire-thread's body.  Loops while state is `:active`:
      1. Snapshot queue head
@@ -468,7 +489,16 @@
 
    Termination: when state transitions away from `:active`, the loop
    exits.  The state machine guards transitions; this fn just polls
-   `:state` per iteration (cooperative shutdown)."
+   `:state` per iteration (cooperative shutdown).
+
+   Interrupt resilience: the per-iteration body is wrapped so that an
+   `.interrupt`-induced InterruptedException landing OUTSIDE park-until!
+   (e.g., mid-`datomic.api/db` during resolve-schedule, or inside
+   fire-schedule!) is treated as a benign wakeup (clear flag +
+   re-evaluate head) rather than killing the thread.  See
+   `interrupt-wakeup?` — without this the fire-thread died at boot when
+   the 2nd add-schedule! interrupted the 1st schedule's resolve
+   (::fire-thread-died → scheduler :inactive)."
   []
   (try
     (let [wall-start-ms (System/currentTimeMillis)
@@ -476,41 +506,40 @@
       (loop []
         (when (= :scheduler.state/active (:state (state/snapshot)))
           (detect-clock-drift! wall-start-ms mono-start-ns)
-          (let [head (queue-head (:queue (state/snapshot)))]
-            (cond
-              ;; Empty queue — long park; woken by add-schedule!'s .interrupt
-              (nil? head)
-              (do (park-until! nil)
-                  (recur))
+          (let [continue?
+                (try
+                  (let [head (queue-head (:queue (state/snapshot)))]
+                    (if (nil? head)
+                      ;; Empty queue — long park; woken by add-schedule!'s .interrupt
+                      (park-until! nil)
+                      ;; Head present — park until its fire-at
+                      (let [[fire-at schedule-eid] head
+                            park-result (park-until! fire-at)]
+                        (when (= :elapsed park-result)
+                          (let [schedule (resolve-schedule schedule-eid)
+                                policy   (or (:mm.schedule/misfire-policy schedule)
+                                             +default-misfire-policy+)
+                                outcome  (fire-schedule! fire-at schedule-eid)]
+                            (case outcome
+                              ;; :fired OR :skipped (misfire :ignore) — advance queue
+                              (:fired :skipped)
+                              (advance-queue-after-fire! fire-at schedule-eid policy)
 
-              ;; Head present — park until its fire-at
-              :else
-              (let [[fire-at schedule-eid] head
-                    park-result (park-until! fire-at)]
-                (case park-result
-                  :interrupted
-                  (recur)  ;; queue mutated; re-evaluate head
-
-                  :elapsed
-                  (let [schedule (resolve-schedule schedule-eid)
-                        policy   (or (:mm.schedule/misfire-policy schedule)
-                                     +default-misfire-policy+)
-                        outcome  (fire-schedule! fire-at schedule-eid)]
-                    (case outcome
-                      :fired
-                      (do (advance-queue-after-fire! fire-at schedule-eid policy)
-                          (recur))
-
-                      :skipped
-                      ;; Misfire policy = :ignore; still need to advance
-                      (do (advance-queue-after-fire! fire-at schedule-eid policy)
-                          (recur))
-
-                      :rejected
-                      ;; Stale queue entry; drop it + continue
-                      (do (state/swap-state! update :queue
-                                             queue-disj-by-eid schedule-eid)
-                          (recur)))))))))))
+                              ;; :rejected — stale queue entry; drop it + continue
+                              :rejected
+                              (state/swap-state! update :queue
+                                                 queue-disj-by-eid schedule-eid)))))))
+                  ;; Normal path (incl. park-until! :interrupted) → re-evaluate head
+                  true
+                  ;; .interrupt wakeup landed mid-blocking-call → benign; clear + continue
+                  (catch InterruptedException _
+                    (Thread/interrupted)
+                    true)
+                  (catch Throwable t
+                    (if (interrupt-wakeup? t)
+                      (do (Thread/interrupted) true)
+                      (throw t))))]
+            (when continue? (recur))))))
     (catch Throwable t
       (logging/error ::fire-thread-died t {} :first-class)
       ;; Ensure state reflects the death — flip to :draining (legal
