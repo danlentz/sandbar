@@ -10,6 +10,7 @@
             [sandbar.reactive.queue :as reactive-queue]
             [sandbar.reactive.sinks :as reactive-sinks]
             [sandbar.schedule :as sched]
+            [sandbar.schedule.demo :as sched-demo]
             [sandbar.search :as search]
             [sandbar.server.nrepl :as nrepl]
             [sandbar.server.pedestal :as pedestal]
@@ -121,12 +122,31 @@
   []
   (let [config           (get-in sys/system [:config])
         scheduler-config (get config :scheduler {})
-        enabled?         (boolean (:enabled? scheduler-config))]
+        enabled?         (boolean (:enabled? scheduler-config))
+        seed-demo?       (boolean (:seed-demo-jobs? scheduler-config))]
     (if enabled?
       (do (sched/enable!)
           (sched/start!)
+          ;; γ.5b — seed + schedule the two demo jobs at boot when
+          ;; :scheduler/seed-demo-jobs? is true.  Per Dan-directive
+          ;; 2026-05-28 (amends Q.γ.5 opt-in-safety for the demo-jobs
+          ;; case).  seed-demo-jobs! upserts the 2 Fn + 2 Job + 2
+          ;; Schedule entities idempotently (stable :db/ident); the
+          ;; returned schedule-idents are added to the live queue.
+          (when seed-demo?
+            (try
+              (let [schedule-eids (sched-demo/seed-demo-jobs!)]
+                (doseq [eid schedule-eids]
+                  (sched/add-schedule! eid))
+                (log/info :SYS/SCHEDULER-DEMO-JOBS-SEEDED
+                          {:count (count schedule-eids)
+                           :schedule-eids schedule-eids}))
+              (catch Exception e
+                (log/warn e :SYS/SCHEDULER-DEMO-SEED-FAILED
+                          "Demo-job seeding failed; scheduler still running, demo jobs not scheduled"))))
           (log/info :SYS/SCHEDULER-STARTED
                     {:enabled? true
+                     :seed-demo-jobs? seed-demo?
                      :jobs     (count (get scheduler-config :jobs []))})
           :scheduler-started)
       (do (log/info :SYS/SCHEDULER-DISABLED-BY-CONFIG)

@@ -26,14 +26,25 @@
  ;;                     family.  Per ι.2 substrate execution 2026-05-25.)
  :required-schema [:meta :ref :literal :fn :any :context :event :user :twit :auth :audit :workflow :job :mm :mm-namespace :workflow-session]
 
- ;; γ.3 — scheduler config.  Defaults: :enabled? false (opt-in safety
- ;; per Q.γ.5 of the γ.1 ADR).  When true, sandbar.core/start invokes
- ;; sandbar.schedule/enable! + sandbar.schedule/start! (allocates the
- ;; handler-pool + spawns the fire-thread + registers the job-dispatcher
- ;; subscriber).  :jobs is an enumeration slot for Schedule idents to
- ;; autostart at boot (γ.5+ populates this with the demo DB-stats job).
- :scheduler {:enabled? false
-             :jobs     []}
+ ;; γ scheduler config.  Per Dan-directive 2026-05-28 the two demo jobs
+ ;; are scheduled by default (amends the original Q.γ.5 :enabled? false
+ ;; opt-in-safety default for the demo-jobs case).
+ ;;
+ ;; :enabled?        — when true, sandbar.core/start invokes
+ ;;                    sandbar.schedule/enable! + start! (handler-pool +
+ ;;                    fire-thread + :mm.event/Scheduled subscriber).
+ ;; :seed-demo-jobs? — when true, boot seeds + schedules 2 demo jobs
+ ;;                    (idempotent :db/ident upsert; dtstart anchored at boot):
+ ;;                      db-stats              FREQ=MINUTELY;INTERVAL=15 → :mm/EventLog substrate counts
+ ;;                      reactive-queue-health FREQ=MINUTELY;INTERVAL=10 → :mm/EventLog queue health
+ ;;                    Both emit :first-class memorials.
+ ;; :jobs            — enumeration slot for additional Schedule idents to
+ ;;                    autostart at boot (future use).
+ ;;
+ ;; Opt out by flipping :enabled? and/or :seed-demo-jobs? to false.
+ :scheduler {:enabled?        true
+             :seed-demo-jobs? true
+             :jobs            []}
 
  :nrepl   {:port 28888}
  :auth {:twitter

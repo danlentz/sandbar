@@ -69,3 +69,42 @@
       (is (boolean? (:worker-running? result)))
       (is (nat-int? (:buffer-size result)))
       (is (boolean? (:saturated? result))))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; γ.5b — seed-demo-jobs! (boot-time idempotent seeding)
+
+(deftest seed-demo-jobs-creates-entities-and-returns-eids
+  (testing "seed-demo-jobs! upserts 2 Fn + 2 Job + 2 Schedule + returns 2 numeric eids"
+    (let [eids (demo/seed-demo-jobs!)]
+      (is (= 2 (count eids))               "Returns 2 schedule eids")
+      (is (every? integer? eids)           "Eids are numeric (not idents — queue-comparator safety)")
+      ;; Verify the entities resolve by their stable idents
+      (let [db (datomic.api/db (sandbar.db.datomic/conn))]
+        (is (some? (datomic.api/entity db :sandbar.demo/log-db-stats-fn))
+            ":mm/Fn db-stats upserted")
+        (is (some? (datomic.api/entity db :sandbar.demo/log-reactive-queue-health-fn))
+            ":mm/Fn reactive-queue-health upserted")
+        (is (some? (datomic.api/entity db :sandbar.demo/db-stats-job))
+            ":mm/Job db-stats upserted")
+        (is (some? (datomic.api/entity db :sandbar.demo/reactive-queue-health-job))
+            ":mm/Job reactive-queue-health upserted")
+        ;; Schedule references its Job + carries the right RRULE
+        (let [sched (datomic.api/entity db :sandbar.demo/db-stats-schedule)]
+          (is (= "FREQ=MINUTELY;INTERVAL=15" (:mm.schedule/recurrence sched))
+              "db-stats schedule has 15-min RRULE")
+          (is (some? (:mm.schedule/dtstart sched)) "dtstart anchored"))
+        (let [sched (datomic.api/entity db :sandbar.demo/reactive-queue-health-schedule)]
+          (is (= "FREQ=MINUTELY;INTERVAL=10" (:mm.schedule/recurrence sched))
+              "reactive-queue-health schedule has 10-min RRULE"))))))
+
+(deftest seed-demo-jobs-is-idempotent
+  (testing "Re-seeding upserts (does NOT duplicate) — same schedule entities by ident"
+    (demo/seed-demo-jobs!)
+    (let [eids2 (demo/seed-demo-jobs!)
+          db    (datomic.api/db (sandbar.db.datomic/conn))
+          ;; Count :mm/Schedule entities with the demo idents — must be exactly 2
+          demo-scheds (->> demo/demo-schedule-idents
+                           (map #(datomic.api/entity db %))
+                           (filter some?))]
+      (is (= 2 (count eids2))           "Second seed still returns 2 eids")
+      (is (= 2 (count demo-scheds))     "Exactly 2 demo schedule entities (no duplication)"))))
