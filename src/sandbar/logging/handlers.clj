@@ -71,6 +71,22 @@
     (catch Throwable _
       (str v))))
 
+(defn- inst->date
+  "Coerce a signal's timestamp to `java.util.Date` for Datomic
+   `:db.type/instant` slots.  Telemere populates `:inst` with a
+   `java.time.Instant`, but Datomic's instant type only accepts
+   `java.util.Date` — writing an `Instant` directly throws
+   `IllegalArgumentException: Cannot write <ts> as tag null`.
+
+   Passes nil + existing `Date`s through unchanged; converts an
+   `Instant` via `Date/from`; leaves any other value as-is (defensive)."
+  [t]
+  (cond
+    (nil? t)                          nil
+    (instance? java.util.Date t)      t
+    (instance? java.time.Instant t)   (java.util.Date/from t)
+    :else                             t))
+
 (defn- resolve-signal-msg
   "Resolve the message string from a Telemere signal.  The :msg_ field
    (when present) is a delay; force it.  Falls back to :msg or empty
@@ -106,7 +122,7 @@
    `:memorial` flag from `:data` before storage (it was a routing hint;
    not part of the durable payload)."
   [signal]
-  (let [inst (or (:inst signal) (java.util.Date.))]
+  (let [inst (or (inst->date (:inst signal)) (java.util.Date.))]
     {:mm.activity/started-at  inst
      :mm.activity/ended-at    inst
      :mm.activity/status      :succeeded
@@ -121,7 +137,7 @@
    policy.  Uses the existing `:dt/Event` substrate runtime hierarchy
    (compatible with `sandbar.util.event`)."
   [signal]
-  {:event/timestamp  (or (:inst signal) (java.util.Date.))
+  {:event/timestamp  (or (inst->date (:inst signal)) (java.util.Date.))
    :event/level      (or (:level signal) :info)
    :event/name       (str (resolve-signal-id signal))
    :event/namespace  (resolve-source-ns signal)
