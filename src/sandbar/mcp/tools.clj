@@ -52,6 +52,7 @@
             [sandbar.orient             :as orient]
             [sandbar.projection      :as pg]
             [sandbar.reactive.queue     :as reactive-queue]
+            [sandbar.schedule           :as sched]
             [sandbar.search             :as search]
             [sandbar.shape              :as shape]
             [sandbar.db.datatype        :as dt]
@@ -2771,7 +2772,84 @@
     :description "WHICH: resolves a reference of any wire form to its canonical entity. PURL-style indirection — federation-shaped references resolve to canonical entities regardless of which wire form was used.\n\nWHEN: use to resolve federation-shaped references (URN form `urn:uuid:<v5>`) into substrate entities; sister verb to sandbar.entity.find (ident form) + sandbar.entity.find-by-rel-path (rel-path form).  When NOT to use: (a) you already know the wire form is an ident — sandbar.entity.find is more direct; (b) you have a rel-path string + know it's that form — sandbar.entity.find-by-rel-path.\n\nHOW: `:reference` is the input string in any of:\n  - `urn:uuid:<v5>` — federation wire form; resolves via :mm/id lookup\n  - `:memory.X/Y` or `memory.X/Y` — substrate ident form; resolves via eref/resolve\n  - `<dir>/<slug>.md` or `<dir>/<slug>` — corpus rel-path form; resolves via memory.<dir>/<slug> ident derivation\n  - numeric string — eid form; resolves via eref/resolve\n\nReturns `{:reference :resolved-entity :resolution-path}` where :resolution-path is one of :urn-uuid | :substrate-ident | :rel-path | :eid.  Returns :resolved-entity nil + :error string if the reference cannot be resolved.\n\nCOMPOSES with sandbar.namespace.policy (each resolution can be policy-checked against the namespace's CommitmentStatement).  Per ζ Scope B ADR §6.2 + Q.ζ.B.8 RATIFIED 2026-05-26."
     :inputSchema (one-required {:reference {:type "string" :description "URN form (urn:uuid:...), substrate ident (memory.X/Y), rel-path (dir/slug.md), or eid (numeric string)"}}
                                [:reference])
-    :handler resolve-handler}])
+    :handler resolve-handler}
+
+   ;; ---------- γ scheduler verbs (Alt-D lazy-load checkpoint per ADR) ----------
+   ;; Per `~/.claude/plans/golden-squishing-flamingo.md` γ.4 + Alt-D ADR
+   ;; `decisions/mcp_tool_surface_scalability_alternative_d_hierarchical_namespacing_…_2026_05_25_2026_05_27`:
+   ;; these verbs land in the catalog but are EXPECTED to be loaded via the
+   ;; lazy-load ToolSearch checkpoint (`ToolSearch select:mcp__sandbar__sandbar_schedule_*`)
+   ;; only when scheduler work enters scope — NOT eager-loaded at orientation.
+   {:name "sandbar.schedule.enable"
+    :title "Flip the scheduler `:enabled?` flag true (does NOT start fire-thread)"
+    :description "WHICH: sets the scheduler's runtime `:enabled?` flag to true.  Does NOT allocate the handler-pool or spawn the fire-thread — use `sandbar.schedule.start` for full activation.  When the dispatcher is running, enabling permits scheduled fires to actually emit Run-creation events.\n\nWHEN: use to TOGGLE the gate flag without lifecycle effect — e.g., to unblock an already-running scheduler that was paused via `sandbar.schedule.disable`.  When NOT to use: (a) the scheduler is not running — call `sandbar.schedule.start` (which both enables AND starts); (b) you want to STOP fires + release resources — `sandbar.schedule.stop`.\n\nHOW: no arguments.  Returns `{:outcome :enabled}`.  Idempotent."
+    :inputSchema no-args-schema
+    :handler (fn [_args] {:outcome (sched/enable!)})}
+
+   {:name "sandbar.schedule.disable"
+    :title "Flip the scheduler `:enabled?` flag false (does NOT stop fire-thread)"
+    :description "WHICH: sets the scheduler's runtime `:enabled?` flag to false.  Does NOT release the handler-pool or stop the fire-thread.  When the fire-thread fires a scheduled event during the disabled period, the subscriber silently skips it (per `handle-scheduled-event`'s enable-gate).\n\nWHEN: use to SUSPEND firings without tearing down resources — e.g., maintenance windows where the scheduler stays warm but produces no Runs.  When NOT to use: (a) you want full lifecycle teardown — `sandbar.schedule.stop`.\n\nHOW: no arguments.  Returns `{:outcome :disabled}`.  Idempotent."
+    :inputSchema no-args-schema
+    :handler (fn [_args] {:outcome (sched/disable!)})}
+
+   {:name "sandbar.schedule.start"
+    :title "Full activation: allocate handler-pool + spawn fire-thread + register subscriber"
+    :description "WHICH: invokes `sandbar.schedule/start!` — allocates the handler-pool ExecutorService, spawns the fire-thread, transitions state-machine to `:scheduler.state/active`, AND registers the `:mm.event/Scheduled` subscriber.  Composes the two-side activation that the standalone `dispatcher.start!` + `job-dispatcher.register!` don't.\n\nWHEN: use to bring the scheduler fully online from `:scheduler.state/inactive`.  Production callsite is typically `sandbar.core/start` (auto-invoked when `config.edn :scheduler/enabled? true`); operators invoke this verb to manually start outside config-controlled boot.  When NOT to use: (a) just flipping the enable flag — `sandbar.schedule.enable`; (b) suspending temporarily — `sandbar.schedule.disable`.\n\nHOW: no arguments.  Returns `{:outcome :started}` on success, `{:outcome :already-active}` when already running.  Idempotent."
+    :inputSchema no-args-schema
+    :handler (fn [_args] {:outcome (sched/start!)})}
+
+   {:name "sandbar.schedule.stop"
+    :title "Full deactivation: unregister subscriber + drain handler-pool + join fire-thread"
+    :description "WHICH: invokes `sandbar.schedule/stop!` — unregisters the `:mm.event/Scheduled` subscriber, transitions state-machine to `:scheduler.state/draining`, interrupts + joins the fire-thread (bounded by `:drain-timeout-ms`, default 5000), shuts down the handler-pool, transitions to `:scheduler.state/inactive`.  Composes the inverse-side deactivation of `sandbar.schedule.start`.\n\nWHEN: use to fully release scheduler resources — typically at JVM shutdown via `sandbar.core/stop`, OR for operator-initiated lifecycle cycles.  When NOT to use: (a) just disabling without teardown — `sandbar.schedule.disable`; (b) restarting — call this verb then `sandbar.schedule.start` (no atomic restart verb).\n\nHOW: optional `:drain-timeout-ms` (default 5000).  Returns `{:outcome :stopped}` on success, `{:outcome :already-inactive}` when not running.  Idempotent."
+    :inputSchema {:type "object"
+                  :properties {:drain-timeout-ms {:type "integer"
+                                                  :description "Max ms to wait for handler-pool drain (default 5000)"}}
+                  :required []}
+    :handler (fn [args]
+               {:outcome (sched/stop! (cond-> {}
+                                        (:drain-timeout-ms args)
+                                        (assoc :drain-timeout-ms (:drain-timeout-ms args))))})}
+
+   {:name "sandbar.schedule.add"
+    :title "Add a :mm/Schedule to the priority queue"
+    :description "WHICH: invokes `sandbar.schedule/add-schedule!` — resolves the :mm/Schedule entity by eid, computes its next-fire-at from `(now)` via the RRULE iterator (honoring `:mm.schedule/exdates` + `:mm.schedule/until`), inserts a `[next-fire-at schedule-eid]` entry into the priority queue, and `.interrupts` the fire-thread to re-park on the new head if appropriate.\n\nWHEN: use to bring a :mm/Schedule into the scheduler's active queue — either at boot (γ.5 demo job autostart) or via operator-initiated additions.  When NOT to use: (a) the Schedule entity doesn't exist yet — author it via `sandbar.entity.create :class :mm/Schedule` first; (b) you want to REMOVE — `sandbar.schedule.remove`.\n\nHOW: `:schedule-eid` is the numeric eid of the :mm/Schedule entity.  Returns `{:schedule-eid :next-fire-at <iso-string-or-nil>}`.  Returns next-fire-at nil when the schedule has no future fires (terminated RRULE / malformed schedule) — queue unchanged in that case.  Idempotent — re-adding an already-queued schedule replaces (not duplicates) its entry."
+    :inputSchema (one-required
+                   {:schedule-eid {:type "integer" :description "Numeric eid of the :mm/Schedule entity"}}
+                   [:schedule-eid])
+    :handler (fn [args]
+               (let [eid (:schedule-eid args)
+                     next-at (sched/add-schedule! eid)]
+                 {:schedule-eid eid
+                  :next-fire-at (when next-at (str next-at))}))}
+
+   {:name "sandbar.schedule.remove"
+    :title "Remove a :mm/Schedule from the priority queue"
+    :description "WHICH: invokes `sandbar.schedule/remove-schedule!` — removes all queue entries for the given :mm/Schedule eid, `.interrupts` the fire-thread to re-park on the new head.\n\nWHEN: use to deschedule a :mm/Schedule without retracting the entity itself — e.g., temporary suppression while keeping the Schedule available for re-add later.  When NOT to use: (a) you want to permanently retract — combine with `sandbar.entity.update` or substrate-level retract; (b) you want to disable ALL fires (gate flag) — `sandbar.schedule.disable`.\n\nHOW: `:schedule-eid` is the numeric eid.  Returns `{:schedule-eid :outcome :removed}`.  Idempotent."
+    :inputSchema (one-required
+                   {:schedule-eid {:type "integer" :description "Numeric eid of the :mm/Schedule entity"}}
+                   [:schedule-eid])
+    :handler (fn [args]
+               (sched/remove-schedule! (:schedule-eid args))
+               {:schedule-eid (:schedule-eid args)
+                :outcome      :removed})}
+
+   {:name "sandbar.schedule.list"
+    :title "Diagnostic: list all currently-queued schedule fires"
+    :description "WHICH: returns the priority queue's current entries — each entry is `[next-fire-at-instant schedule-eid]`, in priority order (earliest fire first).\n\nWHEN: use for diagnostic introspection of what the scheduler will fire next.  When NOT to use: (a) you want the full operator snapshot (state-machine + handler-pool + in-flight runs) — `sandbar.schedule.inspect`.\n\nHOW: no arguments.  Returns `{:queue-size :entries [{:next-fire-at <iso-string> :schedule-eid <integer>} ...]}`."
+    :inputSchema no-args-schema
+    :handler (fn [_args]
+               (let [q (sched/list-schedules)]
+                 {:queue-size (count q)
+                  :entries    (mapv (fn [[fire-at eid]]
+                                      {:next-fire-at (str fire-at)
+                                       :schedule-eid eid})
+                                    q)}))}
+
+   {:name "sandbar.schedule.inspect"
+    :title "Diagnostic: full operator-facing scheduler runtime snapshot"
+    :description "WHICH: returns the canonical operator-facing snapshot of scheduler runtime state — state-machine + enabled-flag + queue size + handler-pool allocated + fire-thread allocated + clock-drift + in-flight Runs + subscriber-registered flag.\n\nWHEN: use as the one-call operator-status verb — for MCP-driven dashboards, health-check tooling, debugging session-orientation.  When NOT to use: (a) you want only the queue entries — `sandbar.schedule.list` (smaller payload); (b) you want only the state keyword — there's no smaller verb; this one's payload is bounded.\n\nHOW: no arguments.  Returns the canonical inspect map keys: `:state :enabled? :queue-size :handler-pool? :fire-thread? :clock-drift-ms :in-flight-runs :subscriber-registered?`."
+    :inputSchema no-args-schema
+    :handler (fn [_args] (sched/inspect))}])
 
 (def ^:private verb-by-name
   (into {} (map (juxt :name identity)) verb-catalog))
