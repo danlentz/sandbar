@@ -520,45 +520,146 @@
                           :projection    :full})]
     (some-> hits first :entity)))
 
+(defn- resolve-type-histogram
+  "Resolve a group-by-:dt/type histogram's keys from ref-eids (or idents) to
+   class-ident keywords, so the banner renders human-readable class names
+   instead of raw entity-ids.  Keys already keyword-shaped pass through."
+  [hist]
+  (into {}
+        (map (fn [[k v]]
+               [(cond
+                  (keyword? k) k
+                  (number? k)  (or (some-> (db/entity k) :db/ident) k)
+                  :else        k)
+                v]))
+        hist))
+
 (defn- orient-corpus-stats
-  "Returns {:memory-count <int> :type-histogram {<type-eid-or-ident> <count>}}.
-   Per the imperative /memory-open Steps 3.1 + 3.2."
+  "Returns {:memory-count <int> :type-histogram {<class-ident> <count>}}.
+   The histogram keys are resolved to class idents (the raw group-by keys are
+   :dt/type ref-eids).  Per the imperative /memory-open Steps 3.1 + 3.2."
   []
   (let [count-result   (aggregate/count-by {:class :mm/Memory})
         group-result   (aggregate/group-by {:class    :mm/Memory
                                             :group-by :dt/type})]
     {:memory-count   (:count count-result)
-     :type-histogram (:groups group-result)}))
+     :type-histogram (resolve-type-histogram (:groups group-result))}))
+
+(defn- orient-type-lattice
+  "Per-branch instance counts for the direct subclasses of :mm/Memory — the
+   top-level type-lattice summary (Artifact / Guidance / Meta / Signal / Spec
+   / …).  Each branch count INCLUDES its subtree (count-by counts instances-of
+   recursively).  Returns a vec of [branch-ident count] pairs, count-desc."
+  []
+  (->> (dt/direct-subclasses-of :mm/Memory)
+       (map (fn [branch] [branch (:count (aggregate/count-by {:class branch}))]))
+       (sort-by second >)
+       vec))
+
+(defn- arc-plan-node
+  "Lazy-read the forest-relevant slots for a plan eid (cheap attribute access
+   on a Datomic entity — no full projection).  Parent resolves to
+   :mm.plan/primary-parent first, then the general :mm.memory/parent."
+  [eid]
+  (let [e      (db/entity eid)
+        parent (or (:mm.plan/primary-parent e) (:mm.memory/parent e))]
+    {:eid      eid
+     :ident    (:db/ident e)
+     :name     (:mm.memory/name e)
+     :stage    (:mm.plan/stage e)
+     :status   (:mm.plan/status e)
+     :rel-path (:mm.memory/rel-path e)
+     :parent   (cond (nil? parent)         nil
+                     (number? parent)      parent
+                     (associative? parent) (:db/id parent)
+                     :else                 nil)}))
+
+(defn- build-arc-tree
+  "Build a round-trip-safe nested parent→child forest from a recency-ordered
+   vec of arc nodes.  Roots are arcs whose parent is absent OR not itself an
+   active arc; each node carries its children inline under :children (so the
+   tree survives JSON round-trip through :phase/imprint without integer-keyed
+   maps).  Returns a vec of root nodes (recency order preserved)."
+  [nodes]
+  (let [active-eids (set (map :eid nodes))
+        children-of (group-by (fn [n]
+                                (let [p (:parent n)]
+                                  (when (contains? active-eids p) p)))
+                              nodes)
+        attach (fn attach [node]
+                 (-> node
+                     (dissoc :parent)
+                     (assoc :children (mapv attach (get children-of (:eid node) [])))))]
+    (mapv attach (get children-of nil []))))
+
+(defn- orient-active-arc-forest
+  "All active :mm/Plan arcs as a parent→child forest.  Returns
+   {:count <int> :tree [<root-node>...]} where each node carries :name :stage
+   :status :rel-path + nested :children.  Roots ordered by recency.  Replaces
+   the prior top-5 flat list per Dan-directive (orient on ALL open arcs +
+   child-arcs)."
+  []
+  (let [{:keys [hits]} (aggregate/rank-by {:class         :mm/Plan
+                                           :rank-by       :recency
+                                           :temporal-slot :mm.memory/last-touched
+                                           :limit         0
+                                           :projection    :metadata-only})
+        nodes  (->> hits
+                    (map (comp arc-plan-node :db/id :entity))
+                    (filter #(= :active (:status %)))
+                    vec)]
+    {:count (count nodes)
+     :tree  (build-arc-tree nodes)}))
 
 (defn- orient-top-recent
   "Return top-N most-recently-touched entities of `class` by
-   :mm.memory/last-touched.  Returns vec of entity-maps (projection
-   :metadata-only for lightweight payloads)."
+   :mm.memory/last-touched, enriched with :mm.memory/name + :mm.memory/rel-path
+   (lazy-read) so the banner renders human-readable names rather than bare
+   idents/eids.  N is small (≈5) so the per-entity enrichment is cheap."
   [class n]
   (let [{:keys [hits]} (aggregate/rank-by {:class         class
                                            :rank-by       :recency
                                            :temporal-slot :mm.memory/last-touched
                                            :limit         n
                                            :projection    :metadata-only})]
-    (mapv :entity hits)))
+    (mapv (fn [{:keys [entity]}]
+            (let [e (db/entity (:db/id entity))]
+              {:db/id              (:db/id entity)
+               :db/ident           (:db/ident entity)
+               :mm.memory/name     (:mm.memory/name e)
+               :mm.memory/rel-path (:mm.memory/rel-path e)}))
+          hits)))
+
+;; Forward-declared so phase-work :phase/orient can compose the banner
+;; server-side (the banner helpers + compose-banner are defined below in the
+;; :phase/imprint section).  Composing in orient lets the skill display the
+;; banner directly from orient's :phase-work-result :banner slot WITHOUT
+;; round-tripping the full orient-state through :phase/imprint — the round-trip
+;; keywordizes keys + risks the AI trimming the payload (observed 2026-05-28).
+(declare ^:private compose-banner)
 
 (defmethod phase-work :phase/orient
   [_args]
-  (let [prior-session   (orient-prior-session)
-        prior-log       (orient-prior-log prior-session)
-        in-flight-plan  (orient-in-flight-plan)
-        stats           (orient-corpus-stats)
-        active-plans    (orient-top-recent :mm/Plan 5)
-        active-tasks    (orient-top-recent :mm/Task 5)
-        active-procs    (wf/list-active-processes)]
-    {:prior-session    prior-session
-     :prior-log        prior-log
-     :in-flight-plan   in-flight-plan
-     :memory-count     (:memory-count stats)
-     :type-histogram   (:type-histogram stats)
-     :active-plans     active-plans
-     :active-tasks     active-tasks
-     :active-processes active-procs}))
+  (let [prior-session  (orient-prior-session)
+        prior-log      (orient-prior-log prior-session)
+        in-flight-plan (orient-in-flight-plan)
+        stats          (orient-corpus-stats)
+        type-lattice   (orient-type-lattice)
+        arc-forest     (orient-active-arc-forest)
+        active-plans   (orient-top-recent :mm/Plan 5)
+        active-tasks   (orient-top-recent :mm/Task 5)
+        active-procs   (wf/list-active-processes)
+        state          {:prior-session     prior-session
+                        :prior-log         prior-log
+                        :in-flight-plan    in-flight-plan
+                        :memory-count      (:memory-count stats)
+                        :type-histogram    (:type-histogram stats)
+                        :type-lattice      type-lattice
+                        :active-arc-forest arc-forest
+                        :active-plans      active-plans
+                        :active-tasks      active-tasks
+                        :active-processes  active-procs}]
+    (assoc state :banner (compose-banner state))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; phase-work :phase/imprint — SECOND multimethod method (Increment H)
@@ -584,30 +685,89 @@
           log-name (some-> log-ref :mm.memory/name)]
       (str "- **Last session**: " (or n "<unnamed>")
            (when ended (str " (closed " ended ")"))
-           (when log-name (str " → handoff log `" log-name "`"))))))
+           (if log-name
+             (str " → handoff log `" log-name "`")
+             " — ⚠ no handoff log (prior session closed without /memory-handoff)")))))
 
 (defn- banner-corpus-state-line
-  "Compose the 'Corpus state' banner line with top-3 memorial types."
+  "Compose the 'Corpus state' banner line — total + top-3 CURATED memorial
+   types rendered by class name (not raw eid).  The :dt/Event runtime-event
+   subtree is excluded from 'top types' (it's operational telemetry, not
+   curated content — mirrors sandbar.core/bm25f-warmable-class?); its volume
+   is summarized separately so the count isn't silently misleading."
   [orient-state]
-  (let [cnt   (:memory-count orient-state)
-        hist  (:type-histogram orient-state)
-        top-3 (->> hist
-                   (sort-by val >)
-                   (take 3)
-                   (map (fn [[k v]]
-                          (str (if (keyword? k) (str k) (str k)) ": " v)))
-                   (str/join ", "))]
+  (let [cnt     (:memory-count orient-state)
+        hist    (:type-histogram orient-state)
+        event?  (fn [k] (and (keyword? k) (dt/type-isa? :dt/Event k)))
+        evt-n   (reduce + 0 (map val (filter (comp event? key) hist)))
+        curated (remove (comp event? key) hist)
+        top-3   (->> curated
+                     (sort-by val >)
+                     (take 3)
+                     (map (fn [[k v]]
+                            (str (if (keyword? k) (name k) (str k)) " " v)))
+                     (str/join ", "))]
     (str "- **Corpus state**: " (or cnt 0) " :mm/Memory entities"
-         (when (seq top-3) (str " (top types: " top-3 ")")))))
+         (when (seq top-3) (str " (top curated types: " top-3 ")"))
+         (when (pos? evt-n) (str " · " evt-n " runtime events")))))
 
 (defn- entity-name
   "Extract a human-readable name from an entity-map.  Falls back to :db/ident
-   string form, then :db/id."
+   string form, then :mm.memory/rel-path, then :db/id."
   [entity]
   (or (:mm.memory/name entity)
       (some-> (:db/ident entity) str)
+      (:mm.memory/rel-path entity)
       (some-> (:db/id entity) str)
       "<unnamed>"))
+
+(defn- banner-type-lattice-line
+  "Compose the 'Type lattice' banner line — the :mm/Memory top-level branches
+   with per-subtree instance counts."
+  [orient-state]
+  (when-let [lattice (seq (:type-lattice orient-state))]
+    (str "- **Type lattice**: "
+         (str/join " · "
+                   (map (fn [[branch n]]
+                          (str (if (keyword? branch) (name branch) (str branch)) " " n))
+                        lattice)))))
+
+(defn- truncate-stage
+  "Trim a stage string to its first line / ~70 chars for compact rendering."
+  [stage]
+  (when stage
+    (let [s (-> (str stage) (str/split #"\n" 2) first str/trim)]
+      (if (> (count s) 70) (str (subs s 0 70) "…") s))))
+
+(defn- arc-node-line
+  "One forest line for an arc node at `depth` (2 spaces per indent level)."
+  [node depth]
+  (let [indent (apply str (repeat depth "  "))
+        nm     (or (:name node) (some-> (:ident node) str) (:rel-path node)
+                   (some-> (:eid node) str) "<unnamed>")
+        stage  (truncate-stage (:stage node))]
+    (str indent "- " nm
+         (when stage (str " — `" stage "`")))))
+
+(defn- arc-tree-lines
+  "Recursively render a forest (vec of nested nodes) to indented bullet lines,
+   capped at `max-depth`."
+  [tree depth max-depth]
+  (mapcat (fn [node]
+            (cons (arc-node-line node depth)
+                  (when (and (< depth max-depth) (seq (:children node)))
+                    (arc-tree-lines (:children node) (inc depth) max-depth))))
+          tree))
+
+(defn- banner-arc-forest-line
+  "Compose the 'Open arcs' forest block — all active arcs as a parent→child
+   tree.  Returns nil when the forest slot is absent/empty (banner then falls
+   back to the flat top-5 active-plans line)."
+  [orient-state]
+  (when-let [forest (:active-arc-forest orient-state)]
+    (when (pos? (or (:count forest) 0))
+      (str "- **Open arcs** (" (:count forest) " active):\n"
+           (str/join "\n" (arc-tree-lines (:tree forest) 1 3))))))
 
 (defn- banner-active-plans-line
   [orient-state]
@@ -723,17 +883,20 @@
 
    Section order:
      1. Last session
-     2. Corpus state
-     3. In-flight arc (NEW — Stage B; surfaces mid-arc trajectory)
-     4. Active arcs (top-5 metadata-only)
-     5. Ready queue (top-5 metadata-only)
-     6. In-flight workflows (count of active workflow.processes)"
+     2. Corpus state (total + top-3 types by name)
+     3. Type lattice (:mm/Memory top-level branches + subtree counts)
+     4. In-flight arc (mid-arc trajectory)
+     5. Open arcs (full active-arc parent→child forest; falls back to top-5)
+     6. Ready queue (top-5 tasks)
+     7. In-flight workflows (count of active workflow.processes)"
   [orient-state]
   (let [lines (filter some?
                       [(banner-prior-session-line orient-state)
                        (banner-corpus-state-line orient-state)
+                       (banner-type-lattice-line orient-state)
                        (banner-in-flight-arc-line orient-state)
-                       (banner-active-plans-line orient-state)
+                       (or (banner-arc-forest-line orient-state)
+                           (banner-active-plans-line orient-state))
                        (banner-ready-queue-line orient-state)
                        (banner-active-processes-line orient-state)])]
     (if (seq lines)

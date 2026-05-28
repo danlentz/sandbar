@@ -1330,6 +1330,42 @@
 ;; Per Q.ι.3.1 (dual-surface design): the Clojure fn AND this MCP verb both
 ;; resolve to `orchestrate/orchestrate` — same code path, different entry.
 
+(defn- lean-phase-work-result
+  "Project an orchestrate phase-work result to a LEAN, JSON-safe wire view.
+   The fat phases (:phase/orient, :phase/capture) carry full entity bodies
+   (body-raw, full projections, top-N memorials) that the skill does NOT need
+   once the banner is composed server-side — and shipping them over MCP risks
+   offloading the tool-result to disk, which is the transcript-brick vector
+   (see ~/claude/BRICK-RECOVERY.md).  The compact :banner string carries the
+   human-readable corpus state; idents/counts let a client re-fetch on demand.
+   Other phases pass through unchanged (their results are already small)."
+  [phase r]
+  (cond
+    (nil? r) r
+
+    (= phase :phase/orient)
+    {:banner               (:banner r)
+     :memory-count         (:memory-count r)
+     :type-lattice         (:type-lattice r)
+     :active-arc-count     (get-in r [:active-arc-forest :count])
+     :active-task-count    (count (:active-tasks r))
+     :active-process-count (count (:active-processes r))
+     :prior-session-ident  (some-> (:prior-session r) :db/ident str)
+     :prior-log-ident      (some-> (:prior-log r) :db/ident str)
+     :in-flight-plan-ident (some-> (:in-flight-plan r) :db/ident str)}
+
+    (= phase :phase/capture)
+    (-> r
+        (dissoc :recent-memorials)
+        (assoc :recent-memorial-count (count (:recent-memorials r))
+               :recent-memorials
+               (mapv (fn [m]
+                       {:db/ident (some-> (:db/ident m) str)
+                        :name     (:mm.memory/name m)})
+                     (:recent-memorials r))))
+
+    :else r))
+
 (defn- orchestrate-handler [args]
   (let [workflow-ident (or (->ident (get args "workflow")) (->ident (get args :workflow)))
         process-id-raw (or (get args "process-id") (get args :process-id))
@@ -1342,23 +1378,27 @@
                             (get args "audit-on-open?") (get args :audit-on-open?))]
     (when (nil? workflow-ident)
       (throw (ex-info "Missing required argument: workflow" {:args args})))
-    (when (nil? process-id-raw)
-      (throw (ex-info "Missing required argument: process-id" {:args args})))
     (when (nil? phase)
       (throw (ex-info "Missing required argument: phase" {:args args})))
-    (let [process-id (if (number? process-id-raw)
-                       process-id-raw
-                       (Long/parseLong (str process-id-raw)))
+    ;; :process-id is OPTIONAL at the MCP boundary.  orchestrate/validate-args!
+    ;; enforces it per-phase (:phase/orient + :phase/initialize are exempt via
+    ;; phases-not-requiring-process-id).  Parse only when supplied; otherwise let
+    ;; the orchestrator surface the canonical per-phase missing-arg error.  This
+    ;; removes the sentinel (process-id 0) workaround clients previously needed.
+    (let [process-id (when (some? process-id-raw)
+                       (if (number? process-id-raw)
+                         process-id-raw
+                         (Long/parseLong (str process-id-raw))))
           actor      (when actor-raw (eref/resolve actor-raw))
           result     (orchestrate/orchestrate
-                       (cond-> {:workflow   workflow-ident
-                                :process-id process-id
-                                :phase      phase}
-                         context  (assoc :context context)
-                         actor    (assoc :actor actor)
-                         reason   (assoc :reason reason)
-                         timeouts (assoc :timeouts timeouts)
-                         (some? audit?) (assoc :audit-on-open? audit?)))]
+                       (cond-> {:workflow workflow-ident
+                                :phase    phase}
+                         (some? process-id) (assoc :process-id process-id)
+                         context            (assoc :context context)
+                         actor              (assoc :actor actor)
+                         reason             (assoc :reason reason)
+                         timeouts           (assoc :timeouts timeouts)
+                         (some? audit?)     (assoc :audit-on-open? audit?)))]
       ;; JSON-safe projection of the result — keywords preserved as strings;
       ;; eids preserved as numbers for clients that need to re-fetch the events.
       {:phase-completed    (str (:phase-completed result))
@@ -1367,7 +1407,7 @@
        :events-emitted     (vec (:events-emitted result))  ;; numeric eids; JSON-safe
        :duration-ms        (:duration-ms result)
        :degraded?          (:degraded? result)
-       :phase-work-result  (:phase-work-result result)})))
+       :phase-work-result  (lean-phase-work-result phase (:phase-work-result result))})))
 
 ;; ---------- Validation service ----------
 
@@ -2357,7 +2397,12 @@
                     :reason         {:type "string"  :description "Optional reason string for transitions whose :workflow/requires-reason? is true"}
                     :timeouts       {:type "object"  :description "Optional per-phase timeout override map (else default-phase-timeouts-ms applies)"}
                     :audit-on-open  {:type "boolean" :description "Optional — invoke audit_fs-substrate-drift in :phase/orient (default false per Q.ι.3.5).  Note: wire-format key MUST be `audit-on-open` (no `?` suffix) per Anthropic MCP property-key regex; handler accepts legacy `audit-on-open?` for back-compat."}}
-                   [:workflow :process-id :phase])
+                   ;; :process-id is NOT universally required — :phase/orient (pure-read)
+                   ;; and :phase/initialize (creates the process) are exempt per
+                   ;; orchestrate/phases-not-requiring-process-id.  Marking it required
+                   ;; here forced clients to pass a sentinel (process-id 0) for those
+                   ;; phases; the orchestrator enforces it per-phase instead.
+                   [:workflow :phase])
     :handler orchestrate-handler}
 
    ;; Validation service — workflow-backed long-running validation
