@@ -107,9 +107,10 @@
 ;; Schedule / Job resolution
 
 (defn- ref->eid
-  "Coerce a Datomic ref-shaped value to a numeric eid.  Handles three
+  "Coerce a Datomic ref-shaped value to a numeric eid.  Handles the
    shapes encountered at ref-typed slot read sites:
    - numeric eid (already)               → returned as-is
+   - keyword :db/ident                   → resolved via d/entity → :db/id
    - Datomic Entity (ILookup, NOT a map) → `(:db/id e)` extracted
    - {:db/id N ...} regular map           → `(:db/id m)` extracted
    - nil                                  → nil
@@ -117,11 +118,21 @@
    Datomic returns refs as Entity proxy objects, which are ILookup
    but not clojure.core/map?.  A `(if (map? ...) ...)` check
    silently misses Entity-typed refs.  This helper centralizes the
-   correct coercion."
+   correct coercion.
+
+   The keyword branch is the :no-job-target FIX (η.4 2026-05-28).  When
+   a :db.type/ref slot points at a NAMED entity (one carrying a
+   :db/ident — as the system Fn/Job/Schedule entities all do), reading
+   the slot back via d/entity returns the target's :db/ident KEYWORD,
+   NOT an Entity proxy (Datomic's enum-ref behavior).  Without this
+   branch ref->eid returned nil for that keyword → job-entity-for-
+   schedule found no Job → :scheduled-event-no-job-target.  Resolving
+   the keyword via d/entity recovers the target eid."
   [ref]
   (cond
     (nil? ref)        nil
     (number? ref)     ref
+    (keyword? ref)    (:db/id (d/entity (d/db (datomic/conn)) ref))
     (:db/id ref)      (:db/id ref)
     :else             nil))
 

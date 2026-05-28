@@ -10,7 +10,7 @@
             [sandbar.reactive.queue :as reactive-queue]
             [sandbar.reactive.sinks :as reactive-sinks]
             [sandbar.schedule :as sched]
-            [sandbar.schedule.demo :as sched-demo]
+            [sandbar.schedule.system :as sched-sys]
             [sandbar.search :as search]
             [sandbar.server.nrepl :as nrepl]
             [sandbar.server.pedestal :as pedestal]
@@ -104,8 +104,8 @@
   ;; in the standard dev workflow until a project explicitly turns it on via
   ;; .sandbar/config.edn override.  When enabled, allocates the handler-pool +
   ;; spawns the fire-thread + registers the :mm.event/Scheduled subscriber.
-  ;; Schedule auto-loading from :jobs is handled separately in γ.5+ (demo
-  ;; DB-stats job).
+  ;; Schedule auto-loading from :jobs is handled separately in γ.5+ (system
+  ;; DB-stats + reactive-queue-health jobs).
   (try
     (start-scheduler-if-enabled!)
     (catch Exception e
@@ -123,30 +123,30 @@
   (let [config           (get-in sys/system [:config])
         scheduler-config (get config :scheduler {})
         enabled?         (boolean (:enabled? scheduler-config))
-        seed-demo?       (boolean (:seed-demo-jobs? scheduler-config))]
+        seed-system?     (boolean (:system-jobs? scheduler-config))]
     (if enabled?
       (do (sched/enable!)
           (sched/start!)
-          ;; γ.5b — seed + schedule the two demo jobs at boot when
-          ;; :scheduler/seed-demo-jobs? is true.  Per Dan-directive
-          ;; 2026-05-28 (amends Q.γ.5 opt-in-safety for the demo-jobs
-          ;; case).  seed-demo-jobs! upserts the 2 Fn + 2 Job + 2
+          ;; γ.5b — seed + schedule the two system jobs at boot when
+          ;; :scheduler/system-jobs? is true.  Per Dan-directive
+          ;; 2026-05-28 (amends Q.γ.5 opt-in-safety for the system-jobs
+          ;; case).  seed-system-jobs! upserts the 2 Fn + 2 Job + 2
           ;; Schedule entities idempotently (stable :db/ident); the
-          ;; returned schedule-idents are added to the live queue.
-          (when seed-demo?
+          ;; returned schedule eids are added to the live queue.
+          (when seed-system?
             (try
-              (let [schedule-eids (sched-demo/seed-demo-jobs!)]
+              (let [schedule-eids (sched-sys/seed-system-jobs!)]
                 (doseq [eid schedule-eids]
                   (sched/add-schedule! eid))
-                (log/info :SYS/SCHEDULER-DEMO-JOBS-SEEDED
+                (log/info :SYS/SCHEDULER-SYSTEM-JOBS-SEEDED
                           {:count (count schedule-eids)
                            :schedule-eids schedule-eids}))
               (catch Exception e
-                (log/warn e :SYS/SCHEDULER-DEMO-SEED-FAILED
-                          "Demo-job seeding failed; scheduler still running, demo jobs not scheduled"))))
+                (log/warn e :SYS/SCHEDULER-SYSTEM-SEED-FAILED
+                          "System-job seeding failed; scheduler still running, system jobs not scheduled"))))
           (log/info :SYS/SCHEDULER-STARTED
                     {:enabled? true
-                     :seed-demo-jobs? seed-demo?
+                     :system-jobs? seed-system?
                      :jobs     (count (get scheduler-config :jobs []))})
           :scheduler-started)
       (do (log/info :SYS/SCHEDULER-DISABLED-BY-CONFIG)
