@@ -64,8 +64,9 @@
      `:memory.decisions/gamma_1_scheduler_path_a_native_min_heap_dispatcher_q_gamma_1_through_6_resolved_2026_05_27`
    - γ scheduler arc plan:
      `:memory.plans/gamma_scheduler_live_integration_arc_path_a_native_min_heap_dispatcher_demo_db_stats_job_5_mcp_verbs_pre_0_2_0_phase_gamma_sub_plan_2026_05_27`"
-  (:require [sandbar.db.datatype :as dt]
-            [sandbar.logging     :as logging]))
+  (:require [sandbar.db.datatype  :as dt]
+            [sandbar.logging      :as logging]
+            [sandbar.reactive.queue :as reactive-queue]))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Substrate enumeration
@@ -126,3 +127,37 @@
                   (merge stats run-ctx)
                   :first-class)
     stats))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Sibling demo job — reactive-queue health metrics
+
+(defn log-reactive-queue-health
+  "Sibling demo job fn — reactive-projection queue health snapshot.
+
+   Same shape as `log-db-stats` but reports the 13-key health map from
+   `sandbar.reactive.queue/health` (the backing fn for the
+   `sandbar.reactive.health` MCP verb).  Emits ONE `:first-class`
+   `:mm/EventLog` memorial per fire carrying:
+
+     {:worker-running?        bool
+      :buffer-size            int (sliding-buffer capacity)
+      :dirty-entity-count     int (entities pending projection)
+      :oldest-pending-age-ms  int or nil
+      :enqueue-total          int (cumulative since startup)
+      :drain-total            int
+      :coalesce-total         int (per-entity coalesce events)
+      :sink-error-total       int (sink-fn failures)
+      :registered-sinks       int
+      :saturated?             bool (oldest-pending > threshold)
+      :startup-instant        java.time.Instant
+      :last-enqueue-instant   java.time.Instant or nil
+      :last-drain-instant     java.time.Instant or nil}
+
+   Argument shape + return contract identical to `log-db-stats`."
+  [run-ctx]
+  (let [health (reactive-queue/health)]
+    (logging/info ::demo-reactive-queue-health
+                  "Demo reactive-queue health snapshot"
+                  (merge health run-ctx)
+                  :first-class)
+    health))

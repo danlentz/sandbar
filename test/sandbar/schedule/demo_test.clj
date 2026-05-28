@@ -49,3 +49,23 @@
       ;; → :mm.run/status :run.status/completed
       (is (= result (demo/db-stats))
           "Returned snapshot matches a direct db-stats call (deterministic)"))))
+
+(deftest log-reactive-queue-health-returns-canonical-snapshot
+  (testing "log-reactive-queue-health returns the 13-key reactive-queue/health snapshot"
+    (let [run-ctx {:run-eid 22222 :schedule-eid 33333 :job-eid 44444}
+          result (demo/log-reactive-queue-health run-ctx)]
+      (is (map? result))
+      ;; 13 documented keys per reactive-queue/health docstring
+      (is (contains? result :worker-running?))
+      (is (contains? result :buffer-size))
+      (is (contains? result :dirty-entity-count))
+      (is (contains? result :enqueue-total))
+      (is (contains? result :drain-total))
+      (is (contains? result :coalesce-total))
+      (is (contains? result :sink-error-total))
+      (is (contains? result :registered-sinks))
+      (is (contains? result :saturated?))
+      (is (contains? result :startup-instant))
+      (is (boolean? (:worker-running? result)))
+      (is (nat-int? (:buffer-size result)))
+      (is (boolean? (:saturated? result))))))
