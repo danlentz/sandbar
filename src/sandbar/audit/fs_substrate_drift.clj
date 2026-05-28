@@ -69,6 +69,30 @@
 ;; Substrate side — Datalog enumeration of :mm/Memory entities with rel-path
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
+(defn- normalize-rel-path
+  "Canonicalize a rel-path for cross-side comparison.  Strips a leading
+   `memory/` prefix so the FS-walk-relative form ('actors/foo.md') and
+   the substrate `:mm.memory/rel-path` slot form that may carry the
+   prefix ('memory/actors/foo.md') collapse to the same comparison key.
+
+   Per η.4 Target #2 (2026-05-28): the η.3 audit reported 1667 spurious
+   :missing-from-substrate entries — entities that EXIST + are findable
+   by entity-find/find-by-rel-path, but whose :mm.memory/rel-path slot
+   carries a leading `memory/` (older codec convention) while the FS
+   walk produces the prefix-less form.  The exact-string set-difference
+   treated the prefix difference as a missing file.  Normalizing both
+   sides before the difference eliminates the false positives WITHOUT
+   hiding genuine missing files (a real orphan still has no match on
+   either side).
+
+   The substrate-side canonical rel-path FORM ratification (should the
+   slot store with-prefix or without?) + the corpus batch-normalize is
+   a separate substrate-quality concern deferred to the ε predicate
+   sweep; this fix is comparison-robustness only."
+  [rel-path]
+  (when rel-path
+    (str/replace rel-path #"^memory/" "")))
+
 (defn- substrate-memory-entities
   "All `:mm/Memory` entities (incl. subclass instances) that carry a
    `:mm.memory/rel-path`.  Returns a vec of `{:db/id, :entity-ident,
@@ -196,8 +220,12 @@
         _                    (log/info :FS-DRIFT-AUDIT/START {:from from})
         fs-specs             (fs-entity-specs from)
         entities             (substrate-memory-entities)
-        fs-by-path           (into {} (map (juxt :mm.memory/rel-path identity)) fs-specs)
-        ent-by-path          (into {} (map (juxt :rel-path identity)) entities)
+        ;; η.4 Target #2 (2026-05-28): key both maps by the NORMALIZED
+        ;; rel-path (leading `memory/` stripped) so prefix-convention
+        ;; differences between the FS-walk form and the substrate
+        ;; :mm.memory/rel-path slot don't surface as spurious drift.
+        fs-by-path           (into {} (map (juxt (comp normalize-rel-path :mm.memory/rel-path) identity)) fs-specs)
+        ent-by-path          (into {} (map (juxt (comp normalize-rel-path :rel-path) identity)) entities)
         fs-paths             (set (keys fs-by-path))
         sub-paths            (set (keys ent-by-path))
         missing-from-substrate (vec (sort (set/difference fs-paths sub-paths)))

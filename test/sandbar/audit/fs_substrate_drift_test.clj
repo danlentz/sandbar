@@ -186,3 +186,51 @@
       (is (vector? (:missing-from-fs report)))
       (is (vector? (:content-divergence report)))
       (is (vector? (:ref-slot-mismatch report))))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; η.4 Target #2 (2026-05-28) — rel-path comparison normalization.
+;;
+;; The η.3 corpus audit reported 1667 spurious :missing-from-substrate
+;; entries: entities that EXIST but whose :mm.memory/rel-path slot carries
+;; a leading `memory/` prefix (older codec convention) while the FS-walk
+;; form is prefix-less.  The exact-string set-difference treated the
+;; prefix difference as a missing file.  The fix normalizes both sides
+;; (strip leading `memory/`) before the difference.
+
+(deftest audit-normalizes-rel-path-prefix-no-false-missing
+  (testing "An FS file (no memory/ prefix) + substrate entity whose rel-path slot HAS the memory/ prefix must NOT report as drift — the normalization collapses the prefix difference"
+    (let [tmpdir   (mk-tmpdir!)
+          fs-rel   "decisions/prefix_norm_test.md"
+          body     "# Prefix-norm test body\n\nIdentical on both sides.\n"
+          ;; FS side: prefix-less rel-path (the FS-walk form)
+          _file    (mk-file! tmpdir fs-rel
+                             (str "---\n"
+                                  "name: Prefix Norm Test\n"
+                                  "type: decision\n"
+                                  "description: η.4 Target #2 normalization fixture\n"
+                                  "---\n\n"
+                                  body))
+          ;; Substrate side: SAME logical file but rel-path slot carries
+          ;; the leading `memory/` prefix (the inconsistent convention).
+          _ent     (dt/make :mm/Memory
+                            {:mm.memory/rel-path "memory/decisions/prefix_norm_test.md"
+                             :mm.memory/name     "Prefix Norm Test"
+                             :mm.memory/memory-type :decision
+                             :mm.memory/body-raw body}
+                            {:validate? false})
+          report   (fs-drift/audit-all {:from tmpdir})]
+      ;; The prefix-mismatched entity must NOT appear as missing-from-substrate
+      (is (not (some #(re-find #"prefix_norm_test" %)
+                     (:missing-from-substrate report)))
+          "Prefix-mismatched entity must NOT be reported missing-from-substrate")
+      ;; ...nor as missing-from-fs (the substrate entity DOES have an FS file)
+      (is (not (some #(when % (re-find #"prefix_norm_test" (str %)))
+                     (:missing-from-fs report)))
+          "Prefix-mismatched entity must NOT be reported missing-from-fs"))))
+
+(deftest audit-normalize-rel-path-helper
+  (testing "normalize-rel-path strips exactly one leading memory/ prefix; idempotent on prefix-less"
+    (let [norm #'fs-drift/normalize-rel-path]
+      (is (= "decisions/foo.md" (norm "memory/decisions/foo.md")))
+      (is (= "decisions/foo.md" (norm "decisions/foo.md")))
+      (is (nil? (norm nil))))))
