@@ -225,6 +225,36 @@
     result))
 
 (declare validate-data)  ;; forward declaration
+(declare type-isa?)      ;; forward reference; defined later in this ns
+
+(def ^:dynamic *default-actor*
+  "Ident (keyword) or eid of the actor on whose behalf substrate writes
+   are performed — or nil.  When bound (e.g. by an MCP / orchestrator
+   boundary that knows the calling actor), `make` defaults
+   `:mm.memory/created-by` to it for :mm/Memory subclasses.  nil ⇒ no
+   created-by default (provenance is left unset, never fabricated)."
+  nil)
+
+(defn- apply-memory-defaults
+  "For :mm/Memory subclasses, supply provenance/temporal slots the caller
+   omitted: `:mm.memory/created` + `:mm.memory/last-touched` ⇒ now;
+   `:mm.memory/created-by` ⇒ [*default-actor*] when that var is bound.
+   Absent-only — explicit slots AND codec-parsed frontmatter both win
+   (this runs AFTER the codec merge in `make`).  No-op for non-:mm/Memory
+   classes.  Root fix for MCP-/programmatically-created memorials that
+   lacked these slots and therefore dropped out of `:mm.memory/last-touched`
+   recency views (e.g. arcs created via `entity.create`)."
+  [dt props]
+  (if (type-isa? :mm/Memory dt)
+    (let [now (java.util.Date.)]
+      (cond-> props
+        (not (contains? props :mm.memory/created))
+        (assoc :mm.memory/created now)
+        (not (contains? props :mm.memory/last-touched))
+        (assoc :mm.memory/last-touched now)
+        (and *default-actor* (not (contains? props :mm.memory/created-by)))
+        (assoc :mm.memory/created-by [*default-actor*])))
+    props))
 
 (defn make
   "Creates a typed instance with pre-transaction validation.
@@ -286,6 +316,11 @@
                        parsed   (parse-fn source {:format resolved-format :class dt})]
                    (merge (dissoc parsed :dt/type) props))
                  props)
+         ;; Memorial-defaults: AFTER the codec merge (so explicit slots +
+         ;; parsed frontmatter both win), absent-only.  entity.create-
+         ;; defaults fix — MCP/programmatic :mm/Memory creates were missing
+         ;; created/last-touched/created-by and fell out of recency views.
+         props (apply-memory-defaults dt props)
          new-entity (if-not validate?
                       (make* dt props)
                       (if-let [errors (validate-data dt props)]

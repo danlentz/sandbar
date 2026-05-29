@@ -88,6 +88,64 @@
    :db/doc "The HOW: section (args + return shape), split from :description."}]
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; :mm.verb/* behavioral-hint + lifecycle scalars  (MCP ToolAnnotations parallel)
+;; The ontology-behavioral-hints ≡ MCP-annotations convergence (Phase 1 of the
+;; mm/Verb-maximization arc).  Derived from the leaf action token by
+;; sandbar.mcp.tools/verb-behavioral-hints — the SAME fn that feeds the wire
+;; annotations in handle-list — with hint-status :asserted until the Phase-5
+;; per-verb uplift verifies them.  open-world? is false for every verb: a memory
+;; substrate is the MCP spec's literal closed-world example.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident       :mm.verb/read-only?
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Verb
+   :dt/range       :db.type/boolean
+   :db/valueType   :db.type/boolean
+   :db/cardinality :db.cardinality/one
+   :db/doc "MCP readOnlyHint — true ⇒ the verb does not modify the substrate."}
+
+  {:db/ident       :mm.verb/destructive?
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Verb
+   :dt/range       :db.type/boolean
+   :db/valueType   :db.type/boolean
+   :db/cardinality :db.cardinality/one
+   :db/doc "MCP destructiveHint — true ⇒ may perform irreversible updates. Meaningful only when read-only? is false."}
+
+  {:db/ident       :mm.verb/idempotent?
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Verb
+   :dt/range       :db.type/boolean
+   :db/valueType   :db.type/boolean
+   :db/cardinality :db.cardinality/one
+   :db/doc "MCP idempotentHint — true ⇒ repeated identical calls have no additional effect beyond the first."}
+
+  {:db/ident       :mm.verb/open-world?
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Verb
+   :dt/range       :db.type/boolean
+   :db/valueType   :db.type/boolean
+   :db/cardinality :db.cardinality/one
+   :db/doc "MCP openWorldHint — false for every sandbar verb (a memory substrate is a CLOSED domain; the spec's literal closed-world example)."}
+
+  {:db/ident       :mm.verb/transition-kind
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Verb
+   :dt/range       :db.type/keyword
+   :db/valueType   :db.type/keyword
+   :db/cardinality :db.cardinality/one
+   :db/doc "ALPS-style safety class derived from the hints: :safe (read-only) / :idempotent / :unsafe."}
+
+  {:db/ident       :mm.verb/hint-status
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Verb
+   :dt/range       :db.type/keyword
+   :db/valueType   :db.type/keyword
+   :db/cardinality :db.cardinality/one
+   :db/doc "Trust qualifier on the behavioral hints: :asserted (derived, not yet verified) or :verified (human-reviewed in the Phase-5 uplift). Closes the MCP 'hints are not guarantees' trust gap."}]
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; :mm.verb/* typed-edge predicates (verb→verb dependency graph)
 ;; Promoted from the ORDER:/COMBINATION: prose. The dependency graph that
 ;; Graph-RAG-Tool-Fusion shows is the highest-leverage retrieval lever.
@@ -137,6 +195,12 @@
                           :mm.verb/which
                           :mm.verb/when
                           :mm.verb/how
+                          :mm.verb/read-only?
+                          :mm.verb/destructive?
+                          :mm.verb/idempotent?
+                          :mm.verb/open-world?
+                          :mm.verb/transition-kind
+                          :mm.verb/hint-status
                           :mm.verb/prereq-of
                           :mm.verb/combines-with
                           :mm.verb/produces-input-for]

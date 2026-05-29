@@ -44,6 +44,7 @@
             [sandbar.audit.tag          :as audit-tag]
             [sandbar.codec              :as codec]
             [sandbar.codec.markdown     :as codec-md]
+            [sandbar.util.edn           :as cfg]
             [sandbar.entity-ref         :as eref]
             [sandbar.identifier         :as id]
             [sandbar.navigate.edges     :as nav-edges]
@@ -388,6 +389,15 @@
 
 ;; ---------- Entity operations ----------
 
+(def ^:private mcp-default-actor
+  "Layer-2-configured default actor ident (.sandbar/config.edn :default-actor)
+   bound to `dt/*default-actor*` at the MCP boundary so `entity.create` auto-
+   populates `:mm.memory/created-by` for :mm/Memory subclasses.  nil ⇒ unset
+   (no created-by default — provenance never fabricated).  Read once via delay.
+   Per Dan-directive 2026-05-28 — the natural increment of the entity.create
+   memorial-defaults fix."
+  (delay (try (cfg/config-value :default-actor) (catch Throwable _ nil))))
+
 (defn- entity-create-handler [args]
   (let [class-arg   (or (get args "class") (get args :class))
         slots       (or (get args "slots") (get args :slots) {})
@@ -429,7 +439,8 @@
                            (and format-arg source-arg)
                            (assoc :format (keyword format-arg)
                                   :source source-arg))
-            new-entity   (dt/make class-ident props make-opts)]
+            new-entity   (binding [dt/*default-actor* @mcp-default-actor]
+                           (dt/make class-ident props make-opts))]
         (log/info :MCP/entity-create
                   {:class  class-ident
                    :entity-id (:db/id new-entity)
@@ -956,6 +967,89 @@
                  (some? limit-arg) (assoc :limit limit-arg)
                  projection       (assoc :projection projection))]
       (nav-edges/inbound-edges opts))))
+
+;; ---------- Tools meta-verbs (Phase 3 of the mm/Verb-maximization arc) ----------
+;;
+;; Metacircular self-introspection: the running MCP server SEARCHES + DESCRIBES
+;; its OWN verb catalog (the :mm/Verb entities projected from `verb-catalog`).
+;; tools.search = BM25F-retrieve the right verb for a task intent; tools.describe
+;; = full card + typed composition edges (prereqs / combines-with / produces-
+;; input-for) for one verb.  Graph-backed Tool Search — closes the loop: the
+;; server serving verbs that query the entities projected from the catalog that
+;; defines those very verbs.
+
+(defn- verb-ref->ident
+  "Coerce a verb reference to its :db/ident keyword.  Accepts a keyword, an ident
+   string (\":sandbar.entity/create\"), or a wire name (\"sandbar.entity.create\")."
+  [v]
+  (cond
+    (keyword? v)                   v
+    (str/starts-with? (str v) ":") (keyword (subs (str v) 1))
+    :else (let [segs (str/split (str v) #"\.")]
+            (cond
+              (>= (count segs) 3) (keyword (str (nth segs 0) "." (nth segs 1))
+                                           (str/join "." (drop 2 segs)))
+              (= (count segs) 2)  (keyword (nth segs 0) (nth segs 1))
+              :else               (keyword (str v))))))
+
+(defn- tools-search-handler
+  "BM25F over the :mm/Verb catalog → lean verb cards ranked by task intent."
+  [args]
+  (let [query    (or (get args "query") (get args :query))
+        limit    (or (get args "limit") (get args :limit) 10)
+        axis-raw (or (get args "axis")  (get args :axis))]
+    (when (nil? query)
+      (throw (ex-info "Missing required argument: query" {:args args})))
+    (let [axis  (when axis-raw (keyword (str/replace (str axis-raw) #"^:" "")))
+          where (when axis [['?e :mm.verb/axis axis]])
+          res   (search/search-bm25f (cond-> {:query query :class :mm/Verb
+                                              :projection :full :limit limit}
+                                       where (assoc :where where)))
+          cards (mapv (fn [{:keys [entity score]}]
+                        {:verb            (:mm.verb/name entity)
+                         :ident           (some-> (:db/ident entity) str)
+                         :title           (:mm.verb/title entity)
+                         :axis            (:mm.verb/axis entity)
+                         :transition-kind (:mm.verb/transition-kind entity)
+                         :read-only?      (:mm.verb/read-only? entity)
+                         :arg-summary     (:mm.verb/arg-summary entity)
+                         :score           score})
+                      (:hits res))]
+      {:query query :matches cards :total (:total res) :returned (count cards)})))
+
+(defn- tools-describe-handler
+  "Full verb card + typed composition edges for one verb (by wire name or ident)."
+  [args]
+  (let [verb-raw (or (get args "verb") (get args :verb))]
+    (when (nil? verb-raw)
+      (throw (ex-info "Missing required argument: verb" {:args args})))
+    (let [ident (verb-ref->ident verb-raw)
+          {:keys [valid? entity reasons]} (eref/validate ident)]
+      (if-not valid?
+        {:verb nil :missing? true :lookup (str verb-raw)
+         :resolved-ident (str ident) :reasons reasons}
+        (let [v       (projection/full-projection entity)
+              inbound (:edges (nav-edges/inbound-edges
+                               {:entity (:db/id v) :predicate :mm.verb/prereq-of
+                                :projection :metadata-only}))]
+          {:verb               (:mm.verb/name v)
+           :ident              (some-> (:db/ident v) str)
+           :title              (:mm.verb/title v)
+           :axis               (:mm.verb/axis v)
+           :which              (:mm.verb/which v)
+           :when               (:mm.verb/when v)
+           :how                (:mm.verb/how v)
+           :arg-summary        (:mm.verb/arg-summary v)
+           :annotations        {:readOnlyHint    (:mm.verb/read-only? v)
+                                :destructiveHint (:mm.verb/destructive? v)
+                                :idempotentHint  (:mm.verb/idempotent? v)
+                                :openWorldHint   (:mm.verb/open-world? v)
+                                :transition-kind (:mm.verb/transition-kind v)
+                                :hint-status     (:mm.verb/hint-status v)}
+           :prerequisites      (mapv #(get-in % [:source :db/ident]) inbound)
+           :prerequisite-for   (vec (:mm.verb/prereq-of v))
+           :combines-with      (vec (:mm.verb/combines-with v))
+           :produces-input-for (vec (:mm.verb/produces-input-for v))})))))
 
 ;; ---------- Navigation operations (Stage P-6 — fulltext arc Phase N) ----------
 ;;
@@ -2894,23 +2988,104 @@
     :title "Diagnostic: full operator-facing scheduler runtime snapshot"
     :description "WHICH: returns the canonical operator-facing snapshot of scheduler runtime state — state-machine + enabled-flag + queue size + handler-pool allocated + fire-thread allocated + clock-drift + in-flight Runs + subscriber-registered flag.\n\nWHEN: use as the one-call operator-status verb — for MCP-driven dashboards, health-check tooling, debugging session-orientation.  When NOT to use: (a) you want only the queue entries — `sandbar.schedule.list` (smaller payload); (b) you want only the state keyword — there's no smaller verb; this one's payload is bounded.\n\nHOW: no arguments.  Returns the canonical inspect map keys: `:state :enabled? :queue-size :handler-pool? :fire-thread? :clock-drift-ms :in-flight-runs :subscriber-registered?`."
     :inputSchema no-args-schema
-    :handler (fn [_args] (sched/inspect))}])
+    :handler (fn [_args] (sched/inspect))}
+
+   ;; Meta — verb-catalog self-introspection (Phase 3 of the mm/Verb-maximization
+   ;; arc).  The running server searching + describing its OWN tool surface.
+   {:name "sandbar.tools.search"
+    :title "Find the right verb(s) for a task — BM25F over the verb catalog"
+    :description "WHICH: ranked verb matches for a natural-language task intent — BM25F over the `:mm/Verb` catalog (sandbar's MCP surface modeled as substrate entities), returning lean verb cards (name / title / axis / transition-kind / read-only? / arg-summary / score).  Metacircular: the server searching its own tool surface.\n\nWHEN: use FIRST when you know WHAT you want to do but not WHICH verb does it — rank verbs by intent instead of scanning all ~80.  The retrieve half of retrieve-then-describe.  When NOT to use: (a) you already know the verb — call it directly; (b) you want the full card + composition edges for a known verb — `sandbar.tools.describe`; (c) searching CORPUS content (memories), not verbs — `sandbar.search.bm25f` against the corpus class.\n\nHOW: `:query` is a bag-of-words task intent (e.g. 'rank memories by recency', 'who cites this entity').  Optional `:limit` (default 10).  Optional `:axis` restricts to a verb family (e.g. ':navigate' / ':aggregate' / ':entity').  Returns `{:query :matches [{:verb :ident :title :axis :transition-kind :read-only? :arg-summary :score}...] :total :returned}`.\n\nORDER: leaf-call; the canonical FIRST step of verb discovery.\n\nCOMBINATION: feed a chosen verb into `sandbar.tools.describe` for the full card + prerequisites + combines-with neighbors, then call the verb itself."
+    :inputSchema (one-required
+                   {:query {:type "string" :description "Natural-language task intent (bag-of-words)"}
+                    :limit {:type "integer" :description "Max verb matches (default 10)"}
+                    :axis  {:type "string" :description "Optional verb-family filter (e.g. ':navigate' / ':aggregate' / ':entity')"}}
+                   [:query])
+    :handler tools-search-handler}
+   {:name "sandbar.tools.describe"
+    :title "Full verb card + typed composition edges for a named verb"
+    :description "WHICH: the full card for one verb from the `:mm/Verb` catalog — title, axis, WHICH/WHEN/HOW, arg-summary, behavioral annotations (readOnly / destructive / idempotent / openWorld / transition-kind / hint-status), AND its typed composition edges: `:prerequisites` (verbs to call first), `:prerequisite-for` (verbs this one enables), `:combines-with` (verbs it composes with), `:produces-input-for` (verbs its output feeds).  Metacircular + graph-backed: the server describing its own verb, edges included.\n\nWHEN: use AFTER `sandbar.tools.search` (or when you already know a verb name) to understand a verb deeply + discover what to call before / with / after it.  The describe half of retrieve-then-describe.  When NOT to use: (a) ranked discovery across verbs — `sandbar.tools.search`; (b) only the raw wire input-schema — it is already in `tools/list`.\n\nHOW: `:verb` is the verb's wire name ('sandbar.entity.create') OR its ident (':sandbar.entity/create').  Returns the card map, or `{:missing? true}` if the verb is unknown.\n\nORDER: prerequisite — typically `sandbar.tools.search` (to pick the verb).\n\nCOMBINATION: the `:prerequisites` / `:combines-with` / `:produces-input-for` lists are themselves verb names — feed them back into `sandbar.tools.describe` to plan a multi-verb chain, or call them directly."
+    :inputSchema (one-required
+                   {:verb {:type "string" :description "Verb wire name (e.g. 'sandbar.entity.create') or ident (e.g. ':sandbar.entity/create')"}}
+                   [:verb])
+    :handler tools-describe-handler}])
 
 (def ^:private verb-by-name
   (into {} (map (juxt :name identity)) verb-catalog))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; tools/list — return the verb catalog
+;; Behavioral hints (MCP ToolAnnotations) — derived from the leaf action token.
+;; ONE derivation feeding BOTH the wire annotations (handle-list, below) AND the
+;; :mm/Verb entity hint-slots (sandbar.scripts.seed-verb-catalog/verb->slots).
+;; hint-status is :asserted — the Phase-5 per-verb uplift authors :verified
+;; overrides.  open-world? is false for every verb (closed memory substrate;
+;; the MCP spec's literal closed-world example).  Part of the mm/Verb-
+;; maximization arc (the ontology-hints ≡ MCP-annotations convergence).
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(def ^:private read-only-verb-leaves
+  "Leaf action tokens whose verbs do NOT mutate the substrate."
+  #{"count" "group-by" "rank-by" "tag-histogram" "fs-substrate-drift" "describe"
+    "direct-slots" "instances" "parents" "required-slots" "slots" "subclasses"
+    "validate-all-instances" "list" "find" "find-by-rel-path" "validate" "policy"
+    "inbound-edges" "outbound-edges" "path-via" "siblings-of" "library-card"
+    "tree" "type-tree" "export" "cardinality" "domain" "range" "health" "classes"
+    "datatypes" "entities" "properties" "attribute" "bm25f" "search" "conformance-report"
+    "inspect" "audit" "lookup" "instance-of" "subclass-of" "history" "results"
+    "active-processes" "process-history" "process-state" "ground" "resolve"})
+
+(def ^:private destructive-verb-leaves
+  "Mutating leaves that perform irreversible removal/cancellation."
+  #{"remove" "cancel"})
+
+(def ^:private idempotent-write-leaves
+  "Mutating leaves whose repeated identical calls have no additional effect."
+  #{"update" "enable" "disable"})
+
+(defn verb-behavioral-hints
+  "Derive MCP behavioral hints for a verb-name from its leaf action token.
+   Returns {:read-only? :destructive? :idempotent? :open-world? :transition-kind
+   :hint-status}.  open-world? is always false (closed memory substrate);
+   hint-status is :asserted (derived — the Phase-5 uplift sets :verified)."
+  [verb-name]
+  (let [leaf  (last (str/split (str verb-name) #"\."))
+        ro?   (contains? read-only-verb-leaves leaf)
+        dest? (and (not ro?) (contains? destructive-verb-leaves leaf))
+        idem? (or ro? (contains? idempotent-write-leaves leaf))]
+    {:read-only?      ro?
+     :destructive?    dest?
+     :idempotent?     idem?
+     :open-world?     false
+     :transition-kind (cond ro? :safe idem? :idempotent :else :unsafe)
+     :hint-status     :asserted}))
+
+(defn verb-annotations
+  "MCP ToolAnnotations map (2025-11-25 shape) for a verb-catalog entry.
+   destructiveHint is meaningful only when not read-only, so it is omitted for
+   read-only verbs."
+  [verb]
+  (let [{:keys [read-only? destructive? idempotent? open-world?]}
+        (verb-behavioral-hints (:name verb))]
+    (cond-> {:readOnlyHint   read-only?
+             :idempotentHint idempotent?
+             :openWorldHint  open-world?}
+      (:title verb)    (assoc :title (:title verb))
+      (not read-only?) (assoc :destructiveHint destructive?))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; tools/list — return the verb catalog (each tool enriched with annotations)
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (defn handle-list
-  "MCP `tools/list` — return the stable verb catalog.
-   Catalog is constant regardless of schema state; schema evolution
-   surfaces through the `sandbar.schema.*` + `sandbar.class.*` read
-   verbs, not through tools/list."
+  "MCP `tools/list` — return the stable verb catalog, each tool enriched with
+   derived MCP `annotations` (read-only / destructive / idempotent / open-world
+   hints) via verb-annotations.  Catalog is constant regardless of schema state;
+   schema evolution surfaces through the `sandbar.schema.*` + `sandbar.class.*`
+   read verbs, not through tools/list."
   [id _params]
-  (envelope/jsonrpc-result id
-                           {:tools (mapv #(dissoc % :handler) verb-catalog)}))
+  (envelope/jsonrpc-result
+   id
+   {:tools (mapv (fn [v] (-> v (dissoc :handler) (assoc :annotations (verb-annotations v))))
+                 verb-catalog)}))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; tools/call — dispatch verb by name; project result to MCP content array
