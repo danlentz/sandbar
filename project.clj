@@ -122,7 +122,8 @@
             "config-show"         ["run" "-m" "sandbar.scripts.config-show"]
             "list-dbs"            ["run" "-m" "sandbar.scripts.list-dbs"]
             "seed-verb-catalog"   ["run" "-m" "sandbar.scripts.seed-verb-catalog"]
-            "affordance-map"      ["run" "-m" "sandbar.scripts.affordance-map"]}
+            "affordance-map"      ["run" "-m" "sandbar.scripts.affordance-map"]
+            "verb-edges-map"      ["run" "-m" "sandbar.scripts.verb-edges-map"]}
 
 
   :asciidoc {:sources ["doc/*.adoc"]
