@@ -1,0 +1,56 @@
+#!/bin/zsh
+# mcp-remote-bridge — stdio<->HTTP bridge so Claude Desktop can reach the
+# sandbar MCP server.
+#
+# Why this exists:
+#   - Claude Desktop's claude_desktop_config.json is stdio-only. Native
+#     "type":"http" url servers are a Claude Code feature, NOT Claude Desktop
+#     (Desktop silently drops/rejects a url entry). Custom Connectors don't
+#     help either: they require a public HTTPS endpoint + OAuth, so a
+#     localhost bearer-auth server has no native Desktop path.
+#   - A Dock-launched GUI app does NOT inherit your interactive shell env,
+#     so SANDBAR_TOKEN exported in ~/.zshenv is invisible to it.
+#
+# How it solves both:
+#   1. Shebang is /bin/zsh ON PURPOSE (the rest of bin/ is bash): zsh
+#      auto-sources ~/.zshenv for every invocation, including non-interactive
+#      GUI launches -> SANDBAR_TOKEN comes into scope WITHOUT ever being
+#      written into any config file.
+#   2. Prepends Homebrew bins to PATH (a GUI app's PATH is minimal).
+#   3. Bridges Desktop stdio <-> the localhost HTTP MCP server via mcp-remote.
+#
+# Register in
+#   ~/Library/Application Support/Claude/claude_desktop_config.json
+#     "mcpServers": { "sandbar": {
+#       "command": "/Users/dan/src/sandbar/bin/mcp-remote-bridge" } }
+# then fully quit + relaunch Claude.app.
+#
+# Env overrides: SANDBAR_MCP_URL (default http://localhost:8080/mcp),
+#                SANDBAR_BRIDGE_LOG (default ~/.config/sandbar/mcp-bridge.stderr.log).
+#
+# CRITICAL: nothing may write to STDOUT before exec -- stdout carries the
+# JSON-RPC stream. All diagnostics go to stderr / the log file only.
+
+set -u
+
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
+
+url="${SANDBAR_MCP_URL:-http://localhost:8080/mcp}"
+log="${SANDBAR_BRIDGE_LOG:-$HOME/.config/sandbar/mcp-bridge.stderr.log}"
+
+if [[ -z "${SANDBAR_TOKEN:-}" ]]; then
+  print -u2 "mcp-remote-bridge: SANDBAR_TOKEN is unset (expected from ~/.zshenv). Aborting."
+  exit 1
+fi
+
+if ! command -v mcp-remote >/dev/null 2>&1; then
+  print -u2 "mcp-remote-bridge: mcp-remote not found on PATH. Install with: npm i -g mcp-remote"
+  exit 1
+fi
+
+exec mcp-remote \
+  "$url" \
+  --transport http-only \
+  --allow-http \
+  --header "Authorization: Bearer ${SANDBAR_TOKEN}" \
+  2>>"$log"
