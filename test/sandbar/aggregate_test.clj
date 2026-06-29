@@ -208,3 +208,46 @@
   (testing "rank-by with non-recognized axis throws (precondition)"
     (is (thrown? AssertionError
                  (agg/rank-by {:class :mm/Memory :rank-by :bogus-axis})))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; rank-by — :memorial-policy filter (lattice-driven curated-vs-operational cut)
+;; Per decisions/filter_curated_memorials_by_lattice_memorial_policy_not_bespoke_type_check_2026_05_29
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(deftest rank-by-memorial-policy-filters-to-first-class-test
+  (testing ":memorial-policy :first-class keeps :first-class memorials, drops :db-only"
+    ;; :mm/Memory declares :first-class (inherited by the plain memory below);
+    ;; :mm/Run declares :db-only.  The :mm/Run is created MORE RECENT than the
+    ;; curated memorial — proving the filter is by policy, not just recency.
+    (make-memory-with-timestamp! "curated-decision" #inst "2026-05-03")
+    (dt/make :mm/Run {:mm.memory/rel-path     "test/run-telemetry.md"
+                      :mm.memory/name         "run-telemetry"
+                      :mm.memory/last-touched #inst "2026-05-04"}
+             {:validate? false})
+    ;; DIAGNOSTIC — confirm the lattice resolves policies as expected in the test DB.
+    (is (= :first-class (dt/effective-memorial-policy-of :mm/Memory)) "DIAG mm/Memory policy")
+    (is (= :db-only (dt/effective-memorial-policy-of :mm/Run)) "DIAG mm/Run policy")
+    (let [result (agg/rank-by {:class           :mm/Memory
+                               :rank-by         :recency
+                               :temporal-slot   :mm.memory/last-touched
+                               :memorial-policy :first-class})
+          names  (set (keep #(get-in % [:entity :mm.memory/name]) (:hits result)))]
+      (is (contains? names "curated-decision")
+          ":first-class memorial is present")
+      (is (not (contains? names "run-telemetry"))
+          ":db-only :mm/Run excluded despite being MORE recent"))))
+
+(deftest rank-by-memorial-policy-nil-is-unfiltered-test
+  (testing "rank-by WITHOUT :memorial-policy returns all policies (back-compat)"
+    (make-memory-with-timestamp! "curated" #inst "2026-05-03")
+    (dt/make :mm/Run {:mm.memory/rel-path     "test/run-2.md"
+                      :mm.memory/name         "run-2"
+                      :mm.memory/last-touched #inst "2026-05-04"}
+             {:validate? false})
+    (let [result (agg/rank-by {:class         :mm/Memory
+                               :rank-by       :recency
+                               :temporal-slot :mm.memory/last-touched})
+          names  (set (keep #(get-in % [:entity :mm.memory/name]) (:hits result)))]
+      (is (contains? names "curated"))
+      (is (contains? names "run-2")
+          "unfiltered recency ranking still includes :db-only entities"))))

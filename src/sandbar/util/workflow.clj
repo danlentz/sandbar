@@ -632,12 +632,26 @@
             tx-data (cond-> [[:db/add (:db/id process) :workflow/current-state (:db/id to-state)]
                              [:db/add (:db/id process) :workflow/history (:db/id history)]]
                       is-terminal?
-                      (conj [:db/add (:db/id process) :workflow/completed-at now]))]
-        ;; Run on-transition hook
-        (run-on-transition transition process (merge context {:actor actor :reason reason}))
-
-        ;; Apply state change
-        @(d/transact (db/conn) tx-data)
+                      (conj [:db/add (:db/id process) :workflow/completed-at now]))
+            ;; Run on-transition hook + CAPTURE its returned tx-data.  Effects
+            ;; (e.g. sandbar.workflow.session/on-fail) return a tx-data vector to
+            ;; be applied ALONGSIDE the state CAS; the prior code discarded the
+            ;; return, so those effects (e.g. :mm.session-process/failure-reason
+            ;; / failure-instant, :paused-from-state) were silent no-ops.  Fixed
+            ;; 2026-05-29 (session-lifecycle-hardening arc): merge the effect's
+            ;; tx-data into the SAME transaction as the CAS so state-change +
+            ;; effect commit atomically.  Guarded — only a vector of tx-forms is
+            ;; merged; a scalar / nil / non-tx return is ignored (back-compat for
+            ;; effects that only log).
+            effect-tx (run-on-transition transition process
+                                         (merge context {:actor actor :reason reason}))
+            all-tx    (cond-> tx-data
+                        (and (sequential? effect-tx)
+                             (seq effect-tx)
+                             (every? sequential? effect-tx))
+                        (into effect-tx))]
+        ;; Apply state change + on-transition effect tx-data atomically
+        @(d/transact (db/conn) all-tx)
 
         (log/info :WORKFLOW/TRANSITION {:process-id (:db/id process)
                                          :action transition-name
@@ -652,6 +666,62 @@
                                              (:workflow/state-name current-state) " -> "
                                              (:workflow/state-name to-state))})
         (db/entity (:db/id process))))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Leaked-session reconciliation (Bug-1 defense-in-depth)
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(def ^:private leaked-close-path
+  "Transition path that drives a non-terminal :workflow/session process to the
+   :session/closed terminal, keyed by current state-name.  Used by
+   `close-leaked-sessions!`."
+  {:session/opening [:session/start :session/close :session/finalize]
+   :session/active  [:session/close :session/finalize]
+   :session/closing [:session/finalize]
+   :session/paused  [:session/resume-maintenance :session/close :session/finalize]})
+
+(defn close-leaked-sessions!
+  "Reconcile LEAKED session-processes — any active (non-terminal) workflow
+   process whose subject :mm/Session has :mm.session/ended-at set.  Such a
+   process is a Bug-1 orphan: the handoff marked the session ended but the
+   process was never finalized (per
+   bugs/… + the 2026-05-29 session-lifecycle-hardening arc).  Each leak is
+   driven to :session/closed via the reachable path for its current state
+   (`leaked-close-path`).
+
+   Idempotent — re-running after all leaks are closed is a no-op (no active
+   process then has an ended subject).  Genuinely-live sessions (subject has
+   NO :mm.session/ended-at) are SKIPPED, so the current session is never closed
+   out from under itself.
+
+   The orchestrator's Bug-1 fix couples ended-at to a terminal finalize, which
+   PREVENTS new leaks via the ceremony; this sweep cleans up pre-existing
+   orphans + guards against any non-orchestrator close path.
+
+   Returns {:scanned <active-count> :leaks <n> :closed [eid…] :skipped [{…}…]}."
+  []
+  (let [actives (list-active-processes)
+        leaked? (fn [p] (some? (:mm.session/ended-at (get-process-subject p))))
+        leaks   (filterv leaked? actives)]
+    (reduce
+      (fn [acc p]
+        (let [pid      (:db/id p)
+              state-kw (:workflow/state-name (get-current-state p))
+              path     (get leaked-close-path state-kw)]
+          (try
+            (when-not (seq path)
+              (throw (ex-info "No close-path registered for current state"
+                              {:state state-kw :process-id pid})))
+            (doseq [t path]
+              ;; re-fetch each step — the process state advances between transitions
+              (transition! (find-process pid) t
+                           :reason "reconcile: close leaked ended-but-open session (Bug-1)"))
+            (update acc :closed conj pid)
+            (catch Exception e
+              (update acc :skipped conj {:process-id pid :state state-kw
+                                         :error (.getMessage e)})))))
+      {:scanned (count actives) :leaks (count leaks) :closed [] :skipped []}
+      leaks)))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; History

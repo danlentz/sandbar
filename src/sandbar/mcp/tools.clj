@@ -56,6 +56,7 @@
             [sandbar.schedule           :as sched]
             [sandbar.search             :as search]
             [sandbar.shape              :as shape]
+            [sandbar.store              :as store]
             [sandbar.db.datatype        :as dt]
             [sandbar.db.datomic         :as db]
             [sandbar.mcp.envelope       :as envelope]
@@ -81,14 +82,21 @@
     :else nil))
 
 (defn- ->ident-str
-  "Project an ident (keyword) or entity-map to a string form.
-   Handles dt/* contract variance — some functions return idents,
-   others return entity-maps (Datomic ref-traversal)."
+  "Project an ident (keyword), entity-map, OR Datomic Entity to a string form.
+   Handles dt/* contract variance — some functions return idents, others return
+   entity-maps, others raw Datomic Entity objects (ref-traversal).
+
+   Datomic Entity objects are NOT `map?`, so without an explicit :db/ident
+   lookup they fell to the `(str x)` branch and printed \"{:db/id N}\" — which
+   masked workflow process-state behind an opaque eid (e.g. workflow.process-state
+   on a leaked process showed {:db/id …} instead of :session/active).  Fixed
+   2026-05-29 (lifecycle-hardening arc) by trying :db/ident before the fallback."
   [x]
   (cond
-    (keyword? x) (str x)
-    (map? x)     (str (:db/ident x))
-    :else        (str x)))
+    (keyword? x)         (str x)
+    (map? x)             (str (:db/ident x))
+    (some-> x :db/ident) (str (:db/ident x))
+    :else                (str x)))
 
 ;; Projection helpers lifted to `sandbar.api.projection` per Task #12.
 ;; Local aliases: `projection/full-projection` → `projection/full-projection`;
@@ -413,34 +421,21 @@
         (throw (ex-info (str "Cannot instantiate abstract class: " class-ident)
                         {:class class-ident :reason :abstract})))
       (let [props-raw    (coerce-slot-map class-ident slots)
-            ;; Gap 17 fix (2026-05-22) — when authoring a :mm/Memory (or
-            ;; subclass) entity via MCP with :mm.memory/rel-path set but
-            ;; :db/ident absent, auto-derive the canonical ident via the
-            ;; codec's rel-path → ident convention.  Without this,
-            ;; MCP-authored memorials lack interned idents → typed-edge
-            ;; navigation (navigate.outbound-edges / library-card / etc.)
-            ;; rejects the entity with "no :db/ident".  The codec ingest
-            ;; path (project.import) already does this auto-derivation;
-            ;; the direct entity.create path must match for consistency
-            ;; with the .md-canonical principle (decisions/markdown_corpus_-
-            ;; as_canonical_projection_substrate_as_derived_retargetable_-
-            ;; index_bootstrap_reprojection_2026_05_22.md).
-            rel-path     (or (get props-raw :mm.memory/rel-path)
-                             (get props-raw "mm.memory/rel-path"))
-            derived-id   (when (and rel-path
-                                    (not (contains? props-raw :db/ident))
-                                    (dt/type-isa? :mm/Memory class-ident))
-                           (codec-md/rel-path->memory-ident rel-path))
-            props        (cond-> props-raw
-                           derived-id (assoc :db/ident derived-id))
             ;; When format + source provided, dt/make's :format opt
             ;; parses via codec mediator; explicit slots override.
             make-opts    (cond-> {}
                            (and format-arg source-arg)
                            (assoc :format (keyword format-arg)
                                   :source source-arg))
+            ;; Unified create path (2026-05-29 lifecycle-hardening arc):
+            ;; sandbar.store/create-memory! derives an EDN-safe :db/ident from
+            ;; :mm.memory/rel-path (when absent; :mm/Memory only — the Gap-17
+            ;; auto-derivation, now digit-dodged) AND mints the opaque-stable
+            ;; :mm/id, so MCP-authored memorials get full ζ identity at birth
+            ;; rather than an ident-only (or identless) entity.  Replaces the
+            ;; previous inline rel-path->ident derivation (which minted no :mm/id).
             new-entity   (binding [dt/*default-actor* @mcp-default-actor]
-                           (dt/make class-ident props make-opts))]
+                           (store/create-memory! class-ident props-raw make-opts))]
         (log/info :MCP/entity-create
                   {:class  class-ident
                    :entity-id (:db/id new-entity)
@@ -1454,7 +1449,8 @@
         (assoc :recent-memorial-count (count (:recent-memorials r))
                :recent-memorials
                (mapv (fn [m]
-                       {:db/ident (some-> (:db/ident m) str)
+                       {:db/ident (or (some-> (:db/ident m) str)
+                                      (some-> (:db/id m) str))
                         :name     (:mm.memory/name m)})
                      (:recent-memorials r))))
 

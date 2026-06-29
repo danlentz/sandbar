@@ -18,6 +18,7 @@
    Per `:memory.decisions/iota_3_substrate_orchestrator_design_ratification_2026_05_26`
    + the W4.1 entry in `:memory.plans/sandbar_0_2_0_release_comprehensive_strategic_re_plan_wave_2_revision_2026_05_26`."
   (:require [clojure.test :refer :all]
+            [sandbar.db.datatype :as dt]
             [sandbar.db.datomic :as db]
             [sandbar.test-util :as tu]
             [sandbar.util.workflow :as wf]
@@ -244,6 +245,65 @@
       (let [process-after (wf/find-process (:db/id process))]
         (is (= :session/opening
                (:workflow/state-name (wf/get-current-state process-after))))))))
+
+(deftest orchestrate-terminal-finalize-marks-session-ended
+  (testing "Bug-1 coupling: a TERMINAL :phase/finalize writes :mm.session/ended-at to the subject"
+    (let [process  (start-test-session-process!)
+          pid      (:db/id process)
+          subj-eid (:db/id (wf/get-process-subject process))]
+      ;; opening → active so the close→finalize chain is reachable
+      (orchestrate/orchestrate {:workflow :workflow/session :process-id pid :phase :phase/activate})
+      (is (nil? (:mm.session/ended-at (db/entity subj-eid)))
+          ":mm.session/ended-at not set before finalize")
+      (let [result (orchestrate/orchestrate {:workflow :workflow/session :process-id pid :phase :phase/finalize})]
+        (is (false? (:degraded? result)) "finalize not degraded from :active")
+        (is (wf/process-in-terminal-state? (wf/find-process pid)) "process reached a terminal state")
+        (is (some? (:mm.session/ended-at (db/entity subj-eid)))
+            ":mm.session/ended-at IS set after a terminal :phase/finalize")))))
+
+(deftest orchestrate-degraded-finalize-does-not-mark-session-ended
+  (testing "Bug-1 brick-safety: a degraded (non-terminal) :phase/finalize does NOT write :mm.session/ended-at and does NOT throw"
+    (let [process  (start-test-session-process!)   ; stays in :session/opening
+          pid      (:db/id process)
+          subj-eid (:db/id (wf/get-process-subject process))
+          result   (orchestrate/orchestrate {:workflow :workflow/session :process-id pid :phase :phase/finalize})]
+      (is (true? (:degraded? result)) "degraded (not thrown) — :session/close unreachable from :opening")
+      (is (not (wf/process-in-terminal-state? (wf/find-process pid))) "process did NOT reach terminal")
+      (is (nil? (:mm.session/ended-at (db/entity subj-eid)))
+          ":mm.session/ended-at NOT written by a non-terminal finalize — session stays re-finalizable"))))
+
+(deftest close-leaked-sessions-reconciles-ended-but-open
+  (testing "Bug-1 reconcile sweep: close-leaked-sessions! drives an ended-but-non-terminal session to :session/closed (idempotently)"
+    (let [process  (start-test-session-process!)
+          pid      (:db/id process)
+          subj-eid (:db/id (wf/get-process-subject process))]
+      ;; Simulate a leak: drive to :active + mark the subject ended, but do NOT finalize.
+      (orchestrate/orchestrate {:workflow :workflow/session :process-id pid :phase :phase/activate})
+      (dt/update-entity! subj-eid {:mm.session/ended-at (java.util.Date.)})
+      (is (not (wf/process-in-terminal-state? (wf/find-process pid)))
+          "precondition: active (non-terminal) process + ended subject = a leak")
+      (let [summary (wf/close-leaked-sessions!)]
+        (is (pos? (:leaks summary)) "leak detected")
+        (is (some #{pid} (:closed summary)) "the leaked process was closed"))
+      (is (wf/process-in-terminal-state? (wf/find-process pid))
+          "postcondition: leaked process driven to a terminal state")
+      (is (empty? (:closed (wf/close-leaked-sessions!)))
+          "idempotent — a second sweep closes nothing"))))
+
+(deftest on-transition-effect-tx-data-is-applied
+  (testing "P5: transition! applies the on-transition effect's returned tx-data (on-fail persists failure-reason/instant — a silent no-op before 2026-05-29)"
+    (let [process (start-test-session-process!)
+          pid     (:db/id process)]
+      ;; opening -> active so :session/fail (active -> failed) is reachable
+      (wf/transition! (wf/find-process pid) :session/start)
+      (wf/transition! (wf/find-process pid) :session/fail :reason "test failure rationale")
+      (let [p (wf/find-process pid)]
+        (is (= :session/failed (:workflow/state-name (wf/get-current-state p)))
+            "process reached :session/failed")
+        (is (= "test failure rationale" (:mm.session-process/failure-reason p))
+            "on-fail effect persisted :mm.session-process/failure-reason (effect tx-data now applied)")
+        (is (some? (:mm.session-process/failure-instant p))
+            "on-fail effect persisted :mm.session-process/failure-instant")))))
 
 (deftest orchestrate-result-map-has-all-six-canonical-keys
   (testing "Every successful orchestrate call returns the full canonical result shape"
@@ -959,8 +1019,8 @@
 ;; phase-work :phase/link tests (W4.1 Increment J — session linkage)
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-(deftest phase-work-link-updates-session-log-and-ended-at
-  (testing "phase-work :phase/link sets :mm.session/log + :mm.session/ended-at on the session"
+(deftest phase-work-link-updates-session-log-only
+  (testing "phase-work :phase/link sets :mm.session/log only — :mm.session/ended-at moved to terminal :phase/finalize (Bug-1 leak-coupling 2026-05-29)"
     (let [;; Bootstrap a session + process to be linked
           init-result (orchestrate/phase-work {:phase    :phase/initialize
                                                :workflow :workflow/session
@@ -980,11 +1040,16 @@
       ;; Re-read the session and verify the slots are set
       (let [session (db/entity session-eid)
             log-ref (:mm.session/log session)
-            log-id  (or (:db/id log-ref)
-                        (when (number? log-ref) log-ref))]
+            ;; A ref to an identded entity reads back as its :db/ident keyword
+            ;; (not an EntityMap); logs are now identded (Bug-3 fix), so resolve
+            ;; keyword + eid + entity forms uniformly.
+            log-id  (cond
+                      (keyword? log-ref)     (:db/id (db/entity log-ref))
+                      (number? log-ref)      log-ref
+                      (associative? log-ref) (:db/id log-ref))]
         (is (= log-eid log-id) ":mm.session/log points at the new :mm/Log")
-        (is (some? (:mm.session/ended-at session))
-            ":mm.session/ended-at is set")))))
+        (is (nil? (:mm.session/ended-at session))
+            ":mm.session/ended-at is NOT set by :phase/link — interrupted ceremony (link without finalize) leaves the session cleanly un-ended + re-finalizable (Bug-1 leak-coupling)")))))
 
 (deftest phase-work-link-rejects-missing-args
   (testing "phase-work :phase/link rejects missing :session-eid + :log-eid"
@@ -1103,10 +1168,14 @@
             ;; Verify the session entity has :mm.session/log + :mm.session/ended-at set
             (let [session (db/entity session-eid)
                   log-ref (:mm.session/log session)
-                  log-id  (or (:db/id log-ref)
-                              (when (number? log-ref) log-ref))]
+                  ;; identded logs read back as their :db/ident keyword (Bug-3 fix)
+                  log-id  (cond
+                            (keyword? log-ref)     (:db/id (db/entity log-ref))
+                            (number? log-ref)      log-ref
+                            (associative? log-ref) (:db/id log-ref))]
               (is (= log-eid log-id) ":mm.session/log links to the new :mm/Log")
-              (is (some? (:mm.session/ended-at session))))
+              (is (nil? (:mm.session/ended-at session))
+                  ":mm.session/ended-at NOT set after :phase/link — written only by terminal :phase/finalize (Bug-1 coupling)"))
             ;; Phase 4: :phase/finalize
             (let [finalize-result (orchestrate/orchestrate
                                     {:workflow   :workflow/session

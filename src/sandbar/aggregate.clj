@@ -94,6 +94,14 @@
                       :mm.memory/last-touched).  Substrate does not
                       hardcode class-specific temporal axes per
                       substrate-quality discipline.
+    :memorial-policy — optional :dt/memorial-policy keyword
+                      (:first-class / :db-only / :inline).  When set, keep
+                      only instances whose class's EFFECTIVE memorial-policy
+                      (ancestry-walk via dt/effective-memorial-policy-of)
+                      matches — the lattice-native curated-vs-operational
+                      filter (e.g. :first-class excludes the :db-only
+                      :event/* runtime-telemetry subtree + :mm/Run).  Reuses
+                      the same axis sandbar.project.dump partitions by.
 
   Returns:
     {:hits     [{:entity <entity-map> :rank-score <number>} ...]
@@ -101,14 +109,15 @@
      :returned <int>}
 
   Per fulltext arc Stage 13."
-  [{:keys [class rank-by limit temporal-slot projection]
+  [{:keys [class rank-by limit temporal-slot projection memorial-policy]
     :or   {limit 20}}]
   {:pre [(keyword? class)
          (rank-axis-keyword? rank-by)
          (integer? limit) (>= limit 0)
          (or (not (#{:recency :freshness} rank-by))
              (keyword? temporal-slot))
-         (or (nil? projection) (#{:full :metadata-only} projection))]}
+         (or (nil? projection) (#{:full :metadata-only} projection))
+         (or (nil? memorial-policy) (keyword? memorial-policy))]}
   (let [pairs   (case rank-by
                   :degree
                   (->> (dt/all-instances-of class)
@@ -128,8 +137,25 @@
                   (dt/recency-rank-of class temporal-slot)
                   :freshness
                   (dt/freshness-rank-of class temporal-slot))
-        total   (count pairs)
-        limited (if (zero? limit) pairs (take limit pairs))
+        ;; Optional lattice-driven memorial-policy filter (per Dan-steer
+        ;; 2026-05-29 — decisions/filter_curated_memorials_by_lattice_memorial_policy_...):
+        ;; keep only entities whose class's EFFECTIVE :dt/memorial-policy
+        ;; matches (e.g. :first-class to surface curated memorials, excluding
+        ;; :db-only runtime telemetry — the :event/* subtree + :mm/Run).
+        ;; Reuses the substrate primitive dt/effective-memorial-policy-of
+        ;; (ancestry-walk, nearest-wins) rather than a bespoke per-type check.
+        ;; Memoized per class-ident (few distinct classes; avoids re-walking
+        ;; ancestry per entity across the full ranked set).
+        filtered (if memorial-policy
+                   (let [policy-of (memoize dt/effective-memorial-policy-of)]
+                     (filterv (fn [[e _]]
+                                (let [t   (:dt/type e)
+                                      cls (if (keyword? t) t (:db/ident t))]
+                                  (= memorial-policy (policy-of cls))))
+                              pairs))
+                   pairs)
+        total   (count filtered)
+        limited (if (zero? limit) filtered (take limit filtered))
         hits    (mapv (fn [[entity rank-score]]
                         {:entity     (projection/apply-projection entity projection)
                          :rank-score rank-score})

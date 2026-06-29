@@ -593,6 +593,39 @@
         (when (and (seq ns-parts) local-name)
           (keyword (str/join "." ns-parts) local-name))))))
 
+(defn- ident-ns-type-prefix
+  "Derive a semantic, singularized prefix from an ident's namespace last
+   segment: :memory.sessions/x -> \"session-\"; :memory.logs/x -> \"log-\";
+   :memory.inbox/x -> \"inbox-\".  Keeps a digit-dodged ident human-readable."
+  [ident]
+  (let [seg      (last (str/split (or (namespace ident) "") #"\."))
+        singular (if (and seg (str/ends-with? seg "s") (> (count seg) 1))
+                   (subs seg 0 (dec (count seg)))
+                   seg)]
+    (str (or singular "x") "-")))
+
+(defn edn-safe-ident
+  "Return `ident` with its NAME part guaranteed Clojure/EDN-reader-readable.
+   Datomic accepts keyword idents whose name starts with a digit (e.g.
+   :memory.sessions/2026-05-29T0713_x) but the Clojure/EDN reader REJECTS them
+   ('Invalid token'), breaking project.export/import round-trips + any EDN
+   tooling (per observations/datomic_idents_with_digit_starting_names_or_-
+   malformed_namespaces_are_not_clojure_or_edn_readable_2026_05_23).  When the
+   name starts with a digit, prefix it with a semantic singularized namespace
+   token; otherwise return `ident` unchanged.  Idempotent (a dodged name no
+   longer starts with a digit).
+
+   :memory.sessions/2026-05-29T0713_x -> :memory.sessions/session-2026-05-29T0713_x
+   :memory.decisions/foo              -> :memory.decisions/foo (unchanged)
+
+   Shared by `sandbar.store/create-memory!` (digit-dodge for NEW entities) +
+   (post-migration) `rel-path->memory-ident` itself, so both converge on the
+   same EDN-safe form.  Per the 2026-05-29 session-lifecycle-hardening arc."
+  [ident]
+  (if (and (keyword? ident) (re-find #"^\d" (name ident)))
+    (keyword (namespace ident) (str (ident-ns-type-prefix ident) (name ident)))
+    ident))
+
 (defn- coerce-rel-path->ident-upsert
   "Coerce a rel-path string (or vec) to a `:db/ident` upsert map for
    cross-tx ref resolution.  Datomic's natural `:db/ident` upsert

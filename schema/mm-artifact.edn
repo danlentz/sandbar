@@ -631,6 +631,7 @@
                       :mm.event-log/msg
                       :mm.event-log/data]
    :dt/abstract?     false
+   :dt/memorial-policy :first-class         ;; per-event-firing memorial — FS-projected to memory/event-logs/.  Explicit (was prose-only in :db/doc; matched the inherited :mm/Memory default but now asserted per bugs/mm_run_eventlog_memorial_policy_declared_in_doc_prose_not_as_slot_2026_05_29).
    :db/doc "Per-event-firing memorial wrapping a :dt/Event substrate runtime instance.  Materialized by sandbar.logging.handlers/memorial-projection-handler when a Telemere signal carries :data {:memorial :first-class}.  Distinguished from :mm/Log (session-handoff chronicle; covers entire sessions) and :mm/Run (scheduler-job execution; covers job invocations).  Default :dt/memorial-policy :first-class — FS-projected to memory/event-logs/<>.md by the reactive-projection substrate.  Per decisions/mm_activity_prov_o_lift_cross_arc_unification_log_eventlog_run_2026_05_23.md.  Composes with sandbar.logging arc Stage D."}
 
   {:db/ident         :mm/Run
@@ -643,6 +644,7 @@
                       :mm.run/output
                       :mm.run/parent-run]
    :dt/abstract?     false
+   :dt/memorial-policy :db-only            ;; high-volume operational runs — covered by DB-dump arc, NOT FS-projected.  The :db/doc declared this default but the slot was never asserted (fixed 2026-05-29 per bugs/mm_run_eventlog_memorial_policy_declared_in_doc_prose_not_as_slot_2026_05_29); narrative runs may still opt :first-class via per-instance override.
    :db/doc "Scheduler-job execution record.  Materialized by sandbar.schedule.dispatcher when a :mm/Schedule fires + a :mm/Job handler runs (scheduler arc Stage F).  Default :dt/memorial-policy :db-only — high-volume operational runs covered by the DB-dump arc.  Narrative runs may opt to :first-class via per-instance override.  Per decisions/mm_activity_prov_o_lift_cross_arc_unification_log_eventlog_run_2026_05_23.md.  Additional :mm.run/* slots (:mm.run/job ref to :mm/Job, :mm.run/triggered-by ref to :mm/Schedule, :mm.run/workflow-process ref to :workflow/Process) land when scheduler arc Stage B authors :mm/Schedule + :mm/Job."}]
 
  ;; Codec-type-keyword routing for the new concrete classes (:mm/Activity is abstract; no codec entry)

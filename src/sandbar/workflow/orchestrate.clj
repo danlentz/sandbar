@@ -26,11 +26,15 @@
    - `:phase/capture`    — workflow.process-history + recent entity.find
                           snapshots + commits queried (pure read)
    - `:phase/author`     — entity.create :class :mm/Log with body-raw drafted
-   - `:phase/link`       — entity.update :mm.session/log + :mm.session/ended-at
+   - `:phase/link`       — entity.update :mm.session/log ONLY (ended-at moved
+                          to :phase/finalize per Bug-1 leak-coupling 2026-05-29)
    - `:phase/finalize`   — workflow.transition :session.transition/close then
-                          workflow.transition :session.transition/finalize
+                          :session.transition/finalize, THEN (only on reaching
+                          a TERMINAL state) entity.update :mm.session/ended-at —
+                          coupling ended-at to a successful close so it can never
+                          be set while the process is non-terminal
                           (:session.state/active → :session.state/closing →
-                           :session.state/finalized)
+                           :session.state/closed)
 
    ## Hard-fail criteria (κ P8)
 
@@ -103,6 +107,7 @@
             [sandbar.api.projection :as projection]
             [sandbar.db.datatype :as dt]
             [sandbar.db.datomic :as db]
+            [sandbar.store :as store]
             [sandbar.util.event :as event]
             [sandbar.util.workflow :as wf])
   (:import [java.util Date]))
@@ -979,16 +984,36 @@
      :process-completed?    (boolean (wf/process-completed? process))}))
 
 (defn- capture-recent-memorials
-  "Return top-N most-recently-touched :mm/Memory entities (metadata-only
-   projection for payload economy).  N defaults to
-   `capture-default-memorial-limit`."
+  "Return top-N most-recently-touched CURATED (:first-class memorial-policy)
+   :mm/Memory entities, each carrying a resolvable :mm.memory/name.
+
+   Two corrections over the prior impl (2026-05-29 lifecycle-hardening arc,
+   per decisions/filter_curated_memorials_by_lattice_memorial_policy_...):
+
+   1. Lattice-driven curated filter — `:memorial-policy :first-class` on
+      rank-by excludes :db-only runtime telemetry (the :event/* subtree +
+      :mm/Run) via the substrate primitive `dt/effective-memorial-policy-of`,
+      rather than a bespoke :dt/Event check (which would wrongly KEEP :mm/Run).
+      The recency axis is otherwise event-dominated (~1300 recent events),
+      which is why the prior unfiltered capture surfaced telemetry noise.
+   2. Name re-hydration — the metadata-only projection drops
+      :mm.memory/name, so re-fetch each entity (mirroring `orient-top-recent`)
+      and resolve a human-readable name via `entity-name` (never bare-nil).
+      The prior `(mapv :entity hits)` shipped name-less metadata maps, which
+      the MCP wire-view then rendered as {:name null} ×N (the reported bug)."
   [limit]
-  (let [{:keys [hits]} (aggregate/rank-by {:class         :mm/Memory
-                                           :rank-by       :recency
-                                           :temporal-slot :mm.memory/last-touched
-                                           :limit         limit
-                                           :projection    :metadata-only})]
-    (mapv :entity hits)))
+  (let [{:keys [hits]} (aggregate/rank-by {:class           :mm/Memory
+                                           :rank-by         :recency
+                                           :temporal-slot   :mm.memory/last-touched
+                                           :memorial-policy :first-class
+                                           :limit           limit
+                                           :projection      :metadata-only})]
+    (mapv (fn [{:keys [entity]}]
+            (let [e (db/entity (:db/id entity))]
+              {:db/id          (:db/id entity)
+               :db/ident       (:db/ident entity)
+               :mm.memory/name (entity-name e)}))
+          hits)))
 
 (defmethod phase-work :phase/capture
   [args]
@@ -1032,19 +1057,22 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (defn- create-session-entity!
-  "Create a new :mm/Session entity from context-supplied bootstrap data.
-   Returns the entity-map (with :db/id + :db/ident)."
+  "Create a new :mm/Session entity from context-supplied bootstrap data via the
+   unified `sandbar.store/create-memory!` path, so the session gets a stable,
+   EDN-safe :db/ident + a minted :mm/id (NOT identless — Bug-3 fix 2026-05-29).
+   Returns the entity-map (with :db/id + :db/ident + :mm/id)."
   [{:keys [rel-path name description focus previous-session actor-ident]}]
   (let [now (Date.)]
-    (dt/make :mm/Session
-             (cond-> {:mm.memory/rel-path        rel-path
-                      :mm.memory/name            name
-                      :mm.memory/description     (or description focus)
-                      :mm.memory/memory-type     :session
-                      :mm.memory/scope           :project
-                      :mm.session/started-at     now}
-               actor-ident      (assoc :mm.memory/created-by [actor-ident])
-               previous-session (assoc :mm.session/previous-session previous-session)))))
+    (store/create-memory!
+      :mm/Session
+      (cond-> {:mm.memory/rel-path        rel-path
+               :mm.memory/name            name
+               :mm.memory/description     (or description focus)
+               :mm.memory/memory-type     :session
+               :mm.memory/scope           :project
+               :mm.session/started-at     now}
+        actor-ident      (assoc :mm.memory/created-by [actor-ident])
+        previous-session (assoc :mm.session/previous-session previous-session)))))
 
 (defmethod phase-work :phase/initialize
   [args]
@@ -1083,20 +1111,23 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (defn- create-log-entity!
-  "Create a new :mm/Log entity from context-supplied handoff data.
-   Returns the entity-map (with :db/id + :db/ident)."
+  "Create a new :mm/Log entity from context-supplied handoff data via the
+   unified `sandbar.store/create-memory!` path (stable EDN-safe :db/ident +
+   minted :mm/id; Bug-3 fix 2026-05-29).
+   Returns the entity-map (with :db/id + :db/ident + :mm/id)."
   [{:keys [narrative rel-path name description cites actor-ident]}]
   (let [now (Date.)]
-    (dt/make :mm/Log
-             (cond-> {:mm.memory/rel-path      rel-path
-                      :mm.memory/name          name
-                      :mm.memory/description   description
-                      :mm.memory/body-raw      narrative
-                      :mm.memory/memory-type   :log
-                      :mm.memory/scope         :global
-                      :mm.memory/last-touched  now}
-               actor-ident (assoc :mm.memory/created-by [actor-ident])
-               (seq cites) (assoc :mm.memory/cites cites)))))
+    (store/create-memory!
+      :mm/Log
+      (cond-> {:mm.memory/rel-path      rel-path
+               :mm.memory/name          name
+               :mm.memory/description   description
+               :mm.memory/body-raw      narrative
+               :mm.memory/memory-type   :log
+               :mm.memory/scope         :global
+               :mm.memory/last-touched  now}
+        actor-ident (assoc :mm.memory/created-by [actor-ident])
+        (seq cites) (assoc :mm.memory/cites cites)))))
 
 (defmethod phase-work :phase/author
   [args]
@@ -1109,9 +1140,11 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; phase-work :phase/link — SIXTH multimethod method (Increment J)
 ;;
-;; Updates the session entity to reference the handoff :mm/Log + records
-;; :mm.session/ended-at.  This is the LAST mutation before :phase/finalize
-;; advances the workflow.process to its terminal state.
+;; Updates the session entity to reference the handoff :mm/Log.  Per the Bug-1
+;; leak-coupling fix (2026-05-29), :mm.session/ended-at is NO LONGER written
+;; here — it is written by the orchestrate fn body ONLY after a terminal
+;; :phase/finalize, so ended-at can never be set while the workflow.process is
+;; still non-terminal (the leak vector that orphaned ended-but-open sessions).
 ;;
 ;; Inputs (via `(:context args)`):
 ;;   :session-eid       — eid (or :db/ident) of the session to update
@@ -1119,8 +1152,6 @@
 ;;   :log-eid           — eid (or :db/ident) of the handoff :mm/Log
 ;;                        (REQUIRED; comes from :phase/author's
 ;;                        :phase-work-result)
-;;   :ended-at          — Instant for :mm.session/ended-at (optional;
-;;                        defaults to NOW)
 ;;
 ;; Outputs (via :phase-work-result):
 ;;   :session-entity    — the refreshed session entity post-update
@@ -1130,17 +1161,20 @@
   [args]
   (let [context     (:context args)
         session-ref (or (:session-eid context) (:session-ident context))
-        log-ref     (or (:log-eid context) (:log-ident context))
-        ended-at    (or (:ended-at context) (Date.))]
+        log-ref     (or (:log-eid context) (:log-ident context))]
     (when-not session-ref
       (throw (ex-info "phase-work :phase/link missing :session-eid (or :session-ident)"
                       {:reason :missing-required-arg :key :session-eid :context context})))
     (when-not log-ref
       (throw (ex-info "phase-work :phase/link missing :log-eid (or :log-ident)"
                       {:reason :missing-required-arg :key :log-eid :context context})))
+    ;; Bug-1 leak-coupling (2026-05-29): :mm.session/ended-at is NO LONGER
+    ;; written here.  It is written by the orchestrate fn body ONLY after a
+    ;; terminal :phase/finalize, so ended-at can never be set while the
+    ;; workflow.process is still non-terminal (the leak vector).  :phase/link
+    ;; now records only the handoff :mm/Log ref.
     (let [updated (dt/update-entity! session-ref
-                                     {:mm.session/log         log-ref
-                                      :mm.session/ended-at    ended-at})]
+                                     {:mm.session/log log-ref})]
       {:session-entity updated})))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -1350,6 +1384,25 @@
                              [(:db/id emitted-event)]
                              [])
             duration-ms    (- (System/currentTimeMillis) start-instant)]
+        ;; Bug-1 leak-coupling (2026-05-29 lifecycle-hardening arc): write
+        ;; :mm.session/ended-at ONLY when :phase/finalize left the process in a
+        ;; TERMINAL state.  ended-at was moved OUT of :phase/link so the invariant
+        ;; "ended-at set ⟹ process terminal" always holds — closing both leak
+        ;; vectors (interrupted ceremony + silent κ-P18 degrade).  Brick-safe per
+        ;; Dan (couple+sweep+log-not-throw): a non-terminal finalize logs WARN +
+        ;; emits the degraded event (above) but does NOT write ended-at and does
+        ;; NOT throw — the session stays cleanly re-finalizable and the reconcile
+        ;; sweep (sandbar.util.workflow/close-leaked-sessions!) mops it up.
+        (when (= phase :phase/finalize)
+          (let [proc      (wf/find-process (:process-id args))
+                terminal? (boolean (and proc (wf/process-in-terminal-state? proc)))]
+            (if terminal?
+              (when-let [subj-eid (some-> proc wf/get-process-subject :db/id)]
+                (dt/update-entity! subj-eid {:mm.session/ended-at (Date.)}))
+              (log/warn :ORCHESTRATE/FINALIZE-INCOMPLETE
+                        {:process-id (:process-id args)
+                         :degraded?  degraded?
+                         :note "session NOT marked ended — finalize did not reach a terminal state; re-finalizable; reconcile sweep will close it"}))))
         (log/info :ORCHESTRATE/PHASE-COMPLETE
                   {:phase              phase
                    :ceremony           (ceremony-of phase)
