@@ -25,8 +25,10 @@
   this commit."
   (:require [cheshire.core      :as json]
             [clojure.test       :refer :all]
+            [sandbar.db.datatype :as dt]
             [sandbar.db.datomic :as db]
             [sandbar.mcp.tools  :as tools]
+            [sandbar.store      :as store]
             [sandbar.test-util  :as tu]))
 
 (use-fixtures :each (tu/make-test-db-fixture {:test-name "mcp-tools-db-test"
@@ -332,6 +334,54 @@
                        {"entity" "not-a-thing"
                         "slots"  {}})]
     (is (user-error? response))))
+
+(defn- mk-mem!
+  "Create an identful :mm/Memory via the canonical store path (derives a
+   :db/ident from rel-path).  Returns {:eid :ident} read back from the DB."
+  [nm rel & [slots]]
+  (let [eid (:db/id (store/create-memory! :mm/Memory
+                                          (merge {:mm.memory/name nm :mm.memory/rel-path rel} slots)
+                                          {:validate? false}))]
+    {:eid eid :ident (:db/ident (db/entity eid))}))
+
+(deftest entity-update-card-many-replaces-by-default
+  ;; W0.found 2026-06-30 — the sandbar.entity.update verb REPLACES a
+  ;; cardinality-many slot's set by default; `additive true` keeps the
+  ;; legacy UNION.  Per decisions/entity_update_card_many_replace_by_
+  ;; default_opt_in_additive_2026_06_30.  Targets are identful (store path)
+  ;; so they can be addressed by ident through the MCP wire; assert by :db/id.
+  ;; db/entity renders identful ref targets as their :db/ident keyword (or a
+  ;; map carrying :db/ident) — normalize either shape to the ident for comparison.
+  (letfn [(cites-of [src-eid]
+            (set (map #(if (associative? %) (:db/ident %) %)
+                      (:mm.memory/cites (db/entity src-eid)))))]
+    (testing "default REPLACE retracts omitted card-many members"
+      (let [t1  (mk-mem! "t1" "test/mcp-cm-t1")
+            t2  (mk-mem! "t2" "test/mcp-cm-t2")
+            t3  (mk-mem! "t3" "test/mcp-cm-t3")
+            src (mk-mem! "src" "test/mcp-cm-src"
+                         {:mm.memory/cites [(:eid t1) (:eid t2)]})]
+        (is (= #{(:ident t1) (:ident t2)} (cites-of (:eid src))) "precondition")
+        (let [resp (call "sandbar.entity.update"
+                         {"entity" (str (:ident src))
+                          "slots"  {":mm.memory/cites" [(str (:ident t1)) (str (:ident t3))]}})]
+          (is (not (user-error? resp))
+              (str "expected success, got: " (error-text resp))))
+        (is (= #{(:ident t1) (:ident t3)} (cites-of (:eid src)))
+            "t2 retracted, t3 added, t1 retained via the MCP verb")))
+
+    (testing "`additive true` preserves the UNION via the MCP verb"
+      (let [t1  (mk-mem! "u1" "test/mcp-add-t1")
+            t2  (mk-mem! "u2" "test/mcp-add-t2")
+            t3  (mk-mem! "u3" "test/mcp-add-t3")
+            src (mk-mem! "src" "test/mcp-add-src"
+                         {:mm.memory/cites [(:eid t1) (:eid t2)]})]
+        (call "sandbar.entity.update"
+              {"entity"   (str (:ident src))
+               "slots"    {":mm.memory/cites" [(str (:ident t3))]}
+               "additive" true})
+        (is (= #{(:ident t1) (:ident t2) (:ident t3)} (cites-of (:eid src)))
+            "t3 appended; t1 + t2 retained under additive")))))
 
 (deftest entity-validate-bogus-class-projects-user-error
   (let [response (call "sandbar.entity.validate"

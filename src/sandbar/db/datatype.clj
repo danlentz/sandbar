@@ -486,6 +486,48 @@
                       :else (into {} entity))]
      (emit-fn entity-map opts))))
 
+;; --- Cardinality-many REPLACE semantics (W0.found 2026-06-30) ---
+;; Per decisions/entity_update_card_many_replace_by_default_opt_in_additive_2026_06_30:
+;; update-entity! REPLACES a card-many slot's set by default (retract the
+;; prior members absent from the supplied set, then assert the supplied
+;; set); callers opt into the legacy additive UNION via {:additive? true}.
+;; Reuses the set-replace diff shape proven in sandbar.db.datomic for class
+;; meta-slots (normalize refs by :db/ident; retract refs by :db/id).
+
+(defn- ref->eid
+  "Resolve a ref-typed slot value to its :db/id for stable set-membership
+   comparison.  Prior values come back as Entity maps (read :db/id directly);
+   supplied values may be idents / eids / lookup-refs (resolve via db/entity).
+   Returns nil when unresolvable (treated as a non-matching member)."
+  [v]
+  (cond
+    (nil? v)                                   nil
+    (and (associative? v) (contains? v :db/id)) (:db/id v)
+    :else (some-> (try (db/entity v) (catch Throwable _ nil)) :db/id)))
+
+(defn- card-many-replace-retracts
+  "For each cardinality-many slot present in `slot-updates`, return the
+   [:db/retract eid slot v] ops removing prior members NOT in the supplied
+   desired set — the retract half of replace-by-diff.  Card-one slots
+   produce no retracts (Datomic auto-retracts the prior single value on
+   assert).  Ref slots canonicalize BOTH prior and desired to :db/id so an
+   unchanged member is never retracted-and-re-added in the same tx (which
+   Datomic would resolve ambiguously); scalar slots compare by value."
+  [ent eid slot-updates]
+  (mapcat
+   (fn [[slot new-val]]
+     (let [prop (entity slot)]
+       (when (= :db.cardinality/many (:db/cardinality prop))
+         (let [ref?    (= :db.type/ref (:db/valueType prop))
+               canon   (if ref? ref->eid identity)
+               new-vec (if (sequential? new-val) new-val [new-val])
+               desired (set (map canon new-vec))
+               prior   (get ent slot)]
+           (for [v prior
+                 :when (not (contains? desired (canon v)))]
+             [:db/retract eid slot (if ref? (ref->eid v) v)])))))
+   slot-updates))
+
 (defn update-entity!
   "Update slot values on an existing entity.
 
@@ -494,6 +536,8 @@
     slot-updates  - map of {:slot-ident new-value ...}
     opts          - optional:
                     :validate? - default true; if false, skips validation
+                    :additive? - default false.  When true, cardinality-many
+                                 slots UNION (append) instead of REPLACE.
 
   Behavior:
   - Resolves entity to its current entity-map shape
@@ -503,18 +547,20 @@
   - Transacts {:db/id <eid> slot-updates...} via Datomic
   - Returns the refreshed entity map
 
-  Cardinality-many slots: the supplied value REPLACES the prior set
-  (Datomic semantics for cardinality-many transactions are additive
-  by default; this function uses a retract+add cycle for replacement
-  semantics when the prior value differs).  TODO: expose `:additive?`
-  opt post-0.1.0 for callers wanting additive semantics.
+  Cardinality-many slots: the supplied value REPLACES the prior set by
+  default — prior members absent from the supplied value are retracted in
+  the same transaction (retract (prior - desired) + assert desired).  Pass
+  `{:additive? true}` to keep the legacy additive UNION (append without
+  retracting).  Card-one slots are unaffected either way (Datomic
+  auto-retracts the prior single value on assert).  Per
+  decisions/entity_update_card_many_replace_by_default_opt_in_additive_2026_06_30.
 
   Per codex SHOULD-FIX #5 — `sandbar.entity.update` MCP verb advertised
   in the catalog but threw not-yet-implemented; this primitive closes
   that gap.  Per the improve-abstraction-not-bypass discipline (the
   prior gap-throw lampshade pointed exactly here)."
   ([entity slot-updates] (update-entity! entity slot-updates {}))
-  ([entity slot-updates {:keys [validate? project?] :or {validate? true}}]
+  ([entity slot-updates {:keys [validate? project? additive?] :or {validate? true}}]
    (when-not (map? slot-updates)
      (throw (ex-info "update-entity! requires slot-updates to be a map"
                      {:received slot-updates})))
@@ -536,12 +582,20 @@
        (when-let [errors (validate-data class-ident (dissoc merged :db/id :dt/type))]
          (log/debug :DT/UPDATE-VALIDATION-FAILED {:class class-ident :errors errors})
          (throw (ex-info "Validation failed on update" errors))))
-     ;; Transact: assoc all slot-updates onto the existing entity.
-     ;; For cardinality-many slots, this is ADDITIVE under Datomic's
-     ;; default semantics.  Post-0.1.0 work: switch to retract+add for
-     ;; replacement (currently consumer's responsibility if needed).
-     @(d/transact (db/conn)
-                  [(assoc slot-updates :db/id eid)])
+     ;; Transact: assert the supplied slot values.  For cardinality-many
+     ;; slots this REPLACES the prior set (retract prior members absent
+     ;; from the supplied set, prepended so they execute before the assert
+     ;; in the same tx) unless the caller opts into additive UNION via
+     ;; :additive? true.  Card-one slots are unaffected (Datomic
+     ;; auto-retracts the prior value on assert).  Per
+     ;; decisions/entity_update_card_many_replace_by_default_opt_in_additive_2026_06_30.
+     (let [retracts (when-not additive?
+                      (card-many-replace-retracts ent eid slot-updates))]
+       (when (seq retracts)
+         (log/info :DT/UPDATE-CARD-MANY-REPLACE
+                   {:eid eid :class class-ident :retract-count (count retracts)}))
+       @(d/transact (db/conn)
+                    (into (vec retracts) [(assoc slot-updates :db/id eid)])))
      ;; Stage A.5 of SSE-reactive-projection arc (decision eid
      ;; 17592186094347 + plan eid 17592186094359): on successful update,
      ;; fire the reactive-projection hook.  `:project?` participates in

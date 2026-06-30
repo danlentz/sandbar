@@ -461,6 +461,52 @@
     (is (dt/cardinality-many? :dt/slots) ":dt/slots should be cardinality many")
     (is (not (dt/cardinality-many? :user/login)) ":user/login should not be cardinality many")))
 
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; update-entity! cardinality-many REPLACE semantics (W0.found 2026-06-30)
+;; Per decisions/entity_update_card_many_replace_by_default_opt_in_additive_2026_06_30
+;; — closes bugs/entity_update_card_many_additive_while_docstring_validator_assume_replace_2026_06_30
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(deftest update-entity-card-many-replaces-by-default
+  ;; dt/make creates identless :mm/Memory entities, so reference + assert by
+  ;; :db/id (eid) — the card-many replace logic canonicalizes refs to :db/id.
+  (let [mk! (fn [nm rel & [slots]]
+              (:db/id (dt/make :mm/Memory
+                               (merge {:mm.memory/name nm :mm.memory/rel-path rel} slots)
+                               {:validate? false})))]
+    (testing "cardinality-many ref slot REPLACES the prior set (omitted members retracted)"
+      (let [t1    (mk! "t1" "test/dt-cm-t1")
+            t2    (mk! "t2" "test/dt-cm-t2")
+            t3    (mk! "t3" "test/dt-cm-t3")
+            src   (mk! "src" "test/dt-cm-src" {:mm.memory/cites [t1 t2]})
+            cites (fn [] (set (map :db/id (:mm.memory/cites (db/entity src)))))]
+        (is (= #{t1 t2} (cites)) "precondition: cites t1 + t2")
+        (dt/update-entity! src {:mm.memory/cites [t1 t3]} {:validate? false})
+        (is (= #{t1 t3} (cites))
+            "t2 retracted, t3 added, t1 retained — REPLACE, not UNION")))
+
+    (testing ":additive? true preserves the legacy UNION (append)"
+      (let [t1    (mk! "a1" "test/dt-add-t1")
+            t2    (mk! "a2" "test/dt-add-t2")
+            t3    (mk! "a3" "test/dt-add-t3")
+            src   (mk! "src" "test/dt-add-src" {:mm.memory/cites [t1 t2]})
+            cites (fn [] (set (map :db/id (:mm.memory/cites (db/entity src)))))]
+        (dt/update-entity! src {:mm.memory/cites [t3]} {:validate? false :additive? true})
+        (is (= #{t1 t2 t3} (cites)) "t3 appended; t1 + t2 retained under additive")))
+
+    (testing "REPLACE with an empty vec CLEARS the cardinality-many slot"
+      (let [t1  (mk! "c1" "test/dt-clr-t1")
+            src (mk! "src" "test/dt-clr-src" {:mm.memory/cites [t1]})]
+        (dt/update-entity! src {:mm.memory/cites []} {:validate? false})
+        (is (empty? (:mm.memory/cites (db/entity src)))
+            "replace with [] retracts every member")))
+
+    (testing "cardinality-one slot is unaffected (Datomic auto-replaces)"
+      (let [src (mk! "orig" "test/dt-one-src")]
+        (dt/update-entity! src {:mm.memory/name "updated"} {:validate? false})
+        (is (= "updated" (:mm.memory/name (db/entity src)))
+            "card-one name replaced as before")))))
+
 (deftest required?-test
   (testing "required? checks if property is required"
     ;; Note: depends on schema having required properties defined
