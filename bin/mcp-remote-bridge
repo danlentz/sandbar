@@ -25,7 +25,7 @@
 #       "command": "/Users/dan/src/sandbar/bin/mcp-remote-bridge" } }
 # then fully quit + relaunch Claude.app.
 #
-# Env overrides: SANDBAR_MCP_URL (default http://localhost:8080/mcp),
+# Env overrides: SANDBAR_MCP_URL (default http://localhost:${SANDBAR_PORT:-8389}/mcp),
 #                SANDBAR_BRIDGE_LOG (default ~/.config/sandbar/mcp-bridge.stderr.log).
 #
 # CRITICAL: nothing may write to STDOUT before exec -- stdout carries the
@@ -35,7 +35,7 @@ set -u
 
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
 
-url="${SANDBAR_MCP_URL:-http://localhost:8080/mcp}"
+url="${SANDBAR_MCP_URL:-http://localhost:${SANDBAR_PORT:-8389}/mcp}"
 log="${SANDBAR_BRIDGE_LOG:-$HOME/.config/sandbar/mcp-bridge.stderr.log}"
 
 if [[ -z "${SANDBAR_TOKEN:-}" ]]; then
