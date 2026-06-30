@@ -288,3 +288,48 @@
     (let [r (tools/datomic-type->json-schema :db.type/oddball)]
       (is (= "string" (:type r)))
       (is (re-find #":db.type/oddball" (:description r))))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Coerce-path hardening — slot-key normalization + instant coercion
+;; (W0.found, 2026-06-29).  Both entity.create + entity.update route their
+;; :slots through coerce-slot-map -> normalize-slot-key / coerce-value, so
+;; these pure tests cover both paths.  Fixes:
+;;  (a) colon-prefixed slot-keys silently dropped — cheshire's :key-fn
+;;      keyword mangles a JSON key ":ns/name" into a keyword whose NAMESPACE
+;;      carries the colon, which matched no declared slot;
+;;  (b) entity.update instant coercion threw MCP -32603 on a bare date string.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(deftest slot-candidate-keys-includes-mangled-and-original-shapes
+  (let [cands (set (#'tools/slot-candidate-keys :mm.tag/definition))]
+    (testing "the cheshire-mangled colon-prefixed keyword (the 2026-06-29 bug)"
+      (is (= ":mm.tag" (namespace (keyword ":mm.tag/definition")))
+          "documents the mangling: the leading colon lands in the namespace")
+      (is (contains? cands (keyword ":mm.tag" "definition"))
+          "mangled colon-namespace keyword is now a candidate (was the silent-drop gap)"))
+    (testing "all four original shapes preserved (strict superset)"
+      (is (contains? cands :mm.tag/definition)   "ident keyword")
+      (is (contains? cands "definition")         "bare local name — tag.define relies on this")
+      (is (contains? cands ":mm.tag/definition") "printed-ident string")
+      (is (contains? cands "mm.tag/definition")  "stripped-colon string"))))
+
+(deftest ->instant-accepts-bare-date-and-full-instant
+  (testing "bare date (the entity.update gap) -> UTC start-of-day"
+    (let [d (#'tools/->instant "2026-06-29")]
+      (is (instance? java.util.Date d))
+      (is (= (java.time.Instant/parse "2026-06-29T00:00:00Z") (.toInstant d)))))
+  (testing "full ISO-8601 instant still parses"
+    (let [d (#'tools/->instant "2026-06-29T12:30:00Z")]
+      (is (= (java.time.Instant/parse "2026-06-29T12:30:00Z") (.toInstant d)))))
+  (testing "zoneless local date-time interpreted UTC"
+    (let [d (#'tools/->instant "2026-06-29T12:30:00")]
+      (is (= (java.time.Instant/parse "2026-06-29T12:30:00Z") (.toInstant d)))))
+  (testing "non-string passes through unchanged"
+    (let [now (java.util.Date.)]
+      (is (identical? now (#'tools/->instant now))))))
+
+(deftest coerce-value-instant-no-longer-throws-on-bare-date
+  ;; Regression for the live MCP -32603 on a date-only :mm.memory/last-touched
+  ;; update (2026-06-29).
+  (is (instance? java.util.Date
+                 (#'tools/coerce-value "2026-06-29" :db.type/instant false))))

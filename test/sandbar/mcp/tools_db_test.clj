@@ -339,6 +339,22 @@
                         "slots" {}})]
     (is (user-error? response))))
 
+(deftest coerce-slot-map-resolves-colon-prefixed-keys
+  ;; Regression for the 2026-06-29 silent-drop bug: a colon-prefixed JSON
+  ;; slot key is mangled by cheshire's :key-fn keyword into a keyword whose
+  ;; NAMESPACE carries the colon, which used to match no declared slot and
+  ;; was silently dropped (producing identless / shape-nonconformant
+  ;; entities).  Derive the real string slot via the known-good bare-name
+  ;; path, then prove its mangled colon-prefixed form resolves to the SAME
+  ;; slot — ns-agnostic so it doesn't hard-code the slot's namespace.
+  (let [bare (#'tools/coerce-slot-map :mm/Tag {"definition" "x"})
+        slot (first (keys bare))]
+    (is (some? slot) "sanity: bare local name 'definition' resolves on :mm/Tag")
+    (let [mangled (keyword (str ":" (namespace slot)) (name slot))
+          colon   (#'tools/coerce-slot-map :mm/Tag {mangled "x"})]
+      (is (contains? colon slot)
+          "colon-prefixed (cheshire-mangled) key must resolve to the slot, not be dropped"))))
+
 (deftest aggregate-group-by-bogus-group-by-projects-user-error
   (let [response (call "sandbar.aggregate.group-by"
                        {"class"    ":dt/Class"

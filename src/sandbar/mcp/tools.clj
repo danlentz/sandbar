@@ -129,16 +129,37 @@
 ;; target slot's :db.type/* using dt/range-of + dt/cardinality-many?.
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
+(defn- ->instant
+  "Parse a string to a java.util.Date for a :db.type/instant slot.
+   Accepts a full ISO-8601 instant (\"2026-06-29T12:00:00Z\"), a bare date
+   (\"2026-06-29\" -> UTC start-of-day), or a zoneless local date-time
+   (\"2026-06-29T12:00:00\" -> interpreted UTC).  Non-strings pass through.
+   The bare-date form is the common frontmatter shape (created: 2026-06-29)
+   that `Instant/parse` alone rejected — the entity.update instant-coercion
+   gap observed 2026-06-29 (a date-only :mm.memory/last-touched update threw
+   MCP -32603)."
+  [v]
+  (if (string? v)
+    (java.util.Date/from
+      (try
+        (java.time.Instant/parse v)
+        (catch java.time.format.DateTimeParseException _
+          (try
+            (-> (java.time.LocalDate/parse v)
+                (.atStartOfDay java.time.ZoneOffset/UTC)
+                (.toInstant))
+            (catch java.time.format.DateTimeParseException _
+              (-> (java.time.LocalDateTime/parse v)
+                  (.toInstant java.time.ZoneOffset/UTC)))))))
+    v))
+
 (defn- coerce-value
   "Coerce one argument value to its target Datomic type."
   [value target-type many?]
   (let [coerce-one (fn [v]
                      (case target-type
                        :db.type/keyword (->ident v)
-                       :db.type/instant (if (string? v)
-                                          (java.util.Date/from
-                                            (java.time.Instant/parse v))
-                                          v)
+                       :db.type/instant (->instant v)
                        :db.type/uuid    (if (string? v)
                                           (java.util.UUID/fromString v)
                                           v)
@@ -153,6 +174,25 @@
 
       :else
       (coerce-one value))))
+
+(defn- slot-candidate-keys
+  "Key-shapes an incoming slot-map might use for a declared slot-ident:
+   the ident keyword; the bare local name; the printed-ident string; the
+   stripped-colon string; AND the cheshire-mangled colon-namespace keyword.
+
+   The last shape is the 2026-06-29 silent-drop bug: cheshire's `:key-fn
+   keyword` turns a leading-colon JSON key `:ns/name` into a keyword whose
+   NAMESPACE carries the colon — `(keyword \":mm.memory/cites\")` splits on
+   the first '/' into ns \":mm.memory\" + name \"cites\" — which matched none
+   of the original four shapes, so the slot was silently dropped (producing
+   identless entities + shape-nonconformant memorials).  Adding it is a strict
+   SUPERSET of the prior matching, so bare local names (relied on by e.g.
+   tag.define) still match."
+  [slot-ident]
+  (let [nm (name slot-ident)
+        ns (namespace slot-ident)]
+    (cond-> [slot-ident nm (str slot-ident) (subs (str slot-ident) 1)]
+      ns (conj (keyword (str ":" ns) nm)))))
 
 (defn- coerce-slot-map
   "Coerce a JSON-shaped slot map (string OR keyword keys → arbitrary values)
@@ -179,22 +219,33 @@
    during C6 verification — entity.create succeeded but produced
    schema-only entities with no content."
   [class-ident slot-map]
-  (let [slots (dt/slots-of class-ident)]
-    (reduce
-      (fn [acc slot-ident]
-        (let [k        slot-ident
-              key-name (name slot-ident)
-              v        (or (get slot-map slot-ident)
-                           (get slot-map key-name)
-                           (get slot-map (str k))
-                           (get slot-map (subs (str k) 1)))]
-          (if (some? v)
-            (assoc acc k (coerce-value v
-                                       (dt/range-of slot-ident)
-                                       (dt/cardinality-many? slot-ident)))
-            acc)))
-      {}
-      slots)))
+  (let [slots (dt/slots-of class-ident)
+        ;; For each declared slot, the first incoming key (across all candidate
+        ;; shapes, incl. the cheshire-mangled colon-namespace form) that is
+        ;; present.  contains?/get (not `or`) so a legit `false` value isn't
+        ;; skipped.
+        hits  (keep (fn [slot-ident]
+                      (when-let [hk (some #(when (contains? slot-map %) %)
+                                          (slot-candidate-keys slot-ident))]
+                        [slot-ident hk]))
+                    slots)
+        props (reduce (fn [acc [slot-ident hk]]
+                        (assoc acc slot-ident
+                               (coerce-value (get slot-map hk)
+                                             (dt/range-of slot-ident)
+                                             (dt/cardinality-many? slot-ident))))
+                      {} hits)
+        matched (set (map second hits))
+        unknown (remove matched (keys slot-map))]
+    ;; Loud signal instead of silent drop: any incoming key that resolved to
+    ;; NO declared slot (across every shape) is logged — this path silently
+    ;; swallowed colon-prefixed keys twice (see slot-candidate-keys).
+    (when (seq unknown)
+      (log/warn :MCP/coerce-slot-map-unknown-keys
+                {:class               class-ident
+                 :unknown-keys        (mapv str unknown)
+                 :declared-slot-count (count slots)}))
+    props))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Datalog :where coercion (used by aggregate verbs; will extend to
