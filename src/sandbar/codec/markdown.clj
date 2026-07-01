@@ -535,6 +535,8 @@
                           v)
     :else v))
 
+(declare edn-safe-ident)
+
 (defn rel-path->memory-ident
   "Convert a corpus rel-path string to an :mm/Memory :db/ident keyword.
    The corpus convention has frontmatter typed-edges write rel-paths
@@ -578,20 +580,25 @@
         ;; slashes between segments.  Detection: starts with `memory.`
         ;; (NOT `memory/`) AND has exactly one `/` separating ns from name.
         ident-form (re-matches #"^(memory(?:\.[^/]+)+)/([^/]+)$" no-ext)]
-    (if ident-form
-      ;; Ident-string form: parse directly as keyword (no path-form
-      ;; reconciliation).
-      (let [[_ ns-str nm-str] ident-form]
-        (keyword ns-str nm-str))
-      ;; Path form: prepend `memory/` if absent + derive keyword.
-      (let [with-mem   (if (str/starts-with? no-ext "memory/")
-                         no-ext
-                         (str "memory/" no-ext))
-            parts      (str/split with-mem #"/")
-            ns-parts   (butlast parts)
-            local-name (last parts)]
-        (when (and (seq ns-parts) local-name)
-          (keyword (str/join "." ns-parts) local-name))))))
+    ;; P6 digit-dodge (2026-06-30): dodge the derived ident so its NAME is
+    ;; EDN-reader-safe + round-trips.  edn-safe-ident is idempotent + nil-safe,
+    ;; so wrapping both branches (incl. the path-form nil guard) is correct.
+    ;; The inverse `memory-ident->rel-path` un-dodges (see edn-unsafe-ident).
+    (edn-safe-ident
+     (if ident-form
+       ;; Ident-string form: parse directly as keyword (no path-form
+       ;; reconciliation).
+       (let [[_ ns-str nm-str] ident-form]
+         (keyword ns-str nm-str))
+       ;; Path form: prepend `memory/` if absent + derive keyword.
+       (let [with-mem   (if (str/starts-with? no-ext "memory/")
+                          no-ext
+                          (str "memory/" no-ext))
+             parts      (str/split with-mem #"/")
+             ns-parts   (butlast parts)
+             local-name (last parts)]
+         (when (and (seq ns-parts) local-name)
+           (keyword (str/join "." ns-parts) local-name)))))))
 
 (defn- ident-ns-type-prefix
   "Derive a semantic, singularized prefix from an ident's namespace last
@@ -624,6 +631,28 @@
   [ident]
   (if (and (keyword? ident) (re-find #"^\d" (name ident)))
     (keyword (namespace ident) (str (ident-ns-type-prefix ident) (name ident)))
+    ident))
+
+(defn edn-unsafe-ident
+  "Inverse of `edn-safe-ident`: strip the ns-derived digit-dodge prefix from a
+   name, recovering the ORIGINAL digit-leading name.  The dodge token is NOT
+   part of the corpus filename, so `memory-ident->rel-path` MUST un-dodge first
+   or it maps a dodged ident to a non-existent path (e.g. logs/log-2026-… .md)
+   — which would corrupt frontmatter cite-paths on re-projection (P6 finding
+   2026-06-30).  No-op unless the name carries THIS ns's dodge prefix directly
+   in front of a digit.  Idempotent + nil-safe.
+
+   :memory.sessions/session-2026-05-29T0713_x -> :memory.sessions/2026-05-29T0713_x
+   :memory.decisions/foo                       -> :memory.decisions/foo (unchanged)"
+  [ident]
+  (if (keyword? ident)
+    (let [prefix (ident-ns-type-prefix ident)
+          nm     (name ident)]
+      (if (and (pos? (count prefix))
+               (str/starts-with? nm prefix)
+               (re-find #"^\d" (subs nm (count prefix))))
+        (keyword (namespace ident) (subs nm (count prefix)))
+        ident))
     ident))
 
 (defn- coerce-rel-path->ident-upsert
@@ -817,7 +846,11 @@
    Returns nil for keywords whose namespace doesn't start with 'memory.'
    (those weren't derived from rel-paths)."
   [ident]
-  (let [ns-part (some-> ident namespace)
+  ;; P6 (2026-06-30): un-dodge FIRST — a dodged ident (e.g. :memory.logs/log-
+  ;; 2026-…) must map back to its TRUE filename (logs/2026-….md), not
+  ;; logs/log-2026-….md.  Skipping this corrupts cite-paths on re-projection.
+  (let [ident   (edn-unsafe-ident ident)
+        ns-part (some-> ident namespace)
         nm      (some-> ident name)]
     (when (and ns-part nm (str/starts-with? ns-part "memory."))
       (let [dirs (-> ns-part
@@ -1124,7 +1157,9 @@
     (let [ns-part   (namespace memory-ident)
           name-part (name memory-ident)
           slug-chain (str/join "__" (map slugify heading-chain))]
-      (keyword ns-part (str name-part "__" slug-chain)))))
+      ;; P6 digit-dodge: sections inherit the parent's (possibly digit-leading)
+      ;; name; dodge the composed ident so it too is EDN-reader-safe.
+      (edn-safe-ident (keyword ns-part (str name-part "__" slug-chain))))))
 
 (defn- parse-heading-line
   "Match an ATX heading line.  Returns `{:level N :title \"...\"}` or nil.

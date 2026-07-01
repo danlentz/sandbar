@@ -794,6 +794,65 @@
     (is (= :memory.actors/foo
            (md/rel-path->memory-ident "memory.actors/foo.md")))))
 
+;; P6 digit-dodge (2026-06-30) — rel-path->memory-ident dodges digit-leading
+;; names so idents round-trip through the EDN reader; memory-ident->rel-path
+;; un-dodges to recover the TRUE filename; section-ident dodges composed idents.
+;; Per observations/p6_dry_run_actual_scope_1040_idents_eid_stable_refs_2026_06_30
+;; + the 2026-05-23 digit-dodge origin observation.
+
+(deftest rel-path->memory-ident-dodges-digit-leading-names
+  (testing "digit-leading names get the singularized-namespace dodge prefix"
+    (is (= :memory.logs/log-2026-05-03_capstone
+           (md/rel-path->memory-ident "logs/2026-05-03_capstone.md")))
+    (is (= :memory.sessions/session-2026-05-29T0713_x
+           (md/rel-path->memory-ident "sessions/2026-05-29T0713_x.md")))
+    (is (= :memory.inbox/inbox-2026-05-08_00-02-44
+           (md/rel-path->memory-ident "inbox/2026-05-08_00-02-44.md")))
+    (is (= :memory.audit-results/audit-result-2026-05-07_x
+           (md/rel-path->memory-ident "audit-results/2026-05-07_x.md"))))
+  (testing "non-digit names are unaffected (dodge is a no-op)"
+    (is (= :memory.decisions/foo (md/rel-path->memory-ident "decisions/foo.md")))))
+
+(deftest edn-safe-unsafe-ident-are-inverse
+  ;; NB: digit-leading keyword LITERALS are unreadable (the very bug being
+  ;; fixed), so the original forms are built via `keyword`, not literal syntax.
+  (testing "edn-unsafe-ident recovers the original digit-leading name"
+    (are [orig] (= orig (md/edn-unsafe-ident (md/edn-safe-ident orig)))
+      (keyword "memory.logs" "2026-05-03_x")
+      (keyword "memory.sessions" "2026-05-29T0713_x")
+      (keyword "memory.inbox" "2026-05-08_00-02-44")
+      (keyword "memory.audit-results" "2026-05-07_x")
+      :memory.decisions/foo))
+  (testing "both are idempotent"
+    (let [d (keyword "memory.logs" "2026-x")]
+      (is (= (md/edn-safe-ident d)
+             (md/edn-safe-ident (md/edn-safe-ident d)))))
+    (is (= (md/edn-unsafe-ident :memory.logs/log-2026-x)
+           (md/edn-unsafe-ident (md/edn-unsafe-ident :memory.logs/log-2026-x))))))
+
+(deftest rel-path-ident-round-trip-through-dodge
+  (testing "rel-path -> dodged ident -> rel-path recovers the ORIGINAL filename"
+    ;; memory-ident->rel-path is private — call via the var
+    (are [rp] (= rp (#'md/memory-ident->rel-path (md/rel-path->memory-ident rp)))
+      "logs/2026-05-03_capstone.md"
+      "sessions/2026-05-29T0713_x.md"
+      "inbox/2026-05-08_00-02-44.md"
+      "decisions/foo.md"
+      "patterns/architectural/sandbar/x.md")))
+
+(deftest section-ident-dodges-digit-leading-parent
+  (testing "sections inherit + dodge a digit-leading parent name"
+    (is (= :memory.logs/log-2026-05-03_x__context
+           (md/section-ident :memory.logs/log-2026-05-03_x ["Context"])))
+    ;; even when the parent ident is still un-dodged, the composed section
+    ;; ident is dodged so it is EDN-safe (both forms converge).  The un-dodged
+    ;; parent is built via `keyword` (unreadable as a literal).
+    (is (= :memory.logs/log-2026-05-03_x__context
+           (md/section-ident (keyword "memory.logs" "2026-05-03_x") ["Context"]))))
+  (testing "non-digit parent unaffected"
+    (is (= :memory.decisions/foo__context
+           (md/section-ident :memory.decisions/foo ["Context"])))))
+
 (deftest rel-path->memory-ident-edge-cases
   (testing "Empty input → nil (no name + no namespace derivable)"
     (is (nil? (md/rel-path->memory-ident ""))))
