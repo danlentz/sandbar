@@ -766,6 +766,22 @@
 
 (declare frontmatter->slots*)
 
+(defn carrier-ident-for-host
+  "Derive the carrier's `:db/ident` from the HOST entity's ident by the
+   `<host-ident>__frontmatter` convention (mirrors the section
+   `__<slug>` convention — see `section-ident`).  E.g.
+   `:memory.git/no_commit_signing` → `:memory.git/no_commit_signing__frontmatter`.
+
+   Per the ratified carrier-reuse design (Fable decision-token 2026-07-02,
+   scratchpad/carrier-reuse-2026-07-02/SPEC.md): identful carriers upsert
+   in place on re-import (eid stable), so re-import stops minting orphans.
+
+   Returns nil when `host-ident` is nil or not a keyword (identless host)
+   — the caller falls back to the anonymous tempid carrier path."
+  [host-ident]
+  (when (keyword? host-ident)
+    (keyword (namespace host-ident) (str (name host-ident) "__frontmatter"))))
+
 (defn frontmatter->slots
   "Transform a YAML-parsed frontmatter map into a slot map for the given
    class.  Each key is run through `frontmatter-key->slot`; values are
@@ -790,13 +806,23 @@
    callers) passes nil → extras `:raw` is reconstructed from the parsed
    value.
 
+   4-arity additionally threads the HOST entity's ident so the extras
+   carrier can be minted IDENTFUL (`<host-ident>__frontmatter`, via
+   `carrier-ident-for-host`) — identful carriers upsert in place on
+   re-import (eid stable) rather than orphaning the prior carrier.  When
+   `host-ident` is nil / not derivable, the carrier stays anonymous
+   (tempid fallback in `entity-specs->tx-data`).  Per the carrier-reuse
+   design (scratchpad/carrier-reuse-2026-07-02/SPEC.md).
+
    Returns an ordered-map (per `sandbar.codec.ordered-map`) preserving
    the frontmatter-map's insertion order — emit-side uses this to
    round-trip source frontmatter key ordering."
   ([class-ident frontmatter-map]
    (frontmatter->slots class-ident frontmatter-map nil))
   ([class-ident frontmatter-map raw-fm-text]
-   (frontmatter->slots* class-ident frontmatter-map raw-fm-text)))
+   (frontmatter->slots* class-ident frontmatter-map raw-fm-text nil))
+  ([class-ident frontmatter-map raw-fm-text host-ident]
+   (frontmatter->slots* class-ident frontmatter-map raw-fm-text host-ident)))
 
 (defn- landing-slot-value
   "Compute the coerced slot value `v'` for a declared, non-guard-dropped
@@ -855,7 +881,7 @@
 
 (defn- frontmatter->slots*
   "Implementation of `frontmatter->slots` (see its docstring)."
-  [class-ident frontmatter-map raw-fm-text]
+  [class-ident frontmatter-map raw-fm-text host-ident]
   (let [out    (om/create)
         extras (om/create)
         order  (mapv (fn [[k _]] (name k)) frontmatter-map)]
@@ -869,13 +895,19 @@
             ;; (b) declared-but-guard-dropped → extras
             (capture-extra! extras k v raw-fm-text)
             (om/put! out slot v')))))
-    ;; Attach the carrier only when extras is non-empty.
+    ;; Attach the carrier only when extras is non-empty.  Mint it IDENTFUL
+    ;; when the host ident is derivable (`<host-ident>__frontmatter`), so a
+    ;; re-import upserts the carrier in place (eid stable) rather than
+    ;; orphaning the prior anonymous carrier.  Identless host → no :db/ident;
+    ;; entity-specs->tx-data falls back to the anonymous tempid path.
     (when (pos? (count (om/keys-vec extras)))
-      (om/put! out :mm.memory/frontmatter
-               {:dt/type :mm/Frontmatter
-                :mm.frontmatter/extra
-                (pr-str {:order order
-                         :extras (om/->clojure-map extras)})}))
+      (let [carrier-ident (carrier-ident-for-host host-ident)
+            carrier       (cond-> {:dt/type :mm/Frontmatter
+                                   :mm.frontmatter/extra
+                                   (pr-str {:order order
+                                            :extras (om/->clojure-map extras)})}
+                            carrier-ident (assoc :db/ident carrier-ident))]
+        (om/put! out :mm.memory/frontmatter carrier)))
     out))
 
 (defn- coerce-keyword->string
@@ -1182,20 +1214,46 @@
                      #"'(\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z?)?)'"
                      "$1")))))
 
+(defn- resolve-carrier-value
+  "Normalize the raw `:mm.memory/frontmatter` ref value into something the
+   extras reader can key off `:mm.frontmatter/extra`.
+
+   THREE shapes reach the emit path (carrier-reuse-2026-07-02/SPEC.md §3):
+     (a) a nested Clojure map   — parse→emit, in-process (identful OR anon)
+     (b) a datomic Entity       — DB→emit, anonymous carrier (no :db/ident)
+     (c) a :db/ident KEYWORD    — DB→emit, IDENTFUL carrier.  Datomic
+         resolves a non-component ref whose TARGET carries a `:db/ident`
+         to that ident keyword (NOT an Entity), so `dt/realize-with`'s
+         shallow `(into {} entity)` yields the keyword here.
+
+   (a)/(b) support keyword lookup directly.  (c) needs a DB round-trip to
+   reach the carrier entity — resolved LAZILY via `requiring-resolve` on
+   `sandbar.db.datomic/entity` so the codec keeps NO static compile-time
+   edge to the Datomic layer (preserves the model-layer discipline in this
+   ns's docstring §Layer-targeting; the edge fires only on the identful
+   DB-realized branch).  Never throws — unresolvable idents yield nil."
+  [carrier]
+  (cond
+    (keyword? carrier)
+    (try
+      (when-let [entity-fn (requiring-resolve 'sandbar.db.datomic/entity)]
+        (entity-fn carrier))
+      (catch Throwable _ nil))
+
+    :else carrier))
+
 (defn- read-carrier-extra
   "Read the `:mm.frontmatter/extra` EDN payload off an
    `:mm.memory/frontmatter` carrier value, returning
-   `{:order [...] :extras {...}}` or nil.  Works on BOTH shapes the emit
-   path sees (SPEC.md §2 / §3):
-     - a nested Clojure map (parse→emit, in-process)
-     - a one-level-realized datomic Entity (DB→emit via `dt/realize-with`)
-   Keyword lookup `(:mm.frontmatter/extra carrier)` works on both (Entity
-   objects support keyword lookup); `clojure.edn/read-string` parses the
-   pr-str'd payload.  Never throws — malformed payloads yield nil."
+   `{:order [...] :extras {...}}` or nil.  Works on ALL shapes the emit
+   path sees (SPEC.md §2 / §3) — nested map, datomic Entity, or the
+   `:db/ident` keyword of an IDENTFUL carrier — via `resolve-carrier-value`.
+   `clojure.edn/read-string` parses the pr-str'd payload.  Never throws —
+   malformed payloads yield nil."
   [carrier]
   (when carrier
     (try
-      (when-let [edn-str (:mm.frontmatter/extra carrier)]
+      (when-let [edn-str (:mm.frontmatter/extra (resolve-carrier-value carrier))]
         (let [parsed (clojure.edn/read-string edn-str)]
           (when (map? parsed) parsed)))
       (catch Exception _ nil))))
@@ -1279,8 +1337,13 @@
                         (parse-frontmatter-text fm-text))
           ;; Thread the RAW (un-parsed) frontmatter block so the extras
           ;; carrier captures byte-faithful `:raw` lines for non-landing
-          ;; keys (SPEC.md §3 / §4.1).
-          slot-map-ordered (frontmatter->slots class-ident fm-map fm-text)
+          ;; keys (SPEC.md §3 / §4.1).  Also thread the HOST entity's ident
+          ;; (via `:host-ident` opt) so the carrier is minted IDENTFUL
+          ;; (`<host-ident>__frontmatter`) — identful carriers upsert in
+          ;; place on re-import rather than orphaning the prior carrier
+          ;; (carrier-reuse-2026-07-02/SPEC.md).  Absent → anonymous carrier.
+          host-ident  (:host-ident opts)
+          slot-map-ordered (frontmatter->slots class-ident fm-map fm-text host-ident)
           slot-map    (om/->clojure-map slot-map-ordered)
           normalized  (normalize-body body-text)]
       ;; Slot-order is NOT carried on the entity.  Emit introspects the
@@ -1710,7 +1773,12 @@
                                            {:rel-path rel-path})))
         resolved-class (resolve-document-class source)
         c              (make-codec)
-        entity         (proto/parse c source {:class resolved-class})
+        ;; Thread the host memory-ident so the extras carrier is minted
+        ;; IDENTFUL (`<memory-ident>__frontmatter`) — re-import upserts it
+        ;; in place (eid stable) rather than orphaning the prior carrier
+        ;; (carrier-reuse-2026-07-02/SPEC.md).
+        entity         (proto/parse c source {:class resolved-class
+                                              :host-ident memory-ident})
         entity         (cond-> (assoc entity :db/ident memory-ident)
                          (memory-class? resolved-class)
                          (assoc :mm.memory/rel-path rel-path))]
@@ -1831,17 +1899,26 @@
                                    ;; ref.  Datomic rejects a nested non-component
                                    ;; ref map that carries neither a :db/id nor a
                                    ;; unique-identity upsert key
-                                   ;; (:db.error/invalid-nested-entity).  The
-                                   ;; carrier has no :db/ident (it is anonymous —
-                                   ;; one-per-host-memory), so assign it a stable
+                                   ;; (:db.error/invalid-nested-entity).
+                                   ;;
+                                   ;; IDENTFUL carriers (carrier-reuse-2026-07-02):
+                                   ;; when the carrier already carries a :db/ident
+                                   ;; (`<host-ident>__frontmatter`, minted at parse),
+                                   ;; it transacts AS-IS — Datomic's ident-upsert
+                                   ;; semantics resolve/create the same eid across
+                                   ;; re-imports (upsert in place, no orphan mint).
+                                   ;;
+                                   ;; FALLBACK — anonymous carrier (identless host):
+                                   ;; no :db/ident AND no :db/id → assign a stable
                                    ;; string tempid derived from the host's tempid
                                    ;; (or its ident) so a single d/transact resolves
-                                   ;; it.  Per SPEC.md §3 (wire the carrier
-                                   ;; end-to-end) + §2 (the sink reads it back one-
-                                   ;; level-realized).
+                                   ;; the nested map.  Per SPEC.md §3 (wire the
+                                   ;; carrier end-to-end) + §2 (sink reads it back
+                                   ;; one-level-realized).
                                    (and (= :mm.memory/frontmatter k)
                                         (map? v)
-                                        (not (contains? v :db/id)))
+                                        (not (contains? v :db/id))
+                                        (not (contains? v :db/ident)))
                                    (assoc v :db/id
                                           (str "tempid-fm-"
                                                (or tid (some-> (:db/ident e) str) "anon")))

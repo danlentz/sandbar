@@ -53,6 +53,7 @@
             [sandbar.orient             :as orient]
             [sandbar.projection      :as pg]
             [sandbar.reactive.queue     :as reactive-queue]
+            [sandbar.retract            :as retract]
             [sandbar.schedule           :as sched]
             [sandbar.search             :as search]
             [sandbar.shape              :as shape]
@@ -2162,6 +2163,30 @@
         updated    (dt/update-entity! (:db/id entity) slots)]
     {:entity (projection/full-projection updated)}))
 
+(defn- entity-retract-handler [args]
+  ;; First-class entity retraction — thin boundary over `sandbar.retract`.
+  ;; Wire keys (per the ratified safety semantics):
+  ;;   :targets (REQUIRED vec) — idents (keyword-strings) or numeric eids
+  ;;   :persist  (bool, default false — dry-run unless true; NO `?` suffix
+  ;;              per the Anthropic MCP property-key regex)
+  ;;   :cascade  (bool, default false)
+  ;;   :reason   (string; REQUIRED when :persist)
+  ;;   :actor    (optional entity ref carried into the audit event)
+  ;; The safety/report layer (cap, protected-skip, dry-run-default,
+  ;; reason-required, atomic tx, audit event) lives in sandbar.retract —
+  ;; this handler only marshals args + surfaces the report.
+  (let [targets (or (get args "targets") (get args :targets))
+        persist (boolean (or (get args "persist") (get args :persist)))
+        cascade (boolean (or (get args "cascade") (get args :cascade)))
+        reason  (or (get args "reason") (get args :reason))
+        actor   (or (get args "actor")  (get args :actor))]
+    (when (nil? targets)
+      (throw (ex-info "Missing required argument: targets (vec of idents or eids)"
+                      {:args args})))
+    (retract/retract! targets (cond-> {:persist persist :cascade cascade}
+                                reason (assoc :reason reason)
+                                actor  (assoc :actor actor)))))
+
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Verb catalog — data-driven dispatch
@@ -2618,6 +2643,26 @@
                                :description "When true, dt/make each parsed entity-spec into the Datomic substrate after import (one-shot ingest).  When false / omitted, this verb is a DRY-RUN that returns entity summaries without persisting.  Per Friction Item #11 of the 0.1.1 co-evolution arc — gives clients a single-call bootstrap path instead of N+1 round-trips (import + entity.create per).  On persist failure for any individual entity, the per-entity failure is captured in the response's `:failed` list (does NOT abort the whole ingest).  Returns `{:persisted-count :failed-count :failed [...]}` when :persist true.  (Wire-format key MUST be `persist` — no `?` suffix — to comply with Anthropic MCP tool-schema property-key regex `^[a-zA-Z0-9_.-]{1,64}$`.  Handler accepts both `persist` and legacy `persist?` for back-compat.)"}}
                    [:from])
     :handler project-import-handler}
+
+   ;; Entity retraction (first-class MCP retraction verb — 2026-07-02).
+   ;; Per decisions/mcp_retraction_verb_substrate_first_over_nrepl_toolchain_workaround_2026_07_02.
+   {:name "sandbar.entity.retract"
+    :title "Retract explicit entities with a dry-run-by-default safety layer"
+    :description "WHICH: retracts an EXPLICIT set of entities (`:targets` — idents or eids, 1..100) via `:db.fn/retractEntity` in ONE atomic transaction, wrapped in the ratified safety layer: dry-run-by-default, per-target blast-radius report, protected-namespace/class guard, cascade opt-in, required audit reason.  The first-class MCP retraction verb — replaces the nREPL-toolchain workaround.  Substrate half is `sandbar.db.datomic/retract-entity`; this verb is the MCP surface + safety layer.\n\nWHEN: use to remove named entities from the substrate — cleanup packages (bulk-retract, bare-ident dups, orphan sections, anonymous carriers).  When NOT to use: (a) predicate/query-based MASS retraction — NOT supported in v1 (explicit targets only; enumerate first via `sandbar.class.instances` / `sandbar.search.bm25f`, then pass the eids); (b) you want to EDIT an entity — `sandbar.entity.update`; (c) you want to physically excise history — out of scope (this is logical retraction).\n\nHOW: `:targets` (REQUIRED) is an array of idents (keyword-strings like `\":memory.decisions/foo\"`) or numeric eids; 1..100 (over-cap ⇒ loud error).  `:persist` (bool, default FALSE) — WITHOUT it the verb is a DRY-RUN returning the full report and transacting NOTHING (same convention as `sandbar.project.import`; wire key is `persist`, no `?`).  `:cascade` (bool, default false) — when true, the enumerated dependents (the target's `:mm/Section` tree + `:mm.memory/frontmatter` carrier) are INCLUDED in the retraction; refs are not `:db/isComponent` so without cascade they survive as ORPHANS (the report says so).  `:reason` (string) — REQUIRED when `:persist` (carried into the `:mm.event/EntityRetracted` audit event; persist without it ⇒ loud error).  `:actor` (optional ref) — recorded on the audit event.  Protected targets (namespace `dt`/`db`/`workflow`/`mm.event`, plus `:mm/Actor` instances + `:mm/Workflow` definitions) are SKIPPED with a reason, NOT retracted, and do NOT abort the batch.\n\nORDER: run once WITHOUT `:persist` to inspect the blast-radius report (datom-counts + dependents + protected flags), then re-run WITH `:persist true` + `:reason` to commit.  Discover target eids first via `sandbar.class.instances` / `sandbar.search.bm25f` / `sandbar.entity.find`.\n\nCOMBINATION: pairs with `sandbar.entity.find` (confirm a target exists first) and `sandbar.navigate.inbound-edges` (see who CITES a target before orphaning it).  Result: the dry-run report `{:targets [{:target :resolved-eid :exists? :ident :dt-type :datom-count :dependents :protected? :protection-reason} ...] :cascade :dependents-note}`, augmented on `:persist` with `:retracted-eids :retracted-count :skipped :events-emitted`."
+    :inputSchema (one-required
+                   {:targets {:type "array"
+                              :items {:type "string"}
+                              :description "Explicit targets (1..100): idents (keyword-strings, e.g. ':memory.decisions/foo') or numeric eids"}
+                    :persist {:type "boolean"
+                              :description "When true, COMMIT the retraction.  Default false = DRY-RUN (report only, transacts nothing).  Wire key MUST be `persist` (no `?`) per the MCP property-key regex."}
+                    :cascade {:type "boolean"
+                              :description "When true, include the target's enumerated dependents (section tree + frontmatter carrier) in the retraction.  Default false — dependents survive as orphans (refs are not :db/isComponent)."}
+                    :reason  {:type "string"
+                              :description "REQUIRED when :persist — human-readable audit string carried into the :mm.event/EntityRetracted event."}
+                    :actor   {:type "string"
+                              :description "Optional actor ref recorded on the audit event."}}
+                   [:targets])
+    :handler entity-retract-handler}
 
    ;; Aggregation operations (Stage 14 — fulltext arc Phase G).
    ;; Descriptions follow the WHICH/WHEN/HOW/ORDER/COMBINATION discipline
