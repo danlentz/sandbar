@@ -527,8 +527,12 @@
                       s))]
     [(vec (vals entries)) stats]))
 
-(defn search-bm25f
-  "Multi-field BM25F search over Datomic-stored entities of `:class`.
+(defn- search-bm25f-single
+  "Single-class BM25F search over Datomic-stored entities of `:class`.
+
+  This is the substrate-correct single-class scoring pipeline (unchanged
+  from HEAD; the public `search-bm25f` below dispatches here for a
+  keyword `:class` and fans out to it per-class for a vec `:class`).
 
   Pipeline tokenizes the query, walks all instances of the class, analyzes
   + stats + scores each via the ported Robertson-Zaragoza canonical
@@ -710,6 +714,163 @@
                          :timing   {:total-ms (- t-end t-start)}}]
     (cond-> result
       (seq facet-by) (assoc :facets (facet-counts sorted facet-by)))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; D7 — multi-class :class vec (strategic-subgroup scope; C12 gap closure)
+;;
+;; Per D7 of decisions/c8_ratification_batch_d1_d9_plus_defaults_all_approved_
+;; 2026_07_02 (Dan-ratified): the retrieval discipline's DEFAULT tier
+;; (strategic-subgroup scope per interaction/scope_vs_global_retrieval_
+;; discipline.md) had no single-call MCP surface because `:class` was
+;; single-valued.  The ratified fix: `:class` accepts a VEC of class idents
+;; (single ident stays supported, byte-for-byte backward-compatible).
+;;
+;; v1 merge semantics — transparent and simple: query each class with its
+;; OWN declared `:dt/bm25f-weights` (per-class field weighting is the
+;; design center of BM25F here — a Tag's :mm.tag/value weight ≠ a Memory's
+;; :mm.memory/name weight), then merge hit lists and sort by RAW score
+;; descending, applying `:limit` AFTER the merge.
+;;
+;; HONEST CAVEAT (documented in the MCP card + here): cross-class raw-score
+;; comparability is APPROXIMATE.  Each class computes its own IDF (df/N over
+;; that class's corpus) and length-normalization (per-class avgdl), so raw
+;; BM25F scores across classes are not on a unified scale.  A deeper
+;; score-unification (e.g. per-class score standardization, or a shared
+;; corpus-stats model) is explicitly OUT of v1 — noted as a future
+;; refinement, not a silent limitation.
+;;
+;; Cache: NO new cache layer.  A multi-class call hits N per-class BM25F
+;; caches exactly as N independent single-class calls would (the
+;; per-class analyzed-corpus + stats caches keyed by class-ident; see the
+;; cache section above).  Invalidation is unchanged (hook-driven per-entity
+;; per interaction/bm25f_cache_invalidation_must_support_normal_mm_memory_
+;; updates).
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(def ^:private +multiclass-cap+
+  "Upper bound on the number of classes in a multi-class `:class` vec.
+  A strategic subgroup is a curated handful, not the whole lattice
+  (per D7 — vec is 2..8).  Over-cap raises a loud error."
+  8)
+
+(defn- multiclass?
+  "True when `class` is a sequential of class idents (the multi-class
+  vec form), false when it is a single class-ident keyword."
+  [class]
+  (sequential? class))
+
+(defn- validate-multiclass-vec!
+  "Loud-error boundary for the multi-class `:class` vec form.  Throws
+  ex-info when: the vec is empty, exceeds `+multiclass-cap+`, or contains
+  a non-keyword member.  Per D7 decision-token 1 (2..8; empty vec → loud
+  error) + HARD-CONSTRAINT loud-error semantics."
+  [classes]
+  (when (empty? classes)
+    (throw (ex-info "Multi-class :class vec must be non-empty (2..8 class idents)"
+                    {:class classes :count 0})))
+  (when (> (count classes) +multiclass-cap+)
+    (throw (ex-info (str "Multi-class :class vec exceeds cap of " +multiclass-cap+
+                         " (a strategic subgroup is a curated handful, not the whole lattice)")
+                    {:class classes :count (count classes) :cap +multiclass-cap+})))
+  (when-not (every? keyword? classes)
+    (throw (ex-info "Every member of a multi-class :class vec must be a class-ident keyword"
+                    {:class classes
+                     :non-keyword-members (vec (remove keyword? classes))})))
+  ;; A single-element vec is a degenerate subgroup; require >= 2 so the
+  ;; single-ident form stays the canonical single-class surface (D7
+  ;; decision-token 1 declares the vec range as 2..8).
+  (when (< (count classes) 2)
+    (throw (ex-info "Multi-class :class vec must contain at least 2 class idents; use a bare ident for single-class search"
+                    {:class classes :count (count classes)}))))
+
+(defn- search-bm25f-multi
+  "Multi-class BM25F search — the D7 strategic-subgroup fan-out.
+
+  Queries each class in `classes` via `search-bm25f-single` with its OWN
+  declared `:dt/bm25f-weights` and `:limit 0` (no per-class cap — the cap
+  applies AFTER the merge), then merges the per-class hit lists, sorts by
+  raw score descending, and applies `:limit` post-merge.
+
+  Compositions:
+   - `:where`     applies per-class (same `?e` contract; each class's
+                  single-class call runs the Datalog filter against its
+                  own instance set).
+   - `:from`/`:via` graph-walk pre-filter applies per-class (each single
+                  call intersects the walk-reachable set with its own
+                  candidate set — path-via is class-agnostic so the same
+                  reachable eids intersect correctly per class).
+   - `:rank-by`   applies per-class BEFORE the merge (structural re-rank
+                  is a post-scoring re-order; each class re-ranks its own
+                  survivors, then the merged list sorts by the resulting
+                  `:score`).  Documented in NOTES as a v1 approximation —
+                  cross-class structural ranking on a unified axis is a
+                  future refinement.
+   - `:facet-by`  facets over the MERGED full match-set (computed here,
+                  post-merge, so counts span all classes).
+   - `:field-weights` is REJECTED with a vec (loud error) — per-class
+                  overrides are out of v1 (D7 decision-token 4).
+
+  Per-hit class visibility: each hit's `:entity` carries `:dt/type` even
+  in metadata-only projection (per sandbar.api.projection), so callers can
+  tell classes apart in the merged list.  Verified by T2.
+
+  Returns the canonical `{:hits :total :returned :timing}` shape (plus
+  `:facets` when `:facet-by` supplied).  `:total` is the merged full-match
+  count across all classes; `:returned` is post-limit."
+  [{:keys [class limit facet-by field-weights] :or {limit 20} :as opts}]
+  (validate-multiclass-vec! class)
+  (when field-weights
+    (throw (ex-info ":field-weights override is not supported with a multi-class :class vec (per-class overrides are out of v1); supply a single :class for a weights override"
+                    {:class class :field-weights field-weights})))
+  (let [t-start   (System/currentTimeMillis)
+        ;; Per-class calls: strip :facet-by (faceting happens over the
+        ;; MERGED set here, not per-class), force :limit 0 (cap applies
+        ;; post-merge), keep everything else (:query :where :from :via
+        ;; :rank-by :temporal-slot :include :projection) so each class's
+        ;; single-class pipeline composes them per-class.
+        per-class-opts (-> opts
+                           (dissoc :facet-by :class :limit)
+                           (assoc :limit 0))
+        per-class-res  (mapv (fn [c]
+                               (search-bm25f-single (assoc per-class-opts :class c)))
+                             class)
+        merged-hits    (into [] (mapcat :hits) per-class-res)
+        ;; Merge + sort by raw score descending.  Cross-class raw-score
+        ;; comparability is APPROXIMATE (per-class IDF/length norm differ).
+        sorted         (vec (sort-by :score > merged-hits))
+        total          (count sorted)
+        limited        (if (zero? limit) sorted (vec (take limit sorted)))
+        t-end          (System/currentTimeMillis)
+        result         {:hits     limited
+                        :total    total
+                        :returned (count limited)
+                        :timing   {:total-ms (- t-end t-start)}}]
+    (cond-> result
+      (seq facet-by) (assoc :facets (facet-counts sorted facet-by)))))
+
+(defn search-bm25f
+  "Multi-field BM25F search over Datomic-stored entities of `:class`.
+
+  `:class` accepts EITHER a single class-ident keyword (single-class
+  scope — unchanged from HEAD) OR a vec of 2..8 class-ident keywords
+  (multi-class strategic-subgroup scope — D7).  For the single form this
+  delegates byte-identically to the substrate-correct single-class
+  pipeline; for the vec form it fans out per-class (each with its own
+  `:dt/bm25f-weights`), merges the hit lists, sorts by raw score
+  descending, and applies `:limit` post-merge.
+
+  See `search-bm25f-single` (the single-class pipeline; full opt
+  documentation) and `search-bm25f-multi` (the multi-class fan-out +
+  composition semantics + the approximate cross-class score-comparability
+  caveat).
+
+  Per D7 of decisions/c8_ratification_batch_d1_d9_plus_defaults_all_
+  approved_2026_07_02 (closes the C12 strategic-subgroup gap) + fulltext
+  arc Stage 4c + Stage 29."
+  [{:keys [class] :as opts}]
+  (if (multiclass? class)
+    (search-bm25f-multi opts)
+    (search-bm25f-single opts)))
 
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;

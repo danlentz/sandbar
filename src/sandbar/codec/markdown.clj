@@ -1768,9 +1768,20 @@
        with the class entity.  No section decomposition; no rel-path slot
        (path is derivable from `memory/<plural>/<name>.md` convention)."
   [source rel-path]
-  (let [memory-ident   (or (memory-ident-from-rel-path rel-path)
+  ;; D2 routing fix (2026-07-02, per decisions/c8_ratification_batch_d1_d9_…):
+  ;; derive the host ident via the CANONICAL converter `rel-path->memory-ident`
+  ;; (prepends `memory.`, handles the ident-string form, applies the P6
+  ;; digit-dodge) so a `:from` anchored at ANY root — including `.../memory`
+  ;; — mints a canonical `memory.`-prefixed ident.  Kills the bare-ident
+  ;; duplicate class (bugs/project_import_drops_memory_namespace_prefix_bare_-
+  ;; ident_2026_07_01).  The stored `:mm.memory/rel-path` is normalized to the
+  ;; UNPREFIXED form so the reactive sink's output-path computation routes to
+  ;; the REAL corpus path (kills the `memory/memory/` junk-twin mis-route for
+  ;; re-imported entities).  From reconcile-2026-07-02/import-fix-and-loading.md §1.4.
+  (let [memory-ident   (or (rel-path->memory-ident rel-path)
                            (throw (ex-info "parse-document requires a rel-path that yields a valid memory ident"
                                            {:rel-path rel-path})))
+        stored-rel-path (str/replace rel-path #"^memory/" "")
         resolved-class (resolve-document-class source)
         c              (make-codec)
         ;; Thread the host memory-ident so the extras carrier is minted
@@ -1781,7 +1792,7 @@
                                               :host-ident memory-ident})
         entity         (cond-> (assoc entity :db/ident memory-ident)
                          (memory-class? resolved-class)
-                         (assoc :mm.memory/rel-path rel-path))]
+                         (assoc :mm.memory/rel-path stored-rel-path))]
     (if (memory-class? resolved-class)
       (let [body-raw (:mm.memory/body-raw entity)
             sections (parse-sections body-raw memory-ident)]

@@ -331,27 +331,33 @@
         entities (md/parse-document src "decisions/foo.md")]
     (is (= 3 (count entities)) "memory + 2 sections")
     (let [[memory ctx decision] entities]
-      (is (= :decisions/foo (:db/ident memory)))
+      ;; D2 routing fix (2026-07-02): parse-document now derives the CANONICAL
+      ;; `memory.`-prefixed ident via rel-path->memory-ident (was the bare
+      ;; :decisions/foo — the bug per project_import_drops_memory_namespace_-
+      ;; prefix_bare_ident_2026_07_01).
+      (is (= :memory.decisions/foo (:db/ident memory)))
       ;; Post-2026-05-21: type: decision routes to :mm/Decision (subclass of :mm/Memory)
       ;; via :dt/codec-type-keyword.  Codec walks :dt/subclass-of for slot inheritance.
       (is (= :mm/Decision   (:dt/type memory)))
       (is (= "Foo Decision" (:mm.memory/name memory)))
       (is (= :decision      (:mm.memory/memory-type memory)))
-      (is (= :decisions/foo__context (:mm.memory/first-section memory)))
-      ;; Memory's rel-path captured
+      (is (= :memory.decisions/foo__context (:mm.memory/first-section memory)))
+      ;; Memory's rel-path captured — UNPREFIXED form (D2 normalization); the
+      ;; input `decisions/foo.md` had no `memory/` prefix so it is unchanged.
       (is (= "decisions/foo.md" (:mm.memory/rel-path memory)))
       ;; Section ctx
-      (is (= :decisions/foo__context (:db/ident ctx)))
+      (is (= :memory.decisions/foo__context (:db/ident ctx)))
       (is (= "Context" (:mm.section/heading ctx)))
       ;; Section decision
-      (is (= :decisions/foo__decision (:db/ident decision)))
+      (is (= :memory.decisions/foo__decision (:db/ident decision)))
       (is (= "Decision" (:mm.section/heading decision))))))
 
 (deftest parse-document-frontmatter-only
   (let [src "---\nname: Empty\n---\n"
         entities (md/parse-document src "notes/empty.md")]
     (is (= 1 (count entities)) "frontmatter-only memory → no sections")
-    (is (= :notes/empty (:db/ident (first entities))))))
+    ;; D2 routing fix (2026-07-02): canonical prefixed ident (was :notes/empty).
+    (is (= :memory.notes/empty (:db/ident (first entities))))))
 
 (deftest round-trip-document-sections
   (let [src (str "---\n"
@@ -423,12 +429,14 @@
     (is (= 7 (count parsed)) "memory + 6 sections (one per level)")
     ;; Each level's parent walks up properly
     (let [sections (rest parsed)]
-      (is (= [:decisions/deep
-              :decisions/deep__l1
-              :decisions/deep__l1__l2
-              :decisions/deep__l1__l2__l3
-              :decisions/deep__l1__l2__l3__l4
-              :decisions/deep__l1__l2__l3__l4__l5]
+      ;; D2 routing fix (2026-07-02): parent idents are the canonical
+      ;; `memory.`-prefixed form (were bare :decisions/deep…).
+      (is (= [:memory.decisions/deep
+              :memory.decisions/deep__l1
+              :memory.decisions/deep__l1__l2
+              :memory.decisions/deep__l1__l2__l3
+              :memory.decisions/deep__l1__l2__l3__l4
+              :memory.decisions/deep__l1__l2__l3__l4__l5]
              (mapv :mm.section/parent sections))))
     ;; Round-trip preserves structure
     (is (= (mapv :db/ident parsed) (mapv :db/ident reparsed)))))
@@ -508,8 +516,9 @@
                  "## Next-Steps\n\nB.\n")
         parsed   (md/parse-document src "decisions/special.md")]
     (is (= 3 (count parsed)))
-    (is (= :decisions/special__qa-first    (-> parsed second :db/ident)))
-    (is (= :decisions/special__next-steps  (-> parsed last :db/ident)))))
+    ;; D2 routing fix (2026-07-02): canonical prefixed section idents.
+    (is (= :memory.decisions/special__qa-first    (-> parsed second :db/ident)))
+    (is (= :memory.decisions/special__next-steps  (-> parsed last :db/ident)))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Stage 7.C — class-routing via :dt/codec-type-keyword
@@ -559,7 +568,8 @@
     (is (= 1 (count entities)) "tag document = single entity; no section decomposition")
     (let [tag (first entities)]
       (is (= :mm/Tag    (:dt/type tag)) "routes to :mm/Tag class")
-      (is (= :tags/audit (:db/ident tag)) "ident derives from rel-path")
+      ;; D2 routing fix (2026-07-02): canonical prefixed ident (was :tags/audit).
+      (is (= :memory.tags/audit (:db/ident tag)) "ident derives from rel-path")
       (is (= "audit"    (:mm.tag/value tag)) "value slot populated from frontmatter")
       (is (= "A discipline-checking pass over the corpus."
              (:mm.tag/definition tag)) "definition slot populated")
