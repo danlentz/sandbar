@@ -1321,6 +1321,64 @@
       ""
       (str (str/join "\n" all-parts) "\n"))))
 
+(defn- strip-shadow-collisions
+  "Drop shadow slots that would emit to the SAME frontmatter key as a
+   canonical (class-declared) slot, so the authoritative value wins on emit.
+
+   THE DEFECT this heals (bugs/mm_rule_derived_projection_lag_stale_
+   frontmatter_emit_reimport_regression_risk_2026_07_03): a class can carry
+   a slot whose frontmatter-key COLLIDES with a canonical slot's — e.g.
+   :mm/Rule instances persist both the inherited canonical :mm.memory/name
+   and a legacy same-named :mm.rule/name (a doubly-declared attribute whose
+   position β.2.2 Phase I moved to :mm.memory/* but whose stored value was
+   never dropped).  Both map to the `name:` YAML key via
+   `slot->frontmatter-key`.  Because the shadow slot is absent from the
+   class's `:dt/codec-slot-order`, it appends as an emit `extras` key AFTER
+   the declared canonical slot and OVERWRITES it in the ordered YAML map —
+   serializing the STALE shadow value.  :mm.rule/body-raw is worse: it is
+   not the body-slot, so it leaks a whole stale `body-raw:` frontmatter
+   block.  :mm/Protocol has no such shadow, which is why it emits faithfully;
+   this restores that property for every class SUBSTRATE-PURELY.
+
+   Resolution — purely metamodel-introspective (NO hardcoded class/slot
+   knowledge per interaction/no_hardcoded_consumer_class_knowledge_in_
+   substrate_2026_05_13).  A shadow slot is dropped when its emitted YAML
+   key is ALSO claimed by an authoritative source:
+     - the class's BODY-SLOT (`body-slot-for`) — its key rides the
+       post-fence body, so any same-keyed frontmatter slot (e.g.
+       :mm.rule/body-raw, whose key is `body-raw`, same as the canonical
+       :mm.memory/body-raw body-slot) is a stale leak; OR
+     - a DIFFERENT class-EFFECTIVE slot (`dt/slots-of`) present in
+       `fm-slots` that emits to the same key.
+   Collisions among only non-effective / non-body slots are left untouched —
+   there is no authoritative basis to prefer one, and this fix must not
+   change unrelated emit behavior.  Non-colliding slots (including
+   cross-cutting display slots like :mm/pref-label that are not
+   class-effective but collide with nothing) are preserved verbatim."
+  [fm-slots class-ident]
+  (let [effective     (dt/slots-of class-ident)
+        body-key      (slot->frontmatter-key class-ident (body-slot-for class-ident))
+        ;; yaml-key → seq of slots in fm-slots that emit to it.
+        by-key        (group-by #(slot->frontmatter-key class-ident %)
+                                (keys fm-slots))
+        ;; Shadow slots to drop.
+        shadows       (into #{}
+                            (for [[yaml-key slots] by-key
+                                  ;; The key is authoritatively claimed when the
+                                  ;; body-slot owns it, OR an effective slot emits it.
+                                  :let  [body-owned? (= yaml-key body-key)
+                                         has-effective? (some effective slots)]
+                                  :when (or body-owned? has-effective?)
+                                  slot  slots
+                                  ;; Drop non-effective slots on a claimed key.
+                                  ;; (An effective slot on an effective-claimed key
+                                  ;; is the authority and is kept.)
+                                  :when (not (contains? effective slot))]
+                              slot))]
+    (if (empty? shadows)
+      fm-slots
+      (into {} (remove (fn [[k _]] (contains? shadows k))) fm-slots))))
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; MarkdownCodec record — implements proto/Codec
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -1378,19 +1436,24 @@
           ;; through the generic fm-slots and re-emitted as !!java.util.UUID).
           ;; Source the id: line from either; strip both below.
           identity-uuid (or (:mm.memory/identity entity) (:mm/id entity))
-          fm-slots      (into {}
-                              (remove (fn [[k _]]
-                                        (or (= :dt/type k)
-                                            (= body-slot k)
-                                            (= :mm.memory/frontmatter k)
-                                            (= :mm.memory/identity k)
-                                            (= :mm/id k)
-                                            (and (keyword? k)
-                                                 (when-let [ns (namespace k)]
-                                                   (or (= "db" ns)
-                                                       (str/starts-with? ns "db.")
-                                                       (= :mm.memory/rel-path k)))))))
-                              entity)
+          fm-slots      (-> (into {}
+                                   (remove (fn [[k _]]
+                                             (or (= :dt/type k)
+                                                 (= body-slot k)
+                                                 (= :mm.memory/frontmatter k)
+                                                 (= :mm.memory/identity k)
+                                                 (= :mm/id k)
+                                                 (and (keyword? k)
+                                                      (when-let [ns (namespace k)]
+                                                        (or (= "db" ns)
+                                                            (str/starts-with? ns "db.")
+                                                            (= :mm.memory/rel-path k)))))))
+                                   entity)
+                            ;; Drop legacy shadow slots (e.g. :mm.rule/name)
+                            ;; that would clobber a canonical same-keyed slot
+                            ;; (:mm.memory/name) with a stale value on emit —
+                            ;; the :mm/Rule derived-projection-lag defect.
+                            (strip-shadow-collisions class-ident))
           ;; Declared-slot frontmatter: extras-aware order walk when a
           ;; carrier is present (SPEC.md §3), else the legacy codec-slot-
           ;; order emit (byte-identical to pre-carrier behavior — R8).
