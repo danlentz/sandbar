@@ -63,6 +63,7 @@
             [sandbar.mcp.envelope       :as envelope]
             [sandbar.mcp.notifications  :as notifications]
             [sandbar.mcp.resources      :as resources]
+            [sandbar.util.auth          :as auth]
             [sandbar.util.jsonrpc-status :as jsonrpc-status]
             [sandbar.service.validation :as validation]
             [sandbar.util.workflow      :as workflow]
@@ -3207,6 +3208,54 @@
                  verb-catalog)}))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Read-only token gate — the single authorization choke point
+;;
+;; A read-only principal (Bearer codex-review token; util/auth read-only-role)
+;; may call read/introspection verbs only.  Rather than maintain a verb
+;; allowlist on the role, the gate DERIVES permission from the same
+;; `verb-behavioral-hints` leaf classifier that produces the wire
+;; ToolAnnotations — one source of truth for a verb's mutation-ness, so the
+;; enforced set can never drift from the advertised set.  This is
+;; deny-by-default: a future verb whose leaf is unknown classifies as
+;; mutating and is rejected until proven read-only.
+;; Per decisions/review_gate_runbook_wave1_ratification_fable_rulings_2026_07_02.md
+;; ruling 8 + scratchpad/review-gate-runbook-2026-07-02/CODEX-RUNBOOK.md §2.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(def ^:private read-only-denied-overrides
+  "Verbs the leaf classifier calls read-only but which a read-only principal
+   must NOT reach.  `sandbar.project.export` leaf-classifies read-only (its
+   `export` leaf is in `read-only-verb-leaves`) yet WRITES the filesystem, so
+   the derived allowlist gets exactly this one curated subtraction.
+   Per the A2 C8 ruling (never export to the repo root)."
+  #{"sandbar.project.export"})
+
+(defn verb-permitted-for-read-only?
+  "True iff a read-only principal may call the verb named `verb-name`: the
+   verb classifies read-only via `verb-behavioral-hints` AND is not one of the
+   curated `read-only-denied-overrides`.  An unknown/uncataloged leaf
+   classifies as mutating, so this returns false — deny-by-default."
+  [verb-name]
+  (and (:read-only? (verb-behavioral-hints verb-name))
+       (not (contains? read-only-denied-overrides verb-name))))
+
+(defn- read-only-denied
+  "The JSON-RPC permission-error envelope rejecting a mutating `verb-name` for
+   a read-only principal.  Fails loud: names the verb + the principal's role +
+   the role's read-only contract, so the caller learns exactly why."
+  [id verb-name]
+  (log/warn :MCP/read-only-denied {:tool verb-name :role auth/read-only-role})
+  (envelope/jsonrpc-error id jsonrpc-status/invalid-params
+                          (str "Permission denied: verb '" verb-name
+                               "' mutates the substrate and the authenticated"
+                               " principal holds the read-only role ("
+                               auth/read-only-role
+                               "), which may call read/introspection verbs only.")
+                          {:tool verb-name
+                           :role auth/read-only-role
+                           :reason :read-only-principal-forbidden-mutation}))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; tools/call — dispatch verb by name; project result to MCP content array
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
@@ -3264,57 +3313,74 @@
   "MCP `tools/call` — dispatch a named verb from the catalog and project
    its result.
 
+   `principal` (the 3-arity) is the authenticated MCP principal, or nil.  A
+   read-only principal (util/auth read-only-role) is gated here: any verb that
+   is not read-only-permitted is rejected with a permission error BEFORE the
+   handler runs.  A nil principal (the legacy/local path) is ungated — full
+   access, unchanged behavior.  The 2-arity is the nil-principal path,
+   preserving the pre-gate call contract used by in-process callers.
+
    Response shapes:
    - Success: `{:content [{:type \"text\" :text <json>}]}`
    - User error (ex-info from handler): `{:content [...] :isError true}`
    - Unknown verb: JSON-RPC `invalid-params`
+   - Read-only principal calling a mutating verb: JSON-RPC `invalid-params`
    - Precondition failure: JSON-RPC `internal-error`
    - Internal error: JSON-RPC `internal-error`
 
    Error codes via `sandbar.util.jsonrpc-status` (semantic constants)."
-  [id params]
-  (let [tool-name (:name params)
-        arguments (:arguments params {})
-        verb      (get verb-by-name tool-name)]
-    (cond
-      (nil? verb)
-      (envelope/jsonrpc-error id jsonrpc-status/invalid-params
-                              (str "Unknown tool: " tool-name)
-                              {:received-name tool-name
-                               :available-tools (mapv :name verb-catalog)})
+  ([id params] (handle-call id params nil))
+  ([id params principal]
+   (let [tool-name (:name params)
+         arguments (:arguments params {})
+         verb      (get verb-by-name tool-name)]
+     (cond
+       (nil? verb)
+       (envelope/jsonrpc-error id jsonrpc-status/invalid-params
+                               (str "Unknown tool: " tool-name)
+                               {:received-name tool-name
+                                :available-tools (mapv :name verb-catalog)})
 
-      :else
-      (try
-        (let [result (try
-                       ((:handler verb) arguments)
-                       (catch clojure.lang.ExceptionInfo e
-                         {:_user-error true
-                          :message (.getMessage e)
-                          :details (ex-data e)}))]
-          (if (:_user-error result)
-            (envelope/jsonrpc-result id
-                                     {:content (result->content
-                                                 (dissoc result :_user-error))
-                                      :isError true})
-            (envelope/jsonrpc-result id
-                                     {:content (result->content result)})))
-        ;; Catch :pre / assertion-error failures separately from Exception.
-        ;; AssertionError extends java.lang.Error (NOT Exception), so without
-        ;; this explicit catch, assertion failures escape the MCP envelope
-        ;; entirely — the codex F-MF-3 release-blocker.  Sibling catch
-        ;; (rather than (catch Throwable ...)) preserves JVM-error
-        ;; propagation discipline: OutOfMemoryError / StackOverflowError /
-        ;; etc. should not be masked as MCP -32603.
-        ;; See decisions/sandbar_entity_ref_abstraction_2026_05_14.md §D-3.3.
-        (catch AssertionError e
-          (log/error e :MCP/precondition-failed {:tool tool-name})
-          (envelope/jsonrpc-error id jsonrpc-status/internal-error
-                                  "Internal-invariant precondition failed at MCP boundary"
-                                  {:tool tool-name
-                                   :assertion (.getMessage e)}))
-        (catch Exception e
-          (log/error e :MCP/tools-call-error {:tool tool-name})
-          (envelope/jsonrpc-error id jsonrpc-status/internal-error
-                                  "Tool execution failed"
-                                  {:tool tool-name
-                                   :exception-message (.getMessage e)}))))))
+       ;; Read-only token gate — deny-by-default for a restricted principal.
+       ;; Placed after the unknown-verb check (so an unknown verb still reports
+       ;; as unknown, not as a permission failure) and before dispatch, the one
+       ;; authorization choke point the whole verb surface funnels through.
+       (and (auth/read-only-principal? principal)
+            (not (verb-permitted-for-read-only? tool-name)))
+       (read-only-denied id tool-name)
+
+       :else
+       (try
+         (let [result (try
+                        ((:handler verb) arguments)
+                        (catch clojure.lang.ExceptionInfo e
+                          {:_user-error true
+                           :message (.getMessage e)
+                           :details (ex-data e)}))]
+           (if (:_user-error result)
+             (envelope/jsonrpc-result id
+                                      {:content (result->content
+                                                  (dissoc result :_user-error))
+                                       :isError true})
+             (envelope/jsonrpc-result id
+                                      {:content (result->content result)})))
+         ;; Catch :pre / assertion-error failures separately from Exception.
+         ;; AssertionError extends java.lang.Error (NOT Exception), so without
+         ;; this explicit catch, assertion failures escape the MCP envelope
+         ;; entirely — the codex F-MF-3 release-blocker.  Sibling catch
+         ;; (rather than (catch Throwable ...)) preserves JVM-error
+         ;; propagation discipline: OutOfMemoryError / StackOverflowError /
+         ;; etc. should not be masked as MCP -32603.
+         ;; See decisions/sandbar_entity_ref_abstraction_2026_05_14.md §D-3.3.
+         (catch AssertionError e
+           (log/error e :MCP/precondition-failed {:tool tool-name})
+           (envelope/jsonrpc-error id jsonrpc-status/internal-error
+                                   "Internal-invariant precondition failed at MCP boundary"
+                                   {:tool tool-name
+                                    :assertion (.getMessage e)}))
+         (catch Exception e
+           (log/error e :MCP/tools-call-error {:tool tool-name})
+           (envelope/jsonrpc-error id jsonrpc-status/internal-error
+                                   "Tool execution failed"
+                                   {:tool tool-name
+                                    :exception-message (.getMessage e)})))))))

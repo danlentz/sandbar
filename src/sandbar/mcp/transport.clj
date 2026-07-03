@@ -34,11 +34,17 @@
 
    Per B.1.1: Streamable HTTP returns either a JSON response (single
    message) or initiates an SSE stream (multi-message responses;
-   Stage C.3). C.1 returns single-message JSON responses only."
+   Stage C.3). C.1 returns single-message JSON responses only.
+
+   The authenticated principal (attached to `[:request :identity]` by
+   sandbar.mcp.auth/bearer-interceptor) is threaded into dispatch so the
+   tools/call token gate can authorize the verb.  A nil principal (no
+   Bearer token — the legacy/local path) leaves dispatch's behavior
+   unchanged."
   [request _ent-store data]
   (log/debug :MCP/inbound {:method (get data :method)
                             :id     (get data :id)})
-  (let [response (protocol/dispatch data)]
+  (let [response (protocol/dispatch data (:identity request))]
     (if response
       (endpoint/return http-status/success response)
       ;; Notification (no id, no expected response) — return 204 No Content

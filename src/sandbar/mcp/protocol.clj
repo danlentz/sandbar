@@ -103,46 +103,58 @@
 (def method-handlers
   "Method dispatch table. Stages C.1+C.4 added initialize + tools/*;
    Stage C.5 adds resources/*; subsequent stages add prompts/* +
-   tasks/*."
-  {"initialize"                  handle-initialize
-   "notifications/initialized"   (fn [_ _] nil) ;; client confirms ready; no response
-   "tools/list"                  (fn [id params] (tools/handle-list id params))
-   "tools/call"                  (fn [id params] (tools/handle-call id params))
-   "resources/list"              (fn [id params] (resources/handle-list id params))
-   "resources/read"              (fn [id params] (resources/handle-read id params))
-   "resources/subscribe"         (fn [id params] (resources/handle-subscribe id params))
-   "resources/unsubscribe"       (fn [id params] (resources/handle-unsubscribe id params))
-   "prompts/list"                (fn [id params] (prompts/handle-list id params))
-   "prompts/get"                 (fn [id params] (prompts/handle-get id params))
-   "tasks/list"                  (fn [id params] (tasks/handle-list id params))
-   "tasks/get"                   (fn [id params] (tasks/handle-get id params))
-   "tasks/cancel"                (fn [id params] (tasks/handle-cancel id params))})
+   tasks/*.
+
+   Every handler is `(fn [id params principal] -> response)`.  Only
+   `tools/call` consults the principal (the read-only token gate); the rest
+   accept and ignore it so `dispatch` can invoke the whole table uniformly
+   without special-casing the authorized method."
+  {"initialize"                  (fn [id params _] (handle-initialize id params))
+   "notifications/initialized"   (fn [_ _ _] nil) ;; client confirms ready; no response
+   "tools/list"                  (fn [id params _] (tools/handle-list id params))
+   "tools/call"                  (fn [id params principal] (tools/handle-call id params principal))
+   "resources/list"              (fn [id params _] (resources/handle-list id params))
+   "resources/read"              (fn [id params _] (resources/handle-read id params))
+   "resources/subscribe"         (fn [id params _] (resources/handle-subscribe id params))
+   "resources/unsubscribe"       (fn [id params _] (resources/handle-unsubscribe id params))
+   "prompts/list"                (fn [id params _] (prompts/handle-list id params))
+   "prompts/get"                 (fn [id params _] (prompts/handle-get id params))
+   "tasks/list"                  (fn [id params _] (tasks/handle-list id params))
+   "tasks/get"                   (fn [id params _] (tasks/handle-get id params))
+   "tasks/cancel"                (fn [id params _] (tasks/handle-cancel id params))})
 
 (defn dispatch
   "Dispatch a single JSON-RPC message. Returns a response map (or nil for
    pure-notification messages with no response expected).
 
+   `principal` is the authenticated MCP principal (or nil on the
+   legacy/local path); it is threaded to the method handler so `tools/call`
+   can authorize the verb under the read-only token gate.  The 1-arity
+   overload dispatches with no principal (full access), preserving the
+   pre-gate call contract.
+
    Error handling per JSON-RPC spec (codes via `sandbar.util.jsonrpc-status`):
    - Unknown method → `method-not-found`
    - Invalid params → `invalid-params` (handler may raise; we catch + map)
    - Handler exception → `internal-error`"
-  [msg]
-  (let [{:keys [id method params]} msg]
-    (cond
-      (not (envelope/valid-envelope? msg))
-      (envelope/jsonrpc-error nil jsonrpc-status/invalid-request "Invalid Request" {:received msg})
+  ([msg] (dispatch msg nil))
+  ([msg principal]
+   (let [{:keys [id method params]} msg]
+     (cond
+       (not (envelope/valid-envelope? msg))
+       (envelope/jsonrpc-error nil jsonrpc-status/invalid-request "Invalid Request" {:received msg})
 
-      (nil? method)
-      (envelope/jsonrpc-error id jsonrpc-status/invalid-request "Invalid Request — method missing")
+       (nil? method)
+       (envelope/jsonrpc-error id jsonrpc-status/invalid-request "Invalid Request — method missing")
 
-      :else
-      (if-let [handler (get method-handlers method)]
-        (try
-          (handler id params)
-          (catch Exception e
-            (log/error e :MCP/dispatch-error
-                       {:method method :id id})
-            (envelope/jsonrpc-error id jsonrpc-status/internal-error "Internal error"
-                                    {:exception-message (.getMessage e)})))
-        (envelope/jsonrpc-error id jsonrpc-status/method-not-found
-                                (str "Method not found: " method))))))
+       :else
+       (if-let [handler (get method-handlers method)]
+         (try
+           (handler id params principal)
+           (catch Exception e
+             (log/error e :MCP/dispatch-error
+                        {:method method :id id})
+             (envelope/jsonrpc-error id jsonrpc-status/internal-error "Internal error"
+                                     {:exception-message (.getMessage e)})))
+         (envelope/jsonrpc-error id jsonrpc-status/method-not-found
+                                 (str "Method not found: " method)))))))

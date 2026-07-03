@@ -132,7 +132,16 @@
                       (do
                         (log/debug :MCP/bearer-authenticated
                                    {:principal-id (-> result :principal :db/id)})
-                        (assoc context :identity (:principal result)))
+                        ;; Attach the principal to BOTH the context (for
+                        ;; interceptors like require-bearer) AND the request
+                        ;; map — the MCP handler is a `defhandler` and receives
+                        ;; only the REQUEST (service/endpoint.clj standard-endpoint),
+                        ;; so the dispatch-path token gate reads the principal
+                        ;; from `[:request :identity]`.  Mirrors the X-API-Key
+                        ;; + session interceptors (util/auth.clj).
+                        (-> context
+                            (assoc :identity (:principal result))
+                            (assoc-in [:request :identity] (:principal result))))
                       (do
                         (log/warn :MCP/bearer-rejected
                                   {:reason (:reason result)

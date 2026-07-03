@@ -336,6 +336,33 @@
     (some #(= role-name (:auth/role-name (if (map? %) % (db/entity %)))) roles)))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Read-only principal — the restricted-reviewer role
+;;
+;; The `:read-only` role is a CAPABILITY MARKER, not a permission bag: it
+;; carries no verb allowlist of its own.  Its meaning is enforced at the MCP
+;; dispatch choke point (`sandbar.mcp.tools/handle-call`), which classifies
+;; each verb's mutation-ness and rejects the mutating ones for a read-only
+;; principal.  Keeping the allowlist OUT of the role (derived at the gate from
+;; the live verb registry) is deny-by-default for future verbs — a new verb is
+;; rejected until it is proven read-only, never silently permitted.
+;; Per decisions/review_gate_runbook_wave1_ratification_fable_rulings_2026_07_02.md
+;; ruling 8.
+
+(def read-only-role
+  "The role-name keyword marking a principal as read-only (the codex-review
+   reviewer role).  The MCP gate treats a principal carrying this role as
+   permitted to call read/introspection verbs only."
+  :read-only)
+
+(defn read-only-principal?
+  "True iff `principal` carries the `:read-only` role.  Returns false for nil
+   (no authenticated principal — the legacy/local full-access path), so the
+   MCP gate is a no-op unless a restricted principal is actually present."
+  [principal]
+  (and (some? principal)
+       (boolean (has-role? principal read-only-role))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Pedestal Interceptors
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
