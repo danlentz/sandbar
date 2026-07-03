@@ -338,7 +338,7 @@ The MCP transport is served at `/mcp` (not under `/api/store/*`).  See [`doc/api
 | Method                          | Endpoint    | Description                                |
 |---------------------------------|-------------|--------------------------------------------|
 | `POST`                          | `/mcp`      | JSON-RPC envelope; reads result            |
-| `POST` (with `Accept: text/event-stream`) | `/mcp` | Subscribe for SSE notifications |
+| `POST` (with `Accept: text/event-stream`) | `/mcp` | Returns the JSON-RPC response as a single SSE `data:` frame (when SSE is negotiated). Notifications subscribe via `GET /mcp/sse`. |
 
 ## Pagination
 
