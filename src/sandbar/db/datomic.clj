@@ -223,6 +223,93 @@
 ;; clear-type-relation-cache! + search.clj's auto-registration of clear-bm25f-cache!)
 
 
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Schema-seeded constraint sub-entity self-heal
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;
+;; The 2 Option-ε interval XOR seed shapes (schema/mm-temporal.edn) each declare
+;; ONE :mm.shape/XorConstraint sub-entity.  Before those sub-entities carried a
+;; stable :db/ident, they were seeded tempid-only; because :mm.shape/xor-
+;; constraints is :db.type/ref cardinality-many WITHOUT :db/isComponent, every
+;; schema retransaction (initialize-db! reloads schema on every boot) minted a
+;; NEW sub-entity eid + APPENDED it to the slot.  :mm.shape/XorConstraint
+;; entities proliferated (~40/shape observed; aggregate.count = 80 vs 2) and
+;; each seed shape's slot accumulated duplicate refs, never retracting.
+;;
+;; Stable :db/idents on the seed sub-entities prevent RECURRENCE (upsert → same
+;; eid each reload → idempotent slot assertion).  This migration HEALS DBs that
+;; already accumulated duplicates: for each schema-seeded shape, retract + GC
+;; every constraint ref in the slot that is NOT its canonical idented sub-
+;; entity.  Idempotent (post-heal each slot holds only its canonical sub-entity,
+;; so subsequent runs find nothing) + surgical (only touches the named seed
+;; shapes — never client-authored constraint sub-entities, which legitimately
+;; lack :db/idents).
+;;
+;; Parallels the set-replace additive-accumulation fix for cardinality-many
+;; class meta-slots (see class-set-replace-meta-slots above); differs in that
+;; xor-constraints values are ref sub-ENTITIES, so healing must GC the detached
+;; entity (retractEntity), not merely retract the slot value.
+;;
+;; Per observations/schema_seeded_ref_subentities_without_db_ident_proliferate_on_reload
+;; + interaction/foundational_substrate_concerns_are_never_follow_up_sub_arcs_2026_05_21.
+
+(def seed-shape-canonical-constraints
+  "Schema-seeded :mm/Shape ident → [constraint-slot canonical-constraint-ident].
+  Names the ONE constraint sub-entity each seed shape must carry.  Extend this
+  when new seed shapes are declared in schema EDN (e.g. if the Cardinality /
+  Pattern / Datatype constraint families ever gain seed instances — they carry
+  the same tempid-vs-:db/ident hazard).
+
+  Public for testability + extensibility."
+  {:memory.shapes/interval-begins-at-xor
+   [:mm.shape/xor-constraints :memory.shapes.xor/interval-begins-at]
+   :memory.shapes/interval-ends-at-xor
+   [:mm.shape/xor-constraints :memory.shapes.xor/interval-ends-at]})
+
+(defn prune-duplicate-seed-constraint-subentities!
+  "Retract + GC duplicate constraint sub-entities accumulated on schema-seeded
+  :mm/Shapes across pre-:db/ident schema reloads.  For each entry in
+  `seed-shape-canonical-constraints`, retract every value of the shape's
+  constraint slot that is NOT the canonical idented sub-entity, and
+  :db.fn/retractEntity the detached duplicate.  Returns the total number of
+  duplicate sub-entities pruned.  Idempotent + surgical — safe to run on every
+  boot.  See the comment block above.
+
+  Public for testability."
+  [uri]
+  (let [c (conn uri)
+        ;; The Datomic Entity API renders a ref to an idented entity (the
+        ;; canonical sub-entity, post-fix) as the :db/ident KEYWORD, and a ref
+        ;; to a non-idented entity (the accumulated duplicates) as an EntityMap.
+        ;; Normalize both to an eid before comparing against the canonical.
+        ref->eid (fn [db v] (if (keyword? v) (:db/id (d/entity db v)) (:db/id v)))]
+    (reduce
+     (fn [total [shape-ident [slot canonical-ident]]]
+       (let [db    (d/db c)
+             shape (d/entity db shape-ident)
+             canon (d/entity db canonical-ident)]
+         (if (and shape canon)
+           (let [canon-eid (:db/id canon)
+                 dupes     (->> (get shape slot)
+                                (map #(ref->eid db %))
+                                (remove #(= % canon-eid))
+                                distinct)]
+             (if (seq dupes)
+               (do
+                 ;; Retract the slot ref AND GC the now-detached sub-entity.
+                 ;; :db.fn/retractEntity alone also retracts inbound refs, but
+                 ;; the explicit :db/retract makes the slot cleanup obvious.
+                 @(d/transact c
+                    (into (mapv (fn [d] [:db/retract (:db/id shape) slot d]) dupes)
+                          (map (fn [d] [:db.fn/retractEntity d]) dupes)))
+                 (log/info :DB/SEED-CONSTRAINT-PRUNE
+                           {:shape shape-ident :slot slot :pruned (count dupes)})
+                 (+ total (count dupes)))
+               total))
+           total)))
+     0
+     seed-shape-canonical-constraints)))
+
 (defn initialize-db! [uri & schema]
   ;; Stage 5 Phase B (2026-05-22): always reload schema + dbfns at start,
   ;; regardless of whether the DB needed to be created.  Datomic's
@@ -246,6 +333,10 @@
   ;; this ns for db/conn + db/db-uri).
   (let [created? (ensure-db! uri)]
     (apply load-all-schema! uri schema)
+    ;; Self-heal schema-seeded constraint sub-entities that proliferated on
+    ;; pre-:db/ident reloads (idempotent no-op once healed).  Must run after
+    ;; load-all-schema! so the canonical idented sub-entities exist.
+    (prune-duplicate-seed-constraint-subentities! uri)
     ((requiring-resolve 'sandbar.db.entailment.quality/validate-entailment-graph!) uri)
     (fn/load-all-dbfn uri)
     (fn/load-all-mm-fn-memorials uri)

@@ -71,6 +71,17 @@
     (map? x)     (:db/ident x)
     :else        nil))
 
+(defn- ->entity
+  "Resolve a ref-slot VALUE to its EntityMap.  Dual to ->ident: the Datomic
+   entity API returns a ref whose target carries :db/ident as the ident KEYWORD
+   rather than an EntityMap, so a constraint sub-entity that is schema-seeded
+   with a stable :db/ident (e.g. the interval XOR seeds in schema/mm-temporal.edn)
+   comes back as a keyword.  Iterating a constraint slot must re-resolve such
+   keyword refs to their entity before reading the sub-entity's OWN slots
+   (:mm.shape.xor/slot-a etc.).  EntityMaps + nil pass through unchanged."
+  [db x]
+  (if (keyword? x) (d/entity db x) x))
+
 (defn- shape-severity
   "Resolve the shape's declared severity, defaulting to :violation."
   [shape]
@@ -139,7 +150,7 @@
    :dt.fn/version      "1.0.0"}
   (let [entity      (d/entity db entity-eid)
         shape       (d/entity db shape-eid)
-        constraints (:mm.shape/cardinality-constraints shape)
+        constraints (map #(->entity db %) (:mm.shape/cardinality-constraints shape))
         violations  (for [c constraints
                           :let [prop    (->ident (:mm.shape.cardinality/property c))
                                 min-v   (:mm.shape.cardinality/min c)
@@ -166,7 +177,7 @@
    :dt.fn/version      "1.0.0"}
   (let [entity      (d/entity db entity-eid)
         shape       (d/entity db shape-eid)
-        constraints (:mm.shape/pattern-constraints shape)
+        constraints (map #(->entity db %) (:mm.shape/pattern-constraints shape))
         violations  (for [c constraints
                           :let [prop  (->ident (:mm.shape.pattern/property c))
                                 regex (:mm.shape.pattern/regex c)
@@ -198,7 +209,7 @@
    :dt.fn/version      "1.0.0"}
   (let [entity      (d/entity db entity-eid)
         shape       (d/entity db shape-eid)
-        constraints (:mm.shape/datatype-constraints shape)
+        constraints (map #(->entity db %) (:mm.shape/datatype-constraints shape))
         violations  (for [c constraints
                           :let [prop      (->ident (:mm.shape.datatype/property c))
                                 expected  (->ident (:mm.shape.datatype/expected-datatype c))
@@ -245,11 +256,11 @@
     (if (true? (:mm.shape/closed? shape))
       (let [declared (into #{}
                            (concat (map ->ident (:mm.shape/required-property shape))
-                                   (map #(->ident (:mm.shape.cardinality/property %))
+                                   (map #(->ident (:mm.shape.cardinality/property (->entity db %)))
                                         (:mm.shape/cardinality-constraints shape))
-                                   (map #(->ident (:mm.shape.pattern/property %))
+                                   (map #(->ident (:mm.shape.pattern/property (->entity db %)))
                                         (:mm.shape/pattern-constraints shape))
-                                   (map #(->ident (:mm.shape.datatype/property %))
+                                   (map #(->ident (:mm.shape.datatype/property (->entity db %)))
                                         (:mm.shape/datatype-constraints shape))))
             ;; Always-allowed substrate slots:
             substrate-allowed #{:db/id :db/ident :dt/type :dt/context :dt/label}
@@ -303,7 +314,7 @@
    :dt.fn/version      "1.0.0"}
   (let [entity      (d/entity db entity-eid)
         shape       (d/entity db shape-eid)
-        constraints (:mm.shape/xor-constraints shape)
+        constraints (map #(->entity db %) (:mm.shape/xor-constraints shape))
         violations  (vec
                       (keep
                         (fn [xc]

@@ -1238,15 +1238,30 @@
 ;; / entity.update boundary rejects in :strict mode; :audit mode logs).
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
- [;; The 2 :mm.shape/XorConstraint sub-entities — minted with tempids first
-  ;; since :mm.shape/xor-constraints is :db.type/ref WITHOUT :db/isComponent,
-  ;; so nested entities need explicit :db/id (Datomic constraint).
+ [;; The 2 :mm.shape/XorConstraint sub-entities.  Each carries BOTH a tempid
+  ;; AND a stable :db/ident.  The tempid is required because
+  ;; :mm.shape/xor-constraints is :db.type/ref WITHOUT :db/isComponent, so the
+  ;; owning shape must reference the sub-entity by explicit :db/id within the
+  ;; same tx (a Datomic constraint).  The :db/ident is LOAD-BEARING: because
+  ;; initialize-db! retransacts schema on every boot, a tempid-only sub-entity
+  ;; would resolve to a NEW eid each reload + APPEND to the cardinality-many
+  ;; slot — the sub-entities would proliferate (~40/shape observed) and each
+  ;; seed shape's slot would accumulate duplicate refs, never retracting.  The
+  ;; :db/ident makes the tempid unify (upsert) with the prior boot's eid, so
+  ;; reload is idempotent — the same discipline that keeps the two :mm/Shape
+  ;; entities below at count 2.  RULE: ANY schema-seeded constraint sub-entity
+  ;; (Xor / Cardinality / Pattern / Datatype) MUST carry a stable :db/ident for
+  ;; this reason.  See sandbar.db.datomic/prune-duplicate-seed-constraint-
+  ;; subentities! (self-heals DBs that accumulated pre-ident duplicates) +
+  ;; observations/schema_seeded_ref_subentities_without_db_ident_proliferate_on_reload.
   {:db/id #db/id[:db.part/user -101]
+   :db/ident :memory.shapes.xor/interval-begins-at
    :dt/type :mm.shape/XorConstraint
    :mm.shape.xor/slot-a :mm.interval/begins-at-instant
    :mm.shape.xor/slot-b :mm.interval/begins-at-time}
 
   {:db/id #db/id[:db.part/user -102]
+   :db/ident :memory.shapes.xor/interval-ends-at
    :dt/type :mm.shape/XorConstraint
    :mm.shape.xor/slot-a :mm.interval/ends-at-instant
    :mm.shape.xor/slot-b :mm.interval/ends-at-time}
