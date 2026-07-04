@@ -249,6 +249,25 @@
                  :declared-slot-count (count slots)}))
     props))
 
+(defn- unmatched-slot-keys
+  "The subset of `slot-map`'s keys that resolve to NO declared slot of
+   `class-ident` (across every candidate key-shape `coerce-slot-map`
+   accepts).  These are the keys `coerce-slot-map` silently discards —
+   surfacing them lets a boundary handler refuse rather than echo a false
+   success.  Returns a (possibly empty) vector of the original keys.
+
+   Complements `coerce-slot-map`'s server-side `:MCP/coerce-slot-map-unknown-keys`
+   log with a caller-visible signal — the F12 fail-silent lens: a dropped
+   payload key must be LOUD, never a wire-success with a lost slot (per
+   bugs/tag_define_upgrade_silently_drops_slots_payload_2026_07_03.md)."
+  [class-ident slot-map]
+  (let [slots   (dt/slots-of class-ident)
+        matched (into #{}
+                      (comp (mapcat slot-candidate-keys)
+                            (filter #(contains? slot-map %)))
+                      slots)]
+    (vec (remove matched (keys slot-map)))))
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Datalog :where coercion (used by aggregate verbs; will extend to
 ;; search verbs in Stage 27).  At the MCP boundary, :where typically
@@ -1779,13 +1798,59 @@
                         {:value value
                          :existing-summary (tag-summary existing)
                          :hint "Pass :upgrade? true to add slots to existing tag, or use sandbar.tag.consolidate / .rename."})))
+      ;; Honest-contract guard #1 — refuse a payload key that resolves to no
+      ;; declared :mm/Tag slot BEFORE transacting.  `coerce-slot-map` would
+      ;; drop it with only a server-side log; on the wire that reads as
+      ;; success-with-a-lost-slot (the validates-then-silently-drops family,
+      ;; per bugs/tag_define_upgrade_silently_drops_slots_payload_2026_07_03.md).
+      (let [unmatched (unmatched-slot-keys :mm/Tag slots)]
+        (when (seq unmatched)
+          (throw (ex-info (str "tag.define: " (count unmatched)
+                               " slot key(s) match no declared :mm/Tag slot "
+                               "and would be silently dropped: "
+                               (str/join ", " (map pr-str unmatched)))
+                          {:value          value
+                           :unmatched-keys (mapv str unmatched)
+                           :declared-slots (mapv str (dt/slots-of :mm/Tag))
+                           :hint "Use canonical :mm.tag/* slot names (definition, scope-note, example, alt-label, ...)."}))))
       (let [coerced (coerce-slot-map :mm/Tag slots)
             props   (merge {:mm.tag/value value} coerced)
             ;; dt/make on :mm/Tag uses Datomic :db.unique/identity
             ;; upsert via :mm.tag/value — same call path covers both
             ;; create + upgrade (named-tempid + upsert resolves to the
             ;; existing eid when the tag exists).
-            new-ent (dt/make :mm/Tag props {})]
+            new-ent (dt/make :mm/Tag props {})
+            ;; Honest-contract guard #2 — re-read the entity FRESH from the
+            ;; post-tx db and confirm every supplied slot actually persisted.
+            ;; The upgrade path relies on :db.unique/identity upsert carrying
+            ;; the slots onto the resolved eid; this proves it landed rather
+            ;; than echoing `dt/make`'s in-memory return blind.  If any
+            ;; supplied slot's value is absent on re-read the upgrade was a
+            ;; silent drop — refuse loudly (the 68-shell WAVE-1 failure mode).
+            persisted (tag-by-value value)
+            dropped   (into {}
+                            (keep (fn [[slot-ident wanted]]
+                                    ;; Cardinality-aware landed? check: card-many
+                                    ;; slots read back as a set, so require every
+                                    ;; supplied member to be present; card-one
+                                    ;; requires value equality.  `coerce-value`
+                                    ;; already wrapped card-many values in a vec.
+                                    (let [got     (get persisted slot-ident)
+                                          landed? (if (dt/cardinality-many? slot-ident)
+                                                    (let [got-set (set got)]
+                                                      (every? got-set wanted))
+                                                    (= got wanted))]
+                                      (when-not landed?
+                                        [slot-ident {:wanted wanted :got got}]))))
+                            coerced)]
+        (when (seq dropped)
+          (throw (ex-info (str "tag.define: " (count dropped)
+                               " slot(s) did not persist on upgrade of tag "
+                               (pr-str value) " — payload silently dropped.")
+                          {:value        value
+                           :entity-id    (:db/id persisted)
+                           :dropped-slots (into {} (map (fn [[k v]] [(str k) v]) dropped))
+                           :hint "Substrate write did not land the supplied slots; use sandbar.entity.update on the tag eid as a fallback."})))
         (log/info :MCP/tag-define {:value value
                                    :entity-id (:db/id new-ent)
                                    :upgraded  (boolean existing)})
@@ -1798,7 +1863,7 @@
           (catch Exception e
             (log/warn e :MCP/tag-define-cache-failed
                       {:value value :entity-id (:db/id new-ent)})))
-        {:tag      (tag-summary new-ent)
+        {:tag      (tag-summary persisted)
          :created  (not existing)
          :upgraded (boolean existing)}))))
 
@@ -2197,11 +2262,14 @@
         persist (boolean (or (get args "persist") (get args :persist)))
         cascade (boolean (or (get args "cascade") (get args :cascade)))
         reason  (or (get args "reason") (get args :reason))
-        actor   (or (get args "actor")  (get args :actor))]
+        actor   (or (get args "actor")  (get args :actor))
+        ack     (boolean (or (get args "acknowledge-dangling")
+                             (get args :acknowledge-dangling)))]
     (when (nil? targets)
       (throw (ex-info "Missing required argument: targets (vec of idents or eids)"
                       {:args args})))
-    (retract/retract! targets (cond-> {:persist persist :cascade cascade}
+    (retract/retract! targets (cond-> {:persist persist :cascade cascade
+                                       :acknowledge-dangling ack}
                                 reason (assoc :reason reason)
                                 actor  (assoc :actor actor)))))
 
@@ -2666,7 +2734,7 @@
    ;; Per decisions/mcp_retraction_verb_substrate_first_over_nrepl_toolchain_workaround_2026_07_02.
    {:name "sandbar.entity.retract"
     :title "Retract explicit entities with a dry-run-by-default safety layer"
-    :description "WHICH: retracts an EXPLICIT set of entities (`:targets` — idents or eids, 1..100) via `:db.fn/retractEntity` in ONE atomic transaction, wrapped in the ratified safety layer: dry-run-by-default, per-target blast-radius report, protected-namespace/class guard, cascade opt-in, required audit reason.  The first-class MCP retraction verb — replaces the nREPL-toolchain workaround.  Substrate half is `sandbar.db.datomic/retract-entity`; this verb is the MCP surface + safety layer.\n\nWHEN: use to remove named entities from the substrate — cleanup packages (bulk-retract, bare-ident dups, orphan sections, anonymous carriers).  When NOT to use: (a) predicate/query-based MASS retraction — NOT supported in v1 (explicit targets only; enumerate first via `sandbar.class.instances` / `sandbar.search.bm25f`, then pass the eids); (b) you want to EDIT an entity — `sandbar.entity.update`; (c) you want to physically excise history — out of scope (this is logical retraction).\n\nHOW: `:targets` (REQUIRED) is an array of idents (keyword-strings like `\":memory.decisions/foo\"`) or numeric eids; 1..100 (over-cap ⇒ loud error).  `:persist` (bool, default FALSE) — WITHOUT it the verb is a DRY-RUN returning the full report and transacting NOTHING (same convention as `sandbar.project.import`; wire key is `persist`, no `?`).  `:cascade` (bool, default false) — when true, the enumerated dependents (the target's `:mm/Section` tree + `:mm.memory/frontmatter` carrier) are INCLUDED in the retraction; refs are not `:db/isComponent` so without cascade they survive as ORPHANS (the report says so).  `:reason` (string) — REQUIRED when `:persist` (carried into the `:mm.event/EntityRetracted` audit event; persist without it ⇒ loud error).  `:actor` (optional ref) — recorded on the audit event.  Protected targets (namespace `dt`/`db`/`workflow`/`mm.event`, plus `:mm/Actor` instances + `:mm/Workflow` definitions) are SKIPPED with a reason, NOT retracted, and do NOT abort the batch.\n\nORDER: run once WITHOUT `:persist` to inspect the blast-radius report (datom-counts + dependents + protected flags), then re-run WITH `:persist true` + `:reason` to commit.  Discover target eids first via `sandbar.class.instances` / `sandbar.search.bm25f` / `sandbar.entity.find`.\n\nCOMBINATION: pairs with `sandbar.entity.find` (confirm a target exists first) and `sandbar.navigate.inbound-edges` (see who CITES a target before orphaning it).  Result: the dry-run report `{:targets [{:target :resolved-eid :exists? :ident :dt-type :datom-count :dependents :protected? :protection-reason} ...] :cascade :dependents-note}`, augmented on `:persist` with `:retracted-eids :retracted-count :skipped :events-emitted`."
+    :description "WHICH: retracts an EXPLICIT set of entities (`:targets` — idents or eids, 1..100) via `:db.fn/retractEntity` in ONE atomic transaction, wrapped in the ratified safety layer: dry-run-by-default, per-target blast-radius report, protected-namespace/class guard, cascade opt-in, required audit reason.  The first-class MCP retraction verb — replaces the nREPL-toolchain workaround.  Substrate half is `sandbar.db.datomic/retract-entity`; this verb is the MCP surface + safety layer.\n\nWHEN: use to remove named entities from the substrate — cleanup packages (bulk-retract, bare-ident dups, orphan sections, anonymous carriers).  When NOT to use: (a) predicate/query-based MASS retraction — NOT supported in v1 (explicit targets only; enumerate first via `sandbar.class.instances` / `sandbar.search.bm25f`, then pass the eids); (b) you want to EDIT an entity — `sandbar.entity.update`; (c) you want to physically excise history — out of scope (this is logical retraction).\n\nHOW: `:targets` (REQUIRED) is an array of idents (keyword-strings like `\":memory.decisions/foo\"`) or numeric eids; 1..100 (over-cap ⇒ loud error).  `:persist` (bool, default FALSE) — WITHOUT it the verb is a DRY-RUN returning the full report and transacting NOTHING (same convention as `sandbar.project.import`; wire key is `persist`, no `?`).  `:cascade` (bool, default false) — when true, the enumerated dependents (the target's `:mm/Section` tree + `:mm.memory/frontmatter` carrier) are INCLUDED in the retraction; refs are not `:db/isComponent` so without cascade they survive as ORPHANS (the report says so).  `:reason` (string) — REQUIRED when `:persist` (carried into the `:mm.event/EntityRetracted` audit event; persist without it ⇒ loud error).  `:actor` (optional ref) — recorded on the audit event.  `:acknowledge-dangling` (bool, default false) — the report's `:inbound-refs`/`:inbound-count` per target enumerate the INBOUND citation edges (`:mm.memory/cites` / `:mm.memory/motivated-by` / any ref) that would be left DANGLING by the retraction; a `:persist` over a target with nonzero inbound refs is REFUSED unless you pass `:acknowledge-dangling true` (or repoint those inbound edges first).  Protected targets (namespace `dt`/`db`/`workflow`/`mm.event`, plus `:mm/Actor` instances + `:mm/Workflow` definitions) are SKIPPED with a reason, NOT retracted, and do NOT abort the batch.\n\nORDER: run once WITHOUT `:persist` to inspect the blast-radius report (datom-counts + outbound dependents + INBOUND refs + protected flags), then re-run WITH `:persist true` + `:reason` (and `:acknowledge-dangling true` if inbound refs exist and you accept the dangle) to commit.  Discover target eids first via `sandbar.class.instances` / `sandbar.search.bm25f` / `sandbar.entity.find`.\n\nCOMBINATION: pairs with `sandbar.entity.find` (confirm a target exists first); the inbound-citation check `sandbar.navigate.inbound-edges` once needed before orphaning is now BUILT IN as the report's `:inbound-refs` section.  Result: the dry-run report `{:targets [{:target :resolved-eid :exists? :ident :dt-type :datom-count :dependents :inbound-refs :inbound-count :protected? :protection-reason} ...] :cascade :dependents-note}`, augmented on `:persist` with `:retracted-eids :retracted-count :skipped :events-emitted`."
     :inputSchema (one-required
                    {:targets {:type "array"
                               :items {:type "string"}
@@ -2678,7 +2746,10 @@
                     :reason  {:type "string"
                               :description "REQUIRED when :persist — human-readable audit string carried into the :mm.event/EntityRetracted event."}
                     :actor   {:type "string"
-                              :description "Optional actor ref recorded on the audit event."}}
+                              :description "Optional actor ref recorded on the audit event."}
+                    :acknowledge-dangling
+                    {:type "boolean"
+                     :description "When true, PERMIT a :persist that leaves inbound citation edges (the report's :inbound-refs) dangling.  Default false ⇒ a persist over a target with nonzero :inbound-count is refused loudly (repoint the inbound refs first, or acknowledge the dangle)."}}
                    [:targets])
     :handler entity-retract-handler}
 

@@ -936,3 +936,104 @@
     (is (or (keyword? (dt/effective-memorial-policy-of :mm/Memory))
             (nil? (dt/effective-memorial-policy-of :mm/Memory)))
         "Returns keyword (declared) or nil (undeclared)")))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; dt/make ref-slot attach — regression for
+;; bugs/dt_make_ref_slots_reject_eids_and_silently_drop_maps_2026_07_02.md
+;;
+;; Memorial (verbatim): "the dt/make single-entity create path cannot attach a
+;; :dt/Ref-ranged slot value in ANY form.  (1) raw Long eid → validation reject;
+;; (2) Datomic EntityMap → same reject; (3) {:db/id eid} map → VALIDATES then
+;; the ref reads back nil (silent drop); (4) {:db/ident kw} codec-style upsert
+;; map → VALIDATES then silently drops."
+;;
+;; The four probes below mirror the memorial's four receipts (originally
+;; scratchpad/foundation-baseline-2026-07-03/falsify_a5/falsify_ref_slots.clj).
+;; The bug filing asserted the FAILURE; this regression asserts the CONTRACT:
+;; each of the four accepted ref-value shapes must (a) pass validation and
+;; (b) attach the SAME actor edge — validation and transaction agree, nothing
+;; validates-then-drops.  :event/actor is :dt/range :dt/Ref, :db/valueType
+;; :db.type/ref, :db/cardinality :db.cardinality/one.
+;;
+;; NB the attach is asserted by direct Datalog (the persisted edge) rather than
+;; by projecting :event/actor, because the read-back projection returns the ref
+;; as a bare ident keyword, not an eid or entity-map (the same projection shape
+;; recorded in bugs/retract_cascade_blind_to_first_section_dependents...).
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defn- make-ref-test-actor!
+  "Create a concrete :mm/AIActor for use as an :event/actor ref target.
+   :mm/Actor is abstract; :mm/AIActor is the concrete subtype (same idiom as
+   retract_test/make-actor!).  Returns the created entity."
+  [ident nm]
+  (dt/make :mm/AIActor {:db/ident ident
+                        :mm.memory/rel-path (str "test/" nm ".md")
+                        :mm.memory/name nm
+                        :mm.actor/actor-type :ai-actor}))
+
+(defn- server-event-props
+  "Minimal :event/ServerEvent prop map merged with an actor-slot fragment
+   (e.g. {:event/actor <value>})."
+  [actor-slot]
+  (merge {:event/kind :mm.event/EntityRetracted
+          :event/name "ref-slot-regression-probe"}
+         actor-slot))
+
+(defn- actor-edge-eid
+  "The eid at the :event/actor slot of event `event-eid`, read via direct
+   Datalog so the assertion is independent of the projection's ref shape."
+  [event-eid]
+  (ffirst (d/q '[:find ?a :in $ ?e :where [?e :event/actor ?a]]
+               (db/db) event-eid)))
+
+(deftest make-ref-slot-attach-test
+  (testing "PROBE 1 — raw Long eid at :event/actor validates AND attaches"
+    (let [actor     (make-ref-test-actor! :memory.test-actors/r-actor1 "r-actor1")
+          actor-eid (:db/id actor)
+          props     (server-event-props {:event/actor actor-eid})
+          errs      (dt/validate-data :event/ServerEvent props)
+          created   (dt/make :event/ServerEvent props)]
+      (is (nil? errs) "raw Long eid must pass :dt/Ref validation")
+      (is (= actor-eid (actor-edge-eid (:db/id created)))
+          "raw Long eid attaches the actor edge")))
+
+  (testing "PROBE 2 — Datomic EntityMap at :event/actor validates AND attaches"
+    (let [actor     (make-ref-test-actor! :memory.test-actors/r-actor2 "r-actor2")
+          actor-eid (:db/id actor)
+          actor-ent (db/entity actor-eid)
+          props     (server-event-props {:event/actor actor-ent})
+          errs      (dt/validate-data :event/ServerEvent props)
+          created   (dt/make :event/ServerEvent props)]
+      (is (nil? errs) "Datomic EntityMap must pass :dt/Ref validation")
+      (is (= actor-eid (actor-edge-eid (:db/id created)))
+          "EntityMap attaches the actor edge")))
+
+  (testing "PROBE 3 — {:db/id eid} map validates AND attaches (no silent drop)"
+    (let [actor     (make-ref-test-actor! :memory.test-actors/r-actor3 "r-actor3")
+          actor-eid (:db/id actor)
+          props     (server-event-props {:event/actor {:db/id actor-eid}})
+          errs      (dt/validate-data :event/ServerEvent props)
+          created   (dt/make :event/ServerEvent props)]
+      (is (nil? errs) "{:db/id eid} must pass :dt/Ref validation")
+      (is (= actor-eid (actor-edge-eid (:db/id created)))
+          "{:db/id eid} attaches the actor edge — the silent-drop is cured")))
+
+  (testing "PROBE 4 — {:db/ident kw} upsert-map validates AND attaches (no silent drop)"
+    (let [actor     (make-ref-test-actor! :memory.test-actors/r-actor4 "r-actor4")
+          actor-eid (:db/id actor)
+          props     (server-event-props {:event/actor {:db/ident :memory.test-actors/r-actor4}})
+          errs      (dt/validate-data :event/ServerEvent props)
+          created   (dt/make :event/ServerEvent props)]
+      (is (nil? errs) "{:db/ident kw} upsert-map must pass :dt/Ref validation")
+      (is (= actor-eid (actor-edge-eid (:db/id created)))
+          "{:db/ident kw} attaches the actor edge — the silent-drop is cured")))
+
+  (testing "coercion never fabricates an edge for an unresolvable ref value"
+    ;; A ref value that names no entity (an unknown ident) must be left
+    ;; UNCHANGED by coercion — never rewritten to some fabricated eid.  The
+    ;; coercion layer's job is to make validation and transaction agree on
+    ;; RESOLVABLE refs, not to paper over bad input.
+    (let [props    (server-event-props {:event/actor :no.such/missing-actor})
+          coerced  (#'dt/coerce-ref-slot-values props)]
+      (is (= :no.such/missing-actor (:event/actor coerced))
+          "an unresolvable ident is passed through untouched, not coerced to a bogus eid"))))

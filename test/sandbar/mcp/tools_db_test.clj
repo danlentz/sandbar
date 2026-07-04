@@ -479,6 +479,71 @@
     (is (user-error? response))
     (is (re-find #"name" (error-text response)))))
 
+(deftest tag-define-upgrade-persists-slots
+  ;; Regression for bugs/tag_define_upgrade_silently_drops_slots_payload_2026_07_03.md:
+  ;; "calling tag.define with upgrade:true and a :slots map (definition/
+  ;; scope-note for an existing shell :mm/Tag) succeeds on the wire but the
+  ;; :slots payload is silently discarded — the entity is unchanged."  The
+  ;; wire call returns success either way; the defect is only visible on
+  ;; RE-READ, so this test round-trips through a fresh tag.lookup to observe
+  ;; what actually landed in the substrate (not the handler's own echo).
+  ;;
+  ;; The literal memorial scenario (declared canonical slots) already lands
+  ;; at HEAD — this half is a forward-regression guard.  The honest-contract
+  ;; half below (undeclared key) is the red→green: pre-fix the handler echoed
+  ;; success while dropping the key; post-fix it refuses loudly.
+  (call "sandbar.tag.define" {"name" "shell-tag-to-upgrade"})   ; bare shell — no slots
+  (let [upgrade (call "sandbar.tag.define"
+                      {"name"    "shell-tag-to-upgrade"
+                       "upgrade" true
+                       "slots"   {"definition" "Canonical definition added on upgrade."
+                                  "scope-note" "When-to-use boundary added on upgrade."}})]
+    (is (success? upgrade) "upgrade should succeed on the wire")
+    (let [payload (result-content-edn upgrade)]
+      (is (true? (:upgraded payload)) "response flags the upgrade branch")
+      ;; The handler's own echo must reflect the persisted slots ...
+      (is (= "Canonical definition added on upgrade." (-> payload :tag :definition))
+          "handler echo carries the upgraded definition")
+      (is (= "When-to-use boundary added on upgrade." (-> payload :tag :scope-note))
+          "handler echo carries the upgraded scope-note")))
+  ;; ... AND an independent re-read must see them (the memorial's exact
+  ;; failure mode is validates-then-silently-drops: success is reported but
+  ;; the substrate is unchanged, so the drop only shows on re-read).
+  (let [reread  (call "sandbar.tag.lookup" {"concept" "shell-tag-to-upgrade"})
+        payload (result-content-edn reread)
+        match   (first (filter #(= "shell-tag-to-upgrade" (:value %))
+                               (:matches payload)))]
+    (is (some? match) "upgraded tag is re-findable by value")
+    (is (= "Canonical definition added on upgrade." (:definition match))
+        "re-read shows the definition slot populated (NOT silently dropped)")
+    (is (= "When-to-use boundary added on upgrade." (:scope-note match))
+        "re-read shows the scope-note slot populated (NOT silently dropped)")))
+
+(deftest tag-define-upgrade-refuses-silent-slot-drop
+  ;; RED→GREEN honest-contract guard for the memorial's `validates-then-
+  ;; silently-drops` family.  A supplied slot key that matches NO declared
+  ;; :mm/Tag slot is discarded by coerce-slot-map with only a server-side
+  ;; log — pre-fix the wire call still returned SUCCESS with the key lost.
+  ;; The fix refuses loudly (ex-info → isError envelope) so no payload key
+  ;; can vanish behind a reported success.
+  (call "sandbar.tag.define" {"name" "shell-honest"})
+  (let [resp (call "sandbar.tag.define"
+                   {"name"    "shell-honest"
+                    "upgrade" true
+                    "slots"   {"definition"      "This one is a real declared slot."
+                               "not-a-real-slot" "This key would silently vanish."}})]
+    (is (user-error? resp)
+        "an undeclared slot key must be a loud user-error, NOT a silent-drop success")
+    (is (re-find #"silently dropped|match no declared" (error-text resp))
+        "the error names the drop it prevented"))
+  ;; And the refusal is pre-transaction — the good declared slot must NOT
+  ;; have partially landed (the whole call is rejected atomically).
+  (let [reread  (call "sandbar.tag.lookup" {"concept" "shell-honest"})
+        payload (result-content-edn reread)
+        match   (first (filter #(= "shell-honest" (:value %)) (:matches payload)))]
+    (is (nil? (:definition match))
+        "refused upgrade left the entity unchanged — no partial write")))
+
 ;; ---------- sandbar.tag.lookup ----------
 
 (deftest tag-lookup-finds-by-value-exact-match

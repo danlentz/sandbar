@@ -224,8 +224,9 @@
     (log/debug :DT/MAKE-ALL* {:count (count entity-specs)})
     result))
 
-(declare validate-data)  ;; forward declaration
-(declare type-isa?)      ;; forward reference; defined later in this ns
+(declare validate-data)          ;; forward declaration
+(declare type-isa?)              ;; forward reference; defined later in this ns
+(declare coerce-ref-slot-values) ;; forward reference; defined with ref->eid
 
 (def ^:dynamic *default-actor*
   "Ident (keyword) or eid of the actor on whose behalf substrate writes
@@ -321,6 +322,12 @@
          ;; defaults fix — MCP/programmatic :mm/Memory creates were missing
          ;; created/last-touched/created-by and fell out of recency views.
          props (apply-memory-defaults dt props)
+         ;; Canonicalize `:db.type/ref` slot values to plain eids BEFORE both
+         ;; validation and transact so the two agree — an eid / EntityMap /
+         ;; {:db/id} / {:db/ident} at a ref slot all reduce to the eid Datomic
+         ;; attaches, curing the reject-or-silently-drop split.  Per
+         ;; bugs/dt_make_ref_slots_reject_eids_and_silently_drop_maps_2026_07_02.md.
+         props (coerce-ref-slot-values props)
          new-entity (if-not validate?
                       (make* dt props)
                       (if-let [errors (validate-data dt props)]
@@ -495,15 +502,72 @@
 ;; meta-slots (normalize refs by :db/ident; retract refs by :db/id).
 
 (defn- ref->eid
-  "Resolve a ref-typed slot value to its :db/id for stable set-membership
-   comparison.  Prior values come back as Entity maps (read :db/id directly);
-   supplied values may be idents / eids / lookup-refs (resolve via db/entity).
-   Returns nil when unresolvable (treated as a non-matching member)."
+  "Resolve any ref-typed slot value to the :db/id of the live entity it names,
+   or nil when it resolves to no live entity.
+
+   Accepts every shape a caller can hand a `:db.type/ref` slot: a Datomic
+   Entity map (read :db/id directly), a `{:db/id eid}` map, an eid Long, an
+   ident keyword, a Datomic lookup-ref vector `[:unique-attr v]`, and a
+   single-key upsert map `{:db/ident kw}` / `{<unique-identity-attr> v}` (the
+   codec's ref shape) — converted to a lookup-ref before resolution because
+   `db/entity` returns an associative value UNCHANGED (so an upsert map would
+   otherwise resolve to itself and yield a nil :db/id).
+
+   The single ref→eid canon shared by two callers that MUST agree: the
+   card-many replace diff (stable set-membership comparison) and `make`'s
+   pre-transact ref coercion.  nil ⇒ unresolvable — treated as a non-matching
+   member by the diff, and (in `make`) left uncoerced so validation rejects it
+   loudly rather than silently dropping it.
+
+   Per bugs/dt_make_ref_slots_reject_eids_and_silently_drop_maps_2026_07_02.md
+   (validation-and-transaction disagreed on ref shapes; upsert maps validated
+   then silently dropped on the single-tx create path)."
   [v]
   (cond
-    (nil? v)                                   nil
+    (nil? v)                                    nil
     (and (associative? v) (contains? v :db/id)) (:db/id v)
+    ;; Single-key upsert map (e.g. {:db/ident kw}): db/entity returns an
+    ;; associative value as-is, so resolve via an explicit lookup-ref.
+    (and (map? v) (= 1 (count v)))
+    (let [[k val] (first v)]
+      (some-> (try (db/entity [k val]) (catch Throwable _ nil)) :db/id))
     :else (some-> (try (db/entity v) (catch Throwable _ nil)) :db/id)))
+
+(defn- ref-valued-slot?
+  "True if `slot-ident`'s property is a `:db.type/ref` slot (its values name
+   other entities rather than carrying literals)."
+  [slot-ident]
+  (= :db.type/ref (:db/valueType (entity slot-ident))))
+
+(defn- coerce-ref-slot-values
+  "Canonicalizes every `:db.type/ref` slot value in `props` to a plain eid via
+   `ref->eid`, returning the rewritten props map.  Card-one slots coerce the
+   lone value; card-many slots coerce each member.  A value `ref->eid` cannot
+   resolve is left UNCHANGED so downstream validation rejects it loudly —
+   coercion never fabricates or silently drops.
+
+   Why this exists: the single-entity `make`/`make*` create path transacted
+   ref values verbatim, so an eid or a Datomic EntityMap failed `:dt/Ref`
+   validation while a `{:db/id eid}` / `{:db/ident kw}` map validated and then
+   silently dropped (Datomic does not attach a bare nested map at a card-one
+   ref).  Coercing to the canonical eid — the same shape the update path's
+   card-many diff already normalizes to — makes validation and transaction
+   agree on every accepted ref shape.
+
+   Per bugs/dt_make_ref_slots_reject_eids_and_silently_drop_maps_2026_07_02.md."
+  [props]
+  (reduce-kv
+   (fn [acc slot v]
+     (if (and (some? v) (ref-valued-slot? slot))
+       (let [coerce-one (fn [x] (or (ref->eid x) x))]
+         (assoc acc slot
+                (cond
+                  (set? v)        (into #{} (map coerce-one) v)
+                  (sequential? v) (into (empty v) (map coerce-one) v)
+                  :else           (coerce-one v))))
+       (assoc acc slot v)))
+   {}
+   props))
 
 (defn- card-many-replace-retracts
   "For each cardinality-many slot present in `slot-updates`, return the
@@ -1727,7 +1791,11 @@
                (= k (unique-identity-slot-of target-class)))))))
 
 (defn- value-matches-range?
-  "Check if a value matches the expected range type"
+  "Returns true if `value` is admissible for a slot whose declared range is
+   `range-type`.  Literal ranges check the Clojure/Java type; class ranges
+   accept an instance of the target class, a `:db.unique/identity` upsert map,
+   an untyped stub entity, or — for the universal `:dt/Ref` marker — any value
+   resolving to a live entity.  nil range ⇒ anything admissible."
   [value range-type]
   (cond
     ;; No range specified - anything goes
@@ -1770,9 +1838,27 @@
     ;;     validation here honors that intentional design — refusing
     ;;     untyped stubs would break entity.update on any memorial that
     ;;     cites a not-yet-ingested target (common during MCP cutover).
+    ;; (d) When the range is the UNIVERSAL ref marker `:dt/Ref` (not a
+    ;;     concrete class), any value that resolves to a live entity — a
+    ;;     raw eid, a Datomic EntityMap, or a `{:db/id eid}` map — is a
+    ;;     valid reference; `instance-of?` fails here because ref-target
+    ;;     classes descend from `:dt/Resource`, a sibling of `:dt/Ref`, not
+    ;;     from `:dt/Ref` itself.  Concrete-class ranges keep the stricter
+    ;;     `instance-of?` check.  Per
+    ;;     bugs/dt_make_ref_slots_reject_eids_and_silently_drop_maps_2026_07_02.md.
     :else
     (or (instance-of? range-type value)
         (upsert-map-for? value range-type)
+        ;; Universal `:dt/Ref` marker: any value naming a LIVE entity is a
+        ;; valid reference.  Resolve through the ref->eid canon (so an eid /
+        ;; EntityMap / {:db/id} all reduce identically), then confirm the
+        ;; target actually exists — `d/entity` on a bogus eid yields a shell
+        ;; with :db/id but no attributes, which must NOT pass.
+        (and (= :dt/Ref range-type)
+             (when-let [eid (ref->eid value)]
+               (some? (seq (entity eid)))))
+        ;; Gap 20 untyped-stub acceptance (see (c) above) — a resolved entity
+        ;; with :db/id but no :dt/type, for the stub-then-fill citation path.
         (when-let [e (try (entity value) (catch Throwable _ nil))]
           (and (:db/id e)
                (nil? (:dt/type e)))))))

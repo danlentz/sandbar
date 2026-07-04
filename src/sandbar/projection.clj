@@ -355,13 +355,76 @@
                      rel         (subs file-path (inc (count root-path)))]
                  rel))))))
 
+(defn- filter-ingested-entities
+  "Return `entities` reduced to the memories passing `filter-spec` plus
+   their sections; sections whose host memory drops also drop (the
+   consistency invariant `entity-passes-filter?` documents).  A nil/empty
+   filter-spec returns `entities` unchanged.  Shared by both ingest paths
+   (directory walk + single-file) so the filter semantics are identical."
+  [entities filter-spec]
+  (if (or (nil? filter-spec) (empty? filter-spec))
+    entities
+    ;; Set-membership on the passing idents (cached descendants-of lookup
+    ;; per decisions/dt_layer_exposes_memoized_type_relation_ops_with_schema_invalidation_2026_05_22.md)
+    ;; then a single ordered pass that carries the host memory's include?
+    ;; verdict onto its trailing sections.
+    (let [memory-descendants (dt/descendants-of :mm/Memory)
+          memories           (vec (clojure.core/filter
+                                    #(contains? memory-descendants (:dt/type %))
+                                    entities))
+          pass-mem-idents    (set (map :db/ident (apply-filter memories filter-spec)))]
+      (loop [out [] include? false [e & rst] entities]
+        (cond
+          (nil? e)
+          out
+
+          (dt/type-isa? :mm/Memory (:dt/type e))
+          (let [inc? (contains? pass-mem-idents (:db/ident e))]
+            (recur (cond-> out inc? (conj e)) inc? rst))
+
+          :else
+          (recur (cond-> out include? (conj e)) include? rst))))))
+
+(defn- ingest-single-file
+  "Parse ONE `.md` file directly (bypassing the directory walk + skip-set)
+   and return its entity-spec vector, filtered per `filter-spec`.
+
+   The rel-path handed to `md/parse-document` is the file's BASENAME — a
+   bare file carries no corpus anchor from which a subtree prefix could be
+   recovered, so basename is the honest path-derivation source.  For the
+   corpus ROOT files (MEMORY.md / README.md) the basename IS the corpus
+   rel-path, so this is the sanctioned heal path for the two root stubs
+   that the walk's `+default-skip-basenames+` unconditionally excludes
+   (bugs/project_import_cannot_select_root_files_memory_md_readme_bare_-
+   ident_stubs_2026_07_02).  Non-.md input yields `[]`.
+
+   An explicitly-named file is ALWAYS ingested — the skip-set governs
+   enumeration during a directory walk, not a file the caller pointed at."
+  [^java.io.File file filter-spec]
+  (let [basename (.getName file)]
+    (if-not (str/ends-with? basename ".md")
+      []
+      (let [parsed (try
+                     (md/parse-document (slurp file) basename)
+                     (catch Throwable ex
+                       (log/warn :SANDBAR/INGEST-PARSE-SKIP
+                                 {:file (.getPath file)
+                                  :error (.getMessage ex)})
+                       nil))]
+        (filter-ingested-entities (vec parsed) filter-spec)))))
+
 (defn ingest-graph
   "Walk a filesystem hierarchy + return a coll of entity-spec maps.
    For each `.md` file, parses via sandbar.codec.markdown/parse-document
    using the file's rel-path as the path-derivation source.
 
    Inputs:
-     from-dir — input directory (java.io.File or string)
+     from-dir — input directory OR a single `.md` file (java.io.File or
+                string).  A directory is walked recursively (README.md +
+                MEMORY.md skipped by default per `:skip-basenames`); a
+                file is parsed directly with its basename as the rel-path,
+                bypassing the walk + skip-set — the heal path for the
+                corpus root files the walk cannot enumerate.
      opts     — map; supported keys:
        :filter — filter spec per `entity-passes-filter?`; applied
                  AFTER per-file parse.  Memories that fail :class /
@@ -369,93 +432,99 @@
                  memories drop too (consistency invariant).
 
    Returns: flat vector of entity-spec maps; for each .md file, the
-   memory entity + its section entities in chain order are appended."
+   memory entity + its section entities in chain order are appended.
+   Throws ex-info when `from-dir` is neither a directory nor a file."
   ([from-dir] (ingest-graph from-dir {}))
   ([from-dir {filter-spec      :filter
               skip-basenames   :skip-basenames
               :or              {skip-basenames +default-skip-basenames+}}]
    (let [root (io/file from-dir)]
-     (when-not (.isDirectory root)
-       (throw (ex-info "ingest-graph requires a directory input"
-                       {:from-dir (str from-dir)})))
-     (let [t-files-start (System/currentTimeMillis)
-           files (vec (walk-markdown-files root skip-basenames))
-           t-files-end (System/currentTimeMillis)
-           _ (log/info :INGEST/FILES-WALKED
-                       {:from-dir (str from-dir)
-                        :file-count (count files)
-                        :ms (- t-files-end t-files-start)})
-           tree-filter (:tree-filter filter-spec)
-           processed-counter (atom 0)
-           all-entities
-           (vec
-             (mapcat (fn [rel-path]
-                       (let [n (swap! processed-counter inc)]
-                         (when (zero? (mod n 100))
-                           (log/info :INGEST/PARSE-PROGRESS
-                                     {:processed n :total (count files)
-                                      :ms (- (System/currentTimeMillis) t-files-end)})))
-                       ;; Tree-filter optimization — skip parse if rel-path
-                       ;; can't pass the :tree-filter prefix anyway.
-                       (when (or (nil? tree-filter)
-                                 (str/starts-with? rel-path tree-filter))
-                         (try
-                           (let [source (slurp (io/file root rel-path))]
-                             (md/parse-document source rel-path))
-                           (catch Throwable ex
-                             ;; Per-file parse failures don't abort the whole
-                             ;; walk — e.g., a section-ident slug collision
-                             ;; in ONE file shouldn't poison the entire corpus
-                             ;; ingest.  Log + skip.  Consumers downstream
-                             ;; (project-import-handler) report per-group
-                             ;; failures explicitly.
-                             (log/warn :SANDBAR/INGEST-PARSE-SKIP
-                                       {:rel-path rel-path
-                                        :error    (.getMessage ex)})
-                             nil))))
-                     files))
-           t-parse-end (System/currentTimeMillis)
-           _ (log/info :INGEST/PARSE-COMPLETE
-                       {:files-walked (count files)
-                        :entities-produced (count all-entities)
-                        :ms (- t-parse-end t-files-end)})
-           filter-active? (and filter-spec (seq filter-spec))
-           _ (log/info :INGEST/FILTER-DECISION
-                       {:filter-active? filter-active?
-                        :filter-spec filter-spec})]
-       (if (or (nil? filter-spec) (empty? filter-spec))
-         all-entities
-         ;; Filter memories per the spec; sections of dropped memories drop too.
-         (let [t-filter-start (System/currentTimeMillis)
-               _ (log/info :INGEST/FILTER-START {:entities (count all-entities)})
-               ;; Stage 5 Phase A.5 — use cached set-membership lookup
-               ;; instead of per-entity dt/type-isa? Datalog query.
-               ;; Per `decisions/dt_layer_exposes_memoized_type_relation_ops_with_schema_invalidation_2026_05_22.md`.
-               memory-descendants (dt/descendants-of :mm/Memory)
-               memories        (vec (clojure.core/filter
-                                      #(contains? memory-descendants (:dt/type %))
-                                      all-entities))
-               t-isa-done (System/currentTimeMillis)
-               _ (log/info :INGEST/FILTER-TYPE-ISA-DONE
-                           {:memories (count memories)
-                            :memory-descendant-count (count memory-descendants)
-                            :ms (- t-isa-done t-filter-start)})
-               pass-mem-idents (set (map :db/ident (apply-filter memories filter-spec)))
-               t-apply-done (System/currentTimeMillis)
-               _ (log/info :INGEST/FILTER-APPLY-DONE
-                           {:pass-idents (count pass-mem-idents)
-                            :ms (- t-apply-done t-isa-done)})]
-           (loop [out [] include? false [e & rst] all-entities]
-             (cond
-               (nil? e)
-               out
+     (cond
+       ;; Single-file :from short-circuits before the walk — the explicit
+       ;; MEMORY.md/README.md heal path (blocker #2, root-file bug): the
+       ;; walk's +default-skip-basenames+ can never enumerate the two root
+       ;; files, so a file the caller points at is parsed directly.
+       (.isFile root)
+       (ingest-single-file root filter-spec)
 
-               (dt/type-isa? :mm/Memory (:dt/type e))
-               (let [inc? (contains? pass-mem-idents (:db/ident e))]
-                 (recur (cond-> out inc? (conj e)) inc? rst))
+       (not (.isDirectory root))
+       (throw (ex-info "ingest-graph requires a directory or file input"
+                       {:from-dir (str from-dir)}))
 
-               :else
-               (recur (cond-> out include? (conj e)) include? rst)))))))))
+       :else
+       (let [t-files-start (System/currentTimeMillis)
+             files (vec (walk-markdown-files root skip-basenames))
+             t-files-end (System/currentTimeMillis)
+             _ (log/info :INGEST/FILES-WALKED
+                         {:from-dir (str from-dir)
+                          :file-count (count files)
+                          :ms (- t-files-end t-files-start)})
+             tree-filter (:tree-filter filter-spec)
+             processed-counter (atom 0)
+             all-entities
+             (vec
+               (mapcat (fn [rel-path]
+                         (let [n (swap! processed-counter inc)]
+                           (when (zero? (mod n 100))
+                             (log/info :INGEST/PARSE-PROGRESS
+                                       {:processed n :total (count files)
+                                        :ms (- (System/currentTimeMillis) t-files-end)})))
+                         ;; Tree-filter optimization — skip parse if the file
+                         ;; can't pass the :tree-filter prefix anyway.  Test the
+                         ;; STORED-form rel-path (via md/walk-rel->stored-rel-path)
+                         ;; so this parse-skip fork and entity-passes-filter? (the
+                         ;; stored-slot fork) compare the SAME target; matching the
+                         ;; raw walk-rel here made the two forks disagree under a
+                         ;; corpus-root anchor — silent imported=0 (bugs/project_-
+                         ;; import_tree_filter_double_fork_walk_rel_vs_stored_rel_-
+                         ;; path_2026_07_02).
+                         (when (or (nil? tree-filter)
+                                   (str/starts-with?
+                                     (md/walk-rel->stored-rel-path rel-path)
+                                     tree-filter))
+                           (try
+                             (let [source (slurp (io/file root rel-path))]
+                               (md/parse-document source rel-path))
+                             (catch Throwable ex
+                               ;; Per-file parse failures don't abort the whole
+                               ;; walk — e.g., a section-ident slug collision
+                               ;; in ONE file shouldn't poison the entire corpus
+                               ;; ingest.  Log + skip.  Consumers downstream
+                               ;; (project-import-handler) report per-group
+                               ;; failures explicitly.
+                               (log/warn :SANDBAR/INGEST-PARSE-SKIP
+                                         {:rel-path rel-path
+                                          :error    (.getMessage ex)})
+                               nil))))
+                       files))
+             t-parse-end (System/currentTimeMillis)
+             _ (log/info :INGEST/PARSE-COMPLETE
+                         {:files-walked (count files)
+                          :entities-produced (count all-entities)
+                          :ms (- t-parse-end t-files-end)})
+             filter-active? (and filter-spec (seq filter-spec))
+             _ (log/info :INGEST/FILTER-DECISION
+                         {:filter-active? filter-active?
+                          :filter-spec filter-spec})
+             t-filter-start (System/currentTimeMillis)
+             _ (log/info :INGEST/FILTER-START {:entities (count all-entities)})
+             result (filter-ingested-entities all-entities filter-spec)
+             _ (log/info :INGEST/FILTER-DONE
+                         {:entities (count result)
+                          :ms (- (System/currentTimeMillis) t-filter-start)})]
+         ;; F12 LOUD-empty: a non-nil :tree-filter that selects NOTHING is the
+         ;; double-fork's silent-zero symptom.  Warn rather than return [] mutely
+         ;; so a mis-anchored or mis-prefixed filter is visible to the caller
+         ;; instead of masquerading as "nothing to import" (bugs/project_import_-
+         ;; tree_filter_double_fork_walk_rel_vs_stored_rel_path_2026_07_02 §Notes,
+         ;; F12 fail-silent lens).
+         (when (and (some? tree-filter) (empty? result) (pos? (count files)))
+           (log/warn :INGEST/TREE-FILTER-SELECTED-NONE
+                     {:tree-filter tree-filter
+                      :files-walked (count files)
+                      :from-dir (str from-dir)
+                      :hint "tree-filter matches the UNPREFIXED stored rel-path (e.g. \"decisions/\" not \"memory/decisions/\")"}))
+         result)))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Round-trip-test convenience

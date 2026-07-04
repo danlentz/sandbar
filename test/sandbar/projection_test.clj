@@ -11,6 +11,8 @@
   (:require [clojure.test          :refer :all]
             [clojure.java.io       :as io]
             [clojure.string        :as str]
+            [clojure.tools.logging :as log]
+            [clojure.tools.logging.impl]
             [sandbar.projection :as pg]
             [sandbar.codec.markdown :as md]
             [sandbar.test-util     :as tu]))
@@ -265,3 +267,154 @@
       (let [content (slurp (io/file dir "decisions/bar.md"))]
         (is (str/includes? content "## Context"))
         (is (str/includes? content "## Decision"))))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Regression — import :tree-filter double-fork (walk-rel vs stored-rel)
+;; Bug: bugs/project_import_tree_filter_double_fork_walk_rel_vs_stored_rel_path_2026_07_02.md
+;;
+;; ingest-graph applied :tree-filter at TWO points against DIFFERENT targets:
+;;   fork 1 (walk-optimization) matched the WALK-relative path — `memory/…`-
+;;     prefixed when :from is the corpus root;
+;;   fork 2 (entity-passes-filter?) matched the entity's STORED
+;;     :mm.memory/rel-path — UNPREFIXED post-D2 (parse-document strips
+;;     `^memory/`, codec/markdown.clj:1847).
+;; Under a corpus-root anchor no single prefix satisfied both, so a
+;; subdir-scoped filter returned imported=0 SILENTLY (F12 fail-silent).
+
+(defn- with-captured-log-warns
+  "Run `body-fn` while capturing every clojure.tools.logging warn-level
+   call into an atom.  Returns `[result captured]` where `captured` is a
+   vector of the raw `message` args passed to `log/warn`.  Used to assert
+   the F12 LOUD-empty warning fires when a non-nil tree-filter selects
+   nothing (mirrors the log-appender binding in mcp/notifications_test)."
+  [body-fn]
+  (let [captured (atom [])
+        factory  (reify clojure.tools.logging.impl/LoggerFactory
+                   (name [_] "captured")
+                   (get-logger [_ _logger-ns]
+                     (reify clojure.tools.logging.impl/Logger
+                       (enabled? [_ _] true)
+                       (write! [_ level _throwable message]
+                         (when (= :warn level)
+                           (swap! captured conj message))))))]
+    (binding [log/*logger-factory* factory]
+      [(body-fn) @captured])))
+
+(defn- project-under-memory-subdir!
+  "Project `entities` into `dir/memory/…` so a walk anchored at `dir`
+   yields `memory/…`-prefixed walk-rel-paths (the corpus-root-anchor
+   shape).  Returns the `dir/memory` File the entities were written to."
+  [dir entities]
+  (let [mem-dir (io/file dir "memory")]
+    (.mkdirs mem-dir)
+    (pg/project-graph entities {:to mem-dir})
+    mem-dir))
+
+(deftest ingest-graph-tree-filter-matches-under-root-anchor
+  ;; RED on pre-fix code: walk-rel `memory/decisions/m1.md` fails the
+  ;; `(str/starts-with? rel-path "decisions/")` optimization, so the file
+  ;; is never parsed and `back` is empty.  GREEN once fork 1 strips the
+  ;; walk-anchor `memory/` prefix before the filter comparison, agreeing
+  ;; with the stored `decisions/m1.md` form fork 2 already tests.
+  (with-tmp-dir [dir nil]
+    (let [m1 (assoc (simple-memory) :mm.memory/rel-path "decisions/m1.md"
+                                    :db/ident :decisions/m1)
+          m2 (assoc (simple-memory) :mm.memory/rel-path "bugs/m2.md"
+                                    :db/ident :bugs/m2)]
+      (project-under-memory-subdir! dir [m1 m2])
+      ;; Anchor the WALK at `dir` (the "corpus root"): walk-rel-paths are
+      ;; `memory/decisions/m1.md` + `memory/bugs/m2.md`.
+      (let [back (pg/ingest-graph dir {:filter {:tree-filter "decisions/"}})]
+        (is (= 1 (count back))
+            "subdir tree-filter selects exactly the one file under decisions/")
+        ;; Post-D2 the minted ident carries the `memory.` prefix (D2 canon
+        ;; via rel-path->memory-ident; INVENTORY caveat (b)).
+        (is (= :memory.decisions/m1 (-> back first :db/ident))
+            "the selected file's entity is the D2 memory.-prefixed ident")
+        (is (= "decisions/m1.md" (-> back first :mm.memory/rel-path))
+            "stored rel-path is the unprefixed D2 form")))))
+
+(deftest ingest-graph-tree-filter-empty-result-is-loud
+  ;; F12 lens: a non-nil tree-filter that yields imported=0 must NOT be
+  ;; silent.  RED on pre-fix code — the double-fork returns [] with no
+  ;; signal.  GREEN once ingest-graph emits a :warn when a non-nil
+  ;; tree-filter selects nothing.
+  (with-tmp-dir [dir nil]
+    (let [m1 (assoc (simple-memory) :mm.memory/rel-path "decisions/m1.md"
+                                    :db/ident :decisions/m1)]
+      (project-under-memory-subdir! dir [m1])
+      (let [[back warns]
+            (with-captured-log-warns
+              #(pg/ingest-graph dir {:filter {:tree-filter "no-such-dir/"}}))]
+        (is (empty? back) "no file matches the bogus filter")
+        (is (some (fn [msg]
+                    (str/includes? (str msg) "no-such-dir/"))
+                  warns)
+            "a warn names the tree-filter that selected nothing (F12 LOUD)")))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Regression — import cannot select corpus ROOT files (MEMORY.md / README.md)
+;; Bug: bugs/project_import_cannot_select_root_files_memory_md_readme_bare_ident_stubs_2026_07_02.md
+;;
+;; The two corpus root files were unreachable by the sanctioned import walk:
+;;   (1) walk-markdown-files unconditionally skips README.md + MEMORY.md via
+;;       +default-skip-basenames+, so no filter form enumerates them;
+;;   (2) ingest-graph rejected a FILE :from with "requires a directory input".
+;; Net: the :memory/MEMORY + :memory/README bare-ident STUBS (no rel-path,
+;; no :dt/type) that D2 re-import heals everywhere else could not be reached
+;; — imported=0 for every filter form; :from=<file> ERRORed.
+;; Fix: a file :from parses that single file directly (basename as rel-path),
+;; bypassing the walk + skip-set — the explicit MEMORY/README heal path.
+
+(defn- write-md-file!
+  "Emit `entity` (an mm/Memory entity-spec) as a single markdown file at
+   `dir/rel-path` via the codec, then return that File.  Reuses
+   project-graph's default hierarchy-fn (reads :mm.memory/rel-path), so the
+   on-disk file is byte-identical to what the corpus stores."
+  ^java.io.File [dir rel-path entity]
+  (pg/project-graph [(assoc entity :mm.memory/rel-path rel-path)] {:to dir})
+  (io/file dir rel-path))
+
+(deftest ingest-graph-file-from-heals-root-level-md
+  ;; RED on pre-fix code: `ingest-graph` throws "requires a directory input"
+  ;; for a file :from, AND even a dir :from can never enumerate MEMORY.md
+  ;; (skip-set).  GREEN once a file :from parses the single named file
+  ;; directly — the explicit heal path for the corpus root files.
+  (with-tmp-dir [dir nil]
+    (let [root-file (write-md-file! dir "MEMORY.md"
+                                    (assoc (simple-memory)
+                                           :db/ident :memory/MEMORY))
+          back (pg/ingest-graph root-file {})]
+      (is (= 1 (count back))
+          "a file :from on a root-level .md yields exactly one healed entity")
+      (let [healed (first back)]
+        ;; The heal target's canonical ident is the bare :memory/MEMORY (a
+        ;; root-level basename mints ns=`memory`), matching the live stub
+        ;; eid 17592186068437 the memorial names — NOT retracted, HEALED.
+        (is (= :memory/MEMORY (:db/ident healed))
+            "root basename MEMORY.md mints the canonical :memory/MEMORY ident")
+        ;; The stub carried NO rel-path + NO :dt/type; the heal restores both.
+        (is (= "MEMORY.md" (:mm.memory/rel-path healed))
+            "heal restores the (unprefixed) stored rel-path the stub lacked")
+        (is (some? (:dt/type healed))
+            "heal restores the :dt/type the bare-ident stub lacked")))))
+
+(deftest ingest-graph-file-from-uses-basename-as-rel-path
+  ;; A file :from is a general single-file ingest, not a MEMORY/README
+  ;; special-case.  The selector knows only the file — it has no corpus
+  ;; anchor to recover a subtree prefix from — so it derives the rel-path
+  ;; from the file's BASENAME (the honest contract for a bare file).  For a
+  ;; root-level heal target (MEMORY.md/README.md) the basename IS the
+  ;; corpus rel-path, which is exactly why this heals the two root stubs.
+  (with-tmp-dir [dir nil]
+    (let [f (write-md-file! dir "decisions/m1.md"
+                            (assoc (simple-memory) :db/ident :decisions/m1))
+          back (pg/ingest-graph f {})]
+      (is (= 1 (count back)) "a file :from parses exactly the one named file")
+      ;; basename `m1.md` → ns `memory` (root-level derivation).  A subtree
+      ;; file passed BARE loses its subtree prefix — callers wanting the
+      ;; subtree ident must pass the subtree dir as :from, not the file.
+      (is (= :memory/m1 (-> back first :db/ident))
+          "single-file :from derives the ident from the file basename")
+      (is (= "m1.md" (-> back first :mm.memory/rel-path))
+          "stored rel-path is the file basename"))))

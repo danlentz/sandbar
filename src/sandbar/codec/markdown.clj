@@ -601,6 +601,28 @@
          (when (and (seq ns-parts) local-name)
            (keyword (str/join "." ns-parts) local-name)))))))
 
+(defn walk-rel->stored-rel-path
+  "Normalize a walk-relative rel-path to the corpus-relative STORED form
+   persisted in `:mm.memory/rel-path` — the walk-rel with a leading
+   `memory/` walk-anchor prefix stripped.
+
+   When `ingest-graph` anchors its walk at the corpus root
+   (`:from /Users/dan/claude`) the walk-rel is `memory/decisions/foo.md`,
+   but the corpus-canonical stored form (D2, per c8_ratification_batch)
+   is the unprefixed `decisions/foo.md` so the reactive sink routes to
+   the REAL corpus path.  Anchoring at `.../memory` already yields the
+   unprefixed form; this is a no-op there.
+
+   This is the SINGLE definition of the walk-rel→stored-rel relation.
+   `parse-document` (stored-slot mint) and `projection/ingest-graph`'s
+   tree-filter parse-skip optimization BOTH route through it so the two
+   filter forks compare the same target — the divergence that produced
+   bugs/project_import_tree_filter_double_fork_walk_rel_vs_stored_rel_-
+   path_2026_07_02 (sibling paths not swept when the canonical form
+   changed)."
+  [rel-path]
+  (str/replace rel-path #"^memory/" ""))
+
 (defn- ident-ns-type-prefix
   "Derive a semantic, singularized prefix from an ident's namespace last
    segment: :memory.sessions/x -> \"session-\"; :memory.logs/x -> \"log-\";
@@ -1844,7 +1866,7 @@
   (let [memory-ident   (or (rel-path->memory-ident rel-path)
                            (throw (ex-info "parse-document requires a rel-path that yields a valid memory ident"
                                            {:rel-path rel-path})))
-        stored-rel-path (str/replace rel-path #"^memory/" "")
+        stored-rel-path (walk-rel->stored-rel-path rel-path)
         resolved-class (resolve-document-class source)
         c              (make-codec)
         ;; Thread the host memory-ident so the extras carrier is minted

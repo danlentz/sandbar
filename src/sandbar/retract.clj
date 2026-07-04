@@ -125,19 +125,42 @@
            sib     (:db/id (:mm.section/next-sibling e))]
        (section-subtree-eids db sib seen)))))
 
+(defn- owned-section-eids
+  "The eids of every `:mm/Section` directly parented at memory `mem-eid` in
+   `db` — the roots of the owned section subtree.  Read via the reverse
+   `:mm.section/parent` index rather than `:mm.memory/first-section` because
+   Datomic projects a ref to an IDENTFUL target (every codec-ingested section
+   carries a path-derived `:db/ident`) as the bare `:db/ident` KEYWORD, not an
+   EntityMap — so `(:db/id (:mm.memory/first-section mem))` is nil and the
+   first-section seed silently enumerates nothing.  Reverse-parent is robust to
+   every projection form of the slot (keyword / eid / EntityMap / nil / dangling)
+   and matches the 108-twin remediation's host→sections enumeration.
+
+   Per bugs/retract_cascade_blind_to_first_section_dependents_bare_keyword_projection_2026_07_03.md."
+  [db mem-eid]
+  (mapv first
+        (d/q '[:find ?s
+               :in $ ?mem
+               :where [?s :mm.section/parent ?mem]]
+             db mem-eid)))
+
 (defn- dependents-of
   "Enumerate the ident-less, component-shaped children reachable from the
    target entity `e` (a `d/entity` map) in `db`: its `:mm/Section` tree
-   (walked from `:mm.memory/first-section` via next-sibling + child
+   (every section subtree parented at `e`, walked via next-sibling + child
    recursion) and its `:mm.memory/frontmatter` carrier.  Returns a vec of
    `{:eid :dt-type :datom-count}` maps.  Refs are NOT `:db/isComponent`,
    so `:db.fn/retractEntity` will NOT auto-cascade to these — they survive
-   as orphans unless `cascade` is chosen (said so in the report)."
+   as orphans unless `cascade` is chosen (said so in the report).
+
+   The section tree is seeded from the reverse `:mm.section/parent` index
+   (`owned-section-eids`), not `:mm.memory/first-section`, so identful
+   sections — the corpus norm — are not lost to the bare-keyword ref
+   projection (see `owned-section-eids`)."
   [db e]
-  (let [first-section (:db/id (:mm.memory/first-section e))
-        section-eids  (if first-section
-                        (section-subtree-eids db first-section)
-                        #{})
+  (let [section-eids  (reduce (fn [acc root] (section-subtree-eids db root acc))
+                              #{}
+                              (owned-section-eids db (:db/id e)))
         frontmatter   (:db/id (:mm.memory/frontmatter e))
         dep-eids      (cond-> (vec (sort section-eids))
                         frontmatter (conj frontmatter))]
@@ -147,6 +170,44 @@
                :dt-type     (dt-type-ident de)
                :datom-count (datom-count db dep-eid)}))
           dep-eids)))
+
+(defn- inbound-refs-of
+  "Enumerate the FOREIGN inbound typed-edges pointing AT `eid` in `db`: every
+   `:db.type/ref` datom `[?src ?attr eid]` whose source is NOT in `owned-eids`
+   — the citation graph that would DANGLE if `eid` were retracted
+   (`:mm.memory/cites`, `:mm.memory/motivated-by`, and any other ref attribute
+   a SURVIVING entity uses to reference the target).  Returns a vec of
+   `{:source-eid :predicate :source-ident :dt-type}` maps, one per edge,
+   ordered by source eid then predicate.
+
+   `owned-eids` is the target's own outbound-dependent set (its section
+   subtree + frontmatter carrier — see `dependents-of`).  Those children hold
+   BACK-edges at the target (`:mm.section/parent`, `:mm.memory/frontmatter`'s
+   inverse) that surface in `:vaet` but are NOT dangle risks: they are already
+   reported on the OUTBOUND axis and are cascade-retracted with the target.
+   Excluding them keeps the two axes disjoint so a plainly-sectioned memory
+   with no external citers reads `:inbound-count 0` rather than tripping the
+   dangle guard on its own sections.
+
+   These edges are the retract verb's SECOND blast-radius axis and are
+   invisible to `dependents-of` (which walks only OUTBOUND component refs):
+   `:db.fn/retractEntity` removes the target's own datoms but leaves every
+   inbound reference asserted against a now-vanished eid.  Read via the VAET
+   reverse-index (`:vaet` is Datomic's value→attribute→entity index over ref
+   datoms) so the query is class-agnostic — no hardcoded predicate list.
+
+   Per bugs/retract_dependents_blind_to_inbound_citation_edges_dangling_refs_2026_07_03.md."
+  [db eid owned-eids]
+  (->> (d/datoms db :vaet eid)
+       (remove (fn [[src _attr _v _tx]] (contains? owned-eids src)))
+       (map (fn [[src attr _v _tx]]
+              (let [se (d/entity db src)]
+                {:source-eid   src
+                 :predicate    (:db/ident (d/entity db attr))
+                 :source-ident (:db/ident se)
+                 :dt-type      (dt-type-ident se)})))
+       (sort-by (juxt :source-eid #(str (:predicate %))))
+       vec))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Per-target report — PURE against a db snapshot
@@ -164,11 +225,16 @@
       :dt-type           <keyword | nil>
       :datom-count       <int>
       :dependents        [<{:eid :dt-type :datom-count}> ...]
+      :inbound-refs      [<{:source-eid :predicate :source-ident :dt-type}> ...]
+      :inbound-count     <int>
       :protected?        <bool>
       :protection-reason <string | nil>}
 
-   `dependents` is ALWAYS enumerated (regardless of `:cascade`) so the
-   caller sees the blast radius."
+   `dependents` (OUTBOUND owned children) and `inbound-refs` (INBOUND
+   citation edges that would DANGLE) are BOTH always enumerated regardless
+   of `:cascade` so the caller sees the full two-axis blast radius.  A
+   nonzero `:inbound-count` is what gates un-acknowledged `:persist` in
+   `retract!` (per the inbound-blind-spot bug)."
   [db target]
   (let [{:keys [valid? entity]} (eref/validate target)]
     (if-not valid?
@@ -179,25 +245,32 @@
        :dt-type           nil
        :datom-count       0
        :dependents        []
+       :inbound-refs      []
+       :inbound-count     0
        :protected?        false
        :protection-reason nil}
-      (let [eid       (:db/id entity)
-            ident     (:db/ident entity)
-            dt-type   (dt-type-ident entity)
-            ns-prot?  (namespace-protected? (some-> ident namespace))
-            cls-prot? (class-protected? dt-type)
+      (let [eid        (:db/id entity)
+            ident      (:db/ident entity)
+            dt-type    (dt-type-ident entity)
+            dependents (dependents-of db entity)
+            owned-eids (into #{} (map :eid) dependents)
+            inbound    (inbound-refs-of db eid owned-eids)
+            ns-prot?   (namespace-protected? (some-> ident namespace))
+            cls-prot?  (class-protected? dt-type)
             protected? (or ns-prot? cls-prot?)
-            reason    (cond
-                        ns-prot?  (str "protected namespace: " (namespace ident))
-                        cls-prot? (str "protected class: " dt-type)
-                        :else     nil)]
+            reason     (cond
+                         ns-prot?  (str "protected namespace: " (namespace ident))
+                         cls-prot? (str "protected class: " dt-type)
+                         :else     nil)]
         {:target            target
          :resolved-eid      eid
          :exists?           true
          :ident             ident
          :dt-type           dt-type
          :datom-count       (datom-count db eid)
-         :dependents        (dependents-of db entity)
+         :dependents        dependents
+         :inbound-refs      inbound
+         :inbound-count     (count inbound)
          :protected?        protected?
          :protection-reason reason}))))
 
@@ -297,18 +370,25 @@
                 the retraction set (default false ⇒ named targets only).
      :reason  — REQUIRED when :persist (human-readable audit string).
      :actor   — optional actor ref carried into each audit event.
+     :acknowledge-dangling — when true, PERMIT a :persist that would leave
+                inbound citation edges dangling (a proceeding target with
+                nonzero `:inbound-count`).  Default false ⇒ such a persist
+                is REFUSED loudly so the caller cannot orphan a citation
+                graph on a report that never showed the inbound edges.
 
    Loud errors (ex-info, nothing retracted):
-     - empty targets                 → :retract/no-targets
-     - > max-targets                 → :retract/target-cap-exceeded
-     - :persist without :reason      → :retract/reason-required
+     - empty targets                          → :retract/no-targets
+     - > max-targets                          → :retract/target-cap-exceeded
+     - :persist without :reason               → :retract/reason-required
+     - :persist over live inbound refs without
+       :acknowledge-dangling                  → :retract/inbound-refs-unacknowledged
 
    Returns the report map.  On :persist the report is augmented with
    `:persist true`, `:retracted-eids`, `:retracted-count`,
    `:skipped` (protected / missing entries), and `:events-emitted`.
    Protected + missing targets are SKIPPED (never abort the batch); the
    retraction tx itself is atomic — if it throws, nothing was retracted."
-  [targets {:keys [persist cascade reason actor] :as _opts}]
+  [targets {:keys [persist cascade reason actor acknowledge-dangling] :as _opts}]
   (let [targets (vec targets)]
     (when (empty? targets)
       (throw (ex-info "retract requires at least one target"
@@ -335,6 +415,28 @@
         (assoc report :persist false)
         (let [{:keys [proceed skipped]} (retractable report)
               eids (retraction-eids proceed cascade)]
+          ;; Inbound-dangle guard (before any tx): retracting a target that
+          ;; surviving entities still cite would leave those citations
+          ;; pointing at a vanished eid.  The caller must SEE that risk
+          ;; (:inbound-refs in the report) and explicitly accept it with
+          ;; :acknowledge-dangling — otherwise the persist is refused while
+          ;; nothing has been retracted.  Per the inbound-blind-spot bug:
+          ;; the verb's dependents:[] must not be read as proof of safety.
+          (when-not acknowledge-dangling
+            (let [dangling (filter #(pos? (:inbound-count %)) proceed)]
+              (when (seq dangling)
+                (throw (ex-info
+                        (str "retract with :persist true would DANGLE inbound "
+                             "citation edges on " (count dangling)
+                             " target(s); pass :acknowledge-dangling true to "
+                             "proceed or repoint the inbound refs first")
+                        {:reasons #{:retract/inbound-refs-unacknowledged}
+                         :dangling-targets
+                         (mapv (fn [t]
+                                 {:target        (:target t)
+                                  :resolved-eid  (:resolved-eid t)
+                                  :inbound-count (:inbound-count t)})
+                               dangling)})))))
           ;; ONE atomic transaction over targets + cascade set.  If it
           ;; throws, nothing was retracted and the error surfaces loudly.
           (when (seq eids)
