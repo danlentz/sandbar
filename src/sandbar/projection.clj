@@ -59,6 +59,7 @@
    entities into entity-spec maps) lives at Stage F (dt/* + MCP
    integration)."
   (:require [clojure.java.io        :as io]
+            [clojure.set            :as set]
             [clojure.string         :as str]
             [clojure.tools.logging  :as log]
             [sandbar.codec          :as codec]
@@ -158,6 +159,120 @@
 
        :else
        (codec/emit entity (assoc opts :format native-codec))))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Pre-write registry guard — refuse frontmatter-key strips at the write
+;; boundary (S2 substrate-fidelity, X-minus 0.2.0)
+;;
+;; The DB→FS emit path can silently degrade: an unresolvable carrier
+;; ident, a malformed EDN payload, or a post-tx map lacking the
+;; :mm.memory/frontmatter key all read-back as `carrier nil` and the
+;; codec falls through to the legacy lossy emit — stripping every extras
+;; key (`at-startup:`, `one-line:`, the long tail) with NO log line
+;; (`resolve-carrier-value` / `read-carrier-extra` are never-throw by
+;; contract, sandbar.codec.markdown:1256,1274).  The codec is model-layer
+;; (no target path, legitimately emits carrier-less DB-first entities), so
+;; the only place "would this write strip a registry key from an existing
+;; file?" is answerable is the write call-site — where old bytes and new
+;; bytes coexist.
+;;
+;; ONE shared primitive, TWO call-sites (IP-3): the reactive sink's
+;; `atomic-write!` (sandbar.reactive.sinks) AND the batch `project-graph`
+;; loop below.  A single definition of "registry-critical" so the reactive
+;; and batch notions can never diverge (mirrors the ceremony-#4 FIX-1
+;; `walk-rel->stored-rel-path` single-definition precedent).
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defn registry-critical-keys
+  "The set of frontmatter wire-keys (strings) whose loss on a write is
+   FATAL (refuse the write) rather than merely warn-logged.
+
+   Sourced from the `SANDBAR_REGISTRY_CRITICAL_KEYS` env-var (comma-
+   separated wire-keys); default `#{\"at-startup\" \"one-line\"}` — the
+   discipline-visibility registry pair, which both ride the same extras
+   carrier and are both load-bearing for the startup-banner tiering
+   (regen captures `one-line:` into the cache; `at-startup:` drives the
+   tier).  A carrier-degradation event strips both together, so the
+   marginal cost of including `one-line` is ~zero.
+
+   Read via a defn (not a def) so it is hot-load / test overridable,
+   consistent with the `SANDBAR_CORPUS_ROOT` env-read convention in
+   `sandbar.reactive.sinks/corpus-root`.
+
+   Env-parse edge (empty ⇒ empty set, NOT `#{\"\"}`): a set/present-but-
+   blank `SANDBAR_REGISTRY_CRITICAL_KEYS=` parses to the EMPTY set, which
+   disables the fatal-refusal tier entirely (every drop becomes warn-only).
+
+   NB the baked default embeds minimal consumer knowledge in the substrate
+   (tension with the no-hardcoded-consumer-class-knowledge discipline,
+   already honored twice on this codepath) — arbitrated narrow (AP-S2-3):
+   the carrier delivers any-key survival; this guard is the backstop for
+   the one named catastrophic consumer, and warn-log frequency is the
+   evidence for widening after telemetry lands."
+  []
+  (if-let [env (System/getenv "SANDBAR_REGISTRY_CRITICAL_KEYS")]
+    (into #{} (->> (str/split env #",")
+                   (map str/trim)
+                   (remove str/blank?)))
+    #{"at-startup" "one-line"}))
+
+(defn- frontmatter-key-set
+  "Parse `source`'s frontmatter block and return the set of top-level
+   wire-keys (strings) it declares.  Returns `nil` when `source` has no
+   frontmatter block (an unterminated or absent `---` fence).
+
+   Uses the already-public `md/split-frontmatter` + `md/parse-frontmatter-text`
+   (cheap; no full document parse).  `parse-frontmatter-text` returns
+   KEYWORD keys, so each is normalized to its wire-key string via `name`."
+  [source]
+  (let [fm (first (md/split-frontmatter source))]
+    (when fm
+      (->> (md/parse-frontmatter-text fm)
+           keys
+           (map name)
+           set))))
+
+(defn guard-registry-critical-write!
+  "Pre-write fidelity guard for `target-path`.  Compares the frontmatter
+   key set of the EXISTING on-disk file against `new-content`'s and:
+
+   1. no file at `target-path` → no-op (fresh writes are never refused);
+   2. on-disk file has no frontmatter block → no-op;
+   3. `dropped` = on-disk wire-keys absent from `new-content`;
+   4. if `dropped` intersects `(registry-critical-keys)` → THROW an
+      ex-info marked `:sandbar/error :registry-strip-refusal` (the sink's
+      companion catch rethrows this marker so it counts in
+      `sink-error-total`; the batch path lets it abort the export);
+   5. else if `dropped` is non-empty → warn-log
+      `:REACTIVE/frontmatter-keys-dropped` and proceed (closes the
+      silent-degradation observability gap without fail-closing the whole
+      projection surface).
+
+   Returns nil (proceed) or throws (refuse).  Called BEFORE the spit at
+   both write call-sites, so a refusal leaves the target — and any `.tmp`
+   sibling — untouched."
+  [target-path new-content]
+  (let [target (io/file target-path)]
+    (when (.exists target)
+      (when-let [disk-keys (frontmatter-key-set (slurp target))]
+        (let [new-keys (or (frontmatter-key-set new-content) #{})
+              dropped  (set/difference disk-keys new-keys)
+              critical (set/intersection dropped (registry-critical-keys))]
+          (cond
+            (seq critical)
+            (throw (ex-info (str "registry-critical frontmatter key would be stripped "
+                                 "by this write; refusing")
+                            {:sandbar/error :registry-strip-refusal
+                             :target-path   target-path
+                             :missing-keys  (vec (sort critical))
+                             :on-disk-keys  (vec (sort disk-keys))
+                             :emitted-keys  (vec (sort new-keys))}))
+
+            (seq dropped)
+            (log/warn :REACTIVE/frontmatter-keys-dropped
+                      {:target-path  target-path
+                       :dropped-keys (vec (sort dropped))})))))
+    nil))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Hierarchy-fn — entity → rel-path
@@ -309,6 +424,12 @@
               flat        (into [memory] sections)
               content     (md/emit-document flat)]
           (.mkdirs (.getParentFile target-file))
+          ;; Pre-write registry guard (IP-3 call-site 2).  Inert for fresh
+          ;; scratch/temp dirs (no existing file → no-op); engages only when
+          ;; exporting over an existing corpus, where a degraded emit would
+          ;; otherwise strip a registry-critical key in-place.  A refusal
+          ;; ex-info aborts the export; the MCP handler reports it.
+          (guard-registry-critical-write! (.getPath target-file) content)
           (spit target-file content)
           (log/debug :PROJECT-GRAPH/wrote {:rel-path rel-path})
           {:rel-path rel-path :written true})))))

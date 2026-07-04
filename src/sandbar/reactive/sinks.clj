@@ -69,14 +69,31 @@
 
    Creates parent directories if absent.
 
+   Consults the pre-write registry guard
+   (`sandbar.projection/guard-registry-critical-write!`, IP-3 call-site 1)
+   BEFORE writing the `.tmp` file: if this write would strip a
+   registry-critical frontmatter key from an existing on-disk file the
+   guard throws a `:registry-strip-refusal` ex-info, so neither the target
+   nor the `.tmp` sibling is ever written.
+
+   The `.renameTo` boolean is CHECKED: a false return (rename failed) is
+   no longer a silent no-write — it throws an `:atomic-rename-failed`
+   ex-info (an ordinary IO failure, caught+warn-logged by
+   `fs-projection-sink`'s catch, NOT rethrown as a fidelity refusal).
+
    Returns nil.  Raises on failure."
   [^String target-path ^String content]
   (let [target ^java.io.File (io/file target-path)
         parent (.getParentFile target)
         tmp    ^java.io.File (io/file (str target-path ".tmp"))]
     (when parent (.mkdirs parent))
+    (pg/guard-registry-critical-write! target-path content)
     (spit tmp content)
-    (.renameTo tmp target)
+    (when-not (.renameTo tmp target)
+      (throw (ex-info "atomic write failed: File.renameTo returned false"
+                      {:sandbar/error :atomic-rename-failed
+                       :target-path   target-path
+                       :tmp-path      (str target-path ".tmp")})))
     nil))
 
 (defn fs-projection-sink
@@ -99,7 +116,18 @@
 
    Failure semantics: per-entity try/catch.  A failed write doesn't
    propagate; the entity stays drained (will re-enqueue on next
-   mutation).  Stage D will refine retry semantics."
+   mutation).  Stage D will refine retry semantics.
+
+   ONE exception to the swallow: a registry-strip refusal from the
+   pre-write guard (`:sandbar/error :registry-strip-refusal`) is
+   error-logged `:REACTIVE/registry-strip-refused` and RETHROWN, so it
+   escapes to `dispatch-sinks!` → increments `:sink-error-total` +
+   `:REACTIVE/sink-failed` + `:REACTIVE/projection-partial` and becomes
+   visible in `sandbar_reactive_health` (a swallowed refusal would leave
+   the counter at 0 and the drain logging `projection-success`).  Ordinary
+   IO failures — including a false `.renameTo` (`:atomic-rename-failed`) —
+   keep today's warn+swallow (widening that is Stage-D territory, out of
+   the S2 scope, per AP-S2-4)."
   [eid post-tx-slots]
   (let [ident       (:db/ident post-tx-slots)
         class-ident (:dt/type post-tx-slots)
@@ -146,9 +174,19 @@
                         {:ident ident :eid eid :class class-ident :rel-path rel-path
                          :duration-ms done-ms :bytes bytes}))))
         (catch Throwable t
-          (log/warn t :REACTIVE/fs-write-failed
-                    {:ident ident :eid eid :class class-ident :rel-path rel-path
-                     :error (.getMessage t)}))))))
+          ;; Companion rethrow: a registry-strip refusal must ESCAPE the
+          ;; sink so `dispatch-sinks!` increments :sink-error-total and the
+          ;; refusal is visible in sandbar_reactive_health.  Everything
+          ;; else (ordinary IO, :atomic-rename-failed, emit-path throws)
+          ;; keeps today's warn+swallow.
+          (if (= :registry-strip-refusal (:sandbar/error (ex-data t)))
+            (do (log/error t :REACTIVE/registry-strip-refused
+                           {:ident ident :eid eid :class class-ident :rel-path rel-path
+                            :error (.getMessage t) :ex-data (ex-data t)})
+                (throw t))
+            (log/warn t :REACTIVE/fs-write-failed
+                      {:ident ident :eid eid :class class-ident :rel-path rel-path
+                       :error (.getMessage t)})))))))
 
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
