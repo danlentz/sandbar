@@ -334,12 +334,25 @@
               (str verb " must be gate-denied with the read-only verb-class reason "
                    "(handle-call, Shape A′); a :result here is a regression of the "
                    "ff176c2 gate.  got " (pr-str body))))))
-    (doseq [verb ["sandbar.entity.find" "sandbar.search.bm25f"]]
+    (doseq [[verb args] {"sandbar.entity.find"  {"ident" ":dt/Class"}
+                         "sandbar.search.bm25f" {"query" "memory" "class" ":mm/Memory"}}]
       (testing (str verb " stays PERMITTED for read-only (a read verb)")
-        (let [body (parse (mcp-post bearer (tools-call verb {"ident" ":dt/Class" "query" "x"})))]
-          ;; A read verb must NOT be gate-denied — neither by the read-only
-          ;; verb-class gate nor by the dispatch scope gate (the read-only SA is
-          ;; SCOPED — it carries :read-only — so it is not unscoped-denied).
+        (let [resp (mcp-post bearer (tools-call verb args))
+              body (parse resp)]
+          ;; A read verb must be genuinely SERVED, not merely "not denied":
+          ;; pin the POSITIVE shape (HTTP 200 + no :error + a :result) with
+          ;; valid per-verb args, so a method-not-found / invalid-params /
+          ;; novel deny reason cannot pass this KEYSTONE non-regression test as
+          ;; a false green (per the T-6 spec 'find/bm25f PERMITTED'; round-3
+          ;; codex+opus+judge must_fix — weak "not-denied-only" pin hardened).
+          (is (= 200 (:status resp))
+              (str verb " must return HTTP 200 for a read-only SA; got " (pr-str resp)))
+          (is (nil? (:error body))
+              (str verb " must not error for a read-only SA; got " (pr-str body)))
+          (is (some? (:result body))
+              (str verb " must return a :result for a read-only SA; got " (pr-str body)))
+          ;; secondary: specifically NOT gate-denied by either gate (the read-
+          ;; only SA is SCOPED — it carries :read-only — so not unscoped-denied).
           (is (not= "read-only-principal-forbidden-mutation"
                     (get-in body [:error :data :reason]))
               (str verb " must not be verb-class denied for read-only; got " (pr-str body)))
