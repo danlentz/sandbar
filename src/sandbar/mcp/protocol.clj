@@ -21,6 +21,7 @@
    - C.3 Notifications channel (sandbar.mcp.notifications)
    - C.4 Resources + Prompts + Tasks support"
   (:require [clojure.tools.logging :as log]
+            [sandbar.mcp.authz     :as authz]
             [sandbar.mcp.envelope  :as envelope]
             [sandbar.mcp.prompts   :as prompts]
             [sandbar.mcp.resources :as resources]
@@ -105,17 +106,22 @@
    Stage C.5 adds resources/*; subsequent stages add prompts/* +
    tasks/*.
 
-   Every handler is `(fn [id params principal] -> response)`.  Only
-   `tools/call` consults the principal (the read-only token gate); the rest
-   accept and ignore it so `dispatch` can invoke the whole table uniformly
-   without special-casing the authorized method."
+   Every handler is `(fn [id params principal] -> response)`.  The dispatch
+   gate (`authz/method-scope-decision`, run in `dispatch` before the handler)
+   covers the principal-SCOPE axis for every method uniformly, so most rows
+   accept and ignore the principal (`_`).  The rows that ALSO need the
+   principal INSIDE the handler consume it explicitly: `tools/call` (the
+   read-only verb-class gate, Shape A′) and — per S5 charter item 3 — the
+   compartment-aware `resources/read` + `resources/subscribe` handlers, which
+   thread the principal to their EP-N3/EP-N1 compartment checks (inert until S6
+   mints the visibility/clearance slots)."
   {"initialize"                  (fn [id params _] (handle-initialize id params))
    "notifications/initialized"   (fn [_ _ _] nil) ;; client confirms ready; no response
    "tools/list"                  (fn [id params _] (tools/handle-list id params))
    "tools/call"                  (fn [id params principal] (tools/handle-call id params principal))
    "resources/list"              (fn [id params _] (resources/handle-list id params))
-   "resources/read"              (fn [id params _] (resources/handle-read id params))
-   "resources/subscribe"         (fn [id params _] (resources/handle-subscribe id params))
+   "resources/read"              (fn [id params principal] (resources/handle-read id params principal))
+   "resources/subscribe"         (fn [id params principal] (resources/handle-subscribe id params principal))
    "resources/unsubscribe"       (fn [id params _] (resources/handle-unsubscribe id params))
    "prompts/list"                (fn [id params _] (prompts/handle-list id params))
    "prompts/get"                 (fn [id params _] (prompts/handle-get id params))
@@ -133,8 +139,19 @@
    overload dispatches with no principal (full access), preserving the
    pre-gate call contract.
 
+   S5 dispatch-layer gate (principal-check-at-dispatch, S5-PLAN §2.2 item 4 /
+   §1.4 Shape A′): for every dispatchable method we compute the principal's
+   scope descriptor and run the pure `authz/method-scope-decision` BEFORE the
+   handler is invoked.  On a deny we return the JSON-RPC deny envelope (or nil
+   for a notification, which expects no response); on allow we proceed to the
+   handler unchanged.  The gate is ADDITIVE — it does NOT duplicate the
+   `tools/call` read-only verb-class check, which stays byte-identical inside
+   `tools/handle-call` (Shape A′).  This is the axis that did not exist before:
+   fail-closed unscoped-deny (AP-2) + family policy for the non-tools methods.
+
    Error handling per JSON-RPC spec (codes via `sandbar.util.jsonrpc-status`):
    - Unknown method → `method-not-found`
+   - Denied by scope → `invalid-params` deny envelope (via authz; AP-2 + family)
    - Invalid params → `invalid-params` (handler may raise; we catch + map)
    - Handler exception → `internal-error`"
   ([msg] (dispatch msg nil))
@@ -149,12 +166,19 @@
 
        :else
        (if-let [handler (get method-handlers method)]
-         (try
-           (handler id params principal)
-           (catch Exception e
-             (log/error e :MCP/dispatch-error
-                        {:method method :id id})
-             (envelope/jsonrpc-error id jsonrpc-status/internal-error "Internal error"
-                                     {:exception-message (.getMessage e)})))
+         ;; S5 dispatch gate — run the pure scope decision before the handler.
+         ;; On deny, short-circuit with the deny envelope (nil for a
+         ;; notification); on allow, invoke the handler as before.
+         (let [scope    (authz/principal->scope principal)
+               decision (authz/method-scope-decision method scope)]
+           (if (authz/deny? decision)
+             (authz/deny->jsonrpc-error id method decision scope)
+             (try
+               (handler id params principal)
+               (catch Exception e
+                 (log/error e :MCP/dispatch-error
+                            {:method method :id id})
+                 (envelope/jsonrpc-error id jsonrpc-status/internal-error "Internal error"
+                                         {:exception-message (.getMessage e)})))))
          (envelope/jsonrpc-error id jsonrpc-status/method-not-found
                                  (str "Method not found: " method)))))))
