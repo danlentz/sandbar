@@ -63,7 +63,14 @@
   ;; arc Stage B.5 D3 2026-05-23) declare :dt/range :mm/Fn — load-order forces
   ;; mm.edn to see :mm/Fn before mm-meta.edn loads its full declaration.
   ;; Per substrate-restart friction discovery 2026-05-23.
-  {:db/ident :mm/Fn              :db/doc "Forward decl: first-class function memorial (full def in schema/mm-meta.edn per Stage B.5 ADR 2026-05-23)."}]
+  {:db/ident :mm/Fn              :db/doc "Forward decl: first-class function memorial (full def in schema/mm-meta.edn per Stage B.5 ADR 2026-05-23)."}
+  ;; S6 keystone-mint forward-decl for :mm/Project (full class def in
+  ;; schema/mm-artifact.edn, loaded AFTER mm.edn).  Needed here because the
+  ;; S6 firewall slot :mm.memory/owning-project declares :dt/range :mm/Project
+  ;; (a :db.type/ref meta-attribute — meta.edn:78-82), so mm.edn's tx must see
+  ;; :mm/Project as a resolvable ident before its full definition loads.
+  ;; Same load-order pattern as :mm/Fn above (2026-05-23).  Per DESIGN-ONTOLOGY §2.3.
+  {:db/ident :mm/Project         :db/doc "Forward decl: keystone tie-class (Codebase<->Context) + firewall-posture project record (full def in schema/mm-artifact.edn per S6 mint 2026-07-06)."}]
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; mm.tag/* Properties
@@ -788,6 +795,23 @@
    :db/valueType   :db.type/keyword
    :db/cardinality :db.cardinality/one
    :db/doc "Memorial status (frontmatter `status:`) — typically :active for arc plans."}
+
+  ;; ---- S6 firewall slots (keystone mint) ----
+  {:db/ident       :mm.memory/visibility
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Memory
+   :dt/range       :db.type/keyword
+   :db/valueType   :db.type/keyword
+   :db/cardinality :db.cardinality/one
+   :db/doc "The intrinsic firewall class / lattice position (:public / :private).  NOT :mm.memory/scope (which answers WHERE-does-this-route :global/:project, NOT how-confidential — a :global memory can be :private).  DEFAULT-DENY is a READ-TIME semantic: absent => :private (fail-closed), applied by sandbar.mcp.clearance/entity-compartment via *default-visibility*, NOT a stored backfill.  X-minus ships the :public<:private binary ONLY; tiers are additive VALUES, never a schema change.  Per DESIGN-ONTOLOGY §2.3/§4.1; the read helper at clearance.clj:57."}
+
+  {:db/ident       :mm.memory/owning-project
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Memory
+   :dt/range       :mm/Project
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/one
+   :db/doc "The routing anchor — the specific :mm/Project instance this memory belongs to (NOT :mm.memory/scope, which names the scope-CLASS not the instance).  ABSENT => the :project/UNASSIGNED sentinel (a sentinel VALUE, not a type; §4).  Read-time default via clearance.clj:58 (:db/id of owning-project, nil pre-assignment).  REF slot — MUST appear in :mm/Memory's :dt/slots (MF-1) to materialize as a traversable edge.  Per DESIGN-ONTOLOGY §2.3/§4.2."}
 
   {:db/ident       :mm.memory/created
    :dt/type        :dt/Property
@@ -1749,7 +1773,11 @@
                       :mm.memory/parent
                       :mm.memory/informs :mm.memory/informed-by
                       :mm.memory/implements
-                      :mm.memory/introduced-in]
+                      :mm.memory/introduced-in
+                      ;; S6 firewall slots (MF-1: owning-project is a REF — MUST be
+                      ;; here to materialize as a traversable edge, not carrier text)
+                      :mm.memory/visibility
+                      :mm.memory/owning-project]
    :dt/abstract?     false
    :db/doc "A corpus memorial — a markdown document under memory/ with YAML frontmatter and a markdown body.  Decomposed at multiple granularities: well-known frontmatter as direct properties; long-tail frontmatter via mm/Frontmatter; tags via mm/Tag refs; body as a sibling chain of mm/Section entities reachable via :mm.memory/first-section + :mm.section/next-sibling walk; markdown links via mm/Link refs."}]
 
@@ -1810,7 +1838,24 @@
   {:db/ident :mm.context/body-raw      :dt/type :dt/Property :dt/domain :mm/Context :dt/range :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/one :db/fulltext true :db/doc "Verbatim markdown body."}
   {:db/ident :mm.context/first-section :dt/type :dt/Property :dt/domain :mm/Context :dt/range :mm/Section :db/valueType :db.type/ref :db/cardinality :db.cardinality/one :db/doc "First section in chain."}
   {:db/ident :mm.context/links         :dt/type :dt/Property :dt/domain :mm/Context :dt/range :mm/Link :db/valueType :db.type/ref :db/cardinality :db.cardinality/many :db/doc "Markdown links from body."}
-  {:db/ident :mm.context/frontmatter   :dt/type :dt/Property :dt/domain :mm/Context :dt/range :mm/Frontmatter :db/valueType :db.type/ref :db/cardinality :db.cardinality/one :db/doc "Long-tail frontmatter ref (reserved)."}]
+  {:db/ident :mm.context/frontmatter   :dt/type :dt/Property :dt/domain :mm/Context :dt/range :mm/Frontmatter :db/valueType :db.type/ref :db/cardinality :db.cardinality/one :db/doc "Long-tail frontmatter ref (reserved)."}
+
+  ;; ---- S6 keystone-mint slots on :mm/Context ----
+  {:db/ident       :mm.context/visible-projects
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Context
+   :dt/range       :mm/Project
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/many
+   :db/doc "The compartment's member projects — the read-optimized INVERSE of :mm.project/runs-in-context, the corpus-canonical membership AUTHORITY (L-2, git-tracked/PR-reviewable, NOT the gitignored registry).  A dedicated un-overloaded membership slot (the inherited :mm.memory/has-part/part-of are smeared across all containment; ONT-F4).  Consumed by the S9 DB-build filter.  Card-MANY.  REF slot — MUST appear in :mm/Context's :dt/slots (MF-1).  Per DESIGN-ONTOLOGY §4.3."}
+
+  {:db/ident       :mm.context/machine-id
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Context
+   :dt/range       :db.type/string
+   :db/valueType   :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/doc "Rename-proof per-machine identity for R2 physical-exclusion keying.  DECLARED schema-ready in S6 per AP-MACHINE-ID O3; S6 MUST NOT write a VALUE (unpopulated per the census — machine-id is a multi-machine-dogfood need deferred to the 0.2.x demonstration gate).  String, card-one, matching the sibling :mm.context/* string convention.  Per S3-RATIFICATION §A; DESIGN-ONTOLOGY §4.4; AP-MACHINE-ID O3."}]
 
 ;;; ===========================================================================
 ;;; :mm.rule/* slot attributes
@@ -1948,7 +1993,12 @@
    ;; re-surfaces them in class.slots-of.
    :dt/slots         [:mm.context/context-type :mm.context/sandboxed
                       :mm.context/host :mm.context/firewall-class
-                      :mm.context/authorization-scope]
+                      :mm.context/authorization-scope
+                      ;; S6 (MF-1: visible-projects is a REF — MUST be here to
+                      ;; materialize as a traversable edge; machine-id is a string
+                      ;; scalar, listed for introspection — declared, VALUE unpopulated)
+                      :mm.context/visible-projects
+                      :mm.context/machine-id]
    :dt/abstract?     false
    :db/doc "A runtime context entity — the unit firewall + authorization rules attach to.  Routes `type: context`.  Per decisions/actor_as_first_class_metamodel_class_with_mm_actor_slots_2026_05_20.md.  β.2.2 Phase I 2026-05-26: doubly-declared slot surface migrated to canonical :mm.memory/* via inheritance from :mm/Memory; 5 context-specific slots retained on this class."}
 

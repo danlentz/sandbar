@@ -23,20 +23,35 @@
 
 (deftest count-by-no-where-test
   (testing "count-by returns {:count int} for class instances"
-    ;; Baseline: schema-load adds 3 :mm/Memory entities (transitively via
-    ;; :mm/Meta inheritance) —
+    ;; Baseline: schema-load pre-seeds 5 :mm/Memory DESCENDANTS (each reaches
+    ;; :mm/Memory transitively via recursive :dt/subclass-of traversal — count-by
+    ;; -> dt/count-of -> all-instances-of uses the instance-of Datalog rule) —
     ;;   2 × :mm/Shape from Phase D Temporal Tier-2 XOR Shape declarations
     ;;       (:memory.shapes/interval-begins-at-xor + …interval-ends-at-xor in
     ;;        schema/mm-temporal.edn)
     ;;   1 × :mm/Workflow from ι.2 session-workflow definition
     ;;       (:workflow/session in schema/workflow-session.edn 2026-05-25)
-    ;; Test creates 3 additional :mm/Memory entities;
-    ;; total = baseline-3 + created-3 = 6.
-    (make-memory-typed! "alpha" :decision)
-    (make-memory-typed! "beta"  :plan)
-    (make-memory-typed! "gamma" :decision)
-    (let [result (agg/count-by {:class :mm/Memory})]
-      (is (= {:count 6} result)))))
+    ;;   1 × :mm/Project sentinel :project/UNASSIGNED (S6 keystone mint —
+    ;;       :mm/Project :dt/subclass-of :mm/Artifact -> :mm/Memory; seeded in
+    ;;       schema/mm-artifact.edn batch (v)).
+    ;;   1 × :mm/Context sentinel :context/UNASSIGNED (S6 keystone mint, batch
+    ;;       (iv)).  :mm/Context has DUAL parentage (:dt/subclass-of is card-many):
+    ;;       :dt/Resource (mm.edn:1955) AND :mm/Meta (mm-meta.edn:468, the
+    ;;       2026-05-21 amendment), and :mm/Meta :dt/subclass-of :mm/Memory
+    ;;       (mm-meta.edn:26).  DESIGN-ONTOLOGY §1.2 certifies :mm/Context
+    ;;       ancestors [:dt/Resource :mm/Meta :mm/Memory].  So :context/UNASSIGNED
+    ;;       IS a :mm/Memory descendant via the :mm/Meta leg and DOES count.
+    ;; Baseline computed dynamically (not a hard-coded literal) so future seed
+    ;; changes don't re-introduce an off-by-one.  Test creates 3 additional
+    ;; :mm/Memory entities; total = baseline (5) + created-3.
+    (let [baseline (:count (agg/count-by {:class :mm/Memory}))]
+      (make-memory-typed! "alpha" :decision)
+      (make-memory-typed! "beta"  :plan)
+      (make-memory-typed! "gamma" :decision)
+      (let [result (agg/count-by {:class :mm/Memory})]
+        (is (= {:count (+ baseline 3)} result))
+        (is (= {:count 8} result)
+            "baseline 5 pre-seeded :mm/Memory descendants + 3 created")))))
 
 (deftest count-by-with-where-test
   (testing "count-by :where restricts by predicate"
@@ -152,15 +167,26 @@
 
 (deftest rank-by-degree-limit-test
   (testing "rank-by :degree honors :limit"
-    ;; Baseline: schema-load adds 3 :mm/Memory entities (2 :mm/Shape + 1
-    ;; :mm/Workflow :workflow/session per ι.2) — see count-by-no-where-test
-    ;; for context.  Test creates 5 additional; total = baseline-3 + created-5
-    ;; = 8.
-    (doseq [n (range 5)] (make-memory-typed! (str "mem-" n) :decision))
-    (let [result (agg/rank-by {:class :mm/Memory :rank-by :degree :limit 2})]
-      (is (= 8 (:total result)))
-      (is (= 2 (:returned result)))
-      (is (= 2 (count (:hits result)))))))
+    ;; Baseline: schema-load pre-seeds 5 :mm/Memory DESCENDANTS (2 :mm/Shape +
+    ;; 1 :mm/Workflow :workflow/session per ι.2 + 1 :mm/Project sentinel
+    ;; :project/UNASSIGNED + 1 :mm/Context sentinel :context/UNASSIGNED, both
+    ;; per the S6 keystone mint).  The :context/UNASSIGNED :mm/Context sentinel
+    ;; IS a :mm/Memory descendant: :mm/Context has DUAL parentage (:dt/Resource
+    ;; at mm.edn:1955 AND :mm/Meta at mm-meta.edn:468), and :mm/Meta
+    ;; :dt/subclass-of :mm/Memory (mm-meta.edn:26) — DESIGN-ONTOLOGY §1.2
+    ;; certifies :mm/Context ancestors [:dt/Resource :mm/Meta :mm/Memory].
+    ;; :total = (count all-instances-of :mm/Memory), which follows the recursive
+    ;; instance-of rule, so it counts BOTH sentinels — see count-by-no-where-test.
+    ;; Baseline computed dynamically (not hard-coded) to prevent off-by-one
+    ;; recurrence.  Test creates 5 additional; total = baseline (5) + created-5.
+    (let [baseline (:count (agg/count-by {:class :mm/Memory}))]
+      (doseq [n (range 5)] (make-memory-typed! (str "mem-" n) :decision))
+      (let [result (agg/rank-by {:class :mm/Memory :rank-by :degree :limit 2})]
+        (is (= (+ baseline 5) (:total result)))
+        (is (= 10 (:total result))
+            "baseline 5 pre-seeded :mm/Memory descendants + 5 created")
+        (is (= 2 (:returned result)))
+        (is (= 2 (count (:hits result))))))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; rank-by — :recency / :freshness with caller-supplied temporal-slot
