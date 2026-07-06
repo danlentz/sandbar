@@ -19,40 +19,15 @@
 
 (def +default-content-type+ "application/edn")
 
-(defn- clj->event-stream
-  "Encode `body` as a single Server-Sent-Events frame onto `output-stream`.
-
-   Matches the neighbor stream-encoder contract ([body output-stream]) so
-   `data-body`'s `(with-handle-encoding-errors encoder)` wrapper can invoke it
-   the same way it invokes `codec/clj->json-stream` et al.  Replaces the former
-   zero-arity throw-placeholder that crashed with an ArityException when content
-   negotiation selected \"text/event-stream\" on POST /mcp (Codex-diagnosed,
-   Dan-relayed 2026-07-03 — see
-   memory/bugs/mcp_post_sse_first_accept_arity_crash_content_types_placeholder_encoder_2026_07_03.md).
-
-   Per MCP streamable-http semantics + the SSE spec, the JSON-RPC response is
-   carried as the frame's `data:` field.  JSON (not EDN — cf. the F-M-004
-   pr-str regression) via the same cheshire encoding the \"application/json\"
-   entry uses, for a consistent wire body.  Compact single-line JSON keeps the
-   frame to one `data:` line; the trailing blank line terminates the event.
-
-   NB: consolidation into `sandbar.util.codec` (where `clj->sse-stream` already
-   lives) is deferred — that file is under concurrent edit by the
-   validation-hardening fleet; this local encoder is the narrow fix and folds
-   into util.codec at ceremony cleanup."
-  [body output-stream]
-  (with-open [writer (codec/buffered-writer output-stream)]
-    (.write writer "event: message\n")
-    (.write writer "data: ")
-    (.write writer ^String (json/generate-string body))
-    (.write writer "\n\n")))
-
+;; SSE encoder consolidated into sandbar.util.codec/clj->sse-stream at
+;; ceremony-#7 cleanup (was the local clj->event-stream narrow fix for the
+;; POST /mcp text/event-stream arity crash, 2026-07-03).
 (def +content-types+
   {"application/json"          codec/clj->json-stream
    "application-json"          codec/clj->json-stream
    "application/edn"           codec/clj->edn-stream
    "application/transit+json"  codec/clj->transit-json-stream
-   "text/event-stream"         clj->event-stream
+   "text/event-stream"         codec/clj->sse-stream
    "text/csv"                  codec/clj->csv-stream
    "text/plain"                codec/clj->text-stream})
 
