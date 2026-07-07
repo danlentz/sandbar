@@ -268,32 +268,56 @@
     (reject-read-plane! :attribute attr-ident nil))
   attr-ident)
 
+(declare read-plane-ident-allowed?)
+
+(defn assert-ident-allowed!
+  "Read-plane guard for an ENTITY / anchor IDENT arg (navigate `:entity`/`:from`,
+  resolve `:reference`).  Throws if `ident`'s namespace is firewalled — but
+  MEMORY-AWARE, so a legit corpus `:memory.*` anchor (and `:mm.*`/`:dt.*`) passes
+  while `:auth/ServiceAccount` used as an anchor is refused.  Returns `ident`."
+  [ident]
+  (when-not (read-plane-ident-allowed? ident)
+    (reject-read-plane! :entity ident nil))
+  ident)
+
 (def read-plane-ident-allowlist
   "Namespace first-segments allowed for an entity's OWN `:db/ident`.  Superset of
   `read-plane-namespace-allowlist` by the corpus 'memory' prefix — corpus
-  memorials are interned as `:memory.<dir>/<slug>`.  Distinct from the
-  class/attribute allow-list because it must ALSO catch a firewalled
-  CLASS/PROPERTY-ident entity whose class is allowed but whose ident is not:
-  e.g. `class.instances :dt/Class` returns the `:auth/User` class entity, whose
-  `:dt/type` is `:dt/Class` (allowed) but whose `:db/ident` is `:auth/User`
-  (firewalled)."
+  memorials are interned as `:memory.<dir>/<slug>`.  Used by the central
+  dispatch-boundary guard to refuse a firewalled IDENT (e.g. `:auth/ServiceAccount`)
+  passed as a nav anchor / lookup target, WITHOUT rejecting a legit
+  `:memory.*` / `:mm.*` / `:dt.*` corpus anchor."
   (conj read-plane-namespace-allowlist "memory"))
 
+(defn read-plane-ident-allowed?
+  "True iff `kw` (an entity/anchor IDENT arg) is safe for the read plane: no
+  namespace, or a first-segment on `read-plane-ident-allowlist`.  Distinct from
+  `read-plane-namespace-allowed?` (the class/attribute list) only by the corpus
+  `memory` prefix.  Non-keywords / nil pass (uncheckable here; the output scrub
+  is the backstop)."
+  [kw]
+  (if (and (keyword? kw) (namespace kw))
+    (contains? read-plane-ident-allowlist (ns-first-segment kw))
+    true))
+
 (defn read-plane-entity-visible?
-  "True iff an entity may be surfaced on the read plane: BOTH its class
-  (`:dt/type`) namespace AND its own ident (`:db/ident`) namespace are
-  non-firewalled.  `:dt/type` on a raw Datomic EntityMap is the class as an
-  EntityMap (which `map?` returns FALSE for — the F-M-003 trap), so resolve it
-  via ILookup `(:db/ident t)`.  A nil class / nil ident is allowed (nothing to
-  leak on that axis).  Works on BOTH raw Datomic entities and projected maps."
+  "True iff an entity may be surfaced on the read plane: its class (`:dt/type`)
+  namespace is non-firewalled.  A METAMODEL entity — a `:dt/Class` / `:dt/Property`
+  DEFINITION — is therefore ALWAYS visible (its `:dt/type` is the allowed `:dt`
+  namespace) even when its OWN ident is firewalled (the `:auth/User` class, the
+  `:auth/api-key-hash` property): the schema REGISTRY is metamodel SHAPE, not
+  instance data, and Dan ruled it stays introspectable (2026-07-07).  An INSTANCE
+  of a firewalled class (`:dt/type :auth/*`) is NOT visible — that is where the
+  credential VALUES live.  `:dt/type` on a raw Datomic EntityMap is the class as
+  an EntityMap (which `map?` returns FALSE for — the F-M-003 trap), so resolve it
+  via ILookup `(:db/ident t)`.  nil class → allowed.  Works on raw entities AND
+  projected maps."
   [entity]
   (let [t   (:dt/type entity)
         cls (cond (keyword? t) t
                   (some? t)    (:db/ident t)
-                  :else        nil)
-        id  (:db/ident entity)]
-    (and (or (nil? cls) (read-plane-namespace-allowed? cls))
-         (or (nil? id)  (contains? read-plane-ident-allowlist (ns-first-segment id))))))
+                  :else        nil)]
+    (or (nil? cls) (read-plane-namespace-allowed? cls))))
 
 (defn assert-entity-allowed!
   "Read-plane guard for a RETURNED / anchor entity (entity.find / navigate /

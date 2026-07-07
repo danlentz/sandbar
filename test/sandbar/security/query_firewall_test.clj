@@ -94,12 +94,23 @@
   (testing "a firewalled INSTANCE (firewalled :dt/type) is NOT visible"
     (is (not (secq/read-plane-entity-visible? {:dt/type :auth/ServiceAccount :db/ident :auth.accounts/codex})))
     (is (not (secq/read-plane-entity-visible? {:dt/type {:db/ident :auth/Session} :db/id 7}))))
-  (testing "a firewalled CLASS-IDENT entity (allowed :dt/Class type, firewalled :db/ident) is NOT visible"
-    (is (not (secq/read-plane-entity-visible? {:dt/type :dt/Class :db/ident :auth/User})))
-    (is (not (secq/read-plane-entity-visible? {:dt/type :dt/Property :db/ident :auth/api-key-hash}))))
+  (testing "a metamodel DEF entity (:dt/Class / :dt/Property) is VISIBLE even with a firewalled ident (schema REGISTRY = shape, Dan-accepted 2026-07-07)"
+    (is (secq/read-plane-entity-visible? {:dt/type :dt/Class :db/ident :auth/User}))
+    (is (secq/read-plane-entity-visible? {:dt/type :dt/Property :db/ident :auth/api-key-hash})))
   (testing "typeless / identless entities pass (nothing to leak on that axis)"
     (is (secq/read-plane-entity-visible? {}))
     (is (secq/read-plane-entity-visible? {:db/id 42}))))
+
+(deftest ident-allowed?
+  (testing "corpus + metamodel anchor idents pass (memory-aware)"
+    (is (secq/read-plane-ident-allowed? :memory.decisions/foo))
+    (is (secq/read-plane-ident-allowed? :mm.tag/value))
+    (is (secq/read-plane-ident-allowed? :dt/Class))
+    (is (secq/read-plane-ident-allowed? :nonamespace)))
+  (testing "a firewalled anchor ident is refused"
+    (is (not (secq/read-plane-ident-allowed? :auth/ServiceAccount)))
+    (is (not (secq/read-plane-ident-allowed? :auth.accounts/codex)))
+    (is (not (secq/read-plane-ident-allowed? :event/HttpRequest)))))
 
 (deftest scrub-projection
   (testing "a firewalled entity collapses to the redaction marker (no ident/class/slots)"
@@ -107,9 +118,9 @@
            (secq/read-plane-scrub-projection {:db/ident :auth.accounts/codex
                                               :dt/type :auth/ServiceAccount
                                               :auth/api-key-hash "bcrypt+sha512$SECRET"})))
-    (is (= secq/read-plane-redaction-marker
+    (is (= {:db/ident :auth/User :dt/type :dt/Class}
            (secq/read-plane-scrub-projection {:db/ident :auth/User :dt/type :dt/Class}))
-        "class.instances :dt/Class firewalled class ident → redacted"))
+        "a metamodel DEF (class.instances :dt/Class → :auth/User) is VISIBLE registry-shape, NOT redacted"))
   (testing "a visible entity keeps corpus slots but STRIPS firewalled-namespace slots"
     (is (= {:db/id 1 :db/ident :memory.decisions/foo :dt/type :mm/Decision
             :mm.memory/name "n"}

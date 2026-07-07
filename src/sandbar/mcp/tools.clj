@@ -388,16 +388,16 @@
    (corpus-side friction-discovery 2026-05-13)."
   [args]
   (let [classes-arg (or (get args "classes") (get args :classes))
-        target-classes (cond
-                         (sequential? classes-arg)
-                         (mapv ->ident classes-arg)
-
-                         (some? classes-arg)
-                         [(->ident classes-arg)]
-
-                         :else
-                         (->> (dt/all-classes)
-                              (remove dt/abstract?)))
+        target-classes (->> (cond
+                              (sequential? classes-arg) (mapv ->ident classes-arg)
+                              (some? classes-arg)       [(->ident classes-arg)]
+                              :else                     (remove dt/abstract? (dt/all-classes)))
+                            ;; SECURITY (read-plane firewall): never enumerate a
+                            ;; firewalled-namespace class (:auth/* etc.) in the batch
+                            ;; — closes the cardinality/existence oracle even for the
+                            ;; default (no :classes) fetch.  Explicit firewalled
+                            ;; :classes are already rejected by the central guard.
+                            (filter secq/read-plane-namespace-allowed?))
         by-class (into {}
                        (for [cls target-classes]
                          [(->ident-str cls)
@@ -938,7 +938,75 @@
     (cond
       (nil? raw)         (throw (ex-info "Missing required argument: class" {:args args}))
       (sequential? raw)  (mapv ->ident raw)
+      ;; A JSON array param may arrive STRING-encoded at the MCP boundary (some
+      ;; clients serialize the array to a string); parse it via the same safe
+      ;; edn reader so the D7 multi-class path works AND the read-plane firewall
+      ;; sees a proper vec (not a garbage single pseudo-ident — the over-block).
+      (and (string? raw) (str/starts-with? (str/trim raw) "["))
+      (let [parsed (try (edn/read-string raw) (catch Exception _ nil))]
+        (if (sequential? parsed) (mapv ->ident parsed) (->ident raw)))
       :else              (->ident raw))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Read-plane INPUT firewall — CENTRAL dispatch-boundary class/attr-arg guard
+;; (RPAF v3).  The complement to the projection-layer OUTPUT scrub: EVERY
+;; non-registry-exempt verb's class/attribute args are validated in handle-call
+;; BEFORE the handler runs — so class-arg oracles that return counts/booleans
+;; with no entity to scrub (schema.entities cardinality, types.instance-of
+;; membership) and any FUTURE class-arg verb are closed by construction
+;; (deny-by-default: a new verb is guarded until explicitly exempted).  Entity /
+;; anchor idents are handled by the per-handler `secq/assert-entity-allowed!`
+;; (now :dt/type-only, so a metamodel DEF anchor passes, an instance rejects) +
+;; the output scrub.  Per
+;; decisions/rpaf_must_be_central_class_arg_entity_return_guard_...2026_07_07.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(def ^:private read-plane-registry-exempt-verbs
+  "Metamodel-SHAPE introspection verbs Dan ruled stay fully introspectable (the
+  schema REGISTRY — class/property DEFINITIONS, never instance data; 2026-07-07).
+  The central class-arg guard SKIPS these; EVERY other verb is guarded."
+  #{"sandbar.schema.classes" "sandbar.schema.properties" "sandbar.schema.datatypes"
+    "sandbar.class.describe" "sandbar.class.slots" "sandbar.class.direct-slots"
+    "sandbar.class.required-slots" "sandbar.class.subclasses" "sandbar.class.parents"
+    "sandbar.property.domain" "sandbar.property.range" "sandbar.property.cardinality"
+    "sandbar.types.subclass-of" "sandbar.tools.search" "sandbar.tools.describe"})
+
+(def ^:private read-plane-class-arg-keys
+  ["class" "classes" "group-by" "target-type" "source-type" "root"])
+
+(def ^:private read-plane-attr-arg-keys ["attribute"])
+
+(defn- read-plane-arg->kw
+  "Coerce a raw class/attribute arg value to a namespaced keyword for the
+  firewall check.  ':x'/'x' string → :x; keyword passes.  Returns nil (SKIP —
+  the per-handler guards + output scrub backstop) for a bare non-namespaced
+  token, a JSON-array-encoded string (multi-class; handled by class-arg-multi +
+  the search per-member guard), an eid number, nil, or a collection."
+  [v]
+  (cond
+    (keyword? v) v
+    (string? v)  (let [s (str/trim (str/replace v #"^:" ""))]
+                   (when (and (str/includes? s "/") (not (str/starts-with? s "[")))
+                     (keyword s)))
+    :else        nil))
+
+(defn- assert-read-plane-call!
+  "Central read-plane INPUT firewall for a dispatched verb: reject a firewalled
+  CLASS / group-by / target-type arg and a firewalled ATTRIBUTE arg BEFORE the
+  handler runs.  No-op for registry-exempt (metamodel-shape) verbs.  Throws the
+  loud `sandbar.security.query` ex-info, which handle-call maps to an isError
+  envelope."
+  [tool-name arguments]
+  (when-not (contains? read-plane-registry-exempt-verbs tool-name)
+    ;; args may be string- OR keyword-keyed at the MCP boundary (handlers read
+    ;; both); check both forms so the guard never silently misses.
+    (letfn [(arg [k] (or (get arguments k) (get arguments (keyword k))))]
+      (doseq [k     read-plane-class-arg-keys
+              :let  [raw (arg k)]
+              v     (if (sequential? raw) raw [raw])]
+        (some-> (read-plane-arg->kw v) secq/assert-class-allowed!))
+      (doseq [k read-plane-attr-arg-keys]
+        (some-> (read-plane-arg->kw (arg k)) secq/assert-attribute-allowed!)))))
 
 (def ^:private +bm25f-read-barrier-timeout-ms+
   "Upper bound the MCP BM25F read handlers (search.bm25f / tag.lookup)
@@ -3471,6 +3539,9 @@
        :else
        (try
          (let [result (try
+                        ;; RPAF v3 — central read-plane INPUT firewall (class/attr
+                        ;; args) before dispatch; throws map to isError below.
+                        (assert-read-plane-call! tool-name arguments)
                         ((:handler verb) arguments)
                         (catch clojure.lang.ExceptionInfo e
                           {:_user-error true
