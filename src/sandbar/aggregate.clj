@@ -47,6 +47,7 @@
   ;; firewalled namespace (:auth/* etc.) BEFORE any query touches the DB.
   (secq/assert-class-allowed! class)
   (secq/assert-where-namespaces! where)
+  (dt/assert-where-eids-allowed! where)   ; numeric-eid-form firewall (db-aware)
   {:count (dt/count-of class where)})
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -78,9 +79,14 @@
   (secq/assert-class-allowed! class)
   (secq/assert-attribute-allowed! group-by)
   (secq/assert-where-namespaces! where)
-  (let [groups (dt/group-by-of class group-by where)]
-    {:groups groups
-     :total  (reduce + 0 (vals groups))}))
+  (dt/assert-where-eids-allowed! where)   ; numeric-eid-form firewall (db-aware)
+  (let [groups  (dt/group-by-of class group-by where)
+        ;; SECURITY (read-plane firewall): drop firewalled-class buckets from a
+        ;; :group-by whose slot yields class refs (e.g. :dt/type) — closes the
+        ;; eid-keyed per-:auth/*-class instance-cardinality leak.
+        visible (into {} (remove (fn [[k _]] (dt/read-plane-group-key-firewalled? k)) groups))]
+    {:groups visible
+     :total  (reduce + 0 (vals visible))}))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; rank-by — structural-rank re-ordering across 4 axes

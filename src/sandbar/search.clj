@@ -1001,6 +1001,7 @@
       (doseq [c class] (secq/assert-class-allowed! c))
       (secq/assert-class-allowed! class))
     (secq/assert-where-namespaces! where)
+    (dt/assert-where-eids-allowed! where)   ; numeric-eid-form firewall (db-aware)
     (if multi?
       (search-bm25f-multi opts)
       (search-bm25f-single opts))))

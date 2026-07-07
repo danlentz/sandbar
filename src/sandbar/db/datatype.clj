@@ -980,6 +980,44 @@
          rows    (d/q merged (db/db) (all-rules) class-ident group-slot)]
      (into {} rows))))
 
+(defn assert-where-eids-allowed!
+  "Read-plane firewall for NUMERIC entity-id references in a `:where` clause
+  vector — the eid-form bypass of the keyword-only `secq/assert-where-namespaces!`
+  (which is pure/db-free and inspects only keywords).  For every integer anywhere
+  in `where-clauses`, db-resolve it to its `:db/ident` and reject (loud ex-info)
+  if that ident is firewalled — an eid in ATTRIBUTE position
+  (`[[?e <auth-attr-eid> ?h]]`) OR VALUE position
+  (`[[?e :dt/type <auth-class-eid>]]`) is a firewalled attribute/class selector.
+  Memory-aware (a corpus `:memory.*` entity eid passes).  db-aware companion to
+  the pure namespace guard; the read-plane wrappers call it alongside
+  `secq/assert-where-namespaces!`.  Per
+  observations/read_plane_where_firewall_bypassed_by_numeric_eid_forms_...2026_07_07."
+  [where-clauses]
+  (when (seq where-clauses)
+    (letfn [(walk [form]
+              (cond
+                (integer? form)
+                (when-let [id (:db/ident (db/entity form))]
+                  (secq/assert-ident-allowed! id))
+                (map? form)  (doseq [[k v] form] (walk k) (walk v))
+                (coll? form) (doseq [x form] (walk x))
+                :else nil))]
+      (doseq [c where-clauses] (walk c))))
+  where-clauses)
+
+(defn read-plane-group-key-firewalled?
+  "True iff an aggregate.group-by result KEY resolves to a firewalled namespace.
+  A `:group-by` on a ref-typed slot (e.g. `:dt/type`) yields raw eid keys; a
+  scalar slot yields keyword/value keys.  Used to DROP firewalled-class buckets
+  from a read-plane group-by result — otherwise `:group-by :dt/type` over an
+  allowed superclass leaks per-`:auth/*`-class instance counts as
+  `{<auth-class-eid> N}`."
+  [k]
+  (let [id (cond (keyword? k) k
+                 (integer? k) (:db/ident (db/entity k))
+                 :else        nil)]
+    (boolean (and id (not (secq/read-plane-ident-allowed? id))))))
+
 (defn degree-of
   "Total ref-attribute count for `entity-ident` — number of (attribute,
   ref-target) outbound pairs plus inbound pairs.  Counts ALL ref-typed
