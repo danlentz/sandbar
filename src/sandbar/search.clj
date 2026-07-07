@@ -23,6 +23,7 @@
             [sandbar.db.datatype     :as dt]
             [sandbar.db.datomic      :as db]
             [sandbar.db.rules        :refer [all-rules]]
+            [sandbar.security.query  :as secq]
             [datomic.api             :as d]
             [sandbar.search.analysis :as analysis]
             [sandbar.search.bm25f    :as bm25f]
@@ -192,7 +193,11 @@
   (let [base-query   '[:find ?e
                        :in $ % ?class
                        :where (instance-of ?class ?e)]
-        merged-query (apply conj base-query where-clauses)]
+        ;; SECURITY (read-plane query-layer, AP-S3-6 vector A): sanitize the
+        ;; caller-supplied clauses BEFORE the splice.  `valid-where-shape?`
+        ;; (the :pre) is only a well-formedness guard — it passes the exploit
+        ;; shapes — so the security boundary MUST be this independent gate.
+        merged-query (apply conj base-query (secq/sanitize-where where-clauses))]
     (set
       (map first
            (d/q merged-query

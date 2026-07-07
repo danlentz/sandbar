@@ -35,6 +35,12 @@
 ;; this global.  If a *read-eval* backstop is wanted, it must be scoped to the
 ;; request-handling thread pool via a `binding`, never a process-wide root
 ;; change during/after load.
+;;
+;; The query-time fn-resolution vector (AP-S3-6 vector A) is closed separately
+;; by the Layer-1 deny-by-default allowlist in
+;; sandbar.security.query/sanitize-where, wired into the three read-plane splice
+;; sites (db.datatype/count-of, db.datatype/group-by-of,
+;; search/where-matching-eids) — see that namespace.  No process-wide state.
 
 (defn make-system
   ([] (make-system :config))

@@ -27,7 +27,8 @@
             [sandbar.db.rules :refer [defrule clear-rulebase! all-rules] :as rule]
             [sandbar.db.fn :refer [defdbfn dbfn clear-fnbase! all-dbfn] :as fn]
             [sandbar.db.datomic :refer [entity describe] :as db]
-            [sandbar.reactive :as reactive]))
+            [sandbar.reactive :as reactive]
+            [sandbar.security.query :as secq]))
 
 (defn all-datatypes
   "Returns a sequence of all class idents in the database.
@@ -945,8 +946,11 @@
    (let [base    '[:find (count ?e) .
                    :in $ % ?class
                    :where (instance-of ?class ?e)]
+         ;; SECURITY (read-plane query-layer, AP-S3-6 vector A): sanitize the
+         ;; caller-supplied clauses BEFORE the splice — throws loud ex-info on
+         ;; any non-allowlisted operator, so no unsafe symbol reaches d/q.
          merged  (if (seq where-clauses)
-                   (apply conj base where-clauses)
+                   (apply conj base (secq/sanitize-where where-clauses))
                    base)
          result  (d/q merged (db/db) (all-rules) class-ident)]
      (or result 0))))
@@ -968,8 +972,10 @@
                    :where
                    (instance-of ?class ?e)
                    [?e ?slot ?v]]
+         ;; SECURITY (read-plane query-layer, AP-S3-6 vector A): sanitize before
+         ;; the splice — see count-of.  Same shared gate, same fail-closed path.
          merged  (if (seq where-clauses)
-                   (apply conj base where-clauses)
+                   (apply conj base (secq/sanitize-where where-clauses))
                    base)
          rows    (d/q merged (db/db) (all-rules) class-ident group-slot)]
      (into {} rows))))
