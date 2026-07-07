@@ -3,8 +3,10 @@
   memory-model MCP arc per
   plans/sandbar_fulltext_search_substrate_arc_2026_05_13.md."
   (:require [clojure.test :refer :all]
+            [datomic.api :as d]
             [sandbar.aggregate :as agg]
             [sandbar.db.datatype :as dt]
+            [sandbar.db.datomic :as db]
             [sandbar.test-util :as tu]))
 
 (use-fixtures :each (tu/make-test-db-fixture {:test-name "aggregate-test"}))
@@ -283,3 +285,56 @@
       (is (contains? names "curated"))
       (is (contains? names "run-2")
           "unfiltered recency ranking still includes :db-only entities"))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; tag-histogram — S11/Rec-9 identless-tag regression guard
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defn- tx!
+  "Transact `specs` directly (bypassing dt/make validation, mirroring the corpus's
+   ref-slot tag upserts) and return the post-transaction db."
+  [specs]
+  @(d/transact (db/conn) specs)
+  (db/db))
+
+(deftest tag-histogram-enumerates-identless-tags-test
+  ;; S11/Rec-9 regression guard.  Corpus :mm/Tag entities are IDENTLESS by design
+  ;; — created via ref-typed-slot upserts carrying only :mm.tag/value (no
+  ;; :db/ident).  The prior impl enumerated tags with dt/all-named-instances-of
+  ;; (a deprecated alias for named-idents-of, whose Datalog requires
+  ;; [?e :db/ident ?ident]), so it matched ZERO real tags and returned
+  ;; {:histogram [] :total 0} across the whole corpus.  These tests fail on the
+  ;; old impl and pass on the all-instances-of fix.
+  (testing "identless tags are enumerated (not collapsed to 0) with distinct-source counts"
+    (tx! [{:dt/type :mm/Memory :db/ident :test/hist-m1
+           :mm.memory/name "hist-m1" :mm.memory/memory-type :decision
+           :mm.memory/tags [{:dt/type :mm/Tag :mm.tag/value "alpha"}
+                            {:dt/type :mm/Tag :mm.tag/value "beta"}]}
+          {:dt/type :mm/Memory :db/ident :test/hist-m2
+           :mm.memory/name "hist-m2" :mm.memory/memory-type :decision
+           :mm.memory/tags [{:dt/type :mm/Tag :mm.tag/value "alpha"}]}])
+    (let [{:keys [histogram total]} (agg/tag-histogram {})
+          created  (filter #(#{"alpha" "beta"} (:value %)) histogram)
+          by-value (into {} (map (juxt :value :count) created))]
+      (is (pos? total)
+          "histogram must enumerate identless tags, not collapse to {:histogram [] :total 0}")
+      (is (= 2 (count created)) "both created tags appear as bins")
+      (is (= 2 (get by-value "alpha")) "alpha is referenced by 2 distinct memories")
+      (is (= 1 (get by-value "beta"))  "beta is referenced by 1 memory")
+      (is (every? #(integer? (:tag %)) created)
+          "identless tags surface their numeric :db/id as the :tag identifier")))
+
+  (testing "a tag cited by ONE entity via two ref slots counts as one entity (distinct-source, not edge-count)"
+    (tx! [{:dt/type :mm/Memory :db/ident :test/hist-m3
+           :mm.memory/name "hist-m3" :mm.memory/memory-type :decision
+           :mm.memory/tags   [{:dt/type :mm/Tag :mm.tag/value "gamma"}]
+           :mm.memory/themes [{:dt/type :mm/Tag :mm.tag/value "gamma"}]}])
+    (let [{:keys [histogram]} (agg/tag-histogram {})
+          by-value (into {} (map (juxt :value :count) histogram))]
+      (is (= 1 (get by-value "gamma"))
+          "gamma cited via BOTH :mm.memory/tags and :mm.memory/themes by one memory = 1 distinct entity")))
+
+  (testing ":limit caps returned bins without changing :total"
+    (let [{:keys [histogram total]} (agg/tag-histogram {:limit 1})]
+      (is (= 1 (count histogram)) ":limit 1 returns a single bin")
+      (is (>= total 3) ":total reports the full tag population regardless of :limit"))))

@@ -35,10 +35,14 @@
 
 (def server-info
   "Identity returned to clients in the `initialize` response.
-   Version aligns with Sandbar's project version (project.clj)."
+   `:version` tracks the sandbar 0.2.0 co-release and is held in agreement
+   with the project-export catalog projection (`:dump/sandbar-version` in
+   `sandbar.project.dump`, already \"0.2.0\") — the two client-visible version
+   surfaces must not drift.  Bumped 0.1.0 → 0.2.0 for the 0.2.0 co-release
+   per S11/Rec-2 (MCP-surface quick win)."
   {:name    "sandbar"
    :title   "Sandbar"
-   :version "0.1.0"})
+   :version "0.2.0"})
 
 (def protocol-version
   "MCP protocol version this server speaks.
@@ -59,6 +63,22 @@
                :listChanged true}
    :prompts   {:listChanged true}
    :logging   {}})
+
+(def server-instructions
+  "Free-text orientation returned in the `initialize` result's `instructions`
+   field (MCP spec InitializeResult.instructions) — the one natural-language
+   surface a connecting client's model sees, so it is kept deliberately terse
+   (token-bounded, ~1 short paragraph) to never dominate the client's context
+   budget.  Points at the workhorse retrieval verbs + the discover-then-describe
+   pattern for the long tail rather than enumerating the catalog.  Per S11/Rec-2
+   (MCP-surface quick win); the one surface Codex-family clients observe."
+  (str "Sandbar is a typed-edge knowledge substrate (Datomic-backed) served over "
+       "MCP.  Prefer its typed verbs over raw text scanning: sandbar.search.bm25f "
+       "for content-relevance retrieval; sandbar.entity.find / sandbar.class.instances "
+       "for known entities and classes; sandbar.navigate.* for typed-edge traversal; "
+       "sandbar.aggregate.* for counts, group-by, and rankings.  Use "
+       "sandbar.tools.search + sandbar.tools.describe to discover and inspect any "
+       "verb before calling it."))
 
 ;; JSON-RPC 2.0 envelope shapes live in `sandbar.mcp.envelope` — extracted
 ;; to a leaf namespace to break the protocol → notifications cycle per the
@@ -91,7 +111,8 @@
      id
      {:protocolVersion protocol-version
       :capabilities    server-capabilities
-      :serverInfo      server-info})))
+      :serverInfo      server-info
+      :instructions    server-instructions})))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Method dispatch table
