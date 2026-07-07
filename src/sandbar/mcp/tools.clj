@@ -531,9 +531,13 @@
                       {:class class-ident :entity-id (:db/id new-entity)})))
         ;; Stage 5 D5 — invalidate/refresh the BM25F search cache.
         ;; Per-entity hook; skipped (no-op) when the class has no
-        ;; :dt/bm25f-weights declaration.  See sandbar.search/entity-changed!
+        ;; :dt/bm25f-weights declaration.  ASYNC since 2026-07-07
+        ;; (arc/bm25f-async-index): entity-changed! is ~144ms+ (scales
+        ;; with body size) and inline it caused MCP write-response
+        ;; timeouts — enqueue and return; the read handlers await
+        ;; quiescence.  See sandbar.search/entity-changed-async!.
         (try
-          (search/entity-changed! class-ident new-entity)
+          (search/entity-changed-async! class-ident new-entity)
           (catch Exception e
             (log/warn e :MCP/entity-create-cache-failed
                       {:class class-ident :entity-id (:db/id new-entity)})))
@@ -930,6 +934,14 @@
       (sequential? raw)  (mapv ->ident raw)
       :else              (->ident raw))))
 
+(def ^:private +bm25f-read-barrier-timeout-ms+
+  "Upper bound the MCP BM25F read handlers (search.bm25f / tag.lookup)
+  wait for pending async index refreshes before serving.  Normally the
+  refresh queue is empty (wait ≈ 0ms) or one write deep (~150ms); the
+  bound only bites under bulk-write backlogs, where serving
+  possibly-stale results beats blocking the read plane."
+  3000)
+
 (defn- search-bm25f-handler [args]
   (let [query           (or (get args "query") (get args :query))
         class-ident     (class-arg-multi args)
@@ -977,6 +989,11 @@
                  (and from via-raw) (assoc :from from :via via-raw)
                  rank-by           (assoc :rank-by rank-by)
                  temporal          (assoc :temporal-slot temporal))]
+      ;; Read barrier (2026-07-07, arc/bm25f-async-index): writes enqueue
+      ;; their BM25F refresh asynchronously; await quiescence (bounded)
+      ;; so the MCP surface keeps read-your-writes semantics.  On timeout
+      ;; we serve possibly-stale results rather than block the read plane.
+      (search/await-bm25f-quiescent! +bm25f-read-barrier-timeout-ms+)
       (search/search-bm25f opts))))
 
 ;; ---------- Navigate edges (Stage 5.B-pre #2 — 0.1.1 co-evolution arc) ----------
@@ -1296,9 +1313,11 @@
                               :metadata-only)]
       ;; Stage 5 D5 — invalidate/refresh the BM25F search cache.
       ;; Per-entity hook; skipped (no-op) when the class has no
-      ;; :dt/bm25f-weights declaration.  See sandbar.search/entity-changed!
+      ;; :dt/bm25f-weights declaration.  ASYNC since 2026-07-07
+      ;; (arc/bm25f-async-index) — see the entity-create-handler note +
+      ;; sandbar.search/entity-changed-async!.
       (try
-        (search/entity-changed! class-ident updated)
+        (search/entity-changed-async! class-ident updated)
         (catch Exception e
           (log/warn e :MCP/entity-update-cache-failed
                     {:class class-ident :entity-id (:db/id updated)})))
@@ -1738,6 +1757,11 @@
                             :metadata-only projection/metadata-projection)
           {:keys [hits total]}
           (try
+            ;; Read barrier — preserves the Gap-27 tag.define→tag.lookup
+            ;; read-your-writes contract now that the define-side refresh
+            ;; is async (see entity-changed-async! + the equivalent
+            ;; barrier in search-bm25f-handler).
+            (search/await-bm25f-quiescent! +bm25f-read-barrier-timeout-ms+)
             (search/search-bm25f {:query concept
                                   :class :mm/Tag
                                   :limit limit})
@@ -1855,8 +1879,11 @@
         ;; the BM25F cache reindexes this tag.  Without this, tag.lookup
         ;; continues to miss the upgraded tag until the next full cache
         ;; rebuild.  Matches the equivalent fire in entity-create-handler.
+        ;; ASYNC since 2026-07-07 (arc/bm25f-async-index); the Gap-27
+        ;; define→lookup read-your-writes contract is preserved by the
+        ;; quiescence barrier in tag-lookup-handler.
         (try
-          (search/entity-changed! :mm/Tag new-ent)
+          (search/entity-changed-async! :mm/Tag new-ent)
           (catch Exception e
             (log/warn e :MCP/tag-define-cache-failed
                       {:value value :entity-id (:db/id new-ent)})))
