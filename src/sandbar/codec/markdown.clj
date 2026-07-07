@@ -901,6 +901,27 @@
 
         :else v))))
 
+(def ^:private identity-frontmatter-key
+  "The frontmatter key that carries the D1 `:mm/id` covenant identity line
+   (`id: '<uuid>'`, emitted by `uuid->id-line`).  Parsed keys arrive from
+   `parse-frontmatter-text` as `(keyword \"id\")` → `:id`."
+  :id)
+
+(defn- parse-identity-uuid
+  "Coerce a parsed `id:` frontmatter value to a `java.util.UUID`, or nil when
+   it is not a well-formed UUID string.  D1 :mm/id covenant (W1 Phase-0):
+   the emitted `id:` line must READ BACK into the `:mm/id` federation-anchor
+   slot on reload rather than being re-derived (store.clj `create-memory!`
+   derives `:mm/id` ABSENT-ONLY, and `:mm/id` is `:db.unique/identity`, so an
+   explicitly-parsed id upserts the same entity and survives a Tempo-C
+   rebuild).  A non-UUID / legacy `!!java.util.UUID`-mangled value returns
+   nil so the caller routes it to the extras carrier (byte-faithful, policy
+   (c)) instead of throwing."
+  [v]
+  (when (string? v)
+    (try (java.util.UUID/fromString (str/trim v))
+         (catch Exception _ nil))))
+
 (defn- frontmatter->slots*
   "Implementation of `frontmatter->slots` (see its docstring)."
   [class-ident frontmatter-map raw-fm-text host-ident]
@@ -908,13 +929,28 @@
         extras (om/create)
         order  (mapv (fn [[k _]] (name k)) frontmatter-map)]
     (doseq [[k v] frontmatter-map
-            :let [slot   (frontmatter-key->slot class-ident k)]]
-      (if-not (slot-declared? slot)
+            :let [slot    (frontmatter-key->slot class-ident k)
+                  id-uuid (when (= identity-frontmatter-key k)
+                            (parse-identity-uuid v))]]
+      (cond
+        ;; D1 :mm/id covenant (W1 Phase-0): the identity line rides back into
+        ;; the :mm/id federation-anchor slot so a Tempo-C reload READS the
+        ;; stored id rather than re-deriving it.  This is a fidelity fix (like
+        ;; the cac6570 codec dodge that STAYS), NOT a P6 identity migration —
+        ;; nothing is re-minted / renamed / backfilled; whatever id the file
+        ;; already carries is preserved.  A non-UUID value (legacy mangle)
+        ;; falls through to the extras carrier (policy (c)).
+        (some? id-uuid)
+        (om/put! out :mm/id id-uuid)
+
         ;; (a) undeclared key → extras
+        (not (slot-declared? slot))
         (capture-extra! extras k v raw-fm-text)
+
+        ;; (b) declared-but-guard-dropped → extras; else land the slot
+        :else
         (let [v' (landing-slot-value slot v)]
           (if (= ::drop v')
-            ;; (b) declared-but-guard-dropped → extras
             (capture-extra! extras k v raw-fm-text)
             (om/put! out slot v')))))
     ;; Attach the carrier only when extras is non-empty.  Mint it IDENTFUL
@@ -1482,15 +1518,22 @@
           fm-declared   (if carrier-data
                           (emit-frontmatter-ordered fm-slots class-ident carrier-data)
                           (emit-frontmatter fm-slots class-ident))
-          ;; id: policy (SPEC.md §3 (b)): a DB-FIRST entity (NO carrier)
-          ;; with a populated identity UUID (:mm.memory/identity or :mm/id)
-          ;; emits `id: '<uuid>'` as a plain single-quoted string, LAST in
-          ;; the block — matching the corpus convention for emitted files
-          ;; (id: trails the frontmatter; see any sink-emitted log/memorial).
-          ;; Carrier-bearing entities that historically carried `id:` ride
-          ;; it through extras (policy (a)), so we add the identity line
-          ;; ONLY when there is no carrier.
-          fm-yaml       (if (and (nil? carrier-data) (some? identity-uuid))
+          ;; id: policy (SPEC.md §3 (b) + D1 :mm/id covenant, W1 Phase-0):
+          ;; an entity with a populated identity UUID (:mm.memory/identity or
+          ;; :mm/id) emits `id: '<uuid>'` as a plain single-quoted string,
+          ;; LAST in the block — matching the corpus convention for emitted
+          ;; files (id: trails the frontmatter; see any sink-emitted memorial).
+          ;; The identity line rides the SLOT, not the extras carrier: the
+          ;; parser now reads `id:` back into :mm/id (frontmatter->slots*), so
+          ;; the round-trip is emit-from-slot → read-into-slot, never
+          ;; re-derived.  Emit the trailing line whenever there is an identity
+          ;; UUID AND the id is not ALREADY carried in extras — the
+          ;; `(contains? … "id")` guard keeps a LEGACY carrier that still
+          ;; holds an `id` extra (persisted before the covenant fix) from
+          ;; double-emitting.  Nil carrier-data → `(:extras nil)` → not-
+          ;; contains → trailing (the prior DB-first behavior, unchanged).
+          fm-yaml       (if (and (some? identity-uuid)
+                                 (not (contains? (:extras carrier-data) "id")))
                           (let [id-line (uuid->id-line identity-uuid)]
                             (if (str/blank? fm-declared)
                               (str id-line "\n")
@@ -2107,24 +2150,26 @@
     (.toString sb)))
 
 (def ^:private derived-memory-attrs
-  "mm/Memory slots that are derived from the file's filesystem path or
-   from the section chain — these MUST be stripped before emit so they
-   don't leak into YAML frontmatter (where parse would interpret them
-   as regular slots).  Re-derived on ingest from rel-path + heading
-   walk."
+  "mm/Memory slots re-derived from the file's filesystem path or from the
+   section chain — stripped before emit so they don't leak into YAML
+   frontmatter (where parse would re-interpret them as regular slots).
+   Re-derived on ingest from rel-path + heading walk.
+
+   The identity slots (`:mm.memory/identity` / `:mm/id`) are DELIBERATELY
+   NOT stripped here.  Under the D1 :mm/id covenant (W1 Phase-0) the id must
+   be EMITTED so a Tempo-C reload READS it back (never re-derives — see
+   `frontmatter->slots*`).  The MarkdownCodec `emit` method already (a)
+   excludes both identity slots from the generic fm-slots, so no
+   `!!java.util.UUID` java-tag ever reaches the YAML serializer, and (b)
+   emits the canonical trailing `id: '<uuid>'` line.  Pre-stripping the
+   identity here defeated (b) and dropped the id: line for any memory WITH
+   sections (the `emit-document` path `realize-and-emit-entity` takes for a
+   sectioned memory) — silently breaking the covenant on the sink's own
+   output."
   #{:db/ident
     :db/id
     :mm.memory/rel-path
-    :mm.memory/first-section
-    ;; SPEC.md §4.4 (supplementary): the raw UUID identity is derived
-    ;; (re-derivable from rel-path on ingest) — strip it here so the
-    ;; `emit-document` coll path never leaks a `!!java.util.UUID` java tag.
-    ;; The mandatory strip + the `id: '<uuid>'` plain-string id: policy
-    ;; live in the MarkdownCodec `emit` method's fm-slots filter.
-    :mm.memory/identity
-    ;; :mm/id — the second uuid-typed identity slot (D1-covenant), carried
-    ;; by the post-cutover cohort; same java-tag hazard, same strip.
-    :mm/id})
+    :mm.memory/first-section})
 
 (defn emit-document
   "Full mm/Memory document emit: takes a vector of entity-specs (memory +
