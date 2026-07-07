@@ -28,6 +28,12 @@
   (:require [clj-uuid :as uuid]
             [sandbar.codec.markdown :as codec-md]
             [sandbar.db.datatype :as dt]
+            ;; sandbar.db.datomic is the LOWEST layer (datatype→datomic), so it is
+            ;; safe to require here (store→datatype→datomic; no cycle).  We reuse
+            ;; its `schedule-content-key-string` as the SINGLE source of the
+            ;; content-key string so the create-path key and the prune-path key
+            ;; can never drift byte-for-byte (W3.B REVISE must-fix #1).
+            [sandbar.db.datomic :as db]
             [sandbar.identifier :as ident]))
 
 (defn derive-memory-ident
@@ -54,18 +60,36 @@
 ;; hardcodes stable :db/idents (upsert via :db.unique/identity).
 ;;
 ;; Fix: derive a deterministic :db/ident from the schedule's STABLE LOGICAL
-;; IDENTITY — (target, recurrence, timezone) — so re-creating a logically
-;; identical schedule UPSERTS onto the same eid instead of appending.  clj-uuid
-;; v5 over the content-key gives a collision-free deterministic name; the same
-;; :mm/id-anchoring `ident/+authority+` namespaces it so two deployments with
-;; the same authority agree.
+;; IDENTITY so re-creating a logically identical schedule UPSERTS onto the same
+;; eid instead of appending.  clj-uuid v5 over the content-key gives a
+;; collision-free deterministic name; the same :mm/id-anchoring
+;; `ident/+authority+` namespaces it so two deployments with the same authority
+;; agree.
 ;;
-;; :mm.schedule/dtstart is DELIBERATELY EXCLUDED from the key: callers re-anchor
-;; dtstart at (now) on every create (that is the proliferation mechanism itself),
-;; so folding it in would defeat upsert for logically-identical schedules.  Two
-;; schedules with the same target + recurrence + timezone ARE the same logical
-;; schedule.  Distinct-target schedules stay distinct (target is in the key), so
-;; the legitimately-authored 1:1-target population is untouched.
+;; W3.B REVISE (DATA-LOSS fix): the original key spanned ONLY (target,
+;; recurrence, timezone) — it EXCLUDED six first-class, dispatcher-read slots
+;; (:until, :count, :exdates, :rdates, :misfire-policy, :concurrency).  Two
+;; schedules differing only on one of those (e.g. :until 2027 vs 2099) then
+;; collapsed onto one eid — silently deleting a legitimately-distinct schedule
+;; and overwriting terminator/policy slots.  The key now spans the FULL
+;; semantically-distinguishing slot set; the canonical content-key STRING is
+;; built by the shared `sandbar.db.datomic/schedule-content-key-string` so the
+;; create-path key and the prune-path key are byte-identical (they cannot drift
+;; because there is one builder).  Keyed slots (enumerated):
+;;   target · recurrence (RRULE — the complete FREQ/INTERVAL/BY-* form) ·
+;;   timezone · until · count · exdates · rdates · misfire-policy · concurrency.
+;; The policy slots (:misfire-policy, :concurrency) are FOLDED IN per the LEAD
+;; RULING (safest option): two schedules firing the same recurrence with
+;; different concurrency/misfire behavior are OPERATIONALLY distinct rows.
+;;
+;; :mm.schedule/dtstart is DELIBERATELY EXCLUDED (the ONLY exclusion among the
+;; recurrence-defining slots): callers re-anchor dtstart at (now) on every create
+;; (that is the proliferation mechanism itself), so folding it in would defeat
+;; upsert for logically-identical schedules.  ACCEPTED TRADEOFF: an idempotent
+;; re-create upserts onto the survivor and thus OVERWRITES its dtstart — a phase
+;; shift of the recurrence anchor — but never changes which distinct schedules
+;; exist.  Two schedules identical on every keyed slot ARE the same logical
+;; schedule; any differing keyed slot keeps them distinct.
 ;;
 ;; Absent-only + non-destructive: an explicit caller-supplied :db/ident always
 ;; wins, and a schedule with neither a target nor a recurrence (no stable
@@ -83,24 +107,63 @@
   (uuid/v5 ident/+authority+ "mm.schedule/content-key"))
 
 (defn- ref-value->key-token
-  "Normalize a :db.type/ref slot VALUE (as it may appear in an entity-spec map
-   pre-transact) to a stable string token for content-keying.  Accepts a keyword
-   ident, a numeric eid, a `{:db/ident k}` / `{:db/id e}` upsert map, or a
-   Datomic EntityMap; nil passes through as \"nil\".  Prefers the :db/ident
-   (stable across DBs) over the eid (DB-local) when both are available."
+  "Normalize a :db.type/ref slot VALUE, as it appears in a PRE-transact entity-
+   spec map, to the CANONICAL target token — the SAME value the prune-path
+   derives from a post-transact EntityMap (must-fix #2), so an idented target
+   passed as its raw eid vs its :db/ident keyword keys identically.  Accepts a
+   keyword ident, a numeric eid, a `{:db/ident k}` / `{:db/id e}` upsert map, or
+   a Datomic EntityMap; prefers the :db/ident (stable across DBs) over the eid
+   (DB-local).  nil → nil (the shared key-builder renders it as the empty token,
+   matching the prune-side nil handling).  Returns the RAW keyword/eid — the
+   shared `schedule-content-key-string` stringifies it, so both sides feed the
+   builder the same primitive."
   [v]
   (cond
-    (nil? v)     "nil"
-    (keyword? v) (str v)
-    (map? v)     (str (or (:db/ident v) (:db/id v)))
-    :else        (str v)))
+    (nil? v)     nil
+    (keyword? v) v
+    (map? v)     (or (:db/ident v) (:db/id v))
+    :else        v))
+
+(defn canonicalize-schedule-target
+  "Resolve a :mm/Schedule's `:mm.schedule/target` to its CANONICAL token so the
+   create-path key matches the prune-path key when the SAME idented target is
+   passed as its raw numeric eid vs its :db/ident keyword (W3.B REVISE must-fix
+   #2).  The prune path reads the target back off a post-transact EntityMap,
+   where Datomic renders an ident-bearing ref AS its :db/ident keyword — so an
+   eid-passed create would otherwise key on the eid string and diverge.
+
+   When the target is a raw eid (or `{:db/id e}`) whose entity HAS a :db/ident,
+   returns `props` with :mm.schedule/target rewritten to that keyword; otherwise
+   returns `props` unchanged (a keyword target, an identless eid, or a nil target
+   all already canonicalize correctly).  DB-aware: uses `db/entity` against the
+   live conn — hence applied here at the transact boundary, not inside the pure
+   key builder.  Only touches :mm/Schedule props."
+  [class props]
+  (let [target (:mm.schedule/target props)]
+    (if (and (dt/type-isa? :mm/Schedule class)
+             (some? target)
+             (not (keyword? target)))
+      (let [ent (db/entity (if (map? target) (or (:db/ident target) (:db/id target))
+                               target))
+            id  (:db/ident ent)]
+        (if id (assoc props :mm.schedule/target id) props))
+      props)))
 
 (defn derive-schedule-ident
   "Derive a stable, deterministic, EDN-safe `:db/ident` for a `:mm/Schedule`
-   from its logical identity — (target, recurrence, timezone) — via clj-uuid v5.
-   Returns nil for non-:mm/Schedule classes, or when the schedule carries
-   NEITHER a target NOR a recurrence (no stable content to key on — leave it
-   identless rather than collapse all content-free schedules onto one eid).
+   from its FULL logical identity via clj-uuid v5.  Returns nil for
+   non-:mm/Schedule classes, or when the schedule carries NEITHER a target NOR a
+   recurrence (no stable content to key on — leave it identless rather than
+   collapse all content-free schedules onto one eid).
+
+   Keyed slot set (W3.B REVISE — the FULL semantically-distinguishing identity;
+   see sandbar.db.datomic/schedule-content-key-string, THE shared canonical key
+   builder both this create-path and the prune-path delegate to so they cannot
+   drift byte-for-byte):
+     target · recurrence · timezone · until · count · exdates · rdates ·
+     misfire-policy · concurrency
+   DELIBERATELY EXCLUDED: :mm.schedule/dtstart (the re-anchored recurrence
+   anchor — the proliferation driver; see the comment block above).
 
    The returned keyword's name is `s-<uuid>`; the `s-` prefix guarantees it
    never leads with a digit, so it always round-trips through the Clojure/EDN
@@ -110,12 +173,19 @@
   [class props]
   (when (dt/type-isa? :mm/Schedule class)
     (let [target     (:mm.schedule/target props)
-          recurrence (:mm.schedule/recurrence props)
-          timezone   (:mm.schedule/timezone props)]
+          recurrence (:mm.schedule/recurrence props)]
       (when (or (some? target) (some? recurrence))
-        (let [content-key (str (ref-value->key-token target)
-                               "|" (some-> recurrence str)
-                               "|" (some-> timezone str))]
+        (let [content-key
+              (db/schedule-content-key-string
+               {:target-token   (ref-value->key-token target)
+                :recurrence     recurrence
+                :timezone       (:mm.schedule/timezone props)
+                :until          (:mm.schedule/until props)
+                :count          (:mm.schedule/count props)
+                :exdates        (db/date-set-token (:mm.schedule/exdates props))
+                :rdates         (db/date-set-token (:mm.schedule/rdates props))
+                :misfire-policy (:mm.schedule/misfire-policy props)
+                :concurrency    (:mm.schedule/concurrency props)})]
           (keyword "sandbar.schedule"
                    (str "s-" (uuid/v5 +schedule-ns+ content-key))))))))
 
@@ -148,6 +218,10 @@
                       (get props "mm.memory/rel-path"))
          derived  (when (and memory? rel-path (not (:db/ident props)))
                     (derive-memory-ident class rel-path))
+         ;; Canonicalize an idented :mm/Schedule target passed as a raw eid to its
+         ;; :db/ident keyword BEFORE keying, so the create-key matches the prune-
+         ;; key regardless of the target's passed form (W3.B REVISE must-fix #2).
+         props    (canonicalize-schedule-target class props)
          ;; :mm/Schedule content-key ident (W3.B proliferation fix) — absent-only,
          ;; and only when the memory-ident derivation did not already supply one.
          sched-id (when-not (or derived (:db/ident props))

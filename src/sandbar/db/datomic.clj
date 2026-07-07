@@ -325,13 +325,23 @@
 ;; same eid).  This migration HEALS DBs that already accumulated duplicates.
 ;;
 ;; CONSERVATISM (provable-duplicates-only): schedules are grouped by the SAME
-;; logical-identity key the create path idents on — (target, recurrence,
-;; timezone), deliberately EXCLUDING :mm.schedule/dtstart (callers re-anchor it
-;; at (now) on every create, so it diverges across otherwise-identical dupes;
-;; folding it in would UNDER-collapse them).  Because `target` is IN the key,
-;; two schedules with DIFFERENT targets never share a group — the legitimately-
-;; authored distinct-target 1:1 population is NEVER collapsed.  Only rows that
-;; are identical on (target, recurrence, timezone) — provable duplicates — merge.
+;; logical-identity key the create path idents on — the FULL semantic slot set
+;; (target, recurrence, timezone, until, count, exdates, rdates, misfire-policy,
+;; concurrency; see `schedule-content-key-string`), deliberately EXCLUDING ONLY
+;; :mm.schedule/dtstart (callers re-anchor it at (now) on every create, so it
+;; diverges across otherwise-identical dupes; folding it in would UNDER-collapse
+;; them).  Because EVERY distinguishing slot is now IN the key, two schedules
+;; that differ on ANY of them (a different :until, a different :concurrency, …)
+;; never share a group — only rows PROVABLY identical on every semantic axis
+;; merge.  This closes the original data-loss flaw where a widened-key-absent
+;; group silently collapsed genuinely-distinct schedules onto one survivor.
+;;
+;; GATING (W3.B REVISE): this is NO LONGER wired into initialize-db! and no
+;; longer runs on every boot.  It is a standalone, deliberately-invoked
+;; migration: DRY-RUN/REPORT by default (lists, per group, the survivor and the
+;; per-dupe slot values that would be dropped, WITHOUT mutating); pass
+;; `:apply? true` to perform the retraction.  Run once out-of-band AFTER a DB
+;; backup; dry-run FIRST and inspect the report before applying.
 ;;
 ;; Non-destructive to graph edges: before retracting a duplicate, EVERY inbound
 ;; ref pointing at it (e.g. :mm.run/triggered-by, :mm.schedule-event/schedule) is
@@ -347,24 +357,137 @@
 ;; precedent (prune-duplicate-seed-constraint-subentities! above; commit 1bc426b)
 ;; + interaction/foundational_substrate_concerns_are_never_follow_up_sub_arcs_2026_05_21.
 
-(defn- schedule-content-key
-  "Stable logical-identity key for a :mm/Schedule Entity — [target-token
-  recurrence timezone].  Mirrors sandbar.store/derive-schedule-ident's key
-  (dtstart deliberately excluded).  `target-token` is the target's :db/ident
-  when it has one (stable) else its eid (DB-local), or nil when target-less.
+;; ── Shared content-key builder (byte-identical on BOTH sides) ────────────────
+;;
+;; W3.B REVISE (data-loss fix): the original key was ONLY (target, recurrence,
+;; timezone) — it EXCLUDED six first-class, dispatcher-read slots (:until,
+;; :count, :exdates, :rdates, :misfire-policy, :concurrency), so two schedules
+;; differing only on one of those (e.g. :until 2027 vs 2099) collapsed onto one
+;; eid at both create (upsert) AND prune (retract) — silently deleting a
+;; legitimately-distinct schedule and overwriting terminator/policy slots.
+;;
+;; The key now spans the FULL semantically-distinguishing slot set.  The
+;; create-path (sandbar.store/derive-schedule-ident, pre-coercion entity-spec
+;; map) and the prune-path (schedule-content-key, post-transact EntityMap) MUST
+;; produce byte-identical strings, so the canonical string is built HERE by ONE
+;; shared fn that both sides call after normalizing their differently-shaped
+;; inputs to the same primitives.  Placed in this (lowest) ns so store — which
+;; requires datatype→datomic — can call it WITHOUT a require cycle.
 
-  The Datomic entity API renders an IDENT-BEARING ref target as its :db/ident
-  KEYWORD (not an EntityMap), so `target` may be a keyword, an EntityMap, or nil
-  — all three are normalized here (same deref-collapse class as
-  bugs/shape_check_validator_fn_derefs_ident_bearing_fn_ref_to_keyword_...)."
+(defn- key-token
+  "Normalize a scalar slot value to a stable string token for the content-key.
+   nil → \"\".  Instant-typed values → their epoch-millis: a java.util.Date (the
+   post-transact wire shape) and a java.time.Instant (a create-path caller may
+   pass either for a :db.type/instant slot) both canonicalize to the same
+   millis, so :until keys identically on both sides regardless of which the
+   caller supplied.  Avoids toString locale/format drift.  Everything else →
+   (str v)."
+  [v]
+  (cond
+    (nil? v)                     ""
+    (instance? java.util.Date v) (str (.getTime ^java.util.Date v))
+    (instance? java.time.Instant v) (str (.toEpochMilli ^java.time.Instant v))
+    :else                        (str v)))
+
+(defn instant->millis
+  "Epoch-millis of an instant-typed value — java.util.Date (post-transact wire
+   shape) or java.time.Instant (a create-path caller may pass either).  Public so
+   the create-path (sandbar.store) shares the exact same member-canonicalization
+   for :exdates/:rdates, guaranteeing byte-identical date-set tokens on both
+   sides."
+  ^long [v]
+  (cond
+    (instance? java.util.Date v)    (.getTime ^java.util.Date v)
+    (instance? java.time.Instant v) (.toEpochMilli ^java.time.Instant v)
+    :else (throw (ex-info "not an instant" {:v v :class (class v)}))))
+
+(defn date-set-token
+  "Normalize a cardinality-many instant slot (:exdates / :rdates) to an
+   ORDER-INDEPENDENT canonical token: epoch-millis of every member, sorted,
+   comma-joined.  A set/vector/nil of java.util.Date (or java.time.Instant, or
+   nil) all canonicalize identically, so member order and collection type can
+   never perturb the key.  Public so the create-path shares the exact builder."
+  [coll]
+  (->> (or coll [])
+       (map instant->millis)
+       sort
+       (clojure.string/join ",")))
+
+(defn schedule-content-key-string
+  "THE canonical :mm/Schedule content-key string — the single source of truth
+   both the create-path ident derivation and the prune-path grouping key are
+   built from, so the two can never drift byte-for-byte.
+
+   Keyed slot set (the FULL semantically-distinguishing identity — enumerated
+   so any future slot addition forces a conscious keep/exclude decision):
+
+     :mm.schedule/target          (canonical `target-token`; see callers)
+     :mm.schedule/recurrence      (RFC-5545 RRULE string — already encodes
+                                    FREQ / INTERVAL / every BY-* rule, so it is
+                                    the COMPLETE recurrence-defining form)
+     :mm.schedule/timezone        (IANA tz name)
+     :mm.schedule/until           (RFC-5545 UNTIL terminator instant)
+     :mm.schedule/count           (RFC-5545 COUNT terminator)
+     :mm.schedule/exdates         (order-independent set of exclusions)
+     :mm.schedule/rdates          (order-independent set of extra instants)
+     :mm.schedule/misfire-policy  (FOLDED IN — LEAD RULING (a): two schedules
+                                    firing the same recurrence with different
+                                    misfire behavior are operationally distinct)
+     :mm.schedule/concurrency     (FOLDED IN — same rationale)
+
+   DELIBERATELY EXCLUDED: :mm.schedule/dtstart — the recurrence anchor callers
+   re-anchor to (now) on every create, which is the proliferation driver
+   itself; folding it in would defeat upsert for logically-identical schedules.
+   Accepted tradeoff: an idempotent re-create UPSERTS onto the survivor and thus
+   overwrites its dtstart — a phase shift of the anchor — but never changes WHICH
+   distinct schedules exist.  Also excluded: derived/observational slots that
+   are NOT part of logical identity (:next-fire-at, :source-nl, :source-cron).
+
+   Args are ALREADY-NORMALIZED primitives (strings/nil), so this fn is a pure
+   deterministic join with no knowledge of Entity-vs-spec-map shape."
+  [{:keys [target-token recurrence timezone until count exdates rdates
+           misfire-policy concurrency]}]
+  (clojure.string/join
+   "|"
+   [(key-token target-token)
+    (key-token recurrence)
+    (key-token timezone)
+    (key-token until)
+    (key-token count)
+    (key-token exdates)              ; already the date-set canonical token
+    (key-token rdates)               ; already the date-set canonical token
+    (key-token misfire-policy)
+    (key-token concurrency)]))
+
+(defn- schedule-content-key
+  "Prune-path logical-identity key for a :mm/Schedule EntityMap — normalizes the
+  post-transact read shape, then delegates to `schedule-content-key-string` so
+  it is byte-identical to the create-path key (sandbar.store/derive-schedule-
+  ident).  See `schedule-content-key-string` for the keyed slot set + the
+  dtstart exclusion rationale.
+
+  Target normalization (must-fix #2): the Datomic entity API renders an
+  IDENT-BEARING ref target as its :db/ident KEYWORD (not an EntityMap), so
+  `target` may be a keyword, an EntityMap, or nil.  We resolve it to a CANONICAL
+  token — :db/ident when present (stable), else the numeric eid — exactly as the
+  create-path does for a raw eid vs a :db/ident keyword, so an idented target
+  passed either way keys identically."
   [sched]
-  (let [target (:mm.schedule/target sched)]
-    [(cond
-       (nil? target)     nil
-       (keyword? target) target
-       :else             (or (:db/ident target) (:db/id target)))
-     (:mm.schedule/recurrence sched)
-     (:mm.schedule/timezone sched)]))
+  (let [target (:mm.schedule/target sched)
+        target-token (cond
+                       (nil? target)     nil
+                       (keyword? target) target
+                       :else             (or (:db/ident target) (:db/id target)))]
+    (schedule-content-key-string
+     {:target-token   target-token
+      :recurrence     (:mm.schedule/recurrence sched)
+      :timezone       (:mm.schedule/timezone sched)
+      :until          (:mm.schedule/until sched)
+      :count          (:mm.schedule/count sched)
+      :exdates        (date-set-token (:mm.schedule/exdates sched))
+      :rdates         (date-set-token (:mm.schedule/rdates sched))
+      :misfire-policy (:mm.schedule/misfire-policy sched)
+      :concurrency    (:mm.schedule/concurrency sched)})))
 
 (defn- inbound-ref-datoms
   "All [e a] pairs where datom [e a target-eid] exists AND `a` is a :db.type/ref
@@ -374,59 +497,116 @@
   (->> (d/datoms db :vaet target-eid)
        (map (fn [dtm] [(.e dtm) (.a dtm)]))))
 
-(defn prune-duplicate-schedules!
-  "Collapse duplicate :mm/Schedule rows accumulated by pre-:db/ident runtime
-  creates.  Groups all schedules by their logical-identity key (target,
-  recurrence, timezone — dtstart excluded); for each group of >1, keeps one
-  survivor (prefers an idented row; ties broken on lowest eid), RE-POINTS every
-  inbound ref from each duplicate onto the survivor, then :db.fn/retractEntity
-  the duplicate.  Returns the total number of duplicate schedules pruned.
-  Idempotent + conservative (only collapses provable duplicates — never
-  distinct-target schedules).  Safe to run on every boot.  See the comment block
-  above.
+(def ^:private schedule-identity-slots
+  "The full slot set the content-key spans — echoed into the dry-run report so an
+  operator sees exactly which values are shared by a collapsing group (and, per
+  dupe, which of the survivor's would be kept).  dtstart is intentionally ABSENT."
+  [:mm.schedule/target :mm.schedule/recurrence :mm.schedule/timezone
+   :mm.schedule/until :mm.schedule/count :mm.schedule/exdates :mm.schedule/rdates
+   :mm.schedule/misfire-policy :mm.schedule/concurrency])
 
-  Public for testability."
-  [uri]
-  (let [c        (conn uri)
-        db       (d/db c)
-        sched-es (map first
+(defn- schedule-slot-snapshot
+  "Read-only snapshot of an EntityMap's identity slots + dtstart (the one
+  excluded axis) + :db/id/:db/ident, for the dry-run report."
+  [sched]
+  (into {:db/id           (:db/id sched)
+         :db/ident        (:db/ident sched)
+         :mm.schedule/dtstart (:mm.schedule/dtstart sched)}
+        (map (fn [slot] [slot (get sched slot)]) schedule-identity-slots)))
+
+(defn- schedule-prune-plan
+  "PURE (read-only) prune plan.  Groups every :mm/Schedule by the widened
+  content-key; for each group of >1 provable duplicates, picks a DETERMINISTIC
+  survivor and enumerates the dupes.  Because the key now spans every
+  semantically-distinguishing slot, all members of a group are PROVABLY identical
+  on every logical axis, so survivor choice loses no data — we therefore pick the
+  LOWEST EID unconditionally (fully deterministic; an idented row, when present,
+  is the one create-path-minted row and already sorts stably by its eid).
+
+  Returns a vector of per-group plan maps:
+    {:content-key <str> :survivor <snapshot> :dupes [<snapshot> …]
+     :dropped-dtstarts [<Date> …]}  ;; dtstart values the phase-shift discards."
+  [db]
+  (let [sched-es (map first
                       (d/q '[:find ?e :where [?e :dt/type :mm/Schedule]] db))
         groups   (->> sched-es
                       (map #(d/entity db %))
                       (group-by schedule-content-key))]
-    (reduce
-     (fn [total [_k members]]
-       (if (> (count members) 1)
-         (let [;; Survivor: idented rows first, then lowest eid (deterministic).
-               survivor (->> members
-                             (sort-by (juxt #(if (:db/ident %) 0 1) :db/id))
-                             first)
-               surv-eid (:db/id survivor)
-               dupes    (remove #(= (:db/id %) surv-eid) members)
-               db'      (d/db c)
-               tx       (into
-                         ;; Re-point every inbound ref from each dupe onto the
-                         ;; survivor (retract old edge, assert new), THEN GC the
-                         ;; now-detached duplicate schedule.
-                         (vec
-                          (mapcat
-                           (fn [dupe]
-                             (let [dupe-eid (:db/id dupe)]
-                               (concat
-                                (mapcat
-                                 (fn [[e a]]
-                                   [[:db/retract e a dupe-eid]
-                                    [:db/add     e a surv-eid]])
-                                 (inbound-ref-datoms db' dupe-eid))
-                                [[:db.fn/retractEntity dupe-eid]])))
-                           dupes)))]
-           @(d/transact c tx)
-           (log/info :DB/SCHEDULE-DUPLICATE-PRUNE
-                     {:survivor surv-eid :pruned (count dupes)})
-           (+ total (count dupes)))
-         total))
-     0
-     groups)))
+    (->> groups
+         (keep
+          (fn [[k members]]
+            (when (> (count members) 1)
+              (let [;; Deterministic survivor: lowest eid.  With the widened key
+                    ;; every member is identical on all semantic axes, so this is
+                    ;; a data-loss-free tiebreak, not a value choice.
+                    sorted   (sort-by :db/id members)
+                    survivor (first sorted)
+                    dupes    (rest sorted)]
+                {:content-key      k
+                 :survivor         (schedule-slot-snapshot survivor)
+                 :dupes            (mapv schedule-slot-snapshot dupes)
+                 :dropped-dtstarts (vec (keep :mm.schedule/dtstart dupes))}))))
+         vec)))
+
+(defn prune-duplicate-schedules!
+  "Standalone, deliberately-invoked migration that collapses PROVABLE duplicate
+  :mm/Schedule rows accumulated by pre-:db/ident runtime creates.  Groups by the
+  WIDENED logical-identity key (every semantically-distinguishing slot — target,
+  recurrence, timezone, until, count, exdates, rdates, misfire-policy,
+  concurrency; dtstart excluded — see `schedule-content-key-string`).
+
+  MODES (must-fix #3 — this is NO LONGER wired into initialize-db!):
+    - DRY-RUN / REPORT (default): returns
+        {:mode :dry-run :groups [<plan> …] :would-prune <n>}
+      WITHOUT mutating.  Each plan lists the survivor, the dupes that would
+      collapse onto it, and the per-dupe dtstart values that would be dropped
+      (the accepted phase-shift).  Inspect this before applying.
+    - APPLY (`:apply? true`): for each group RE-POINTS every inbound ref from
+      each duplicate onto the deterministic (lowest-eid) survivor, then
+      :db.fn/retractEntity the duplicate; returns
+        {:mode :apply :groups [<plan> …] :pruned <n>}.
+
+  OPERATIONAL DISCIPLINE: run once out-of-band AFTER a DB backup; dry-run FIRST
+  and read the report, THEN re-invoke with :apply? true.  Idempotent — post-heal
+  each key holds exactly one schedule, so a re-run's dry-run reports zero groups.
+  Conservative: with the widened key, only rows identical on EVERY semantic axis
+  merge — genuinely-distinct schedules (any differing slot) are never collapsed.
+
+  Public for testability + out-of-band invocation."
+  [uri & {:keys [apply?] :or {apply? false}}]
+  (let [c    (conn uri)
+        db   (d/db c)
+        plan (schedule-prune-plan db)]
+    (if-not apply?
+      {:mode       :dry-run
+       :groups     plan
+       :would-prune (reduce + 0 (map (comp count :dupes) plan))}
+      (let [pruned
+            (reduce
+             (fn [total {:keys [survivor dupes]}]
+               (let [surv-eid (:db/id survivor)
+                     db'      (d/db c)
+                     tx       (vec
+                               (mapcat
+                                (fn [{dupe-eid :db/id}]
+                                  (concat
+                                   ;; Re-point every inbound ref from the dupe
+                                   ;; onto the survivor (retract old, assert new),
+                                   ;; THEN GC the now-detached duplicate.
+                                   (mapcat
+                                    (fn [[e a]]
+                                      [[:db/retract e a dupe-eid]
+                                       [:db/add     e a surv-eid]])
+                                    (inbound-ref-datoms db' dupe-eid))
+                                   [[:db.fn/retractEntity dupe-eid]]))
+                                dupes))]
+                 @(d/transact c tx)
+                 (log/info :DB/SCHEDULE-DUPLICATE-PRUNE
+                           {:survivor surv-eid :pruned (count dupes)})
+                 (+ total (count dupes))))
+             0
+             plan)]
+        {:mode :apply :groups plan :pruned pruned}))))
 
 (defn initialize-db! [uri & schema]
   ;; Stage 5 Phase B (2026-05-22): always reload schema + dbfns at start,
@@ -455,11 +635,15 @@
     ;; pre-:db/ident reloads (idempotent no-op once healed).  Must run after
     ;; load-all-schema! so the canonical idented sub-entities exist.
     (prune-duplicate-seed-constraint-subentities! uri)
-    ;; Self-heal duplicate :mm/Schedule rows accumulated by pre-:db/ident runtime
-    ;; creates (W3.B proliferation fix; idempotent no-op once healed).  Groups on
-    ;; (target, recurrence, timezone), re-points inbound edges, GCs provable
-    ;; duplicates only — never distinct-target schedules.
-    (prune-duplicate-schedules! uri)
+    ;; NB: prune-duplicate-schedules! is DELIBERATELY NOT called here.  W3.B REVISE
+    ;; (data-loss fix): the boot-time prune could silently collapse genuinely-
+    ;; distinct schedules whenever the identity key was too narrow.  The key is now
+    ;; widened AND the prune is a standalone, out-of-band migration (dry-run first,
+    ;; then :apply? true, after a DB backup) — NOT an unconditional every-boot
+    ;; mutation.  See prune-duplicate-schedules! + the comment block above it.
+    ;; The create-path content-key :db/ident (sandbar.store/derive-schedule-ident)
+    ;; is the standing recurrence-prevention mechanism; healing pre-existing dupes
+    ;; is an operator decision, not a boot side-effect.
     ((requiring-resolve 'sandbar.db.entailment.quality/validate-entailment-graph!) uri)
     (fn/load-all-dbfn uri)
     (fn/load-all-mm-fn-memorials uri)

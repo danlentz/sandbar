@@ -154,6 +154,169 @@
       (is (= (+ before 2) (schedule-count (d/db *conn*)))
           "two distinct-target schedules are two distinct rows"))))
 
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Tests — DISTINCTNESS ON NON-TARGET AXES (W3.B REVISE data-loss fix)
+;;
+;; The original content-key spanned only (target, recurrence, timezone), so two
+;; schedules identical on those three but differing on a first-class,
+;; dispatcher-read slot (:until / :count / :exdates / :misfire-policy /
+;; :concurrency) collapsed onto ONE eid — silently deleting a legitimately-
+;; distinct schedule (create-path upsert) or retracting it (prune).  These tests
+;; lock each such axis as identity-distinguishing, at BOTH create and prune.
+;; Mirrors `distinct-targets-stay-distinct`.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(def ^:private base-until-props
+  "A fixed (recurrence, timezone) base — the axes the OLD key spanned besides
+   target.  Intentionally TARGET-LESS so these tests need no seed-system-jobs!
+   (a target :db.type/ref requires the ident to already exist); target-lessness
+   is orthogonal to the non-target-axis distinctness under test.  Each test
+   perturbs exactly ONE non-target axis on top of this base."
+  {:mm.schedule/recurrence "FREQ=DAILY"
+   :mm.schedule/timezone   "UTC"})
+
+(defn- iso->date [iso] (Date/from (Instant/parse iso)))
+
+(deftest distinct-on-until-stays-distinct-at-create
+  (testing ":until 2027 vs 2099 — identical on (target, recurrence, timezone)
+            but a DIFFERENT terminator instant — MUST remain two distinct rows
+            at create (the reported data-loss repro: the two collapsed to one)."
+    (system/seed-system-jobs!)
+    (let [before (schedule-count (d/db *conn*))]
+      (create-schedule! (assoc base-until-props
+                               :mm.schedule/until (iso->date "2027-01-01T00:00:00Z")))
+      (create-schedule! (assoc base-until-props
+                               :mm.schedule/until (iso->date "2099-01-01T00:00:00Z")))
+      (is (= (+ before 2) (schedule-count (d/db *conn*)))
+          "two schedules differing only by :until are two distinct rows")
+      ;; And their derived idents differ (the mechanism, proven directly).
+      (is (not= (store/derive-schedule-ident
+                 :mm/Schedule (assoc base-until-props
+                                     :mm.schedule/until (iso->date "2027-01-01T00:00:00Z")))
+                (store/derive-schedule-ident
+                 :mm/Schedule (assoc base-until-props
+                                     :mm.schedule/until (iso->date "2099-01-01T00:00:00Z"))))
+          ":until is in the content-key → distinct idents"))))
+
+(deftest distinct-on-count-stays-distinct-at-create
+  (testing ":count 5 vs 500 — a different bounded recurrence count — stays
+            distinct at create."
+    (system/seed-system-jobs!)
+    (let [before (schedule-count (d/db *conn*))]
+      (create-schedule! (assoc base-until-props :mm.schedule/count 5))
+      (create-schedule! (assoc base-until-props :mm.schedule/count 500))
+      (is (= (+ before 2) (schedule-count (d/db *conn*)))
+          "two schedules differing only by :count are two distinct rows"))))
+
+(deftest distinct-on-exdates-stays-distinct-at-create
+  (testing ":exdates {A} vs {A B} — a different exclusion set — stays distinct
+            at create (order-independent set membership drives the key)."
+    (system/seed-system-jobs!)
+    (let [before (schedule-count (d/db *conn*))]
+      (create-schedule! (assoc base-until-props
+                               :mm.schedule/exdates #{(iso->date "2027-01-01T00:00:00Z")}))
+      (create-schedule! (assoc base-until-props
+                               :mm.schedule/exdates #{(iso->date "2027-01-01T00:00:00Z")
+                                                      (iso->date "2027-02-01T00:00:00Z")}))
+      (is (= (+ before 2) (schedule-count (d/db *conn*)))
+          "two schedules differing only by :exdates are two distinct rows")
+      ;; Order-independence proof: {A B} and {B A} key IDENTICALLY.
+      (is (= (store/derive-schedule-ident
+              :mm/Schedule (assoc base-until-props
+                                  :mm.schedule/exdates [(iso->date "2027-01-01T00:00:00Z")
+                                                        (iso->date "2027-02-01T00:00:00Z")]))
+             (store/derive-schedule-ident
+              :mm/Schedule (assoc base-until-props
+                                  :mm.schedule/exdates [(iso->date "2027-02-01T00:00:00Z")
+                                                        (iso->date "2027-01-01T00:00:00Z")])))
+          ":exdates key is order-independent (same set → same ident)"))))
+
+(deftest distinct-on-misfire-policy-stays-distinct-at-create
+  (testing ":misfire-policy :fire-once-now vs :ignore — LEAD RULING (a): policy
+            slots are folded into the key, so operationally-different schedules
+            stay distinct at create."
+    (system/seed-system-jobs!)
+    (let [before (schedule-count (d/db *conn*))]
+      (create-schedule! (assoc base-until-props
+                               :mm.schedule/misfire-policy :misfire/fire-once-now))
+      (create-schedule! (assoc base-until-props
+                               :mm.schedule/misfire-policy :misfire/ignore))
+      (is (= (+ before 2) (schedule-count (d/db *conn*)))
+          "two schedules differing only by :misfire-policy are two distinct rows"))))
+
+(deftest distinct-on-concurrency-stays-distinct-at-create
+  (testing ":concurrency :forbid vs :allow — LEAD RULING (a): folded into the
+            key, so distinct concurrency behavior → distinct rows at create."
+    (system/seed-system-jobs!)
+    (let [before (schedule-count (d/db *conn*))]
+      (create-schedule! (assoc base-until-props
+                               :mm.schedule/concurrency :concurrency/forbid))
+      (create-schedule! (assoc base-until-props
+                               :mm.schedule/concurrency :concurrency/allow))
+      (is (= (+ before 2) (schedule-count (d/db *conn*)))
+          "two schedules differing only by :concurrency are two distinct rows"))))
+
+(deftest distinct-on-non-target-axes-survive-prune
+  (testing "PRUNE must NOT collapse schedules that differ on a non-target axis.
+            Inject 5 schedules that share (target, recurrence, timezone) but each
+            differ on a DIFFERENT semantic slot (:until / :count / :exdates /
+            :misfire-policy / :concurrency) — the widened key groups each ALONE,
+            so an :apply prune retracts NOTHING.  This is the direct data-loss
+            guard: the OLD key grouped all 5 together and would have destroyed 4."
+    (let [variants
+          [(assoc base-until-props :mm.schedule/until   (iso->date "2030-01-01T00:00:00Z"))
+           (assoc base-until-props :mm.schedule/count   7)
+           (assoc base-until-props :mm.schedule/exdates #{(iso->date "2030-06-01T00:00:00Z")})
+           (assoc base-until-props :mm.schedule/misfire-policy :misfire/ignore)
+           (assoc base-until-props :mm.schedule/concurrency    :concurrency/replace)]]
+      (doseq [v variants]
+        ;; transact each with a DIVERGENT dtstart — the only excluded axis — to
+        ;; prove dtstart divergence alone never forces a collapse either way.
+        (create-schedule! (assoc v :mm.schedule/dtstart (Date/from (Instant/now)))))
+      (is (= 5 (schedule-count (d/db *conn*)))
+          "5 create-distinct schedules (each differs on one non-target axis)")
+      ;; Dry-run: nothing would collapse.
+      (let [{:keys [would-prune groups]} (db/prune-duplicate-schedules! *uri*)]
+        (is (= 0 would-prune) "dry-run: no group has >1 member → 0 would-prune")
+        (is (empty? groups) "no collapsing groups reported"))
+      ;; Apply: still nothing pruned, all 5 survive.
+      (let [{:keys [pruned]} (db/prune-duplicate-schedules! *uri* :apply? true)]
+        (is (= 0 pruned) "apply prune retracts nothing — every axis is distinct")
+        (is (= 5 (schedule-count (d/db *conn*)))
+            "all 5 semantically-distinct schedules survive the prune")))))
+
+(deftest same-non-target-axes-still-collapse
+  (testing "Positive control: schedules IDENTICAL on every keyed slot (including
+            the newly-added ones) but differing ONLY on dtstart still collapse —
+            widening the key did not break the intended upsert for true dupes."
+    (let [props (assoc base-until-props
+                       :mm.schedule/until          (iso->date "2040-01-01T00:00:00Z")
+                       :mm.schedule/misfire-policy :misfire/fire-once-now
+                       :mm.schedule/concurrency    :concurrency/forbid)]
+      (dotimes [_ 8]
+        (create-schedule! (assoc props :mm.schedule/dtstart (Date/from (Instant/now)))))
+      (is (= 1 (schedule-count (d/db *conn*)))
+          "8 creates identical on every keyed slot upsert to 1 (dtstart excluded)"))))
+
+(deftest idented-target-eid-vs-keyword-keys-identically
+  (testing "must-fix #2 — an idented target passed as its RAW NUMERIC EID keys
+            identically to the same target passed as its :db/ident KEYWORD, so a
+            targeted create is idempotent regardless of the target's passed form
+            (the create-key is canonicalized to match the prune-key's read-back
+            :db/ident rendering)."
+    (system/seed-system-jobs!)
+    (let [eid (:db/id (d/entity (d/db *conn*) :sandbar.system/db-stats-job))
+          base {:mm.schedule/recurrence "FREQ=DAILY" :mm.schedule/timezone "UTC"}
+          before (schedule-count (d/db *conn*))]
+      (is (some? eid) "resolved the system target's numeric eid")
+      ;; Create with the KEYWORD target, then with the RAW EID target.
+      (create-schedule! (assoc base :mm.schedule/target :sandbar.system/db-stats-job
+                               :mm.schedule/dtstart (Date/from (Instant/now))))
+      (create-schedule! (assoc base :mm.schedule/target eid
+                               :mm.schedule/dtstart (Date/from (Instant/now))))
+      (is (= (inc before) (schedule-count (d/db *conn*)))
+          "eid-form and keyword-form creates UPSERT onto ONE row (added exactly 1)"))))
+
 (deftest system-seed-idempotent-across-reseed
   (testing "seed-system-jobs! stays at 2 system schedules across repeated
             re-seeds (the pre-existing :db/ident upsert discipline; regression
@@ -183,35 +346,62 @@
          :mm.schedule/dtstart        (Date/from (.plusSeconds (Instant/now) i))
          :mm.schedule/misfire-policy :misfire/fire-once-now}])))
 
+;; NB: prune-duplicate-schedules! is now a GATED migration (W3.B REVISE
+;; must-fix #3) — DRY-RUN by default, mutation ONLY under :apply? true, and it
+;; returns a REPORT MAP ({:mode … :pruned/:would-prune n :groups […]}), not a
+;; bare int.  The apply-mode tests pass :apply? true and read :pruned.
+
 (deftest prune-heals-accumulated-duplicates
-  (testing "prune-duplicate-schedules! collapses target-less duplicates that
-            differ ONLY by dtstart down to one, restoring a clean count."
+  (testing "prune-duplicate-schedules! (apply mode) collapses target-less
+            duplicates that differ ONLY by dtstart down to one, restoring a
+            clean count."
     (inject-legacy-duplicate-schedules! 25)
     (is (= 25 (schedule-count (d/db *conn*))) "25 legacy dupes injected")
-    (let [pruned (db/prune-duplicate-schedules! *uri*)]
+    (let [{:keys [pruned mode]} (db/prune-duplicate-schedules! *uri* :apply? true)]
+      (is (= :apply mode) "explicit :apply? true selects mutation mode")
       (is (= 24 pruned) "returns the count of pruned duplicates (25 - 1 survivor)")
       (is (= 1 (schedule-count (d/db *conn*)))
           "collapsed to the single canonical survivor")
       (is (= 1 (targetless-count (d/db *conn*)))
           "the survivor is the target-less logical schedule"))))
 
+(deftest prune-dry-run-is-default-and-non-mutating
+  (testing "DEFAULT invocation is a DRY-RUN: it REPORTS the collapse plan
+            (would-prune count + per-group survivor/dupe snapshots) WITHOUT
+            mutating the DB.  The gate that prevents boot-time data loss."
+    (inject-legacy-duplicate-schedules! 6)
+    (is (= 6 (schedule-count (d/db *conn*))) "6 legacy dupes injected")
+    (let [{:keys [mode would-prune groups]} (db/prune-duplicate-schedules! *uri*)]
+      (is (= :dry-run mode) "default mode is dry-run (no :apply?)")
+      (is (= 5 would-prune) "dry-run reports 5 would collapse (6 - 1 survivor)")
+      (is (= 1 (count groups)) "one collapsing group")
+      (let [{:keys [survivor dupes dropped-dtstarts]} (first groups)]
+        (is (some? (:db/id survivor)) "report names the concrete survivor eid")
+        (is (= 5 (count dupes)) "report enumerates the 5 dupes")
+        (is (= 5 (count dropped-dtstarts))
+            "report lists the per-dupe dtstart values the phase-shift discards"))
+      ;; The DB is UNCHANGED — dry-run never mutates.
+      (is (= 6 (schedule-count (d/db *conn*)))
+          "dry-run left all 6 rows in place (no retraction)"))))
+
 (deftest prune-is-idempotent-on-clean-db
-  (testing "prune is a no-op on a DB with no duplicate schedules."
+  (testing "prune (apply) is a no-op on a DB with no duplicate schedules."
     ;; Only the 2 system schedules (distinct targets) — no duplicates.
     (system/seed-system-jobs!)
     (is (= 2 (schedule-count (d/db *conn*))))
-    (is (= 0 (db/prune-duplicate-schedules! *uri*))
+    (is (= 0 (:pruned (db/prune-duplicate-schedules! *uri* :apply? true)))
         "clean DB → prunes nothing")
     (is (= 2 (schedule-count (d/db *conn*))) "system schedules untouched")
     ;; And running prune a SECOND time after a heal is still a no-op.
     (inject-legacy-duplicate-schedules! 5)
-    (is (= 4 (db/prune-duplicate-schedules! *uri*)) "first prune heals 5→1")
-    (is (= 0 (db/prune-duplicate-schedules! *uri*))
+    (is (= 4 (:pruned (db/prune-duplicate-schedules! *uri* :apply? true)))
+        "first prune heals 5→1")
+    (is (= 0 (:pruned (db/prune-duplicate-schedules! *uri* :apply? true)))
         "second prune is a no-op (already healed)")))
 
 (deftest prune-is-conservative-on-distinct-targets
   (testing "prune NEVER collapses schedules with distinct targets — only
-            provable (same target/recurrence/timezone) duplicates merge."
+            provable (identical on every keyed slot) duplicates merge."
     (system/seed-system-jobs!)
     ;; Two distinct-target schedules + 3 identical target-less dupes.
     (create-schedule! {:mm.schedule/target     :sandbar.system/db-stats-job
@@ -223,7 +413,7 @@
     (inject-legacy-duplicate-schedules! 3)
     (let [before (schedule-count (d/db *conn*))]
       (is (= 7 before) "2 system + 2 distinct-target + 3 target-less dupes")
-      (let [pruned (db/prune-duplicate-schedules! *uri*)]
+      (let [{:keys [pruned]} (db/prune-duplicate-schedules! *uri* :apply? true)]
         (is (= 2 pruned) "only the 3 target-less dupes collapse (3 - 1 = 2)")
         (is (= 5 (schedule-count (d/db *conn*)))
             "2 system + 2 distinct-target + 1 surviving target-less all remain")))))
@@ -239,7 +429,7 @@
                 [{:db/id                     (d/tempid :db.part/user)
                   :dt/type                   :mm.event/Scheduled
                   :mm.schedule-event/schedule b}])
-          _  (db/prune-duplicate-schedules! *uri*)
+          _  (db/prune-duplicate-schedules! *uri* :apply? true)
           dbv (d/db *conn*)
           survivors (map first
                          (d/q '[:find ?e :where [?e :dt/type :mm/Schedule]] dbv))
