@@ -60,13 +60,18 @@
       (`logic-grouping-forms`).  No current legitimate `:where` writes them.
       TODO fast-follow: allowlist the grouping heads structurally and recurse
       into their sub-clauses instead of rejecting.
-    - REGEX (`re-matches`/`re-find`): INCLUDED.  Documented residual: there is
-      NO `d/q` query timeout anywhere in this codebase (verified 2026-07-07), so
-      a caller-crafted pathological pattern (ReDoS) against long stored strings
-      is an UNBOUNDED-CPU availability residual.  This is strictly less severe
-      than the integrity/exfiltration vector this validator closes (no data
-      leaves, nothing is written).  Fast-follow: pair regex with an input-length
-      cap / match budget, or drop regex if the residual is unacceptable.
+    - REGEX (`re-matches`/`re-find`): DROPPED from the v1 allowlist (fork
+      decision, 2026-07-07).  There is NO `d/q` query timeout anywhere in this
+      codebase (verified 2026-07-07) to backstop ReDoS, so deny-by-default must
+      NOT open an unbounded-CPU operator with no backstop — and no current legit
+      corpus `:where` needs regex.  TODO: re-add regex ONLY paired with an
+      input-length cap / match budget (marked TODO at `safe-query-op-allowlist`).
+      Architect may override to include-with-residual by restoring the two vars.
+    - QUERY BUILT-INS (`missing?`/`get-else`/`ground`/`fulltext`/`tuple`/
+      `untuple`): ALLOWED via a SEPARATE name-based passlist
+      (`safe-query-builtin-forms`) — these are Datomic query special forms that
+      resolve to NIL (verified 2026-07-07), NOT classpath vars, so they cannot
+      live in the var-identity allowlist and carry zero RCE risk.
     - ALLOWLIST: MINIMAL-curated (see `safe-query-op-allowlist`).  `apply` is
       DELIBERATELY EXCLUDED (it would launder a forbidden symbol past a
       head-symbol check).  Extend only on demonstrated need — each addition is a
@@ -83,25 +88,30 @@
 ;; whose resolution+invocation by Datomic is safe for untrusted input to cause.
 ;;
 ;; Stored as a set of resolved VARS (not string names) so that alias-qualified
-;; forms (`str/starts-with?`) and bare-referred forms (`starts-with?` via a
-;; :refer) compare EQUAL to their fully-qualified var after resolution.
+;; forms (`str/starts-with?`) and bare-referred forms (`starts-with?`) compare
+;; EQUAL to their fully-qualified var after resolution (bare-referred string
+;; predicates are canonicalized via `safe-op-bare-name-index`, see below).
 ;;
 ;; EXACT v1 membership (enumerated for audit — deny-by-default means anything
 ;; absent is rejected; the dangerous namespaces need NOT be blocklisted):
 ;;   Comparison / equality : =  not=  <  <=  >  >=
 ;;   String predicates     : clojure.string/{starts-with? ends-with?
 ;;                                           includes? blank?}
-;;   Regex match           : re-matches  re-find   (ReDoS residual — see ns doc)
 ;;   Type / nil predicates : nil?  some?  string?  keyword?  number?  int?
 ;;                           boolean?  contains?
 ;;   Pure accessors        : get  count  nth
+;;   (Datomic query built-ins missing?/get-else/ground/fulltext/tuple/untuple
+;;    live in the SEPARATE `safe-query-builtin-forms` name passlist — they
+;;    resolve to nil and cannot be var-identity members.)
 ;;
 ;; DELIBERATELY ABSENT (dangerous or unneeded — rejected by deny-by-default):
 ;;   eval read-string read load load-string slurp spit deref future future-call
 ;;   pmap apply resolve requiring-resolve find-var  (indirection / side effects)
 ;;   clojure.java.shell/*  clojure.java.*  java.*  System/*  datomic.api/*
-;;   +  -  *  first  identity  re-* beyond match/find  (candidates for
-;;   fast-follow on demonstrated need, kept off the minimal v1 set)
+;;   re-matches  re-find  (regex — DROPPED in v1, no d/q timeout to backstop
+;;                         ReDoS; see ns doc + TODO below)
+;;   +  -  *  first  identity  (candidates for fast-follow on demonstrated need,
+;;                              kept off the minimal v1 set)
 ;;   or and not or-join not-join  (nested logic — REJECT in v1, see below)
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
@@ -115,14 +125,42 @@
     ;; string predicates
     #'clojure.string/starts-with?  #'clojure.string/ends-with?
     #'clojure.string/includes?     #'clojure.string/blank?
-    ;; regex match (pure — ReDoS availability residual documented in ns doc)
-    #'clojure.core/re-matches  #'clojure.core/re-find
+    ;; TODO(regex): re-matches / re-find were DROPPED from v1 (fork decision
+    ;; 2026-07-07 — no d/q timeout to backstop ReDoS).  Re-add ONLY paired with
+    ;; an input-length cap / match budget:
+    ;;   #'clojure.core/re-matches  #'clojure.core/re-find
     ;; type / nil predicates
     #'clojure.core/nil?     #'clojure.core/some?    #'clojure.core/string?
     #'clojure.core/keyword? #'clojure.core/number?  #'clojure.core/int?
     #'clojure.core/boolean? #'clojure.core/contains?
     ;; pure accessors
     #'clojure.core/get  #'clojure.core/count  #'clojure.core/nth})
+
+(def ^:private safe-op-bare-name-index
+  "Simple-name → allowlisted-var index.  A `:where` may write a string predicate
+  bare (`starts-with?`) rather than aliased (`str/starts-with?`); because
+  `clojure.string` is `:as`-aliased (NOT `:refer`-ed) into this namespace, a
+  bare `starts-with?` does not `ns-resolve` here and would be over-blocked.
+  This index canonicalizes such a bare simple-symbol back to its allowlisted
+  var.  DERIVED from `safe-query-op-allowlist`, so it can NEVER grant anything
+  the allowlist does not already contain — it only recovers already-allowed
+  operators written in bare form."
+  (into {}
+        (map (fn [v] [(symbol (name (symbol v))) v]))
+        safe-query-op-allowlist))
+
+(def safe-query-builtin-forms
+  "Datomic query BUILT-IN / special forms (`missing?`, `get-else`, `ground`,
+  `fulltext`, `tuple`, `untuple`).  Each RESOLVES TO NIL (verified 2026-07-07 —
+  they are query-engine forms interpreted by Datomic, NOT classpath vars), so
+  they carry ZERO RCE risk and CANNOT be members of the var-identity
+  `safe-query-op-allowlist`.  Kept as a SEPARATE bare-symbol name passlist,
+  mirroring the `registered-query-rules` pattern.  `missing?` was on the
+  design-of-record allowlist and is restored here (it was silently dropped when
+  the allowlist became var-identity-only).  Extend only on demonstrated need +
+  verification that the new symbol truly resolves to nil / is a Datomic special
+  form (never a classpath var)."
+  '#{missing? get-else ground fulltext tuple untuple})
 
 (def registered-query-rules
   "The substrate's own registered Datalog rule names (bare symbols, expanded
@@ -158,15 +196,25 @@
     - symbols whose namespace is not loaded / does not exist;
     - host-interop forms (`System/getProperty` resolves to a Class or throws);
     - anything that does not resolve to a Var.
+  For a bare simple-symbol that does not resolve here (notably the
+  `clojure.string` predicates, aliased `:as str` but not `:refer`-ed), falls
+  back to `safe-op-bare-name-index` — a name→var map DERIVED FROM the allowlist,
+  so the fallback can only recover an already-allowlisted operator written bare,
+  never grant a new capability.
+
   Because the ONLY accept path is membership in `safe-query-op-allowlist`, a
   symbol that resolves to a non-allowlisted var (even a loaded dangerous one
   like `clojure.java.shell/sh`) is rejected all the same — resolution here is
   used ONLY to canonicalize identity, never to grant capability."
   [sym]
-  (try
-    (let [r (ns-resolve (the-ns 'sandbar.security.query) sym)]
-      (when (var? r) r))
-    (catch Throwable _ nil)))
+  (or
+    (try
+      (let [r (ns-resolve (the-ns 'sandbar.security.query) sym)]
+        (when (var? r) r))
+      (catch Throwable _ nil))
+    ;; Bare-referred fallback (e.g. `starts-with?` → clojure.string/starts-with?).
+    (when (simple-symbol? sym)
+      (get safe-op-bare-name-index sym))))
 
 (defn- reject!
   [where-clauses clause offending-symbol reason-kw message]
@@ -180,12 +228,14 @@
                                           (map symbol)
                                           sort
                                           vec)
-                   :allowed-rules    (vec (sort registered-query-rules))})))
+                   :allowed-rules    (vec (sort registered-query-rules))
+                   :allowed-builtins (vec (sort safe-query-builtin-forms))})))
 
 (defn- check-call-head
   "A call form `(head arg …)` was found (head is a symbol).  Accept iff head is
   a logic-grouping form (→ v1 reject with a distinct message), a registered
-  rule, or resolves to an allowlisted var; otherwise reject loudly."
+  rule, a Datomic query built-in (`safe-query-builtin-forms`), or resolves to an
+  allowlisted var; otherwise reject loudly."
   [where-clauses clause head]
   (cond
     (contains? logic-grouping-forms head)
@@ -197,6 +247,9 @@
 
     (contains? registered-query-rules head)
     :accept-rule
+
+    (contains? safe-query-builtin-forms head)
+    :accept-builtin
 
     (contains? safe-query-op-allowlist (resolve-head-var head))
     :accept-fn
@@ -211,15 +264,23 @@
 
 (defn- validate-form
   "Recursively validate one clause or sub-form.  Deny-by-default over EVERY
-  call form found ANYWHERE in the tree — head position AND argument position —
-  so laundering a forbidden symbol into an argument (e.g.
-  `[(= ?a (clojure.java.shell/sh \"id\"))]`) is caught even though the head
-  (`=`) is allowlisted.  Total and side-effect-free: it inspects and may throw,
-  but NEVER resolves-and-invokes a named operator (naming `spit` must not call
+  call form found ANYWHERE in the tree — head position AND argument position, and
+  inside ANY nested collection (list, vector, MAP key/val, SET member, tagged
+  literal, and any value's metadata) — so laundering a forbidden symbol into an
+  argument (e.g. `[(= ?a (clojure.java.shell/sh \"id\"))]`) OR into a map/set
+  literal under an allowlisted head (e.g. `[(= ?n {:k (…/sh \"touch\" X)})]`,
+  `[(= ?n #{(…/sh \"id\")})]`) is caught.  Clojure maps and sets are neither
+  `seq?` nor `sequential?`, so a `(coll? form)` walk is REQUIRED for the stated
+  invariant to hold.  Total and side-effect-free: it inspects and may throw, but
+  NEVER resolves-and-invokes a named operator (naming `spit` must not call
   `spit`)."
   [where-clauses clause form]
+  ;; Metadata can itself carry a call form (`^{:k (…/sh)} x`) — walk it first.
+  ;; `meta` is nil-safe for values that cannot hold metadata.
+  (when-let [m (meta form)]
+    (validate-form where-clauses clause m))
   (cond
-    ;; A call/rule form: a seq headed by a symbol → the only dangerous shape.
+    ;; A call/rule form: a seq headed by a symbol → the only invokable shape.
     (and (seq? form) (symbol? (first form)))
     (do
       (check-call-head where-clauses clause (first form))
@@ -227,10 +288,23 @@
       (doseq [arg (rest form)]
         (validate-form where-clauses clause arg)))
 
-    ;; Any other sequential (data-pattern vector, binding vector, or a seq
-    ;; whose head is a non-symbol literal): recurse into elements.  Contains no
-    ;; invokable head of its own.
-    (sequential? form)
+    ;; Tagged literal (data-reader output for an unknown tag under the data-only
+    ;; EDN reader): the payload hides in its `:form`.  Walk it.
+    (tagged-literal? form)
+    (validate-form where-clauses clause (:form form))
+
+    ;; MAP literal: walk BOTH keys AND vals (a forbidden call can hide in
+    ;; either).  Maps are not sequential?, so this branch is load-bearing.
+    (map? form)
+    (doseq [[k v] form]
+      (validate-form where-clauses clause k)
+      (validate-form where-clauses clause v))
+
+    ;; ANY other collection — vector (data-pattern / binding), SET literal, or a
+    ;; seq whose head is a non-symbol literal: walk every child.  `coll?` is the
+    ;; general net that catches set literals (also not sequential?) and anything
+    ;; else nested, so no call form can escape the walk.
+    (coll? form)
     (doseq [x form]
       (validate-form where-clauses clause x))
 
