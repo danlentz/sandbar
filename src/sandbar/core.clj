@@ -22,18 +22,19 @@
 ;; `start` because it logically belongs to the lifecycle section).
 (declare start-scheduler-if-enabled!)
 
-;; Read-plane security backstop (AP-S3-6 / read-plane hardening, 2026-07-06).
-;; Globally disable reader-eval so a bare `read-string` on ANY wire-reachable
-;; path cannot execute `#=(...)` reader forms at parse time.  No code in this
-;; substrate relies on *read-eval* (verified: zero `#=` / `*read-eval*` uses in
-;; src/), so disabling it process-wide is side-effect-free.  Runs at namespace
-;; load, after the requires above, so startup ns-loading is unaffected.  This
-;; backstops the search `:where` fix in mcp/tools.clj (now routed through the
-;; edn/read-string-based ->where-clauses) plus the internal pr-str round-trips
-;; in util/job.clj + util/workflow.clj + the config read in util/edn.clj.
-;; It does NOT close the query-time fn-resolution vector (AP-S3-6 vector A) —
-;; that requires the Layer-1 sanitize-where allowlist (scheduled 0.2.x).
-(alter-var-root #'*read-eval* (constantly false))
+;; NOTE (2026-07-07): a global `(alter-var-root #'*read-eval* (constantly false))`
+;; backstop was tried here (F1 read-plane hardening) and REMOVED — it broke a
+;; legitimate load-time `#=(...)` reader-eval on a FRESH server start
+;; (ExceptionInInitializerError in sandbar.util.event / sandbar.service.content,
+;; poisoning the /mcp response-encoding interceptors -> HTTP 500 on every MCP
+;; request).  The "zero #= uses in src/" premise was FALSE (a dependency or
+;; resource on the load path uses reader-eval; it only survived originally
+;; because F1 was hot-loaded AFTER everything had already initialized).  The
+;; real parse-time vector-B closure lives in mcp/tools.clj (search :where routed
+;; through the edn/read-string-based ->where-clauses) and does NOT depend on
+;; this global.  If a *read-eval* backstop is wanted, it must be scoped to the
+;; request-handling thread pool via a `binding`, never a process-wide root
+;; change during/after load.
 
 (defn make-system
   ([] (make-system :config))
