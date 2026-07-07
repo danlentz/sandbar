@@ -186,9 +186,12 @@
                                             {"class" ":mm/Memory"
                                              "group-by" ":auth/api-key-hash"})))))
 
-(deftest b4-group-by-scrub-and-output-scrub-still-fire
-  (testing "the output scrub REDACTS a firewalled-class entity wholesale (the
-            group-by result-key / projection scrub — no value leaks)"
+(deftest b4-output-scrub-and-groupby-attr-guard-still-fire
+  (testing "the read-plane OUTPUT / projection scrub (secq/read-plane-scrub-projection,
+            query.clj:343) REDACTS a firewalled-class entity WHOLESALE to the marker
+            — no value leaks.  NB: this is the projection-layer EXIT scrub; the
+            group-by result-KEY scrub (dt/read-plane-group-key-firewalled? at
+            aggregate.clj:87) is a DIFFERENT function — b6 covers that one."
     (is (= secq/read-plane-redaction-marker
            (secq/read-plane-scrub-projection
              {:dt/type :auth/User :db/id 5
@@ -198,8 +201,75 @@
                      {:dt/type :mm/Memory :mm.memory/name "ok" :http/raw "internal"})]
       (is (= "ok" (:mm.memory/name scrubbed)))
       (is (not (contains? scrubbed :http/raw)))))
-  (testing "aggregate.group-by on a firewalled group-by slot is refused"
+  (testing "aggregate.group-by on a firewalled group-by SLOT is refused by the
+            :group-by ATTRIBUTE guard (secq/assert-attribute-allowed!, aggregate.clj:80)"
     (is (rpaf-reject? #(agg/group-by {:class :mm/Memory :group-by :auth/api-key-hash})))))
+
+(deftest b5-numeric-eid-where-firewall-refuses-auth-selector
+  ;; RPAF v3.1 NUMERIC-EID :where firewall — dt/assert-where-eids-allowed!
+  ;; (datatype.clj:1074), wired into aggregate.count/group-by (aggregate.clj:50/82).
+  ;; The keyword-only namespace guard (secq/assert-where-namespaces!) inspects only
+  ;; keywords, so a caller could smuggle a firewalled :auth/* selector past it as a
+  ;; raw numeric EID in ATTRIBUTE position ([[?e <auth-attr-eid> ?h]]) or VALUE
+  ;; position ([[?e :dt/type <auth-class-eid>]]).  The db-aware eid guard resolves
+  ;; every integer to its :db/ident and refuses a firewalled one.  (Distinct from
+  ;; the operator-allowlist sanitize-where guard: that fires :reason
+  ;; :operator-not-allowlisted on a call-form head symbol; THIS fires :reason
+  ;; :namespace-not-read-plane-allowed on a resolved firewalled ident.)
+  (seed-world!)
+  (let [auth-attr-eid  (sup/eid-of :auth/api-key-hash)   ; firewalled ATTRIBUTE eid
+        auth-class-eid (sup/eid-of :auth/User)            ; firewalled CLASS eid
+        ok-class-eid   (sup/eid-of :mm/Memory)]           ; allowed CLASS eid (control)
+    (testing "unit: the eid guard resolves an attribute-position firewalled eid and
+              refuses via the read-plane namespace firewall (NOT the operator allowlist)"
+      (let [d (try (dt/assert-where-eids-allowed! [['?e auth-attr-eid '?h]]) ::no-throw
+                   (catch clojure.lang.ExceptionInfo e (ex-data e)))]
+        (is (= :namespace-not-read-plane-allowed (:reason d))
+            "the refusing party is assert-ident-allowed! → read-plane-firewall")
+        (is (= :auth/api-key-hash (:offending d))
+            "and it names the resolved firewalled attribute ident")))
+    (testing "wired: agg/count-by refuses an attribute-position firewalled eid (aggregate.clj:50)"
+      (is (rpaf-reject? #(agg/count-by {:class :mm/Memory
+                                        :where [['?e auth-attr-eid '?h]]}))))
+    (testing "wired: agg/count-by refuses a VALUE-position firewalled class-selector eid"
+      (is (rpaf-reject? #(agg/count-by {:class :mm/Memory
+                                        :where [['?e :dt/type auth-class-eid]]}))))
+    (testing "an ALLOWED class-selector eid in the SAME value position PASSES — the
+              guard discriminates by resolved ident, it is not a blanket integer ban"
+      (is (= [['?e :dt/type ok-class-eid]]
+             (dt/assert-where-eids-allowed! [['?e :dt/type ok-class-eid]]))))))
+
+(deftest b6-group-by-result-key-scrub-drops-firewalled-bucket
+  ;; RPAF v3.1 result-KEY scrub — dt/read-plane-group-key-firewalled? (datatype.clj:1099),
+  ;; applied at aggregate.clj:87.  A :group-by :dt/type over an ALLOWED superclass
+  ;; (:dt/Ref, the allowed ancestor of :auth/User via :auth/Principal) would leak
+  ;; per-:auth/*-class instance COUNTS as {<auth-class-eid> N}; the result-key scrub
+  ;; drops those buckets AFTER the raw grouping, keeping allowed buckets.
+  (seed-world!)
+  ;; Seed two raw :auth/User instances (firewalled :dt/type; reached from :dt/Ref via
+  ;; the recursive instance-of rule, User → Principal → Ref).  raw-transact! bypasses
+  ;; the write guards — SETUP, not the subject under test.
+  (sup/raw-transact! [{:db/ident :ceremony8/probe-auth-1 :dt/type :auth/User}
+                      {:db/ident :ceremony8/probe-auth-2 :dt/type :auth/User}])
+  (let [auth-class-eid (sup/eid-of :auth/User)
+        mem-class-eid  (sup/eid-of :mm/Memory)]
+    (testing "the predicate discriminates: a firewalled class-eid key → true, allowed → false"
+      (is (true?  (dt/read-plane-group-key-firewalled? auth-class-eid)))
+      (is (false? (dt/read-plane-group-key-firewalled? mem-class-eid))))
+    (testing "the RAW group-by-of (pre-scrub) DOES surface the firewalled :auth/User
+              bucket — the per-class instance-count leak exists at the query layer"
+      (let [raw (dt/group-by-of :dt/Ref :dt/type)]
+        (is (contains? raw auth-class-eid)
+            "raw group-by-of over the allowed superclass leaks the :auth/User count")
+        (is (<= 2 (get raw auth-class-eid 0)))))
+    (testing "agg/group-by (aggregate.clj:87 result-key scrub) DROPS the firewalled bucket"
+      (let [result (agg/group-by {:class :dt/Ref :group-by :dt/type})]
+        (is (not (contains? (:groups result) auth-class-eid))
+            "the :auth/User count bucket is scrubbed from the read-plane result")))
+    (testing "an ALLOWED bucket SURVIVES the scrub (selective, not blanket-empty)"
+      (let [result (agg/group-by {:class :mm/Memory :group-by :dt/type})]
+        (is (contains? (:groups result) mem-class-eid)
+            "the :mm/Memory bucket is kept — only firewalled keys are dropped")))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; C.  CROSS-PLANE COMPOSITION — the genuinely-new merged-tree behaviour.
