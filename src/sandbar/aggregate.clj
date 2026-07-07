@@ -189,16 +189,19 @@
 
 (defn tag-histogram
   "Return a frequency histogram of :mm/Tag usage across the corpus.
-   Each bin = {tag-ident, tag-value, count}; count is the number of
-   entities (any class) that reference the tag via any cardinality-many
-   ref slot.
+   Each bin = {:tag <identifier>, :value <string>, :count <int>}; count is
+   the number of entities (any class) that reference the tag via any
+   cardinality-many ref slot.  `:tag` is the canonical tag-ref fallback
+   (:db/ident, else :mm.tag/value, else :db/id — mirrors
+   `sandbar.audit.tag/tag-ref`), so it may be a keyword, string, or Long.
 
    Optional opts:
      :limit — cap returned bins (default 0 = no cap); sorted descending
-              by count, ascending by tag-ident as tie-breaker
+              by count, ascending by the stringified tag identifier as
+              tie-breaker (type-safe across keyword/string/Long)
 
    Returns:
-     {:histogram [{:tag <ident> :value <string> :count <int>} ...]
+     {:histogram [{:tag <ident|value|eid> :value <string> :count <int>} ...]
       :total <int>}
 
    Per Stage 5.B-pre #4 of
@@ -211,14 +214,19 @@
   ;; `dt/all-named-instances-of` (a deprecated alias for `named-idents-of`,
   ;; whose Datalog requires `[?e :db/ident ?ident]`) matched ZERO tags and the
   ;; histogram collapsed to {:histogram [] :total 0} across all 118 live tags —
-  ;; the S11/Rec-9 anomaly.  Each tag's identifier is its :db/ident when interned,
-  ;; else its numeric :db/id.  `:count` is the number of DISTINCT source entities
-  ;; (tool-card contract: "the number of entities ... that reference the tag"),
-  ;; deduped by source :db/id since one entity may cite a tag via >1 ref slot
-  ;; (e.g. both :mm.memory/tags and :mm.memory/themes).
+  ;; the S11/Rec-9 anomaly.  Each tag's `:tag` identifier follows the
+  ;; codebase-canonical fallback (mirrors `sandbar.audit.tag/tag-ref`): its
+  ;; :db/ident when interned, else its :mm.tag/value string, else its numeric
+  ;; :db/id — so an identless-but-valued corpus tag surfaces a human-meaningful
+  ;; key (its value) rather than a bare eid, while `:value` still carries the raw
+  ;; :mm.tag/value (redundant for identless tags, which is acceptable).  `:count`
+  ;; is the number of DISTINCT source entities (tool-card contract: "the number of
+  ;; entities ... that reference the tag"), deduped by source :db/id since one
+  ;; entity may cite a tag via >1 ref slot (e.g. both :mm.memory/tags and
+  ;; :mm.memory/themes).
   (let [tags    (dt/all-instances-of :mm/Tag)
         bins    (for [e tags
-                      :let [tag (or (:db/ident e) (:db/id e))
+                      :let [tag (or (:db/ident e) (:mm.tag/value e) (:db/id e))
                             val (:mm.tag/value e)
                             n   (->> (dt/inbound-edges-of (:db/id e) {})
                                      (map (comp :db/id :source))

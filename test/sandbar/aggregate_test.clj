@@ -321,8 +321,8 @@
       (is (= 2 (count created)) "both created tags appear as bins")
       (is (= 2 (get by-value "alpha")) "alpha is referenced by 2 distinct memories")
       (is (= 1 (get by-value "beta"))  "beta is referenced by 1 memory")
-      (is (every? #(integer? (:tag %)) created)
-          "identless tags surface their numeric :db/id as the :tag identifier")))
+      (is (= #{"alpha" "beta"} (set (map :tag created)))
+          "identless-but-valued tags surface their :mm.tag/value string as :tag (canonical tag-ref fallback: :db/ident → :mm.tag/value → :db/id)")))
 
   (testing "a tag cited by ONE entity via two ref slots counts as one entity (distinct-source, not edge-count)"
     (tx! [{:dt/type :mm/Memory :db/ident :test/hist-m3

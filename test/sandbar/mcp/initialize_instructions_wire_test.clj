@@ -10,9 +10,14 @@
    Auth note: /mcp `require-bearer` 401s an unauthenticated request even for the
    scope-EXEMPT `initialize` (read-only-token wire suite, `wire-fail-closed`), so
    we seed a throwaway ServiceAccount whose api-key is generated at RUNTIME — NO
-   credential literal is committed.  `Accept: application/json` dodges the
-   SSE-first content-negotiation crash
-   (bugs/mcp_post_sse_first_accept_arity_crash_content_types_placeholder_encoder)."
+   credential literal is committed.  `Accept: application/json` pins the probe to
+   the deterministic-JSON response encoder so the assertions read a stable
+   serialized body.  (Historical: this Accept once also side-stepped an SSE-first
+   content-negotiation arity crash on POST /mcp; that crash was FIXED at ceremony
+   #7 — `sandbar.service.content` now maps `text/event-stream` to
+   `codec/clj->sse-stream` in the `+content-types+` table, `service/content.clj:25-32`
+   per the ceremony-#7 consolidation comment at `:22-24`.  The JSON Accept therefore
+   stands purely for deterministic-JSON assertions, no longer to dodge a crash.)"
   (:require [cheshire.core       :as json]
             [clojure.test        :refer :all]
             [io.pedestal.test    :refer [response-for]]
