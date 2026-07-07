@@ -351,7 +351,10 @@
 ;; identless legacy row, and breaks ties on lowest eid for determinism.
 ;;
 ;; Idempotent: post-heal each key holds exactly one schedule, so a re-run finds
-;; no group with >1 member.  Safe to run on every boot.
+;; no group with >1 member.  This is an OUT-OF-BAND migration, NOT wired into
+;; initialize-db!: it defaults to a non-mutating dry-run report and only
+;; retracts under `:apply? true`.  Run it once, deliberately, after a DB backup
+;; — dry-run FIRST and inspect the plan before applying.
 ;;
 ;; Per the W3.B schedule-idempotency arc + the XorConstraint seed-idempotency
 ;; precedent (prune-duplicate-seed-constraint-subentities! above; commit 1bc426b)
@@ -536,10 +539,18 @@
          (keep
           (fn [[k members]]
             (when (> (count members) 1)
-              (let [;; Deterministic survivor: lowest eid.  With the widened key
-                    ;; every member is identical on all semantic axes, so this is
-                    ;; a data-loss-free tiebreak, not a value choice.
-                    sorted   (sort-by :db/id members)
+              (let [;; Survivor: PREFER a row carrying a :db/ident (a system
+                    ;; schedule or a post-fix content-key-idented row) over an
+                    ;; identless legacy row, then lowest eid for determinism.
+                    ;; With the widened key every member is identical on all
+                    ;; semantic axes so no value is lost either way — but keeping
+                    ;; the idented row as survivor is load-bearing: a legacy
+                    ;; identless dup typically has a LOWER eid (it predates the
+                    ;; fix), and a bare lowest-eid tiebreak would retain the
+                    ;; identless row, so the next create-path create would APPEND
+                    ;; rather than upsert — reintroducing the proliferation this
+                    ;; arc exists to prevent.
+                    sorted   (sort-by (juxt #(if (:db/ident %) 0 1) :db/id) members)
                     survivor (first sorted)
                     dupes    (rest sorted)]
                 {:content-key      k

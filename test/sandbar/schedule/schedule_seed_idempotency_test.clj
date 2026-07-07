@@ -365,6 +365,38 @@
       (is (= 1 (targetless-count (d/db *conn*)))
           "the survivor is the target-less logical schedule"))))
 
+(deftest prune-keeps-idented-survivor-so-create-stays-idempotent
+  (testing "MIXED-GROUP guard (W3.B REVISE round-2 must-fix): when a collapsing
+            group holds legacy IDENTLESS dups (lower eids — they predate the fix)
+            alongside a post-fix content-key-IDENTED create-path row (higher eid),
+            prune MUST keep the idented row as survivor.  A bare lowest-eid
+            tiebreak would retain the identless legacy row and retract the idented
+            one — then the next create-path create APPENDS instead of upserting,
+            reintroducing the very proliferation W3.B exists to kill.  A count-only
+            check passes either way; this test locks the survivor's :db/ident AND
+            post-heal create idempotency."
+    ;; 5 legacy identless dups first (lower eids), then a create-path create that
+    ;; shares the SAME content-key (target-less FREQ=HOURLY/UTC/fire-once-now) and
+    ;; mints an IDENTED row at a higher eid.
+    (inject-legacy-duplicate-schedules! 5)
+    (create-schedule! (untargeted-props))
+    (is (= 6 (schedule-count (d/db *conn*))) "5 legacy + 1 idented create = 6")
+    (is (= 5 (:pruned (db/prune-duplicate-schedules! *uri* :apply? true)))
+        "5 dupes collapse onto 1 survivor")
+    (is (= 1 (schedule-count (d/db *conn*))) "one survivor remains")
+    ;; (a) the survivor is the IDENTED create-path row, not an identless legacy dup
+    (let [survivor (d/q '[:find (pull ?e [:db/id :db/ident]) .
+                          :where [?e :dt/type :mm/Schedule]] (d/db *conn*))]
+      (is (some? (:db/ident survivor))
+          "survivor carries a content-key :db/ident (idented-preference tiebreak)"))
+    ;; (b) a further create-path create UPSERTS onto the survivor — no append.
+    ;; Under the bare lowest-eid regression the survivor would be identless and
+    ;; this would append, taking the count to 2.
+    (create-schedule! (untargeted-props))
+    (is (= 1 (schedule-count (d/db *conn*)))
+        "post-heal create stays idempotent (upsert, delta 0) — proliferation
+         does NOT return")))
+
 (deftest prune-dry-run-is-default-and-non-mutating
   (testing "DEFAULT invocation is a DRY-RUN: it REPORTS the collapse plan
             (would-prune count + per-group survivor/dupe snapshots) WITHOUT
