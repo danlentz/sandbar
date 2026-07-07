@@ -90,3 +90,42 @@
     (is (some?
           (dt/update-entity! :ctx/priv
                              {:mm.context/visible-projects (sup/eid-of :proj/pub)})))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; T-11e/f (adjudication must-fix #3) — a :public-bottom context MASKED with
+;; intrinsic :private visibility must STILL refuse a private member from BOTH
+;; legs.  The mask composes :sensitivity :private, so a tie keyed on the
+;; composed sensitivity is defeated; the tie must key on the :public-bottom
+;; DESIGNATION (:tie-designation).  The four T-11 tests above seed public-bottom
+;; contexts WITHOUT the mask — they miss this (pre-fix BOTH legs PERMITTED).
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defn- seed-masked-public-bottom-context! [ident]
+  ;; :public-bottom DESIGNATION but intrinsic :private visibility (the mask)
+  (sup/raw-transact! [{:db/ident              ident
+                       :dt/type               :mm/Context
+                       :mm.memory/name        (name ident)
+                       :mm.context/firewall-class :public-bottom
+                       :mm.memory/visibility  :private}])
+  (sup/eid-of ident))
+
+(deftest tie-masked-public-bottom-context-visible-private-project-refused
+  (seed-masked-public-bottom-context! :ctx/masked)
+  (sup/seed-context! :ctx/priv :project-isolated)
+  (sup/seed-project! :proj/priv :private :ctx/priv)
+  (testing "a :public-bottom context MASKED with :private visibility STILL
+            refuses a private project in visible-projects — the tie keys on the
+            :public-bottom DESIGNATION, not the visibility-masked sensitivity"
+    (is (fw-violation?
+          #(dt/update-entity! :ctx/masked
+                              {:mm.context/visible-projects (sup/eid-of :proj/priv)})))))
+
+(deftest tie-private-project-runs-in-masked-public-bottom-context-refused
+  (seed-masked-public-bottom-context! :ctx/masked)
+  (sup/seed-context! :ctx/priv :project-isolated)
+  (sup/seed-project! :proj/priv :private :ctx/priv)
+  (testing "the symmetric runs-in-context leg: a private project declaring
+            runs-in-context → the MASKED public-bottom context is STILL refused"
+    (is (fw-violation?
+          #(dt/update-entity! :proj/priv
+                              {:mm.project/runs-in-context (sup/eid-of :ctx/masked)})))))

@@ -783,14 +783,24 @@
                                       :ident       ident
                                       :tx-entities (count group)})
                              (catch Throwable ex
-                               (log/warn ex :IMPORT/GROUP-FAILED
-                                         {:idx idx :ident ident :class class-ident})
-                               (update acc :failed conj
-                                       {:dt/type     class-ident
-                                        :ident       ident
-                                        :tx-entities (count group)
-                                        :error       (.getMessage ex)})))))
-                       {:persisted [] :failed []}
+                               ;; T-4: a FIREWALL refusal is shaped as :refused
+                               ;; (a governed edge the import floor forbade),
+                               ;; distinct from a generic :failed (schema/tx
+                               ;; error).  Detect the :firewall-violation error
+                               ;; envelope; everything else stays :failed.
+                               (let [firewall? (and (instance? clojure.lang.ExceptionInfo ex)
+                                                    (some #(= :firewall-violation (:type %))
+                                                          (:errors (ex-data ex))))
+                                     bucket    (if firewall? :refused :failed)
+                                     rec       {:dt/type     class-ident
+                                                :ident       ident
+                                                :tx-entities (count group)
+                                                :error       (.getMessage ex)}]
+                                 (log/warn ex (if firewall? :IMPORT/GROUP-REFUSED
+                                                  :IMPORT/GROUP-FAILED)
+                                           {:idx idx :ident ident :class class-ident})
+                                 (update acc bucket conj rec))))))
+                       {:persisted [] :failed [] :refused []}
                        (map-indexed vector groups))
               t-end (System/currentTimeMillis)]
           (log/info :IMPORT/COMPLETE {:imported (count entities)
@@ -806,7 +816,11 @@
            :groups         total
            :persisted-count (count (:persisted results))
            :failed-count   (count (:failed results))
-           :failed         (:failed results)})))))
+           :failed         (:failed results)
+           ;; T-4: firewall-refused groups surface separately from generic
+           ;; failures (a governed edge the import floor forbade).
+           :refused-count  (count (:refused results))
+           :refused        (:refused results)})))))
 
 ;; ---------- Aggregation operations (Stage 14 — fulltext arc Phase G) ----------
 ;;

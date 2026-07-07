@@ -233,3 +233,37 @@
     (let [result (nav-path/path-via {:from :dt/Property :via [:NOT :dt/subclass-of]})]
       (is (pos? (:total result))
           "the metamodel [:NOT :dt/subclass-of] walk still returns endpoints"))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; siblings-of enumeration guard (adjudication must-fix #1) — S7-PLAN §5/R15
+;; names siblings-of an EP-3-inherited surface; it is a rel-path prefix
+;; ROW-READ enumeration channel and must withhold a sibling the anchor's
+;; compartment may not see (a public anchor must not discover a private
+;; sibling's ident/content).
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(deftest ep3-siblings-of-withholds-private-sibling
+  (sup/seed-context! :ctx/home :public-bottom)
+  (sup/seed-context! :ctx/work :project-isolated)
+  (sup/seed-project! :proj/pub  :public  :ctx/home :public-bottom)
+  (sup/seed-project! :proj/priv :private :ctx/work)
+  (sup/seed-memory! :mem/pub-sib  :public  :proj/pub
+                    {:mm.memory/rel-path "decisions/pub.md"})
+  (sup/seed-memory! :mem/priv-sib :private :proj/priv
+                    {:mm.memory/rel-path "decisions/secret.md"})
+  (let [priv-eid (sup/eid-of :mem/priv-sib)
+        sib-eids (into #{} (keep :db/id) (dt/siblings-of :mem/pub-sib :mm.memory/rel-path))]
+    (testing "a PUBLIC anchor's siblings-of does NOT disclose the PRIVATE sibling
+              in the same rel-path directory"
+      (is (not (contains? sib-eids priv-eid))
+          "the private sibling must be withheld (enumeration channel closed)"))))
+
+(deftest ep3-siblings-of-shows-permitted-sibling
+  (sup/seed-context! :ctx/home :public-bottom)
+  (sup/seed-project! :proj/pub :public :ctx/home :public-bottom)
+  (sup/seed-memory! :mem/a :public :proj/pub {:mm.memory/rel-path "decisions/a.md"})
+  (sup/seed-memory! :mem/b :public :proj/pub {:mm.memory/rel-path "decisions/b.md"})
+  (let [sib-eids (into #{} (keep :db/id) (dt/siblings-of :mem/a :mm.memory/rel-path))]
+    (testing "a PUBLIC sibling in the same public compartment IS listed (no
+              over-refusal of a permitted sibling)"
+      (is (contains? sib-eids (sup/eid-of :mem/b))))))

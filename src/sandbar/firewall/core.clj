@@ -258,10 +258,22 @@
   `private?` (not public); a private member in a private-or-unknown
   compartment PERMITS (both ends private) — the refusal fires ONLY on the
   affirmatively-public compartment, which is exactly the leak this clause
-  exists to catch, never on an ambiguous one."
+  exists to catch, never on an ambiguous one.
+
+  PUBLIC-BOTTOM DESIGNATION (S7 must-fix #3): whether the context end is the
+  PUBLIC co-load root is its `:mm.context/firewall-class :public-bottom`
+  DESIGNATION — carried on the Context label as `:tie-designation` — NOT its
+  visibility-composed `:sensitivity`.  A `:public-bottom` context masked with
+  `:mm.memory/visibility :private` composes `:sensitivity :private`; keying the
+  tie on `:sensitivity` would let it admit a private project into the public
+  root.  Fall back to `:sensitivity` only when no designation is present (a
+  non-Context / hand-built label — fail-closed: absent designation reads
+  private, so the refusal never fires spuriously)."
   [context-side-label project-side-label]
-  (not (and (public? context-side-label)
-            (private? project-side-label))))
+  (let [ctx-designation (or (:tie-designation context-side-label)
+                            (:sensitivity context-side-label))]
+    (not (and (= :public ctx-designation)
+              (private? project-side-label)))))
 
 ;;; ===========================================================================
 ;;; §1.4 — THE CLOSURE FINDER (pure over a supplied edge-seq + injected resolver)

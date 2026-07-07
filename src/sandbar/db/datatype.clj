@@ -703,12 +703,21 @@
    (when-not (map? slot-updates)
      (throw (ex-info "update-entity! requires slot-updates to be a map"
                      {:received slot-updates})))
-   (let [ent     (cond
-                   (associative? entity) entity
-                   :else (db/entity entity))
-         eid     (or (:db/id ent)
+   (let [resolved (cond
+                    (associative? entity) entity
+                    :else (db/entity entity))
+         eid     (or (:db/id resolved)
                      (throw (ex-info "update-entity! could not resolve :db/id"
                                      {:entity entity})))
+         ;; S7 (adjudication must-fix #4): build the firewall SOURCE label —
+         ;; and the card-many retracts + validation — from the CANONICAL DB
+         ;; row read by eid, NEVER the caller-supplied map.  A caller passing a
+         ;; SPARSE map (e.g. {:db/id .. :dt/type ..}) would otherwise omit
+         ;; :mm.memory/visibility, defeating intrinsic-visibility-label's
+         ;; declassification guard (T-12) and letting a public row be re-owned
+         ;; into a private project.  The trust model is "labels are on the
+         ;; data", not on the caller's shape — so read the data.
+         ent     (or (db/entity eid) resolved)
          ;; Inline class-ident lookup (class-ident-of is defined below
          ;; in this file; avoid forward-reference for compile order)
          class-ident (:dt/type ent)
@@ -1384,6 +1393,16 @@
              (filter (fn [[eid path]]
                        (and (not= eid self-eid)
                             (same-dir? path))))
+             ;; S7 EP-3 (adjudication must-fix #1; S7-PLAN §5/R15 names
+             ;; siblings-of an EP-3-inherited surface): siblings-of is a
+             ;; rel-path prefix ROW-READ enumeration channel — withhold any
+             ;; sibling the anchor's compartment may not see, so a public
+             ;; anchor cannot discover a private sibling's ident/content.  The
+             ;; per-endpoint firewall verdict (fail-closed, principal-
+             ;; independent) is the same predicate the coarse path-via fallback
+             ;; uses.  Defense-in-depth ahead of S9 physical exclusion.
+             (filter (fn [[eid _]]
+                       (fw-enforce/endpoint-permitted? (db/db) self-eid eid)))
              (mapv (fn [[eid _]] (db/entity eid))))))))
 
 (defn graph-walk-from

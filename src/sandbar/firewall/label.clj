@@ -274,7 +274,19 @@
      ;; authoring a cross-compartment governed edge (UNASSIGNED->private{H}
      ;; must REFUSE).  Uniform with memory-label / project-label (EP-1 gap fix).
      :contexts    (if ctx-eid #{ctx-eid} (unassigned-contexts db))
-     :project     nil}))
+     :project     nil
+     ;; S7 (adjudication must-fix #3): the compartment-TIE co-load floor keys
+     ;; on the PUBLIC-BOTTOM DESIGNATION (the `:mm.context/firewall-class`
+     ;; ALONE), NOT the visibility-composed `:sensitivity` above.  Else a
+     ;; `:public-bottom` context masked with `:mm.memory/visibility :private`
+     ;; composes `:sensitivity :private` and `tie-permits?` (which refuses only
+     ;; a PUBLIC context admitting a PRIVATE project) is defeated — admitting a
+     ;; private project into the public co-load root.  The visibility fold
+     ;; STAYS in `:sensitivity` (correct for the citation-flow predicate: a
+     ;; masked-private context citing public is private→public = permitted);
+     ;; `tie-permits?` reads `:tie-designation`.
+     :tie-designation (sensitivity-of-firewall-class
+                        (:mm.context/firewall-class ent))}))
 
 (defn- project-label
   "Label a :mm/Project source.  Its compartment is its `runs-in-context` set;

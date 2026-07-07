@@ -449,3 +449,78 @@
                      :mm.memory/visibility :internal
                      :mm.memory/owning-project :proj/privA
                      :mm.memory/cites (sup/eid-of :mem/internal-b)})))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; update-entity! sparse-map source-label (adjudication must-fix #4) — the EP-1
+;; source label must be read from the DB row, never a caller-supplied partial
+;; map that omits :mm.memory/visibility.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(deftest ep1-update-entity-sparse-map-cannot-bypass-source-label
+  (seed-world!)
+  (testing "an in-process SPARSE-map update ({:db/id .. :dt/type ..} with NO
+            :mm.memory/visibility) re-owning a public memory into a private
+            project is REFUSED — update-entity! reads the source visibility from
+            the DB row, so the T-12 declassification guard cannot be bypassed by
+            omitting the visibility key from the caller's map"
+    (is (fw-violation?
+          #(dt/update-entity! {:db/id   (sup/eid-of :mem/pub-target)
+                               :dt/type :mm/Memory}
+                              {:mm.memory/owning-project :proj/privA})))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; CA-6 co-batch KNOWN FAIL-OPEN characterization (adjudication must-fix #2 +
+;; Dan-escalation).  GREEN TODAY *only because the defect is present*: a
+;; same-batch make-all* {new public-bottom project P; public A owned-by-P cites
+;; private B owned-by-P} with the production codec's {:db/ident kw} sibling-ref
+;; shape is PERMITTED — both members' SOURCE labels collapse to
+;; :project/UNASSIGNED (P uncommitted), so the forbidden public→private cites
+;; edge COMMITS and is durably stored (bugs/s7_ca6_source_side_spec_index_gap...).
+;; ==> When the source-side d/with proposed-DB fix lands (Dan-escalated), INVERT
+;;     this to assert (fw-violation? ...) + no cites datom.  S9's owning-project-
+;;     stamping ingest MUST NOT be commissioned until then (hard S9-entry gate).
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(deftest ca6-cobatch-KNOWN-FAILOPEN-characterization
+  (sup/seed-context! :ctx/home :public-bottom)
+  (let [committed?
+        (try
+          (dt/make-all*
+            [{:db/ident :proj/coP :dt/type :mm/Project :mm.project/ident :proj/coP
+              :mm.project/corpus-repo "r" :mm.project/default-visibility :public
+              :mm.project/firewall-class :public-bottom
+              :mm.project/runs-in-context (sup/eid-of :ctx/home)}
+             {:db/ident :mem/coB :dt/type :mm/Memory :mm.memory/name "coB"
+              :mm.memory/visibility :private
+              :mm.memory/owning-project {:db/ident :proj/coP}}
+             {:db/ident :mem/coA :dt/type :mm/Memory :mm.memory/name "coA"
+              :mm.memory/visibility :public
+              :mm.memory/owning-project {:db/ident :proj/coP}
+              :mm.memory/cites {:db/ident :mem/coB}}])
+          true
+          (catch clojure.lang.ExceptionInfo _ false))]
+    (testing "KNOWN FAIL-OPEN: the co-batch currently COMMITS (defect present —
+              INVERT to assert refusal when the CA-6 source-side fix lands)"
+      (is (true? committed?)
+          "if this flips to false the CA-6 fix has landed — invert this test"))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; T-13 exempt legs (adjudication must-fix #5) — commit-path proof that EXEMPT
+;; slots pointing at a PRIVATE target are NOT firewall-refused (only governed
+;; flow/carrier/tie slots are checked).  The prior T-13 covered part-of only.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(deftest ep1-exempt-edges-to-private-not-refused
+  (seed-world!)
+  (testing "EXEMPT slots (part-of / tags / created-by) pointing at a PRIVATE
+            target do NOT trip the firewall — via make* (the firewall-only
+            floor), isolating the census disposition from schema validation"
+    (doseq [slot [:mm.memory/part-of :mm.memory/tags :mm.memory/created-by]]
+      (let [ent (dt/make* :mm/Memory
+                          {:mm.memory/name           (str "exempt-" (name slot))
+                           :mm.memory/visibility     :public
+                           :mm.memory/owning-project :proj/pub
+                           slot                      (sup/eid-of :mem/privA-target)})]
+        (is (some? (:db/id ent))
+            (str slot " is exempt — a public source touching a private target "
+                 "via it must NOT be firewall-refused"))))))
