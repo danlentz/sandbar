@@ -19,7 +19,8 @@
   (:refer-clojure :exclude [count-by group-by rank-by])
   (:require [sandbar.api.projection :as projection]
             [sandbar.db.datatype    :as dt]
-            [sandbar.db.datomic     :as db]))
+            [sandbar.db.datomic     :as db]
+            [sandbar.security.query :as secq]))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; count-by — entity count with optional predicate filter
@@ -42,6 +43,10 @@
   [{:keys [class where]}]
   {:pre [(keyword? class)
          (or (nil? where) (sequential? where))]}
+  ;; SECURITY (read-plane namespace firewall): deny :class / :where in a
+  ;; firewalled namespace (:auth/* etc.) BEFORE any query touches the DB.
+  (secq/assert-class-allowed! class)
+  (secq/assert-where-namespaces! where)
   {:count (dt/count-of class where)})
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -68,6 +73,11 @@
   {:pre [(keyword? class)
          (keyword? group-by)
          (or (nil? where) (sequential? where))]}
+  ;; SECURITY (read-plane namespace firewall): deny a firewalled :class,
+  ;; :group-by slot (the credential-hash DUMP vector), or :where attribute.
+  (secq/assert-class-allowed! class)
+  (secq/assert-attribute-allowed! group-by)
+  (secq/assert-where-namespaces! where)
   (let [groups (dt/group-by-of class group-by where)]
     {:groups groups
      :total  (reduce + 0 (vals groups))}))
@@ -118,6 +128,9 @@
              (keyword? temporal-slot))
          (or (nil? projection) (#{:full :metadata-only} projection))
          (or (nil? memorial-policy) (keyword? memorial-policy))]}
+  ;; SECURITY (read-plane namespace firewall): deny ranking over a firewalled
+  ;; class (:auth/* etc.) before enumerating its instances.
+  (secq/assert-class-allowed! class)
   (let [pairs   (case rank-by
                   :degree
                   (->> (dt/all-instances-of class)

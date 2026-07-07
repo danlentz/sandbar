@@ -182,6 +182,149 @@
   '#{or and not or-join not-join})
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Read-plane NAMESPACE FIREWALL (RPAF) — deny-by-default class/attribute/entity
+;; read-scope, ORTHOGONAL to the call-form allowlist above.
+;;
+;; The call-form allowlist closes the query-time RCE (a `:where` cannot RESOLVE
+;; a dangerous fn).  It does NOT scope WHICH classes/attributes a read-plane
+;; caller may touch: the aggregate/search/count/group-by/class.instances verbs
+;; impose no read-scope authz, so `group-by :auth/ServiceAccount
+;; :auth/api-key-hash` dumps credential hashes verbatim and a `:where [[?x
+;; :auth/api-key-hash ?h] [(starts-with? ?h P)]]` is a char-by-char existence
+;; ORACLE (unjoined ?x ⇒ global predicate).  This firewall denies the read plane
+;; any namespace outside the corpus + metamodel.  Deny-by-default (allow-list),
+;; mirroring the call-form gate.  Governing ADR:
+;; decisions/read_plane_namespace_firewall_deny_by_default_closes_auth_exfil_...
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(def read-plane-namespace-allowlist
+  "First-segment namespace prefixes the read plane may touch (matched on the
+  keyword namespace's FIRST dotted segment).  DENY-BY-DEFAULT: a `:class`, a
+  `:group-by`/`:attribute` slot, a `:where` attribute, or a RETURNED entity
+  whose class namespace's first segment is NOT in this set is refused loudly.
+  Covers the ENTIRE memory model + metamodel; EXCLUDES substrate-internal /
+  secret / operational namespaces — :auth/* (credentials), :user/* (secrets),
+  :audit/* (data snapshots), :event/:http/:api/:tx (runtime), :job/* (scheduler
+  internals), :model/:twit (demo), :context/:workflow/:fn (substrate).
+    mm    — memory model    (:mm/*, :mm.memory/*, :mm.tag/*, :mm.session/* …)
+    dt    — metamodel       (:dt/Class, :dt/Property, :dt.fn/* …)
+    db    — structural      (:db/ident, :db/valueType, :db.type/* …)
+    value — value-type refs (:value/* …)
+  Extend ONLY on a demonstrated legitimate read-plane need + review — each
+  addition widens the exfiltration surface.  Single source of truth."
+  #{"mm" "dt" "db" "value"})
+
+(defn- ns-first-segment
+  "First dotted segment of `kw`'s namespace, or nil if `kw` is not a namespaced
+  keyword.  :mm.memory/name -> \"mm\"; :auth/api-key-hash -> \"auth\"."
+  [kw]
+  (when (and (keyword? kw) (namespace kw))
+    (first (str/split (namespace kw) #"\."))))
+
+(defn read-plane-namespace-allowed?
+  "True iff `kw` is safe for the read plane: a namespaced keyword whose FIRST
+  namespace segment is on `read-plane-namespace-allowlist`, OR a keyword with NO
+  namespace (a bare value like `:decision` — it names no class/attribute
+  surface, so it cannot select firewalled data).  Non-keywords are allowed
+  (only keywords name the class/attribute surface)."
+  [kw]
+  (if (and (keyword? kw) (namespace kw))
+    (contains? read-plane-namespace-allowlist (ns-first-segment kw))
+    true))
+
+(defn- reject-read-plane!
+  [kind offending context]
+  (throw (ex-info
+           (str "Rejected read-plane " (name kind) " '" offending "' — its "
+                "namespace is firewalled off the read plane.  The read plane "
+                "exposes only the corpus + metamodel namespaces ("
+                (str/join " / " (sort read-plane-namespace-allowlist))
+                "); substrate-internal namespaces (:auth/*, :user/*, :audit/*, "
+                "runtime/scheduler/demo) are denied by default.  See "
+                "sandbar.security.query/read-plane-namespace-allowlist.")
+           {:sanitizer 'sandbar.security.query/read-plane-firewall
+            :reason    :namespace-not-read-plane-allowed
+            :kind      kind
+            :offending offending
+            :context   context
+            :allowed   (vec (sort read-plane-namespace-allowlist))})))
+
+(defn assert-class-allowed!
+  "Read-plane guard for a class-scoped read verb (aggregate.count/group-by/
+  rank-by, search.bm25f, class.instances).  Throws loud ex-info if
+  `class-ident`'s namespace is firewalled.  Returns `class-ident` (threadable).
+  Class-agnostic; the caller supplies the class."
+  [class-ident]
+  (when-not (read-plane-namespace-allowed? class-ident)
+    (reject-read-plane! :class class-ident nil))
+  class-ident)
+
+(defn assert-attribute-allowed!
+  "Read-plane guard for an attribute/slot argument (search.attribute
+  `:attribute`, aggregate.group-by `:group-by`).  Throws if `attr-ident`'s
+  namespace is firewalled.  Returns `attr-ident`."
+  [attr-ident]
+  (when-not (read-plane-namespace-allowed? attr-ident)
+    (reject-read-plane! :attribute attr-ident nil))
+  attr-ident)
+
+(defn assert-entity-allowed!
+  "Read-plane guard for a RETURNED entity (entity.find / navigate / library-card
+  / resolve).  Refuses to hand back an entity whose class (`:dt/type`) is in a
+  firewalled namespace — the direct-lookup analogue of the class guard.
+  `:dt/type` may be a keyword ident or an entity-map carrying `:db/ident`.  A
+  nil / typeless entity passes (no class to leak).  Returns `entity`."
+  [entity]
+  (let [t   (:dt/type entity)
+        ;; `:dt/type` on a raw Datomic EntityMap is the class as an EntityMap —
+        ;; which `map?` returns FALSE for (the F-M-003 return-shape trap).  Use
+        ;; ILookup `(:db/ident t)`, which works on BOTH a Datomic EntityMap and a
+        ;; plain Clojure map; a bare keyword `:dt/type` is taken as-is.
+        cls (cond (keyword? t) t
+                  (some? t)    (:db/ident t)
+                  :else        nil)]
+    (when (and cls (not (read-plane-namespace-allowed? cls)))
+      (reject-read-plane! :entity cls {:db/id (:db/id entity)})))
+  entity)
+
+(defn- reject-denied-where-keywords!
+  "Recursively reject any firewalled-namespace keyword in `form` (an expression
+  clause or sub-form).  In a `:where` call form a namespaced keyword names an
+  attribute / class / value to select on — a firewalled one is an exfiltration
+  probe (e.g. `[(missing? $ ?e :auth/api-key-hash)]`)."
+  [where clause form]
+  (cond
+    (keyword? form)
+    (when-not (read-plane-namespace-allowed? form)
+      (reject-read-plane! :where-namespace form clause))
+    (map? form)  (doseq [[k v] form]
+                   (reject-denied-where-keywords! where clause k)
+                   (reject-denied-where-keywords! where clause v))
+    (coll? form) (doseq [x form] (reject-denied-where-keywords! where clause x))
+    :else nil))
+
+(defn assert-where-namespaces!
+  "Read-plane NAMESPACE guard over the parsed `:where` clause vector (the
+  companion to `sanitize-where`'s call-form guard).  Rejects ANY
+  firewalled-namespace keyword ANYWHERE in ANY clause — attribute position (the
+  `[?x :auth/api-key-hash ?h]` oracle), VALUE position (the `[?x :dt/type
+  :auth/User]` existence oracle — unjoined, a satisfiable firewalled-value clause
+  leaks whole-population existence), and expression/builtin args
+  (`[(missing? $ ?e :auth/api-key-hash)]`).  No legitimate corpus `:where` names
+  a firewalled namespace in ANY position (real values are bare keywords like
+  `:decision` or corpus/metamodel idents like `:mm/Decision`), so this is
+  deny-by-default with no legit over-block.  Throws loud ex-info; `nil`/`[]`
+  no-op.  Returns `where-clauses`.  Called by the read-plane WRAPPERS
+  (aggregate/search) — NOT by `sanitize-where` — so internal
+  `count-of`/`group-by-of` callers keep the RCE guard without the read-scope
+  firewall."
+  [where-clauses]
+  (when (seq where-clauses)
+    (doseq [clause where-clauses]
+      (reject-denied-where-keywords! where-clauses clause clause)))
+  where-clauses)
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; The one validator
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 

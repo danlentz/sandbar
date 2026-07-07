@@ -56,6 +56,7 @@
             [sandbar.retract            :as retract]
             [sandbar.schedule           :as sched]
             [sandbar.search             :as search]
+            [sandbar.security.query     :as secq]
             [sandbar.shape              :as shape]
             [sandbar.store              :as store]
             [sandbar.db.datatype        :as dt]
@@ -367,6 +368,7 @@
 
 (defn- class-instances-handler [args]
   (let [c              (class-arg args)
+        _              (secq/assert-class-allowed! c) ; read-plane namespace firewall (no :auth/* dump)
         projection-raw (or (get args "projection") (get args :projection))
         ;; MCP boundary default per Gap 12 follow-on (B.3 — :projection opt
         ;; on bulky-response verbs).  Enumeration ships :metadata-only by
@@ -597,7 +599,10 @@
           projection (or (projection/->projection-mode projection-raw)
                          :metadata-only)]
       (if valid?
-        {:entity (projection/apply-projection entity projection)}
+        ;; SECURITY (read-plane namespace firewall): refuse to hand back a
+        ;; firewalled-class entity (e.g. an :auth/* account) fetched by ident/eid.
+        (do (secq/assert-entity-allowed! entity)
+            {:entity (projection/apply-projection entity projection)})
         {:entity nil :missing? true :lookup (str ident-or-id) :reasons reasons}))))
 
 (defn- entity-find-by-rel-path-handler [args]
@@ -909,6 +914,7 @@
     (when (nil? query)
       (throw (ex-info "Missing required argument: query" {:args args})))
     (let [attribute  (eref/resolve-ident attribute-raw)
+          _          (secq/assert-attribute-allowed! attribute) ; read-plane firewall (no :auth/api-key-hash search)
           ;; B.3 — MCP boundary defaults to :metadata-only for the bulky
           ;; search-result case; symmetric with search.bm25f + class.instances
           ;; + aggregate.rank-by.
@@ -1042,10 +1048,16 @@
         projection-raw   (or (get args "projection") (get args :projection))]
     (when (nil? entity-raw)
       (throw (ex-info "Missing required argument: entity" {:args args})))
-    (let [projection (projection/->projection-mode projection-raw)
-          opts (cond-> {:entity (eref/resolve-ident entity-raw)}
+    (let [anchor     (eref/resolve-ident entity-raw)
+          ;; SECURITY (read-plane namespace firewall): deny traversing FROM a
+          ;; firewalled-class anchor (:auth/* etc.) or filtering TO a firewalled
+          ;; target-type.  Guard by the entity's CLASS (:dt/type), never its
+          ;; ident (corpus idents are :memory.*, not :mm.*).
+          _          (secq/assert-entity-allowed! (db/entity anchor))
+          projection (projection/->projection-mode projection-raw)
+          opts (cond-> {:entity anchor}
                  predicate-raw    (assoc :predicate (parse-predicate-arg predicate-raw))
-                 target-type-raw  (assoc :target-type (eref/resolve-ident target-type-raw))
+                 target-type-raw  (assoc :target-type (secq/assert-class-allowed! (eref/resolve-ident target-type-raw)))
                  (some? limit-arg) (assoc :limit limit-arg)
                  projection       (assoc :projection projection))]
       (nav-edges/outbound-edges opts))))
@@ -1058,10 +1070,14 @@
         projection-raw   (or (get args "projection") (get args :projection))]
     (when (nil? entity-raw)
       (throw (ex-info "Missing required argument: entity" {:args args})))
-    (let [projection (projection/->projection-mode projection-raw)
-          opts (cond-> {:entity (eref/resolve-ident entity-raw)}
+    (let [anchor     (eref/resolve-ident entity-raw)
+          ;; SECURITY (read-plane namespace firewall): deny traversing INTO a
+          ;; firewalled-class anchor or filtering by a firewalled source-type.
+          _          (secq/assert-entity-allowed! (db/entity anchor))
+          projection (projection/->projection-mode projection-raw)
+          opts (cond-> {:entity anchor}
                  predicate-raw    (assoc :predicate (parse-predicate-arg predicate-raw))
-                 source-type-raw  (assoc :source-type (eref/resolve-ident source-type-raw))
+                 source-type-raw  (assoc :source-type (secq/assert-class-allowed! (eref/resolve-ident source-type-raw)))
                  (some? limit-arg) (assoc :limit limit-arg)
                  projection       (assoc :projection projection))]
       (nav-edges/inbound-edges opts))))
@@ -1215,6 +1231,7 @@
       (throw (ex-info "Missing or non-sequential argument: axes (must be array of axis-spec objects)"
                       {:args args})))
     (let [entity-ident (eref/resolve-ident entity-arg)
+          _            (secq/assert-entity-allowed! (db/entity entity-ident)) ; read-plane firewall
           axes (mapv ->axis-spec axes-arg)
           projection (projection/->projection-mode projection-raw)
           opts (cond-> {:entity entity-ident :axes axes}
@@ -1230,6 +1247,7 @@
     (when (nil? path-slot-arg)
       (throw (ex-info "Missing required argument: path-slot" {:args args})))
     (let [entity-ident (eref/resolve-ident entity-arg)
+          _            (secq/assert-entity-allowed! (db/entity entity-ident)) ; read-plane firewall
           path-slot    (eref/resolve-ident path-slot-arg)
           opts (cond-> {:entity entity-ident :path-slot path-slot}
                  (some? limit) (assoc :limit limit))]
@@ -1246,6 +1264,7 @@
     (when (nil? via-arg)
       (throw (ex-info "Missing required argument: via" {:args args})))
     (let [from-ident    (eref/resolve-ident from-arg)
+          _             (secq/assert-entity-allowed! (db/entity from-ident)) ; read-plane firewall
           include-set   (when (sequential? include)
                           (set (map keyword include)))
           opts          (cond-> {:from from-ident :via via-arg}
@@ -2387,8 +2406,8 @@
   (let [ref-str (or (get args "reference") (get args :reference))]
     (when (str/blank? (str ref-str))
       (throw (ex-info "Missing required argument: reference" {:args args})))
-    (let [db (db/db)]
-      (cond
+    (let [db     (db/db)
+          result (cond
         ;; URN form: urn:uuid:<v5>
         (str/starts-with? ref-str "urn:uuid:")
         (let [uuid-str (subs ref-str (count "urn:uuid:"))
@@ -2450,7 +2469,12 @@
                                                 :resolution-path :substrate-ident)))))]
           {:reference       ref-str
            :resolved-entity (into {} ent)
-           :resolution-path :substrate-ident})))))
+           :resolution-path :substrate-ident}))]
+      ;; SECURITY (read-plane namespace firewall): refuse to resolve a reference
+      ;; to a firewalled-class entity (:auth/* etc.).  Re-load by :db/id so the
+      ;; class check sees a proper EntityMap (:dt/type), not the into-map form.
+      (some-> (:resolved-entity result) :db/id db/entity secq/assert-entity-allowed!)
+      result)))
 
 
 (defn- one-required [props required-keys]

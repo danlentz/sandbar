@@ -992,10 +992,18 @@
   Per D7 of decisions/c8_ratification_batch_d1_d9_plus_defaults_all_
   approved_2026_07_02 (closes the C12 strategic-subgroup gap) + fulltext
   arc Stage 4c + Stage 29."
-  [{:keys [class] :as opts}]
-  (if (multiclass? class)
-    (search-bm25f-multi opts)
-    (search-bm25f-single opts)))
+  [{:keys [class where] :as opts}]
+  (let [multi? (multiclass? class)]
+    ;; SECURITY (read-plane namespace firewall): deny a firewalled :class (single
+    ;; OR any member of the multi-class vec) + a firewalled :where attribute
+    ;; BEFORE searching — so bm25f cannot enumerate/oracle :auth/* et al.
+    (if multi?
+      (doseq [c class] (secq/assert-class-allowed! c))
+      (secq/assert-class-allowed! class))
+    (secq/assert-where-namespaces! where)
+    (if multi?
+      (search-bm25f-multi opts)
+      (search-bm25f-single opts))))
 
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
