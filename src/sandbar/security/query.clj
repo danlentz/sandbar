@@ -148,9 +148,13 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (defn- resolve-head-var
-  "Resolve `sym` to its Var (alias-aware, using THIS namespace's mappings — it
-  requires `clojure.string :as str` so `str/starts-with?` resolves).  Returns
-  the Var or nil.  Returns nil (never throws, never invokes) for:
+  "Resolve `sym` to its Var, canonicalizing identity.  Uses `ns-resolve`
+  against THIS namespace explicitly (NOT bare `resolve`, whose one-arg form
+  keys off the runtime `*ns*` and would miss our aliases) so that this
+  namespace's mappings apply deterministically — in particular the
+  `clojure.string :as str` alias, so `str/starts-with?` resolves to the same
+  var as the fully-qualified form.  Returns the Var or nil.  Returns nil (never
+  throws, never invokes) for:
     - symbols whose namespace is not loaded / does not exist;
     - host-interop forms (`System/getProperty` resolves to a Class or throws);
     - anything that does not resolve to a Var.
@@ -160,7 +164,7 @@
   used ONLY to canonicalize identity, never to grant capability."
   [sym]
   (try
-    (let [r (resolve sym)]
+    (let [r (ns-resolve (the-ns 'sandbar.security.query) sym)]
       (when (var? r) r))
     (catch Throwable _ nil)))
 
