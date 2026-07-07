@@ -22,6 +22,19 @@
 ;; `start` because it logically belongs to the lifecycle section).
 (declare start-scheduler-if-enabled!)
 
+;; Read-plane security backstop (AP-S3-6 / read-plane hardening, 2026-07-06).
+;; Globally disable reader-eval so a bare `read-string` on ANY wire-reachable
+;; path cannot execute `#=(...)` reader forms at parse time.  No code in this
+;; substrate relies on *read-eval* (verified: zero `#=` / `*read-eval*` uses in
+;; src/), so disabling it process-wide is side-effect-free.  Runs at namespace
+;; load, after the requires above, so startup ns-loading is unaffected.  This
+;; backstops the search `:where` fix in mcp/tools.clj (now routed through the
+;; edn/read-string-based ->where-clauses) plus the internal pr-str round-trips
+;; in util/job.clj + util/workflow.clj + the config read in util/edn.clj.
+;; It does NOT close the query-time fn-resolution vector (AP-S3-6 vector A) —
+;; that requires the Layer-1 sanitize-where allowlist (scheduled 0.2.x).
+(alter-var-root #'*read-eval* (constantly false))
+
 (defn make-system
   ([] (make-system :config))
   ([configuraton-designator]

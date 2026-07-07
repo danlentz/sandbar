@@ -945,10 +945,7 @@
         projection-raw  (or (get args "projection") (get args :projection))]
     (when (nil? query)
       (throw (ex-info "Missing required argument: query" {:args args})))
-    (let [where     (when where-raw
-                      (cond
-                        (string? where-raw)     (read-string where-raw)
-                        (sequential? where-raw) (vec where-raw)))
+    (let [where     (->where-clauses where-raw)  ; shared edn-based parser (:293) — no bare read-string / reader-eval on the wire path (AP-S3-6 vector B)
           facet-by  (when facet-by-raw
                       (mapv eref/resolve-ident
                             (if (sequential? facet-by-raw) facet-by-raw [facet-by-raw])))
