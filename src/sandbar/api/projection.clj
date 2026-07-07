@@ -54,7 +54,8 @@
   - Bug C4 (fresh-from-transact entity returns sparse projection
     because seq iteration only surfaces realized attrs)"
   (:require [clojure.string :as str]
-            [datomic.api    :as d])
+            [datomic.api    :as d]
+            [sandbar.security.query :as secq])
   (:import (datomic Entity)))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -84,10 +85,16 @@
   realization."
   [entity]
   (when entity
-    (cond-> {}
-      (:db/id entity)    (assoc :db/id    (:db/id entity))
-      (:db/ident entity) (assoc :db/ident (:db/ident entity))
-      (:dt/type entity)  (assoc :dt/type  (:dt/type entity)))))
+    ;; SECURITY (read-plane OUTPUT firewall): a firewalled entity (:auth/* etc.)
+    ;; — INCLUDING a nested ref reached via project-nested-value — is redacted;
+    ;; a visible entity keeps only non-firewalled slots.  metadata carries no
+    ;; firewalled slot, so a visible entity is unchanged; a firewalled one
+    ;; collapses to the redaction marker (no :db/ident / :dt/type enumeration).
+    (secq/read-plane-scrub-projection
+      (cond-> {}
+        (:db/id entity)    (assoc :db/id    (:db/id entity))
+        (:db/ident entity) (assoc :db/ident (:db/ident entity))
+        (:dt/type entity)  (assoc :dt/type  (:dt/type entity))))))
 
 (defn- project-nested-value
   "Project a slot value for inclusion in `:full` projection output.
@@ -138,8 +145,14 @@
                        (map (fn [[k v]]
                               [k (project-nested-value v)]))
                        (into {}))]
-      (cond-> slots
-        (:db/id touched) (assoc :db/id (:db/id touched))))))
+      ;; SECURITY (read-plane OUTPUT firewall): redact a firewalled entity to the
+      ;; marker; strip any firewalled-namespace SLOT (e.g. :http/* / :event/* on
+      ;; an otherwise-allowed entity) from a visible one.  Applied to EVERY
+      ;; full-projected entity so navigate/rank-by/class.instances/search/etc.
+      ;; cannot leak firewalled data through their RETURNED entities.
+      (secq/read-plane-scrub-projection
+        (cond-> slots
+          (:db/id touched) (assoc :db/id (:db/id touched)))))))
 
 (defn frontmatter-projection
   "Project a Datomic Entity to its FRONTMATTER — all scalar + ref slots

@@ -268,24 +268,72 @@
     (reject-read-plane! :attribute attr-ident nil))
   attr-ident)
 
-(defn assert-entity-allowed!
-  "Read-plane guard for a RETURNED entity (entity.find / navigate / library-card
-  / resolve).  Refuses to hand back an entity whose class (`:dt/type`) is in a
-  firewalled namespace — the direct-lookup analogue of the class guard.
-  `:dt/type` may be a keyword ident or an entity-map carrying `:db/ident`.  A
-  nil / typeless entity passes (no class to leak).  Returns `entity`."
+(def read-plane-ident-allowlist
+  "Namespace first-segments allowed for an entity's OWN `:db/ident`.  Superset of
+  `read-plane-namespace-allowlist` by the corpus 'memory' prefix — corpus
+  memorials are interned as `:memory.<dir>/<slug>`.  Distinct from the
+  class/attribute allow-list because it must ALSO catch a firewalled
+  CLASS/PROPERTY-ident entity whose class is allowed but whose ident is not:
+  e.g. `class.instances :dt/Class` returns the `:auth/User` class entity, whose
+  `:dt/type` is `:dt/Class` (allowed) but whose `:db/ident` is `:auth/User`
+  (firewalled)."
+  (conj read-plane-namespace-allowlist "memory"))
+
+(defn read-plane-entity-visible?
+  "True iff an entity may be surfaced on the read plane: BOTH its class
+  (`:dt/type`) namespace AND its own ident (`:db/ident`) namespace are
+  non-firewalled.  `:dt/type` on a raw Datomic EntityMap is the class as an
+  EntityMap (which `map?` returns FALSE for — the F-M-003 trap), so resolve it
+  via ILookup `(:db/ident t)`.  A nil class / nil ident is allowed (nothing to
+  leak on that axis).  Works on BOTH raw Datomic entities and projected maps."
   [entity]
   (let [t   (:dt/type entity)
-        ;; `:dt/type` on a raw Datomic EntityMap is the class as an EntityMap —
-        ;; which `map?` returns FALSE for (the F-M-003 return-shape trap).  Use
-        ;; ILookup `(:db/ident t)`, which works on BOTH a Datomic EntityMap and a
-        ;; plain Clojure map; a bare keyword `:dt/type` is taken as-is.
         cls (cond (keyword? t) t
                   (some? t)    (:db/ident t)
-                  :else        nil)]
-    (when (and cls (not (read-plane-namespace-allowed? cls)))
-      (reject-read-plane! :entity cls {:db/id (:db/id entity)})))
+                  :else        nil)
+        id  (:db/ident entity)]
+    (and (or (nil? cls) (read-plane-namespace-allowed? cls))
+         (or (nil? id)  (contains? read-plane-ident-allowlist (ns-first-segment id))))))
+
+(defn assert-entity-allowed!
+  "Read-plane guard for a RETURNED / anchor entity (entity.find / navigate /
+  library-card / path-via / siblings / resolve).  Refuses an entity whose class
+  (`:dt/type`) OR own ident (`:db/ident`) namespace is firewalled — the latter
+  catches a firewalled CLASS ident used as a nav anchor (`:auth/ServiceAccount`,
+  whose `:dt/type :dt/Class` is allowed but whose ident is not).  A nil /
+  typeless / non-interned entity passes.  Returns `entity`."
+  [entity]
+  (when-not (read-plane-entity-visible? entity)
+    (reject-read-plane! :entity (or (:db/ident entity) (:dt/type entity))
+                        {:db/id (:db/id entity)}))
   entity)
+
+(def read-plane-redaction-marker
+  "Placeholder returned in place of a firewalled entity in a read-plane
+  projection — carries NO id / ident / class / slot (no value, no enumeration
+  ident, no class name).  A residual count-of-markers is a weak structural
+  oracle only; the ENTRY guards + `assert-entity-allowed!` refuse the highest-
+  leverage firewalled selectors/anchors before a collection is even built."
+  {:mm/redacted "read-plane-firewalled"})
+
+(defn read-plane-scrub-projection
+  "Read-plane OUTPUT firewall for an ALREADY-PROJECTED entity map — the EXIT
+  surface complement to the entry guards.  Firewalled entity (by class OR ident)
+  → `read-plane-redaction-marker`.  Visible entity → itself with any
+  firewalled-namespace SLOT dissoc'd (an allowed-class entity may still carry
+  firewalled slots, e.g. an `:mm/Event` with `:http/*` fields).  nil → nil.
+  Total + idempotent; the projection layer applies it to EVERY projected entity
+  (top-level AND nested refs) so every entity-returning read verb — navigate /
+  library-card / rank-by / class.instances / path-via / siblings / search — is
+  sanitized by construction (the F5 shared-splice-site discipline, one layer
+  out)."
+  [projected]
+  (when projected
+    (if (read-plane-entity-visible? projected)
+      (into {} (remove (fn [[k _]] (and (keyword? k) (namespace k)
+                                        (not (read-plane-namespace-allowed? k)))))
+            projected)
+      read-plane-redaction-marker)))
 
 (defn- reject-denied-where-keywords!
   "Recursively reject any firewalled-namespace keyword in `form` (an expression
