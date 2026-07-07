@@ -310,6 +310,124 @@
      0
      seed-shape-canonical-constraints)))
 
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Duplicate :mm/Schedule self-heal (W3.B proliferation fix)
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;
+;; :mm/Schedule is a :mm/Spec (NOT a :mm/Memory), so before this arc the runtime
+;; create path (sandbar.store/create-memory!) derived NO :db/ident for it and
+;; dt/make minted a fresh tempid → brand-new eid on every create.  Repeated
+;; UNTARGETED creates (the MCP `entity.create :class :mm/Schedule` path + the
+;; equivalent `dt/make :mm/Schedule` in tests / dev-loops) therefore APPENDED a
+;; new target-less row each time — the target-less :mm/Schedule proliferation
+;; this arc fixes.  create-memory! now derives a stable content-key :db/ident
+;; (sandbar.store/derive-schedule-ident) so RECURRENCE is prevented (upsert →
+;; same eid).  This migration HEALS DBs that already accumulated duplicates.
+;;
+;; CONSERVATISM (provable-duplicates-only): schedules are grouped by the SAME
+;; logical-identity key the create path idents on — (target, recurrence,
+;; timezone), deliberately EXCLUDING :mm.schedule/dtstart (callers re-anchor it
+;; at (now) on every create, so it diverges across otherwise-identical dupes;
+;; folding it in would UNDER-collapse them).  Because `target` is IN the key,
+;; two schedules with DIFFERENT targets never share a group — the legitimately-
+;; authored distinct-target 1:1 population is NEVER collapsed.  Only rows that
+;; are identical on (target, recurrence, timezone) — provable duplicates — merge.
+;;
+;; Non-destructive to graph edges: before retracting a duplicate, EVERY inbound
+;; ref pointing at it (e.g. :mm.run/triggered-by, :mm.schedule-event/schedule) is
+;; RE-POINTED onto the survivor, so no :mm/Run / :mm.event/ScheduleEvent loses
+;; its edge.  Survivor selection prefers a schedule carrying a :db/ident (the
+;; system schedules + any content-key-idented rows created post-fix) over an
+;; identless legacy row, and breaks ties on lowest eid for determinism.
+;;
+;; Idempotent: post-heal each key holds exactly one schedule, so a re-run finds
+;; no group with >1 member.  Safe to run on every boot.
+;;
+;; Per the W3.B schedule-idempotency arc + the XorConstraint seed-idempotency
+;; precedent (prune-duplicate-seed-constraint-subentities! above; commit 1bc426b)
+;; + interaction/foundational_substrate_concerns_are_never_follow_up_sub_arcs_2026_05_21.
+
+(defn- schedule-content-key
+  "Stable logical-identity key for a :mm/Schedule Entity — [target-token
+  recurrence timezone].  Mirrors sandbar.store/derive-schedule-ident's key
+  (dtstart deliberately excluded).  `target-token` is the target's :db/ident
+  when it has one (stable) else its eid (DB-local), or nil when target-less.
+
+  The Datomic entity API renders an IDENT-BEARING ref target as its :db/ident
+  KEYWORD (not an EntityMap), so `target` may be a keyword, an EntityMap, or nil
+  — all three are normalized here (same deref-collapse class as
+  bugs/shape_check_validator_fn_derefs_ident_bearing_fn_ref_to_keyword_...)."
+  [sched]
+  (let [target (:mm.schedule/target sched)]
+    [(cond
+       (nil? target)     nil
+       (keyword? target) target
+       :else             (or (:db/ident target) (:db/id target)))
+     (:mm.schedule/recurrence sched)
+     (:mm.schedule/timezone sched)]))
+
+(defn- inbound-ref-datoms
+  "All [e a] pairs where datom [e a target-eid] exists AND `a` is a :db.type/ref
+  attribute — i.e. every inbound ref pointing at `target-eid`.  Used to re-point
+  a pruned duplicate schedule's inbound edges onto the survivor before GC."
+  [db target-eid]
+  (->> (d/datoms db :vaet target-eid)
+       (map (fn [dtm] [(.e dtm) (.a dtm)]))))
+
+(defn prune-duplicate-schedules!
+  "Collapse duplicate :mm/Schedule rows accumulated by pre-:db/ident runtime
+  creates.  Groups all schedules by their logical-identity key (target,
+  recurrence, timezone — dtstart excluded); for each group of >1, keeps one
+  survivor (prefers an idented row; ties broken on lowest eid), RE-POINTS every
+  inbound ref from each duplicate onto the survivor, then :db.fn/retractEntity
+  the duplicate.  Returns the total number of duplicate schedules pruned.
+  Idempotent + conservative (only collapses provable duplicates — never
+  distinct-target schedules).  Safe to run on every boot.  See the comment block
+  above.
+
+  Public for testability."
+  [uri]
+  (let [c        (conn uri)
+        db       (d/db c)
+        sched-es (map first
+                      (d/q '[:find ?e :where [?e :dt/type :mm/Schedule]] db))
+        groups   (->> sched-es
+                      (map #(d/entity db %))
+                      (group-by schedule-content-key))]
+    (reduce
+     (fn [total [_k members]]
+       (if (> (count members) 1)
+         (let [;; Survivor: idented rows first, then lowest eid (deterministic).
+               survivor (->> members
+                             (sort-by (juxt #(if (:db/ident %) 0 1) :db/id))
+                             first)
+               surv-eid (:db/id survivor)
+               dupes    (remove #(= (:db/id %) surv-eid) members)
+               db'      (d/db c)
+               tx       (into
+                         ;; Re-point every inbound ref from each dupe onto the
+                         ;; survivor (retract old edge, assert new), THEN GC the
+                         ;; now-detached duplicate schedule.
+                         (vec
+                          (mapcat
+                           (fn [dupe]
+                             (let [dupe-eid (:db/id dupe)]
+                               (concat
+                                (mapcat
+                                 (fn [[e a]]
+                                   [[:db/retract e a dupe-eid]
+                                    [:db/add     e a surv-eid]])
+                                 (inbound-ref-datoms db' dupe-eid))
+                                [[:db.fn/retractEntity dupe-eid]])))
+                           dupes)))]
+           @(d/transact c tx)
+           (log/info :DB/SCHEDULE-DUPLICATE-PRUNE
+                     {:survivor surv-eid :pruned (count dupes)})
+           (+ total (count dupes)))
+         total))
+     0
+     groups)))
+
 (defn initialize-db! [uri & schema]
   ;; Stage 5 Phase B (2026-05-22): always reload schema + dbfns at start,
   ;; regardless of whether the DB needed to be created.  Datomic's
@@ -337,6 +455,11 @@
     ;; pre-:db/ident reloads (idempotent no-op once healed).  Must run after
     ;; load-all-schema! so the canonical idented sub-entities exist.
     (prune-duplicate-seed-constraint-subentities! uri)
+    ;; Self-heal duplicate :mm/Schedule rows accumulated by pre-:db/ident runtime
+    ;; creates (W3.B proliferation fix; idempotent no-op once healed).  Groups on
+    ;; (target, recurrence, timezone), re-points inbound edges, GCs provable
+    ;; duplicates only — never distinct-target schedules.
+    (prune-duplicate-schedules! uri)
     ((requiring-resolve 'sandbar.db.entailment.quality/validate-entailment-graph!) uri)
     (fn/load-all-dbfn uri)
     (fn/load-all-mm-fn-memorials uri)
