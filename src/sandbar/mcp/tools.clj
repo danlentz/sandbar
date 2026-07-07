@@ -60,6 +60,7 @@
             [sandbar.store              :as store]
             [sandbar.db.datatype        :as dt]
             [sandbar.db.datomic         :as db]
+            [sandbar.firewall.enforce   :as fw-enforce]
             [sandbar.mcp.envelope       :as envelope]
             [sandbar.mcp.notifications  :as notifications]
             [sandbar.mcp.resources      :as resources]
@@ -1342,11 +1343,20 @@
         slots     (or (get args "slots") (get args :slots) {})]
     (when (nil? class-arg)
       (throw (ex-info "Missing required argument: class" {:args args})))
-    (let [class-ident (eref/resolve-ident class-arg)
-          props       (coerce-slot-map class-ident slots)
-          errors      (dt/validate-data class-ident props)]
-      (if errors
-        {:valid? false :errors errors}
+    (let [class-ident  (eref/resolve-ident class-arg)
+          props        (coerce-slot-map class-ident slots)
+          schema-errs  (:errors (dt/validate-data class-ident props))
+          ;; S7 advisory arm (CA-1.3 / R19): the read-only entity.validate verb
+          ;; must surface the SAME firewall verdict the commit floor would throw,
+          ;; so a caller cannot get a clean bill here and then have entity.create
+          ;; refuse the identical spec.  Single-spec, nil spec-index (no batch),
+          ;; targets resolved against the live db — the interactive EP-1 shape.
+          fw-errs      (mapv fw-enforce/verdict->error
+                            (:violations (fw-enforce/check-entity-flow
+                                           (db/db) class-ident props)))
+          all-errs     (into (vec schema-errs) fw-errs)]
+      (if (seq all-errs)
+        {:valid? false :errors {:errors all-errs}}
         {:valid? true}))))
 
 ;; ---------- Workflow operations ----------

@@ -41,17 +41,21 @@
     ;;       (mm-meta.edn:26).  DESIGN-ONTOLOGY §1.2 certifies :mm/Context
     ;;       ancestors [:dt/Resource :mm/Meta :mm/Memory].  So :context/UNASSIGNED
     ;;       IS a :mm/Memory descendant via the :mm/Meta leg and DOES count.
+    ;;   4 × :mm/Shape + 2 × :mm/Fn from the S7 BU-6 safety-shape batch
+    ;;       (schema/mm-artifact.edn; :mm/Shape and :mm/Fn are :mm/Memory
+    ;;       descendants via the :mm/Meta leg — the 4 :mm.shape/PatternConstraint
+    ;;       sub-entities are NOT and do not count).
     ;; Baseline computed dynamically (not a hard-coded literal) so future seed
     ;; changes don't re-introduce an off-by-one.  Test creates 3 additional
-    ;; :mm/Memory entities; total = baseline (5) + created-3.
+    ;; :mm/Memory entities; total = baseline (11) + created-3.
     (let [baseline (:count (agg/count-by {:class :mm/Memory}))]
       (make-memory-typed! "alpha" :decision)
       (make-memory-typed! "beta"  :plan)
       (make-memory-typed! "gamma" :decision)
       (let [result (agg/count-by {:class :mm/Memory})]
         (is (= {:count (+ baseline 3)} result))
-        (is (= {:count 8} result)
-            "baseline 5 pre-seeded :mm/Memory descendants + 3 created")))))
+        (is (= {:count 14} result)
+            "baseline 11 pre-seeded :mm/Memory descendants + 3 created")))))
 
 (deftest count-by-with-where-test
   (testing "count-by :where restricts by predicate"
@@ -178,13 +182,15 @@
     ;; :total = (count all-instances-of :mm/Memory), which follows the recursive
     ;; instance-of rule, so it counts BOTH sentinels — see count-by-no-where-test.
     ;; Baseline computed dynamically (not hard-coded) to prevent off-by-one
-    ;; recurrence.  Test creates 5 additional; total = baseline (5) + created-5.
+    ;; recurrence.  Test creates 5 additional; total = baseline (11) + created-5
+    ;; (baseline includes the S7 BU-6 4 :mm/Shape + 2 :mm/Fn seeds — see
+    ;; count-by-no-where-test's census note).
     (let [baseline (:count (agg/count-by {:class :mm/Memory}))]
       (doseq [n (range 5)] (make-memory-typed! (str "mem-" n) :decision))
       (let [result (agg/rank-by {:class :mm/Memory :rank-by :degree :limit 2})]
         (is (= (+ baseline 5) (:total result)))
-        (is (= 10 (:total result))
-            "baseline 5 pre-seeded :mm/Memory descendants + 5 created")
+        (is (= 16 (:total result))
+            "baseline 11 pre-seeded :mm/Memory descendants + 5 created")
         (is (= 2 (:returned result)))
         (is (= 2 (count (:hits result))))))))
 

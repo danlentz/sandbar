@@ -48,6 +48,7 @@
    Spec: audit-results/xminus-build-2026-07-04/S6/S6-PLAN.md,
    DESIGN-ONTOLOGY §2.2/§2.3, DESIGN-W1-FIREWALL, S3-RATIFICATION §A."
   (:require [clojure.test          :refer :all]
+            [datomic.api           :as datomic.api]
             [sandbar.db.datatype   :as dt]
             [sandbar.db.datomic    :as db]
             [sandbar.navigate.edges :as nav]
@@ -189,12 +190,24 @@
     ;; these attributes on any entity, so the label never goes UNDEFINED for
     ;; a Context source.  (The write-time flow-rule REFUSAL of the bad edge
     ;; is S7 enforcement; S6 asserts the label is total, i.e. never nil.)
+    ;; S7 NOTE: the write-time REFUSAL of this exact public→private edge is now
+    ;; LIVE (EP-1, S7 BU-4) — `dt/make` on this Context THROWS a firewall
+    ;; violation.  This S6 assertion is about CONSTRUCTIBILITY + label-totality
+    ;; (its own line-190 comment: "the write-time flow-rule REFUSAL … is S7
+    ;; enforcement"), so we seed the hazardous edge via RAW transact (bypassing
+    ;; the S7 guard) to keep proving the edge exists + the label is total.  The
+    ;; S7 refusal of the same edge through dt/make is covered by
+    ;; sandbar.firewall.ep1-commit-path-test (T-1) + the L-9 source tests.
     (let [target (make-memory! {:mm.memory/visibility :private})
-          ctx    (dt/make :mm/Context
-                   {:mm.memory/name      "s6-l9-context"
-                    :mm.memory/visibility :public
-                    :mm.memory/cites     (:db/id target)})
-          ent    (db/entity (:db/id ctx))]
+          ctx-id (do @(datomic.api/transact
+                        (db/conn)
+                        [{:db/ident             :mem/s6-l9-context
+                          :dt/type              :mm/Context
+                          :mm.memory/name       "s6-l9-context"
+                          :mm.memory/visibility :public
+                          :mm.memory/cites      (:db/id target)}])
+                     (:db/id (db/entity :mem/s6-l9-context)))
+          ent    (db/entity ctx-id)]
       (is (seq (:mm.memory/cites ent))
           "the Context->foreign-memory cites edge exists (the governable hazard S7 refuses)")
       (is (= :public (:mm.memory/visibility ent))

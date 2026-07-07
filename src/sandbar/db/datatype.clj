@@ -27,6 +27,8 @@
             [sandbar.db.rules :refer [defrule clear-rulebase! all-rules] :as rule]
             [sandbar.db.fn :refer [defdbfn dbfn clear-fnbase! all-dbfn] :as fn]
             [sandbar.db.datomic :refer [entity describe] :as db]
+            [sandbar.db.ref :as ref]
+            [sandbar.firewall.enforce :as fw-enforce]
             [sandbar.reactive :as reactive]))
 
 (defn all-datatypes
@@ -127,6 +129,55 @@
   []
   (named-idents-of :dt/Property))
 
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; S7 EP-1 — THE UNCONDITIONAL FIREWALL FLOOR (BU-4 / CA-1)
+;;
+;; The firewall floor is a SECURITY boundary, NOT a schema check.  It fires on
+;; EVERY interactive commit path INDEPENDENT of `:validate?` (which now gates
+;; SCHEMA required/type/cardinality checks ONLY).  The check is a PURE predicate
+;; over the edge's src/tgt LABELS — principal-INDEPENDENT (rejects on the EDGE,
+;; never the caller).  Delegated wholesale to `sandbar.firewall.enforce`, which
+;; NEVER requires this ns back (R14 acyclicity).  Per S7-PLAN §4 / CA-1.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defn- firewall-guard!
+  "Run the EP-1 author-time flow check for entity-spec `props` of class `dt`
+  and THROW an ex-info `\"Firewall violation\"` carrying the `{:errors [...]}`
+  envelope when any governed edge is FORBIDDEN — else return nil (the write
+  proceeds).  `:skipped` (unresolved governed targets) are WARN-logged, never
+  fatal (the best-effort carrier / stub case, §4.4).
+
+  UNCONDITIONAL: called on every interactive commit path (make*, make,
+  update-entity!) regardless of `:validate?`.  Reads the CURRENT db as the
+  resolver's snapshot.  `spec-index` (optional) threads same-batch forward-refs
+  for the batch floor (CA-6)."
+  ([dt props] (firewall-guard! dt props nil))
+  ([dt props spec-index]
+   (let [{:keys [violations skipped]}
+         (fw-enforce/check-entity-flow (db/db) dt props spec-index)]
+     (fw-enforce/warn-skipped! skipped)
+     (when-let [envelope (fw-enforce/verdicts->error-envelope violations)]
+       (log/debug :DT/FIREWALL-VIOLATION {:class dt :violations (count violations)})
+       (throw (ex-info "Firewall violation" envelope))))))
+
+(defn- firewall-batch-guard!
+  "Run the EP-1 batch flow floor over `entity-specs` (each carrying `:dt/type`)
+  and THROW an ex-info `\"Firewall violation in batch\"` when any governed edge
+  is FORBIDDEN — else return nil.  Firewall-ONLY (the trust-caller bulk contract
+  keeps schema checks the caller's job, R5).  `spec-index` (optional) is the
+  pre-built intra-batch index so a same-batch forward-ref resolves against its
+  sibling (CA-6).  Per S7-PLAN §4.3."
+  ([entity-specs]
+   (firewall-batch-guard! entity-specs (fw-enforce/index-specs-by-ident entity-specs)))
+  ([entity-specs spec-index]
+   (let [{:keys [violations skipped]}
+         (fw-enforce/check-batch (db/db) entity-specs spec-index)]
+     (fw-enforce/warn-skipped! skipped)
+     (when (seq violations)
+       (log/debug :DT/FIREWALL-VIOLATION-BATCH {:violations (count violations)})
+       (throw (ex-info "Firewall violation in batch"
+                       (fw-enforce/verdicts->error-envelope violations)))))))
+
 (defn make*
   "Creates a typed instance without validation.
 
@@ -140,6 +191,11 @@
     (make* :User {:user/login \"dan\" :user/secret \"hash\"})
 
   Note: Use `make` instead for validated instance creation.
+
+  S7 CA-1: an UNCONDITIONAL firewall guard fires immediately before the
+  raw `d/transact` — `make*` is the unvalidated primitive `make`/`make-all`
+  bottom out in, so guarding it here closes the `:validate? false` bypass at
+  the transactor boundary (no interactive write reaches Datomic un-firewalled).
 
   Bug C10 fix (2026-05-22): the entity is identified by a NAMED
   string tempid so the post-transact eid lookup is deterministic.
@@ -156,6 +212,9 @@
   precedence (caller-explicit identity wins)."
   ([dt] (make* dt {}))
   ([dt props]
+   ;; S7 CA-1: unconditional firewall floor BEFORE the raw transact.  Throws
+   ;; on a forbidden governed edge whether or not the caller ran validation.
+   (firewall-guard! dt props)
    (let [main-tid    (or (:db/id props) "main")
          row         (assoc props :dt/type dt :db/id main-tid)
          result      @(d/transact (db/conn) [row])
@@ -218,11 +277,24 @@
    arc_2026_05_20.md — `sandbar.project.import :persist? true` needs to
    transact each markdown file's memory + sections atomically so that
    `:mm.memory/first-section` and `:mm.section/parent` cross-refs
-   resolve via :db/ident upsert."
-  [entity-specs]
-  (let [result @(d/transact (db/conn) entity-specs)]
-    (log/debug :DT/MAKE-ALL* {:count (count entity-specs)})
-    result))
+   resolve via :db/ident upsert.
+
+   S7 (BU-4, §4.3): the NON-optional firewall batch floor fires INSIDE this
+   primitive, so `project.import`, `full-corpus-ingest`, and any FUTURE bulk
+   caller inherit it — a forbidden governed edge in ANY spec throws
+   \"Firewall violation in batch\" and NONE transact.  Firewall-ONLY (the
+   trust-caller bulk contract keeps required/type/cardinality the caller's
+   job, R5).  The 2-arity accepts a pre-built `spec-index` so the VALIDATED
+   `make-all` threads the SAME intra-batch index it built for its schema
+   ref-range pass (CA-6) — a same-batch forward-ref resolves against its
+   sibling instead of over-refusing on tx-ordering."
+  ([entity-specs]
+   (make-all* entity-specs (fw-enforce/index-specs-by-ident entity-specs)))
+  ([entity-specs spec-index]
+   (firewall-batch-guard! entity-specs spec-index)
+   (let [result @(d/transact (db/conn) entity-specs)]
+     (log/debug :DT/MAKE-ALL* {:count (count entity-specs)})
+     result)))
 
 (declare validate-data)          ;; forward declaration
 (declare type-isa?)              ;; forward reference; defined later in this ns
@@ -383,7 +455,14 @@
    already transacted; reactive side-effects are observability-grade)."
   ([entity-specs] (make-all entity-specs {}))
   ([entity-specs {:keys [project?]}]
-   (let [failures (keep-indexed
+   ;; S7 CA-6: build the intra-batch spec-index ONCE and thread it into the
+   ;; firewall floor (via make-all* below) so a same-batch forward-ref (a
+   ;; sibling `:db/ident` declared later in the batch, both public) resolves
+   ;; against its sibling rather than over-refusing on tx-ordering.  The
+   ;; schema validate-data pass is unchanged — it already admits the codec's
+   ;; upsert-map cross-ref shape without a live-DB resolve.
+   (let [spec-index (fw-enforce/index-specs-by-ident entity-specs)
+         failures (keep-indexed
                     (fn [i spec]
                       (let [dt        (:dt/type spec)
                             spec-only (dissoc spec :dt/type)]
@@ -397,7 +476,7 @@
          (throw (ex-info "Validation failed for one or more entities"
                          {:errors (vec failures)
                           :total  (count entity-specs)})))
-       (let [tx-result (make-all* entity-specs)]
+       (let [tx-result (make-all* entity-specs spec-index)]
          ;; Per-entity reactive-projection hook fire
          (doseq [spec entity-specs
                  :let [class-ident  (:dt/type spec)
@@ -505,33 +584,29 @@
   "Resolve any ref-typed slot value to the :db/id of the live entity it names,
    or nil when it resolves to no live entity.
 
-   Accepts every shape a caller can hand a `:db.type/ref` slot: a Datomic
-   Entity map (read :db/id directly), a `{:db/id eid}` map, an eid Long, an
-   ident keyword, a Datomic lookup-ref vector `[:unique-attr v]`, and a
-   single-key upsert map `{:db/ident kw}` / `{<unique-identity-attr> v}` (the
-   codec's ref shape) — converted to a lookup-ref before resolution because
-   `db/entity` returns an associative value UNCHANGED (so an upsert map would
-   otherwise resolve to itself and yield a nil :db/id).
+   A 1-line forwarder into the substrate canon `sandbar.db.ref/ref->eid`
+   (S7 BU-0 / ruling R13), supplying the CURRENT db.  Accepts every shape a
+   caller can hand a `:db.type/ref` slot — a Datomic Entity map, a `{:db/id eid}`
+   map, an eid Long, an ident keyword (resolved THROUGH the db, curing the
+   `(:db/id keyword)→nil` sentinel collapse, S6-review #1), a Datomic lookup-ref
+   vector `[:unique-attr v]`, and a single-key upsert map `{:db/ident kw}` /
+   `{<unique-identity-attr> v}` (the codec's ref shape).
 
-   The single ref→eid canon shared by two callers that MUST agree: the
-   card-many replace diff (stable set-membership comparison) and `make`'s
-   pre-transact ref coercion.  nil ⇒ unresolvable — treated as a non-matching
-   member by the diff, and (in `make`) left uncoerced so validation rejects it
-   loudly rather than silently dropping it.
+   The single ref→eid canon shared by callers that MUST agree: the card-many
+   replace diff (stable set-membership comparison), `make`'s pre-transact ref
+   coercion, and `value-matches-range?`'s existence check.  nil ⇒ unresolvable
+   — treated as a non-matching member by the diff, and (in `make`) left
+   uncoerced so validation rejects it loudly rather than silently dropping it.
+
+   Delegates to the true-leaf `sandbar.db.ref` so `sandbar.firewall.*` and
+   `sandbar.mcp.clearance` share the identical normalization without pulling
+   this ns (acyclicity, ruling R14).
 
    Per bugs/dt_make_ref_slots_reject_eids_and_silently_drop_maps_2026_07_02.md
    (validation-and-transaction disagreed on ref shapes; upsert maps validated
    then silently dropped on the single-tx create path)."
   [v]
-  (cond
-    (nil? v)                                    nil
-    (and (associative? v) (contains? v :db/id)) (:db/id v)
-    ;; Single-key upsert map (e.g. {:db/ident kw}): db/entity returns an
-    ;; associative value as-is, so resolve via an explicit lookup-ref.
-    (and (map? v) (= 1 (count v)))
-    (let [[k val] (first v)]
-      (some-> (try (db/entity [k val]) (catch Throwable _ nil)) :db/id))
-    :else (some-> (try (db/entity v) (catch Throwable _ nil)) :db/id)))
+  (ref/ref->eid (db/db) v))
 
 (defn- ref-valued-slot?
   "True if `slot-ident`'s property is a `:db.type/ref` slot (its values name
@@ -642,6 +717,13 @@
      (when-not class-ident
        (throw (ex-info "update-entity! requires entity to have :dt/type"
                        {:entity entity :merged merged})))
+     ;; S7 CA-1: UNCONDITIONAL firewall floor — OUTSIDE the `validate?` block so
+     ;; an update ADDING a forbidden governed edge is refused whether or not the
+     ;; caller ran schema validation.  Checks the MERGED shape (existing slots +
+     ;; updates) so the src label reflects the entity's real visibility /
+     ;; owning-project, and every governed edge on the post-update entity is
+     ;; evaluated (an update introducing a public→private `cites` throws).
+     (firewall-guard! class-ident (dissoc merged :db/id))
      (when validate?
        (when-let [errors (validate-data class-ident (dissoc merged :db/id :dt/type))]
          (log/debug :DT/UPDATE-VALIDATION-FAILED {:class class-ident :errors errors})
@@ -1124,9 +1206,19 @@
                           (db/db) eid))
          pred-set  (when predicate
                      (set (if (sequential? predicate) predicate [predicate])))
+         db-now    (db/db)
+         ;; S7 EP-3 (BU-5 / R16): a governed edge whose firewall verdict
+         ;; REFUSES is REWRITTEN — {:predicate :blocked true :reason ...} with
+         ;; NO :target key (key ABSENCE, not a sentinel, so a client feeding
+         ;; :target onward gets nil, never a fake entity).  The forbidden hop
+         ;; is src=eid → slot → tgt=v; principal-INDEPENDENT.  A PERMITTED /
+         ;; exempt edge projects its :target normally.
          project   (fn [[a v]]
-                     {:predicate (or (:db/ident (db/entity a)) a)
-                      :target    (db/entity v)})
+                     (let [slot (or (:db/ident (db/entity a)) a)]
+                       (if (fw-enforce/hop-forbidden? db-now eid slot v)
+                         {:predicate slot :blocked true
+                          :reason :firewall/flow-forbidden}
+                         {:predicate slot :target (db/entity v)})))
          match?    (if pred-set
                      (fn [edge] (pred-set (:predicate edge)))
                      (constantly true))]
@@ -1169,9 +1261,18 @@
                           (db/db) eid))
          pred-set  (when predicate
                      (set (if (sequential? predicate) predicate [predicate])))
+         db-now    (db/db)
+         ;; S7 EP-3 (BU-5 / R16): an inbound edge is the WRITTEN edge
+         ;; s → slot → eid (s is the source that authored it; this entity is
+         ;; the target).  Its firewall verdict is the per-hop verdict on that
+         ;; written direction; a FORBIDDEN inbound edge is listed-as-broken
+         ;; (no :source key) from this end too — symmetric with outbound.
          project   (fn [[s a]]
-                     {:predicate (or (:db/ident (db/entity a)) a)
-                      :source    (db/entity s)})
+                     (let [slot (or (:db/ident (db/entity a)) a)]
+                       (if (fw-enforce/hop-forbidden? db-now s slot eid)
+                         {:predicate slot :blocked true
+                          :reason :firewall/flow-forbidden}
+                         {:predicate slot :source (db/entity s)})))
          match?    (if pred-set
                      (fn [edge] (pred-set (:predicate edge)))
                      (constantly true))]
@@ -1323,6 +1424,24 @@
            (or (nil? pred-set)
                (pred-set (or (:db/ident (db/entity a)) a))))
 
+         db-now         (db/db)
+
+         ;; S7 EP-3 (BU-5 / CA-2): the blocked-hop verdict for one walk-frontier
+         ;; ref-datom row, applied BEFORE the target enters the next frontier.
+         ;; A :forward row is the written edge from-frontier → slot → to-new; an
+         ;; :inverse row `[?n ?a ?f]` binds ?f=from-frontier (object) / ?n=to-new
+         ;; (subject), so the written edge is to-new → slot → from-frontier.
+         ;; Governs whichever physical direction the datom was authored in;
+         ;; principal-INDEPENDENT.  Without this, navigate.walk fully bypasses
+         ;; EP-3 (walk.clj → graph-walk-from's direct d/q, not edges-of).
+         hop-blocked?
+         (fn [{:keys [from-frontier to-new attr direction]}]
+           (let [slot (or (:db/ident (db/entity attr)) attr)]
+             (boolean
+               (if (= :inverse direction)
+                 (fw-enforce/hop-forbidden? db-now to-new slot from-frontier)
+                 (fw-enforce/hop-forbidden? db-now from-frontier slot to-new)))))
+
          step-edges
          (fn [frontier-eids]
            (let [forward-rows (when forward?
@@ -1359,7 +1478,16 @@
          (zero? (count frontier)) (persistent! results)
          (>= hop hops)            (persistent! results)
          :else
-         (let [discovered
+         (let [;; S7 EP-3 (CA-2): partition the step-edges into FORBIDDEN
+               ;; (dropped from the frontier, surfaced as {:blocked true} rows
+               ;; with NO :entity — the audit signal) and PERMITTED (traversed
+               ;; normally).  A forbidden target NEVER enters `visited`/frontier,
+               ;; so navigate.walk cannot reach a private target from a public
+               ;; source.
+               all-edges  (step-edges (keys frontier))
+               blocked    (filterv hop-blocked? all-edges)
+               allowed    (remove hop-blocked? all-edges)
+               discovered
                (reduce
                  (fn [acc edge]
                    (let [{:keys [from-frontier to-new attr direction]} edge]
@@ -1377,15 +1505,44 @@
                                  :path   (when include-paths?
                                            (conj parent-path step))})))))
                  {}
-                 (step-edges (keys frontier)))]
+                 allowed)
+               ;; Blocked rows carry the predicate + reason but NO :entity/:target
+               ;; and NO :path advance — one per forbidden ref-datom.  Dedup is
+               ;; keyed on [predicate to-new] (NOT the emitted row): a single
+               ;; forbidden target reached via the same predicate twice in one
+               ;; hop collapses to one row, but TWO distinct forbidden targets on
+               ;; the SAME card-many predicate each yield their own row so the
+               ;; S10 audit signal counts one row per forbidden ref-datom (R16).
+               ;; `to-new` is the DEDUP KEY only — it never enters the wire row
+               ;; (no :target eid/ident leaks; key ABSENCE, not a sentinel).  A
+               ;; global seen-set (not `distinct`/`dedupe`) is required because
+               ;; forbidden edges are NOT sorted by key within a hop.
+               blocked-rows
+               (:rows
+                 (reduce
+                   (fn [{:keys [seen rows] :as acc} {:keys [attr to-new]}]
+                     (let [pred (or (:db/ident (db/entity attr)) attr)
+                           k    [pred to-new]]
+                       (if (contains? seen k)
+                         acc
+                         {:seen (conj seen k)
+                          :rows (conj rows
+                                      {:predicate pred
+                                       :blocked   true
+                                       :reason    :firewall/flow-forbidden
+                                       :hop       (inc hop)})})))
+                   {:seen #{} :rows []}
+                   blocked))]
            (recur (inc hop)
                   (into visited (keys discovered))
                   (into {} (map (fn [[eid r]] [eid (:path r)])) discovered)
-                  (reduce
-                    (fn [acc [_ r]]
-                      (conj! acc (if include-paths? r (dissoc r :path))))
-                    results
-                    discovered))))))))
+                  (as-> results $
+                    (reduce
+                      (fn [acc [_ r]]
+                        (conj! acc (if include-paths? r (dissoc r :path))))
+                      $
+                      discovered)
+                    (reduce conj! $ blocked-rows)))))))))
 
 (defn search-fulltext
   "Single-attribute fulltext search via Datomic + Lucene.

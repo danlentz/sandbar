@@ -861,4 +861,152 @@
    :mm.project/runs-in-context :context/UNASSIGNED  ;; required tie; the seeded :mm/Context sentinel (batch iv) — range-valid :mm/Context, NOT :context/Empty
    :db/doc "Sentinel :mm/Project the owning-project default resolves to when a memory carries no :mm.memory/owning-project.  A sentinel VALUE, not a type.  default-visibility :private = fail-closed (an unassigned memory reads private + is confined until assigned).  Seeded in schema EDN so it exists at first write (the clearance read helper + S9 routing resolve absent owning-project to this).  runs-in-context ties to the seeded :context/UNASSIGNED :mm/Context sentinel (batch iv) — :context/Empty is a :context/Context and would fail the :dt/range :mm/Context.  Per DESIGN-ONTOLOGY §4.2."}]
 
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; S7 BU-6 — the 3 directional-firewall :mm/Shape seeds, RETARGETED to the S6
+;; STRING carriers (S7-PLAN §6; S6 minted NO RepoHandle — corpus-repo is a
+;; string).  Charter idents KEPT for receipt-chain traceability (ruled §8-R18);
+;; the retarget is doc-noted per shape.  Genuine single-entity invariants (C3),
+;; disjoint from the two-entity flow rule (EP-1/EP-3 — sandbar.firewall.*).
+;;
+;; Seed idiom follows the interval XOR precedent (mm-temporal.edn):
+;;   - Constraint sub-entities carry BOTH a tempid (the shape must reference
+;;     them by explicit :db/id within the same tx) AND a stable upsert key so
+;;     initialize-db!'s per-boot schema retransaction is idempotent (the RULE
+;;     at mm-temporal.edn — schema-seeded ref sub-entities without a stable
+;;     key proliferate on reload).
+;;   - The :mm.shape/PatternConstraint sub-entities use a stable :db/ident
+;;     (exactly the XOR discipline — check-pattern re-resolves keyword refs
+;;     via ->entity).
+;;   - The :mm/Fn validator sub-entities DELIBERATELY carry NO :db/ident:
+;;     Datomic's entity API derefs a ref to an ident-bearing entity as the
+;;     ident KEYWORD (the enum-ref behavior; cf. clearance ref-collapse bug
+;;     2026-07-06), and sandbar.shape/check-validator-fn reads
+;;     :dt.fn/source-ns/:dt.fn/source-var directly off the deref'd ref — an
+;;     ident here would collapse the fn ref to a keyword and fail EVERY
+;;     entity closed.  Reload idempotence comes from the :db.unique/identity
+;;     :mm.memory/identity upsert key instead (fixed UUIDs below; stable
+;;     upsert keys, not rel-path-derived — these are DB-only sub-entities).
+;;     The fn IMPLS live on the peer classpath (sandbar.shape.safety, defdbfn
+;;     :classpath-fn — the walker-fn registration pattern) and are resolved
+;;     lazily via requiring-resolve, so the seeds are live in bare-schema
+;;     test fixtures too (which load :required-schema only, never
+;;     load-all-mm-fn-memorials).
+;;
+;; NB :mm.shape/applies-to is :db.cardinality/one (mm.edn), so the charter's
+;; ":mm/Project + :mm/Codebase" target for no-absolute-path is seeded as TWO
+;; shape entities — the charter-ident shape (Project) + an explicitly-named
+;; -codebase sibling carrying the Codebase leg.  Same invariant, same regex.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [;; The 4 :mm.shape/PatternConstraint sub-entities — ONE negative regex
+  ;; (L-2/R7: location is registry-resolved, never corpus-baked): a value
+  ;; passes iff it is NOT absolute (`^/`, `^~`, `^[A-Za-z]:\`), carries NO
+  ;; `file://` scheme, and contains NO `..` traversal.  check-pattern skips
+  ;; absent slots and checks card-many slots per-value (push-allowlist "each").
+  {:db/id #db/id[:db.part/user -111]
+   :db/ident :memory.shapes.pattern/project-corpus-repo-not-absolute
+   :dt/type :mm.shape/PatternConstraint
+   :mm.shape.pattern/property :mm.project/corpus-repo
+   :mm.shape.pattern/regex "\\A(?![/~]|[A-Za-z]:\\\\)(?!.*file://)(?!.*\\.\\.).*\\z"}
+
+  {:db/id #db/id[:db.part/user -112]
+   :db/ident :memory.shapes.pattern/project-push-allowlist-not-absolute
+   :dt/type :mm.shape/PatternConstraint
+   :mm.shape.pattern/property :mm.project/push-allowlist
+   :mm.shape.pattern/regex "\\A(?![/~]|[A-Za-z]:\\\\)(?!.*file://)(?!.*\\.\\.).*\\z"}
+
+  {:db/id #db/id[:db.part/user -113]
+   :db/ident :memory.shapes.pattern/codebase-repo-root-not-absolute
+   :dt/type :mm.shape/PatternConstraint
+   :mm.shape.pattern/property :mm.codebase/repo-root
+   :mm.shape.pattern/regex "\\A(?![/~]|[A-Za-z]:\\\\)(?!.*file://)(?!.*\\.\\.).*\\z"}
+
+  {:db/id #db/id[:db.part/user -114]
+   :db/ident :memory.shapes.pattern/codebase-canonical-reference-not-absolute
+   :dt/type :mm.shape/PatternConstraint
+   :mm.shape.pattern/property :mm.codebase/canonical-reference
+   :mm.shape.pattern/regex "\\A(?![/~]|[A-Za-z]:\\\\)(?!.*file://)(?!.*\\.\\.).*\\z"}
+
+  ;; The 2 :mm/Fn validator sub-entities (NO :db/ident — see banner).
+  {:db/id #db/id[:db.part/user -115]
+   :dt/type :mm/Fn
+   :mm.memory/identity #uuid "23e85a5e-0dcb-4a12-a456-9200121d8e82"
+   :dt.fn/source-ns "sandbar.shape.safety"
+   :dt.fn/source-var "check-project-layout-safety"
+   :dt.fn/lang :clojure
+   :dt.fn/purpose :validate
+   :dt.fn/purity :pure-total
+   :dt.fn/cost-class :cheap
+   :dt.fn/installed-as :classpath-fn
+   :dt.fn/version "1.0.0"
+   :dt.fn/description "Delegate for :mm.shape/project-layout-safety — a :submodule/:subdir corpus-layout's corpus-repo must stay inside the project's own tree.  Impl: sandbar.shape.safety/check-project-layout-safety."}
+
+  {:db/id #db/id[:db.part/user -116]
+   :dt/type :mm/Fn
+   :mm.memory/identity #uuid "9fa0a391-5454-49e6-87a3-9c8c4094e532"
+   :dt.fn/source-ns "sandbar.shape.safety"
+   :dt.fn/source-var "check-repo-handle-url-safety"
+   :dt.fn/lang :clojure
+   :dt.fn/purpose :validate
+   :dt.fn/purity :pure-total
+   :dt.fn/cost-class :cheap
+   :dt.fn/installed-as :classpath-fn
+   :dt.fn/version "1.0.0"
+   :dt.fn/description "Delegate for :mm.shape/repo-handle-url-safety — a :public-default project carrying a populated corpus-repo URL without explicit code-ref-public? consent is a :violation (L-6).  Impl: sandbar.shape.safety/check-repo-handle-url-safety."}
+
+  ;; The 4 :mm/Shape entities referencing the sub-entities via tempid.
+  {:db/ident              :mm.shape/project-layout-safety
+   :dt/type               :mm/Shape
+   :mm.shape/shape-id     "project-layout-safety"
+   :mm.shape/applies-to   :mm/Project
+   :mm.shape/description  "Cross-slot layout invariant (S7-PLAN §6): a :submodule/:subdir :mm.project/corpus-layout's corpus-repo path must not escape the project's own tree (a submodule crossing a visibility boundary).  Boundary: absolute-path/..-traversal REJECTION is :mm.shape/no-absolute-path's job; this shape's specific concern is in-tree confinement for the in-tree layouts (a remote URL, legal under no-absolute-path, is NOT in-tree here).  Other layouts pass unexamined."
+   :mm.shape/severity     :violation
+   :mm.shape/validator-fn #db/id[:db.part/user -115]}
+
+  {:db/ident              :mm.shape/no-absolute-path
+   :dt/type               :mm/Shape
+   :mm.shape/shape-id     "no-absolute-path"
+   :mm.shape/applies-to   :mm/Project
+   :mm.shape/description  "Path-safety invariant (S7-PLAN §6, L-2/R7): :mm.project/corpus-repo + :mm.project/push-allowlist (each) must not be absolute (^/, ^~, ^[A-Za-z]:\\, file://) and must carry no .. traversal — location is registry-resolved, never corpus-baked.  The :mm/Codebase leg of the charter shape lives on :mm.shape/no-absolute-path-codebase (:mm.shape/applies-to is card-one)."
+   :mm.shape/severity     :violation
+   :mm.shape/pattern-constraints [#db/id[:db.part/user -111]
+                                  #db/id[:db.part/user -112]]}
+
+  {:db/ident              :mm.shape/no-absolute-path-codebase
+   :dt/type               :mm/Shape
+   :mm.shape/shape-id     "no-absolute-path-codebase"
+   :mm.shape/applies-to   :mm/Codebase
+   :mm.shape/description  "The :mm/Codebase leg of :mm.shape/no-absolute-path (same L-2/R7 invariant, same regex; split ONLY because :mm.shape/applies-to is card-one): :mm.codebase/repo-root + :mm.codebase/canonical-reference must not be absolute and must carry no .. traversal.  NB this tightens repo-root's legacy 'absolute filesystem path' doc per the S7 charter — the path is registry-resolved henceforth."
+   :mm.shape/severity     :violation
+   :mm.shape/pattern-constraints [#db/id[:db.part/user -113]
+                                  #db/id[:db.part/user -114]]}
+
+  {:db/ident              :mm.shape/repo-handle-url-safety
+   :dt/type               :mm/Shape
+   :mm.shape/shape-id     "repo-handle-url-safety"
+   :mm.shape/applies-to   :mm/Project
+   :mm.shape/description  "RETARGETED (S7-PLAN §6, ruled §8-R18): charter ident kept though S6 minted NO RepoHandle — applies-to :mm/Project ONLY (code-ref-public? lives on Project; a Codebase-side check would be cross-entity, which SHACL cannot express; the Codebase leg's path safety is no-absolute-path-codebase's job).  A :public default-visibility project carrying a populated :mm.project/corpus-repo URL with :mm.project/code-ref-public? absent-or-false is a :violation (L-6; absent => false per ruling 6).  The seeded UNASSIGNED sentinel value counts as UNpopulated."
+   :mm.shape/severity     :violation
+   :mm.shape/validator-fn #db/id[:db.part/user -116]}
+
+  ;; FUTURE-BRANCH fixture (COMMENTED, UNSEEDED — unfalsifiable today, per
+  ;; S7-PLAN §6): RepoHandle-origin-url.  The day :mm/RepoHandle mints, seed
+  ;; the pair below + the one-line applies-to retarget of
+  ;; :mm.shape/repo-handle-url-safety back to :mm/RepoHandle.
+  ;;
+  ;; {:db/id #db/id[:db.part/user -117]
+  ;;  :db/ident :memory.shapes.pattern/repo-handle-origin-url-not-absolute
+  ;;  :dt/type :mm.shape/PatternConstraint
+  ;;  :mm.shape.pattern/property :mm.repo-handle/origin-url
+  ;;  :mm.shape.pattern/regex "\\A(?![/~]|[A-Za-z]:\\\\)(?!.*file://)(?!.*\\.\\.).*\\z"}
+  ;;
+  ;; {:db/ident              :mm.shape/repo-handle-origin-url-safety
+  ;;  :dt/type               :mm/Shape
+  ;;  :mm.shape/shape-id     "repo-handle-origin-url-safety"
+  ;;  :mm.shape/applies-to   :mm/RepoHandle
+  ;;  :mm.shape/description  "origin-url is registry-resolved, never absolute/corpus-baked (L-2/R7)."
+  ;;  :mm.shape/severity     :violation
+  ;;  :mm.shape/pattern-constraints [#db/id[:db.part/user -117]]}
+  ]
+
 ]

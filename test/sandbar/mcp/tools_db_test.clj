@@ -25,6 +25,7 @@
   this commit."
   (:require [cheshire.core      :as json]
             [clojure.test       :refer :all]
+            [datomic.api        :as d]
             [sandbar.db.datatype :as dt]
             [sandbar.db.datomic :as db]
             [sandbar.mcp.tools  :as tools]
@@ -299,6 +300,66 @@
                        {"class" "not-a-thing"
                         "slots" {}})]
     (is (user-error? response))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; S7 entity.validate firewall ADVISORY arm (CA-1.3 / R19) — the read-only
+;; verb must surface the SAME firewall verdict the commit floor throws, so a
+;; caller cannot get a clean bill here and then have entity.create refuse the
+;; identical spec.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defn- seed-fw-world! []
+  ;; RAW transact (bypassing EP-1) so the fixtures — incl. a private target —
+  ;; exist without tripping the guard we are about to exercise via validate.
+  ;; Ordered txns: a :db/ident ref only resolves against the COMMITTED db, so
+  ;; contexts must land before the projects that reference them, etc.
+  @(d/transact (db/conn)
+     [{:db/ident :ctx/home :dt/type :mm/Context :mm.memory/name "home"
+       :mm.context/firewall-class :public-bottom}
+      {:db/ident :ctx/work :dt/type :mm/Context :mm.memory/name "work"
+       :mm.context/firewall-class :project-isolated}])
+  @(d/transact (db/conn)
+     [{:db/ident :proj/pub :dt/type :mm/Project :mm.memory/name "pub"
+       :mm.project/ident :proj/pub :mm.project/corpus-repo "r"
+       :mm.project/default-visibility :public
+       :mm.project/firewall-class :public-bottom
+       :mm.project/runs-in-context :ctx/home}
+      {:db/ident :proj/priv :dt/type :mm/Project :mm.memory/name "priv"
+       :mm.project/ident :proj/priv :mm.project/corpus-repo "r"
+       :mm.project/default-visibility :private
+       :mm.project/runs-in-context :ctx/work}])
+  @(d/transact (db/conn)
+     [{:db/ident :mem/priv-target :dt/type :mm/Memory :mm.memory/name "pt"
+       :mm.memory/visibility :private :mm.memory/owning-project :proj/priv}]))
+
+(deftest entity-validate-surfaces-firewall-violation
+  (seed-fw-world!)
+  (let [priv-eid (:db/id (d/entity (db/db) :mem/priv-target))]
+    (testing "a public→private spec that entity.create would REFUSE reports
+              :valid? false with a :firewall-violation error (no advisory
+              divergence from the commit floor)"
+      (let [response (call "sandbar.entity.validate"
+                           {"class" ":mm/Memory"
+                            "slots" {"mm.memory/name"           "leaker"
+                                     "mm.memory/visibility"     ":public"
+                                     "mm.memory/owning-project" ":proj/pub"
+                                     "mm.memory/cites"          priv-eid}})
+            body     (json/parse-string (error-text response) true)]
+        (is (false? (:valid? body)))
+        (is (some #(= "firewall-violation" (:type %))
+                  (get-in body [:errors :errors]))
+            (str "entity.validate must surface the firewall verdict; got "
+                 (pr-str body)))))
+    (testing "a permitted private→public spec reports :valid? true"
+      (let [pub-mem (:db/id (d/entity (db/db) :mem/priv-target)) ; reuse world
+            response (call "sandbar.entity.validate"
+                           {"class" ":mm/Memory"
+                            "slots" {"mm.memory/name"           "clean"
+                                     "mm.memory/visibility"     ":private"
+                                     "mm.memory/owning-project" ":proj/priv"}})
+            body     (json/parse-string (error-text response) true)]
+        (is (true? (:valid? body))
+            (str "a non-leaking spec must validate clean; got " (pr-str body)))))))
 
 (deftest entity-find-bogus-ident-returns-missing-not-error
   (testing "entity-find has FIND-OR-MISSING semantic — does NOT raise on
