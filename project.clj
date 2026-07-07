@@ -123,7 +123,10 @@
             "list-dbs"            ["run" "-m" "sandbar.scripts.list-dbs"]
             "seed-verb-catalog"   ["run" "-m" "sandbar.scripts.seed-verb-catalog"]
             "affordance-map"      ["run" "-m" "sandbar.scripts.affordance-map"]
-            "verb-edges-map"      ["run" "-m" "sandbar.scripts.verb-edges-map"]}
+            "verb-edges-map"      ["run" "-m" "sandbar.scripts.verb-edges-map"]
+            "memory-open-affordance" ["run" "-m" "sandbar.scripts.memory-open-affordance"]
+            "catalog-check"       ["run" "-m" "sandbar.scripts.catalog-check"]
+            "catalog-regen"       ["do" ["affordance-map"] ["verb-edges-map"] ["memory-open-affordance"]]}
 
 
   :asciidoc {:sources ["doc/*.adoc"]
