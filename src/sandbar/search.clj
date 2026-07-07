@@ -18,6 +18,7 @@
   Per fulltext arc plan §1.1, §1.6, §6.5 of
   plans/sandbar_fulltext_search_substrate_arc_2026_05_13.md."
   (:require [clojure.set]
+            [clojure.tools.logging   :as log]
             [sandbar.api.projection  :as projection]
             [sandbar.db.datatype     :as dt]
             [sandbar.db.datomic      :as db]
@@ -331,11 +332,21 @@
 ;; keyed invalidation produces 0% hit rate.  Instead, mutators of class
 ;; instances call `entity-changed!` / `entity-removed!` post-transact:
 ;;
-;;   - sandbar.mcp.tools/entity-create-handler — fires entity-changed!
-;;     after dt/make on the new entity
-;;   - sandbar.mcp.tools/entity-update-handler — fires entity-changed!
-;;     after dt/update-entity! on the updated entity
+;;   - sandbar.mcp.tools/entity-create-handler — enqueues entity-changed!
+;;     (via entity-changed-async!) after dt/make on the new entity
+;;   - sandbar.mcp.tools/entity-update-handler — enqueues entity-changed!
+;;     (via entity-changed-async!) after dt/update-entity! on the updated
+;;     entity
 ;;   - test fixtures — clear via clear-bm25f-cache! (see search_test fixture)
+;;
+;; Since 2026-07-07 (arc/bm25f-async-index) the MCP write path enqueues
+;; the refresh onto a dedicated single-thread executor instead of running
+;; it inline — entity-changed! is ~144ms for a 6.5KB body (tokenize +
+;; ref-resolution dominates) and was the dominant per-write cost, causing
+;; MCP-client response timeouts on larger writes.  The index is therefore
+;; EVENTUALLY-CONSISTENT after writes; readers that need read-your-writes
+;; call `await-bm25f-quiescent!` (the MCP search.bm25f + tag.lookup
+;; handlers do).
 ;;
 ;; Per-class because each :mm/* class has its own :dt/bm25f-weights.
 ;; Per-entity because file-level edits (one :mm/Memory per file in the
@@ -476,6 +487,115 @@
   (when (seq (dt/effective-bm25f-weights-of class))
     (swap! bm25f-entry-cache update class dissoc eid)
     (swap! bm25f-stats-cache dissoc class)))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Async BM25F refresh (2026-07-07 — arc/bm25f-async-index)
+;;
+;; entity-changed! is the dominant per-write cost on the MCP write path
+;; (~144ms for a 6.5KB body; scales with body size — it re-tokenizes the
+;; full body-raw and resolves ref-typed tag/theme slots).  Running it
+;; inline on the write-RESPONSE path caused MCP-client request timeouts
+;; on larger writes (the write itself commits sub-ms; only the response
+;; stalled).  `entity-changed-async!` moves the refresh onto a dedicated
+;; single-thread daemon executor so the write returns immediately.
+;;
+;; Why a dedicated executor and NOT the reactive-projection queue
+;; (sandbar.reactive.queue):
+;;   - the reactive queue's sinks fire at the dt/make/update-entity!
+;;     substrate boundary for ALL mutation paths with an
+;;     [eid post-tx-slots] payload — registering a BM25F sink there is
+;;     the larger architectural move (all-mutator index refresh), kept
+;;     as a follow-up, not this minimal fix;
+;;   - its worker is a core.async go-loop; parking 144ms+ of blocking
+;;     tokenization + Datalog ref-resolution inside a go block starves
+;;     the fixed core.async dispatch pool;
+;;   - its per-entity coalescing drops the entity-map payload that
+;;     entity-changed! needs.
+;;
+;; Guarantees:
+;;   - FIFO single-thread ⇒ per-entity refresh order == write order,
+;;     and a no-op marker task doubles as a quiescence barrier
+;;     (`await-bm25f-quiescent!`).
+;;   - Worker errors are LOGGED + counted, never rethrown — the write
+;;     already committed; a failed refresh must never surface as a
+;;     write error.
+;;   - Cross-restart durability is inherent: `warm-bm25f-cache!`
+;;     rebuilds the whole cache from the DB at JVM startup, so a
+;;     refresh lost to JVM death is repaired at next start.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defonce ^:private bm25f-refresh-executor
+  (java.util.concurrent.Executors/newSingleThreadExecutor
+   (reify java.util.concurrent.ThreadFactory
+     (newThread [_ r]
+       (doto (Thread. ^Runnable r "sandbar-bm25f-refresh")
+         (.setDaemon true))))))
+
+(defonce bm25f-refresh-stats
+  ;; Observability + test surface: cumulative counters since JVM start.
+  (atom {:enqueued 0 :completed 0 :failed 0}))
+
+(defn entity-changed-async!
+  "Enqueue `(entity-changed! class entity-map)` onto the dedicated
+  single-thread BM25F refresh executor and return immediately.
+
+  The refresh runs asynchronously — the BM25F index is EVENTUALLY-
+  CONSISTENT after the caller's write.  Callers needing read-your-writes
+  (tests; the MCP read handlers) call `await-bm25f-quiescent!` first.
+
+  Semantics preserved from the sync call: the enqueued job is exactly
+  `entity-changed!` (still a direct-path no-op when the class has no
+  :dt/bm25f-weights; transitive invalidation still runs).  Job failures
+  are logged (:SEARCH/bm25f-async-refresh-failed) + counted in
+  `bm25f-refresh-stats`, never rethrown — the write already committed.
+
+  Returns the java.util.concurrent.Future for the enqueued job."
+  [class entity-map]
+  (swap! bm25f-refresh-stats update :enqueued inc)
+  (let [^java.util.concurrent.ExecutorService ex bm25f-refresh-executor]
+    (.submit ex
+             ^Runnable
+             (fn []
+               (try
+                 ;; Late-bound var deref (NOT a captured fn value) so
+                 ;; with-redefs in tests governs the worker too.
+                 (entity-changed! class entity-map)
+                 (swap! bm25f-refresh-stats update :completed inc)
+                 (catch Throwable t
+                   (swap! bm25f-refresh-stats update :failed inc)
+                   (log/warn t :SEARCH/bm25f-async-refresh-failed
+                             {:class     class
+                              :entity-id (:db/id entity-map)})))))))
+
+(defn await-bm25f-quiescent!
+  "Block until every previously-enqueued async BM25F refresh has been
+  processed (completed OR failed-and-logged), up to `timeout-ms`
+  (default 30000).
+
+  Implementation: submits a no-op marker to the single-thread FIFO
+  refresh executor and waits for it — when the marker runs, everything
+  enqueued before it has drained.
+
+  Returns true when quiescent within the timeout; false on timeout
+  (index may still be catching up — callers should proceed with
+  possibly-stale results rather than error).
+
+  This is the sync-flush hook for create-then-search consumers:
+  tests, and the MCP search.bm25f / tag.lookup read handlers (which
+  call it with a short bounded timeout to preserve read-your-writes
+  semantics across the MCP surface)."
+  ([] (await-bm25f-quiescent! 30000))
+  ([timeout-ms]
+   (let [^java.util.concurrent.ExecutorService ex bm25f-refresh-executor
+         marker (.submit ex ^Runnable (fn []))]
+     (try
+       (.get marker timeout-ms java.util.concurrent.TimeUnit/MILLISECONDS)
+       true
+       (catch java.util.concurrent.TimeoutException _
+         (log/warn :SEARCH/bm25f-quiescence-timeout
+                   {:timeout-ms timeout-ms
+                    :stats      @bm25f-refresh-stats})
+         false)))))
 
 (defn warm-bm25f-cache!
   "Cold-warm the BM25F cache for `class` by walking all current instances,
