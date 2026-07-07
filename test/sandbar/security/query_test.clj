@@ -129,6 +129,121 @@
       (is (map? d))
       (is (= 'clojure.java.shell/sh (:offending-symbol d))))))
 
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; MUST-FIX #1/#2 — collection-literal launder: a forbidden call hidden inside a
+;; MAP or SET literal (which are neither seq? nor sequential?) under an
+;; allowlisted head.  Before the (coll? form) walk these reached d/q and were
+;; EXECUTED by Datomic.  Each MUST reject with :reason + :offending-symbol =
+;; the forbidden head.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(deftest reject-map-literal-value-launder
+  (testing "a forbidden call hidden in a MAP VALUE under an allowlisted head is
+            rejected (map is not sequential? — the live bypass)"
+    (let [d (rejected? '[[(= ?n {:k (clojure.java.shell/sh "touch" "/tmp/pwn")})]])]
+      (is (map? d))
+      (is (= :operator-not-allowlisted (:reason d)))
+      (is (= 'clojure.java.shell/sh (:offending-symbol d))))))
+
+(deftest reject-map-literal-key-launder
+  (testing "a forbidden call hidden in a MAP KEY is rejected (both keys and vals
+            are walked)"
+    (let [d (rejected? '[[(= ?n {(clojure.java.shell/sh "id") :whatever})]])]
+      (is (map? d))
+      (is (= :operator-not-allowlisted (:reason d)))
+      (is (= 'clojure.java.shell/sh (:offending-symbol d))))))
+
+(deftest reject-set-literal-launder
+  (testing "a forbidden call hidden in a SET MEMBER under an allowlisted head is
+            rejected (set is not sequential? — the second live bypass)"
+    (let [d (rejected? '[[(= ?n #{(clojure.java.shell/sh "id")})]])]
+      (is (map? d))
+      (is (= :operator-not-allowlisted (:reason d)))
+      (is (= 'clojure.java.shell/sh (:offending-symbol d))))))
+
+(deftest reject-vector-in-map-launder
+  (testing "a forbidden call in a VECTOR nested inside a MAP value is rejected"
+    (let [d (rejected? '[[(= ?n {:k [(clojure.core/spit "/tmp/pwn" "x")]})]])]
+      (is (map? d))
+      (is (= :operator-not-allowlisted (:reason d)))
+      (is (= 'clojure.core/spit (:offending-symbol d))))))
+
+(deftest reject-map-in-set-launder
+  (testing "a forbidden call in a MAP nested inside a SET is rejected"
+    (let [d (rejected? '[[(= ?n #{{:k (clojure.core/slurp "/etc/passwd")}})]])]
+      (is (map? d))
+      (is (= :operator-not-allowlisted (:reason d)))
+      (is (= 'clojure.core/slurp (:offending-symbol d))))))
+
+(deftest reject-deeply-nested-mixed-launder
+  (testing "a forbidden call buried in a deeply-nested map/vector/set/map mix
+            under an allowlisted head is still reached and rejected"
+    (let [d (rejected?
+             '[[(= ?n {:a [#{{:b (deref (future (clojure.java.shell/sh "id")))}}]})]])]
+      (is (map? d))
+      (is (= :operator-not-allowlisted (:reason d)))
+      ;; deref is the outermost forbidden head reached inside the nesting
+      (is (= 'deref (:offending-symbol d))))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; MUST-FIX #4/#5 — over-block CORRECTNESS: legit forms that must now PASS.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(deftest accept-datomic-query-builtins
+  (testing "the safe Datomic query built-ins (resolve to nil — NOT classpath
+            vars) pass via the separate name passlist"
+    (let [w '[[(missing? $ ?e :mm.memory/scope)]]]
+      (is (= w (secq/sanitize-where w))))
+    (let [w '[[(get-else $ ?e :mm.memory/scope :none) ?s]]]
+      (is (= w (secq/sanitize-where w))))
+    (let [w '[[(ground [1 2 3]) [?x ...]]]]
+      (is (= w (secq/sanitize-where w))))
+    (let [w '[[(fulltext $ :mm.memory/text "q") [[?e ?v]]]]]
+      (is (= w (secq/sanitize-where w))))
+    (let [w '[[(tuple ?a ?b) ?t]]]
+      (is (= w (secq/sanitize-where w))))
+    (let [w '[[(untuple ?t) [?a ?b]]]]
+      (is (= w (secq/sanitize-where w))))))
+
+(deftest accept-missing?-restored
+  (testing "missing? (on the design-of-record allowlist, silently dropped when
+            the allowlist became var-identity-only) is RESTORED"
+    (is (contains? secq/safe-query-builtin-forms 'missing?))
+    (let [w '[[(missing? $ ?e :mm.memory/memory-type)]]]
+      (is (= w (secq/sanitize-where w))))))
+
+(deftest accept-bare-referred-string-predicates
+  (testing "a bare (un-namespaced) starts-with?/includes? — the SAME fn as the
+            allowlisted clojure.string/... var — passes via the bare-name index"
+    (let [w '[[(starts-with? ?n "auth")]]]
+      (is (= w (secq/sanitize-where w))))
+    (let [w '[[(includes? ?n "auth")]]]
+      (is (= w (secq/sanitize-where w))))
+    (let [w '[[(ends-with? ?n "z")]]]
+      (is (= w (secq/sanitize-where w))))
+    (let [w '[[(blank? ?n)]]]
+      (is (= w (secq/sanitize-where w))))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; MUST-FIX #6 — regex DROPPED from v1 (fork decision): re-matches / re-find are
+;; no longer allowlisted (no d/q timeout to backstop ReDoS).
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(deftest reject-regex-dropped-in-v1
+  (testing "re-find is DROPPED from v1 — now rejected as not-allowlisted"
+    (let [d (rejected? '[[(re-find #"x" ?n)]])]
+      (is (map? d))
+      (is (= :operator-not-allowlisted (:reason d)))
+      (is (= 're-find (:offending-symbol d)))))
+  (testing "re-matches is DROPPED from v1 — now rejected as not-allowlisted"
+    (let [d (rejected? '[[(re-matches #"x+" ?n)]])]
+      (is (map? d))
+      (is (= :operator-not-allowlisted (:reason d)))
+      (is (= 're-matches (:offending-symbol d)))))
+  (testing "the allowlist no longer carries the regex vars"
+    (is (not (contains? secq/safe-query-op-allowlist #'clojure.core/re-find)))
+    (is (not (contains? secq/safe-query-op-allowlist #'clojure.core/re-matches)))))
+
 (deftest reject-nested-logic-v1
   (testing "v1 conservative default: nested logic (or/...) is rejected with the
             distinct :nested-logic-unsupported-v1 reason"
@@ -173,24 +288,44 @@
 
 (def ^:private shell-payload '[[(clojure.java.shell/sh "id") ?x]])
 
+(defn- ex-data-of
+  "Invoke `thunk`; return the ex-data of an ExceptionInfo it throws, else
+  ::not-rejected.  Used to prove the SANITIZER fired (structured :reason +
+  :offending-symbol) rather than some incidental downstream error."
+  [thunk]
+  (try (thunk) ::not-rejected
+       (catch clojure.lang.ExceptionInfo e (ex-data e))))
+
 (deftest wiring-count-of-rejects-before-d-q
   (testing "db.datatype/count-of (splice site datatype.clj:949) rejects the
-            shell payload from sanitize-where before ever touching (db/db)/d/q"
-    (is (thrown? clojure.lang.ExceptionInfo
-                 (dt/count-of :mm/Memory shell-payload)))))
+            shell payload from sanitize-where before ever touching (db/db)/d/q —
+            and the ex-data proves THE SANITIZER fired, not an incidental error"
+    (let [d (ex-data-of #(dt/count-of :mm/Memory shell-payload))]
+      (is (map? d))
+      (is (= 'sandbar.security.query/sanitize-where (:sanitizer d)))
+      (is (= :operator-not-allowlisted (:reason d)))
+      (is (= 'clojure.java.shell/sh (:offending-symbol d))))))
 
 (deftest wiring-group-by-of-rejects-before-d-q
   (testing "db.datatype/group-by-of (splice site datatype.clj:972) rejects the
-            shell payload before d/q"
-    (is (thrown? clojure.lang.ExceptionInfo
-                 (dt/group-by-of :mm/Memory :mm.memory/memory-type shell-payload)))))
+            shell payload before d/q, with sanitizer ex-data"
+    (let [d (ex-data-of
+             #(dt/group-by-of :mm/Memory :mm.memory/memory-type shell-payload))]
+      (is (map? d))
+      (is (= 'sandbar.security.query/sanitize-where (:sanitizer d)))
+      (is (= :operator-not-allowlisted (:reason d)))
+      (is (= 'clojure.java.shell/sh (:offending-symbol d))))))
 
 (deftest wiring-where-matching-eids-rejects-before-d-q
   (testing "search/where-matching-eids (splice site search.clj:194) rejects the
-            shell payload before d/q (private fn reached via var)"
-    (let [wme (resolve 'sandbar.search/where-matching-eids)]
-      (is (thrown? clojure.lang.ExceptionInfo
-                   (wme :mm/Memory shell-payload))))))
+            shell payload before d/q (private fn reached via var), with
+            sanitizer ex-data"
+    (let [wme (resolve 'sandbar.search/where-matching-eids)
+          d   (ex-data-of #(wme :mm/Memory shell-payload))]
+      (is (map? d))
+      (is (= 'sandbar.security.query/sanitize-where (:sanitizer d)))
+      (is (= :operator-not-allowlisted (:reason d)))
+      (is (= 'clojure.java.shell/sh (:offending-symbol d))))))
 
 (deftest wiring-no-file-written-on-primitive-reject
   (testing "a spit payload routed through count-of throws before d/q AND writes
