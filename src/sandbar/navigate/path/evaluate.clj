@@ -68,7 +68,20 @@
   JSON serialization through MCP/REST stays compact + meaningful."
   (:require [datomic.api :as d]
             [sandbar.db.datomic :as db]
+            [sandbar.firewall.enforce :as fw-enforce]
             [sandbar.navigate.path.value :as pv]))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; S7 EP-3 blocked-hop audit accumulator (R16 / §5 — a forbidden hop is
+;; SURFACED, never silently dropped).  `extend-frontier` is the single choke
+;; point every operator inherits; when this var is bound to an atom (by
+;; `reachable`), each firewall-REFUSED hop is conj'd here so `path-via` can
+;; report the audit signal alongside the (correctly withheld) endpoints.  Nil
+;; for the path-data-only `evaluate-from` entry, where the drop is intended and
+;; the caller does not consume the signal.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(def ^:dynamic *blocked-hops* nil)
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; First-arrival merge — Policy A enforcement helper
@@ -149,14 +162,49 @@
 ;; encountered wins (frontier-as-map natural behavior).
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
+(defn- hop-forbidden?
+  "S7 EP-3 (BU-5 / R15): is the single atomic step `{:from :to :edge}`
+   FORBIDDEN by the firewall under `db`?  The `:edge` carries the predicate +
+   direction; a `:forward` step is the written datom from → pred → to, while an
+   `:inverse` step (`[?t ?pred ?f]`, so `:to` is the subject) is the written
+   datom to → pred → from.  Governs whichever physical direction was authored;
+   principal-INDEPENDENT.  A non-governed predicate is never forbidden."
+  [db {:keys [from to edge]}]
+  (let [pred (:predicate edge)]
+    (boolean
+      (if (= :inverse (:direction edge))
+        (fw-enforce/hop-forbidden? db to pred from)
+        (fw-enforce/hop-forbidden? db from pred to)))))
+
 (defn- extend-frontier
   "Apply step-results to `frontier` — for each {:from :to :edge}
    step, extend frontier[:from]'s path by the edge to reach :to.
-   Returns the new frontier."
-  [frontier step-results]
-  (reduce (fn [acc {:keys [from to edge]}]
-            (if (contains? acc to)
-              acc  ; Policy A — first-arrival wins
+   Returns the new frontier.
+
+   S7 EP-3 (BU-5 / R15): a step whose firewall verdict REFUSES is DROPPED from
+   the frontier — the forbidden endpoint never enters, so a path expression
+   cannot traverse a public→private (or cross-private) hop — AND the refused
+   hop is recorded in `*blocked-hops*` (when bound) so the drop is SURFACED,
+   never silent (R16 / §5 audit signal).  The guard is at this single choke
+   point so every operator (:PREDICATE / :INV / :ANY / :SEQ / :REP* / :REP+)
+   inherits it, principal-INDEPENDENT."
+  [db frontier step-results]
+  (reduce (fn [acc {:keys [from to edge] :as step}]
+            (cond
+              (contains? acc to)      acc  ; Policy A — first-arrival wins
+              (hop-forbidden? db step)      ; S7 EP-3 — forbidden hop dropped…
+              (do (when *blocked-hops*      ; …but recorded (never silent, §5)
+                    ;; R16 wire shape: NO endpoint eid on the row — the dropped
+                    ;; target's eid must not reach the caller (it would disclose
+                    ;; the existence + identity of a forbidden-compartment entity,
+                    ;; the exact metadata leak the edges-of/graph-walk-from
+                    ;; surfaces strip, datatype.clj `to-new never enters the wire`).
+                    (swap! *blocked-hops* conj
+                           {:predicate (:predicate edge)
+                            :blocked   true
+                            :reason    :firewall/flow-forbidden}))
+                  acc)
+              :else
               (let [parent-path (get frontier from)
                     new-path    (pv/extend-path parent-path edge to)]
                 (assoc acc to new-path))))
@@ -178,7 +226,7 @@
   "(:PREDICATE p) — atomic forward step."
   [ast db frontier]
   (let [pred (:predicate ast)]
-    (extend-frontier frontier (atomic-forward-step db pred (keys frontier)))))
+    (extend-frontier db frontier (atomic-forward-step db pred (keys frontier)))))
 
 (defn- evaluate-inv
   "(:INV child) — invert the child's traversal direction.
@@ -192,7 +240,7 @@
   (let [child (first (:args ast))]
     (case (:op child)
       :PREDICATE
-      (extend-frontier frontier
+      (extend-frontier db frontier
                        (atomic-inverse-step db (:predicate child) (keys frontier)))
 
       ;; :INV :ANY — symmetric (any ref edge in either direction);
@@ -205,7 +253,7 @@
                         [?t ?a ?f]
                         [?a :db/valueType :db.type/ref]]
                       db (vec (keys frontier)))]
-        (extend-frontier frontier
+        (extend-frontier db frontier
                          (map (fn [[f a t]]
                                 (let [pred-ident (or (:db/ident (d/entity db a)) a)]
                                   {:from f :to t
@@ -231,7 +279,7 @@
   "(:ANY) — wildcard forward step over ref-typed attributes.
    Mirrors compile-any's R-2 ref-type guard."
   [_ast db frontier]
-  (extend-frontier frontier (atomic-any-step db (keys frontier))))
+  (extend-frontier db frontier (atomic-any-step db (keys frontier))))
 
 (defn- evaluate-restrict
   "(:RESTRICT [pred value]) — keep frontier entries whose endpoint
@@ -421,3 +469,44 @@
             {:eid  eid
              :path (project-path-nodes db path)})
           result-frontier)))
+
+(defn evaluable?
+  "True iff canonical IR tree `ast` contains ONLY operators this evaluator can
+   execute — the Canonical-8 plus the desugarable :OPT / :REP.  False when any
+   :NOT / :FILTER / :TEST node is present (the operators `evaluate-node` throws
+   on: path-data AND the S7 EP-3 per-hop guard are not yet available for them).
+
+   `path-via` uses this to route firewall-governed reachability: an evaluable
+   expression goes through the guarded evaluator (per-hop EP-3 correct); a
+   non-evaluable one falls back to the compiler under a coarse fail-closed
+   endpoint filter (`fw-enforce/endpoint-permitted?`)."
+  [ast]
+  (letfn [(walk [n]
+            (cond
+              (not (map? n))                            true
+              (contains? #{:NOT :FILTER :TEST} (:op n)) false
+              :else (every? walk (concat (:args n)
+                                         (when-let [c (:child n)] [c])))))]
+    (walk ast)))
+
+(defn reachable
+  "Guarded reachability for an `evaluable?` `ast` from `seed-eid` — returns
+   `{:endpoints [{:eid :path} …] :blocked [<blocked-hop> …]}`.  `:endpoints` is
+   the frontier with every firewall-REFUSED hop dropped (per-hop EP-3); every
+   dropped hop is recorded in `:blocked` as the eid-FREE R16 wire row
+   `{:predicate <slot> :blocked true :reason :firewall/flow-forbidden}` (the
+   dropped target's eid is NOT on the row — that would disclose a forbidden-
+   compartment entity's identity), so the traverse-time refusal is SURFACED,
+   not silently lost (R16 / S7-PLAN §5).  The caller (`path-via`) projects
+   `:endpoints` to entity-maps (endpoint-only) or `{:entity :path}` (paths).
+
+   Only pass an `evaluable?` tree; :NOT / :FILTER / :TEST make `evaluate-node`
+   throw (they route through the compiler fallback instead)."
+  [db ast seed-eid]
+  (let [acc      (atom [])
+        frontier (binding [*blocked-hops* acc]
+                   (evaluate-node ast db {seed-eid (pv/singleton seed-eid)}))]
+    {:endpoints (mapv (fn [[eid path]]
+                        {:eid eid :path (project-path-nodes db path)})
+                      frontier)
+     :blocked   @acc}))

@@ -4,6 +4,7 @@
             [com.stuartsierra.component :as component]
             [datomic.api          :as d]
             [sandbar.db.fn      :as fn]
+            [sandbar.db.ref     :as ref]
             [sandbar.db.rules   :as rules]
             [sandbar.util.common       :as util]
             [sandbar.util.edn        :as dedn]))
@@ -282,7 +283,10 @@
         ;; canonical sub-entity, post-fix) as the :db/ident KEYWORD, and a ref
         ;; to a non-idented entity (the accumulated duplicates) as an EntityMap.
         ;; Normalize both to an eid before comparing against the canonical.
-        ref->eid (fn [db v] (if (keyword? v) (:db/id (d/entity db v)) (:db/id v)))]
+        ;; Delegates to the substrate canon (S7 BU-0) — one audited ref->eid
+        ;; for every ref shape; behavior-identical at THIS site (the old
+        ;; inline local already resolved keywords through the db).
+        ref->eid ref/ref->eid]
     (reduce
      (fn [total [shape-ident [slot canonical-ident]]]
        (let [db    (d/db c)

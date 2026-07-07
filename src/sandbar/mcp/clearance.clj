@@ -24,10 +24,27 @@
    `:public`-visibility entity or a full-clearance token.  S6 LOOSENS this by
    minting real compartments; the gate is safe-by-default the instant it lands.
 
-   Pure predicates — no DB reads, no wire deps, leaf namespace.  All slot reads
-   are keyword-as-fn lookups over already-loaded entity/principal maps.
+   REF NORMALIZATION (S7 BU-0): the compartment/clearance reads route every
+   `:mm.memory/owning-project` / `:auth/cleared-projects` ref value through the
+   substrate canon `sandbar.db.ref/ref->eid`.  Datomic renders a ref to an
+   ident-bearing entity (a `:project/UNASSIGNED` sentinel, an interned project)
+   as its `:db/ident` KEYWORD, so the old `(:db/id ref)` read collapsed such a
+   ref to nil — silently VOIDING explicit sentinel ownership (fail-closed) and,
+   once `:auth/cleared-projects` populates with a collapsing shape, opening a
+   nil-aliasing fail-OPEN.  The reads now normalize first, and the membership
+   check carries an explicit NEVER-CLEAR-NIL guard so a collapsed compartment
+   can never be positively cleared.  A KEYWORD ref resolves to its eid only
+   when a `db` is threaded (the `[db entity]` arity); the pure `[entity]` arity
+   normalizes the db-free shapes (nil / eid / EntityMap / `{:db/id}`) and the
+   never-clear-nil guard closes the residual keyword-without-db case.
 
-   Spec: DESIGN-D3-NOTIFY-PLANE-GATE.md §2 (verbatim), S5-PLAN.md §2.2 item 3.")
+   Pure predicates by default — no DB reads unless a `db` is explicitly threaded
+   for keyword-ident resolution; no wire deps.  Requires only the true-leaf
+   `sandbar.db.ref` (itself `datomic.api`-only), so this stays a leaf.
+
+   Spec: DESIGN-D3-NOTIFY-PLANE-GATE.md §2 (verbatim), S5-PLAN.md §2.2 item 3;
+   bugs/clearance_helper_collapses_ident_bearing_project_refs_to_nil_confirmed_failclosed_latent_failopen_s6_mustfix_2026_07_06.md."
+  (:require [sandbar.db.ref :as ref]))
 
 (def ^:dynamic *default-visibility*
   "Visibility assumed when `:mm.memory/visibility` is ABSENT — the pre-S6
@@ -42,20 +59,47 @@
    unknown/unscoped principal) mandates `:private`."
   :private)
 
+(defn- normalize-project-ref
+  "Normalize an `:mm.memory/owning-project` / `:auth/cleared-projects` ref value
+   to the `:db/id` eid it names, or nil when it names none.
+
+   Routes through the substrate canon `sandbar.db.ref/ref->eid` when a `db` is
+   supplied (the only shape that can resolve a bare `:db/ident` KEYWORD — the
+   sentinel/interned-project collapse this cures).  With NO db (the pure notify-
+   plane callers, `db` = nil) it resolves the db-free shapes directly — nil /
+   eid Long / EntityMap / `{:db/id}` — and returns nil for a bare keyword it
+   cannot resolve.  A nil return NEVER positively clears a compartment (the
+   `principal-clears-project?` never-clear-nil guard)."
+  [db v]
+  (cond
+    (nil? v)                                    nil
+    (and (associative? v) (contains? v :db/id)) (:db/id v)
+    (some? db)                                  (ref/ref->eid db v)
+    (number? v)                                 v
+    :else                                       nil))
+
 (defn entity-compartment
   "Return `entity`'s confidentiality compartment as `{:visibility kw :project id-or-nil}`.
 
    `:visibility` is the entity's `:mm.memory/visibility` keyword, or
    `*default-visibility*` when the slot is absent (the fail-closed pre-S6
-   default).  `:project` is the `:db/id` of the entity's `:mm.memory/owning-project`
+   default).  `:project` is the eid of the entity's `:mm.memory/owning-project`
    ref — the compartment key for a `:private` entity — or nil for a `:public`
    entity (and pre-S6, when the ref slot is absent).
 
+   The owning-project ref is normalized via the substrate canon (S7 BU-0): an
+   ident-bearing project ref (rendered by Datomic as a `:db/ident` KEYWORD, e.g.
+   the `:project/UNASSIGNED` sentinel) resolves to its real eid instead of
+   collapsing to nil.  Keyword resolution needs a `db`; thread the `[db entity]`
+   arity to recover sentinel/interned ownership.  The pure `[entity]` arity
+   normalizes the db-free shapes (EntityMap / `{:db/id}` / eid) as before.
+
    INERT-UNTIL-S6: both slots mint at S6, so pre-S6 this returns
    `{:visibility *default-visibility* :project nil}` for every entity."
-  [entity]
-  {:visibility (or (:mm.memory/visibility entity) *default-visibility*)
-   :project    (:db/id (:mm.memory/owning-project entity))})
+  ([entity] (entity-compartment nil entity))
+  ([db entity]
+   {:visibility (or (:mm.memory/visibility entity) *default-visibility*)
+    :project    (normalize-project-ref db (:mm.memory/owning-project entity))}))
 
 (defn principal-clears-project?
   "True iff `principal` is cleared for the project-compartment `project-eid`.
@@ -67,17 +111,28 @@
    `:mm/Project`) is read and membership of `project-eid` decides it.
 
    Fail-closed: a nil principal, an absent `:auth/cleared-projects` slot, or a
-   `project-eid` the principal does not clear all resolve to false.
+   `project-eid` the principal does not clear all resolve to false.  NEVER-CLEAR-
+   NIL guard (S7 BU-0): a nil `project-eid` (a compartment whose owning-project
+   ref collapsed) is never positively cleared, and nil-collapsing members of the
+   cleared set are stripped via `keep` — closing the nil-aliasing fail-OPEN
+   (`(contains? #{nil} nil)` = true) that would otherwise clear EVERY collapsed
+   private compartment.  The cleared-set members normalize through the substrate
+   canon (`db` threaded via the `[db principal project-eid]` arity for keyword-
+   ident resolution; db-free shapes resolve without it).
 
    INERT-UNTIL-S6: both `:auth/full-clearance?` and `:auth/cleared-projects`
    mint at S6, so pre-S6 a restricted (non-full-clearance) principal reads an
    empty cleared set and clears NOTHING."
-  [principal project-eid]
-  (boolean
-    (when principal
-      (or (:auth/full-clearance? principal)
-          (let [cleared (set (map :db/id (:auth/cleared-projects principal)))]
-            (contains? cleared project-eid))))))
+  ([principal project-eid] (principal-clears-project? nil principal project-eid))
+  ([db principal project-eid]
+   (boolean
+     (when principal
+       (or (:auth/full-clearance? principal)
+           (and project-eid                       ; never clear a nil compartment
+                (let [cleared (into #{}
+                                    (keep #(normalize-project-ref db %))
+                                    (:auth/cleared-projects principal))]
+                  (contains? cleared project-eid))))))))
 
 (defn cleared-for-compartment?
   "THE clearance predicate.  True iff `principal` may see an entity in
