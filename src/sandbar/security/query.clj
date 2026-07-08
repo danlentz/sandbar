@@ -16,9 +16,14 @@
   proven on an isolated `datomic:mem` DB earlier this arc.
 
   The parse-time half of the vector (a reader-eval trick that ran code before
-  the query started) was closed live in commit c7d836c (`->where-clauses` now
-  uses a data-only EDN reader; `*read-eval*` is disabled process-wide at
-  `core.clj`).  THIS namespace closes the surviving query-time half: even a
+  the query started) was closed live in commit c7d836c: `->where-clauses` now
+  parses caller `:where` text with a DATA-ONLY EDN reader
+  (`clojure.edn/read-string`, which never honors `#=(...)` reader-eval) instead
+  of the Clojure reader.  (A process-wide reader-eval backstop at `sandbar.core`
+  was briefly tried as extra defence and REVERTED — it broke a legitimate
+  load-time `#=` on a fresh server start; see the NOTE at `sandbar.core` lines
+  25-40.  This closure does NOT depend on any process-wide reader state.)  THIS
+  namespace closes the surviving query-time half: even a
   perfectly well-formed, innocent-looking clause vector only becomes dangerous
   when Datomic resolves a head symbol to a fn and invokes it, so we refuse to
   let any non-allowlisted head symbol reach `d/q`.

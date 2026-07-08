@@ -22,14 +22,18 @@
 
    ── Probe groups ─────────────────────────────────────────────────────────
    A.  4 PINNED directional-flow probes — S7-PLAN.md §7  (T-1/T-5/T-6/T-25)
-   B.  RPAF read-plane regression (the 639705e plane survives the merge)
-   C.  CROSS-PLANE COMPOSITION (the genuinely-new merged-tree behaviour)
+   B.  RPAF read-plane regression (the 639705e plane survives the merge) —
+       incl. DISPATCH-LEVEL entity.find refusal, by ident (b7) + by numeric
+       :db/id (b8), driven through tools/handle-call end-to-end.
+   C.  CROSS-PLANE COMPOSITION (the genuinely-new merged-tree behaviour) — the
+       edge-forbidden write (c2) is driven through the REAL dispatch boundary.
    D.  S5 principal-gate regression (the dispatch gate is orthogonal to both)
 
    Every probe runs against a fresh datomic:mem fixture — never the live store.
    Seeding uses RAW d/transact (sandbar.firewall.support) so fixtures land
-   without tripping the guard under test; the SUBJECT write goes through the
-   real primitive."
+   without tripping the guard under test; the SUBJECT operation then goes through
+   the real primitive AND, for the composition-critical cases, the real MCP
+   dispatch boundary (tools/handle-call — b1/b7/b8/c1/c2/c5)."
   (:require [clojure.test :refer [deftest testing is use-fixtures]]
             [sandbar.aggregate :as agg]
             [sandbar.db.datatype :as dt]
@@ -271,6 +275,59 @@
         (is (contains? (:groups result) mem-class-eid)
             "the :mm/Memory bucket is kept — only firewalled keys are dropped")))))
 
+(deftest b7-entity-find-dispatch-refuses-firewalled-instance-by-ident
+  ;; R9 — DISPATCH-LEVEL entity.find RPAF probe (by IDENT).  The dispatch INPUT
+  ;; guard (assert-read-plane-call!) inspects only :class/:group-by args, so
+  ;; entity.find — which takes an ident/id, NOT a class — is not caught there.
+  ;; The refusing party is the entity-find-handler OUTPUT guard
+  ;; (secq/assert-entity-allowed!, tools.clj:605): it resolves the fetched
+  ;; entity's :dt/type and refuses a firewalled-class INSTANCE.  (The :auth/User
+  ;; CLASS DEFINITION itself stays visible as metamodel per
+  ;; read-plane-entity-visible?; only an INSTANCE carries credential values — so
+  ;; this probe targets the raw-seeded :auth/User INSTANCE, not the class.)
+  (seed-world!)
+  ;; Raw-seed a firewalled :auth/User INSTANCE (bypasses the write guards — SETUP,
+  ;; not the subject under test).  The placeholder hash is a non-secret fixture.
+  (sup/raw-transact! [{:db/ident :ceremony8/probe-auth-1 :dt/type :auth/User
+                       :auth/api-key-hash "<fake-nonsecret-placeholder>"}])
+  (testing "entity.find on the :auth/* INSTANCE by ident is refused end-to-end at
+            the dispatch boundary (isError with the read-plane signature)"
+    (let [resp (call "sandbar.entity.find" {"ident" ":ceremony8/probe-auth-1"})]
+      (is (dispatch-error? resp)
+          "the composed dispatch refuses the firewalled-instance find")
+      (is (re-find #"(?i)read.?plane|firewall" (error-text resp))
+          (str "the refusal carries the read-plane signature; got "
+               (pr-str (error-text resp))))
+      (is (not (re-find #"fake-nonsecret-placeholder" (error-text resp)))
+          "no slot VALUE from the firewalled instance leaks into the refusal envelope")))
+  (testing "positive control — entity.find on an ALLOWED :mm/Memory instance is
+            NOT read-plane-refused (the guard is selective, not a blanket ban)"
+    (let [resp (call "sandbar.entity.find" {"ident" ":mem/pub-target"})]
+      (is (dispatch-ok? resp)
+          (str "an allowed-class entity.find must not be refused; got "
+               (pr-str (error-text resp)))))))
+
+(deftest b8-entity-find-dispatch-refuses-firewalled-instance-by-numeric-eid
+  ;; R9 companion — the SAME firewalled instance fetched by its NUMERIC :db/id.
+  ;; A caller who holds only the integer eid (never the ident) must not thereby
+  ;; smuggle the credential row past the output guard: the entity-find-handler
+  ;; resolves the eid to the same entity and assert-entity-allowed! refuses it
+  ;; identically.  (Closes the "numeric-eid form dodges the keyword guard"
+  ;; read-plane concern for the entity-return surface.)
+  (seed-world!)
+  (sup/raw-transact! [{:db/ident :ceremony8/probe-auth-1 :dt/type :auth/User
+                       :auth/api-key-hash "<fake-nonsecret-placeholder>"}])
+  (let [auth-eid (sup/eid-of :ceremony8/probe-auth-1)]
+    (testing "entity.find by NUMERIC :db/id is refused at the dispatch boundary too"
+      (let [resp (call "sandbar.entity.find" {"id" auth-eid})]
+        (is (dispatch-error? resp)
+            "the numeric-eid find is refused end-to-end, same as the ident form")
+        (is (re-find #"(?i)read.?plane|firewall" (error-text resp))
+            (str "the refusal carries the read-plane signature; got "
+                 (pr-str (error-text resp))))
+        (is (not (re-find #"fake-nonsecret-placeholder" (error-text resp)))
+            "no slot VALUE leaks through the numeric-eid path either")))))
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; C.  CROSS-PLANE COMPOSITION — the genuinely-new merged-tree behaviour.
 ;;     Both firewalls compose as independent AND-gates; neither masks the other.
@@ -292,19 +349,39 @@
       (is (re-find #"(?i)read.?plane|firewall" (error-text resp))))))
 
 (deftest c2-edge-forbidden-write-refused-even-when-class-permitted
+  ;; R10 — the SUBJECT write is driven through the REAL dispatch boundary
+  ;; (entity.create → store/create-memory! → dt/make → EP-1 firewall-guard!), not
+  ;; only the primitive.  The composition thesis is about the real boundary: RPAF
+  ;; PERMITS the :mm/Memory class at dispatch, the handler runs, and EP-1 refuses
+  ;; the forbidden public→private edge — surfaced as a dispatch isError carrying
+  ;; the "Firewall violation" text (handle-call ExceptionInfo arm, tools.clj:3570).
   (seed-world!)
-  (testing "a :mm/Memory write (RPAF-PERMITTED class) that cites public→private
-            passes the RPAF class guard but is REFUSED by the directional EP-1"
-    (is (nil? (#'tools/assert-read-plane-call! "sandbar.entity.create"
-                                               {"class" ":mm/Memory"}))
-        "RPAF class guard PERMITS :mm/Memory")
-    (is (fw-violation?
-          #(dt/make :mm/Memory
-                    {:mm.memory/name "class-ok-edge-bad"
-                     :mm.memory/visibility :public
-                     :mm.memory/owning-project :proj/pub
-                     :mm.memory/cites (sup/eid-of :mem/privA-target)}))
-        "the DIRECTIONAL firewall refuses the forbidden edge")))
+  (let [priv-eid (sup/eid-of :mem/privA-target)]
+    (testing "RPAF class guard PERMITS :mm/Memory at dispatch (the class is not firewalled)"
+      (is (nil? (#'tools/assert-read-plane-call! "sandbar.entity.create"
+                                                 {"class" ":mm/Memory"}))))
+    (testing "PRIMARY — the edge-forbidden write through the REAL dispatch boundary is
+              refused by the directional EP-1 and surfaced as a dispatch isError"
+      (let [resp (call "sandbar.entity.create"
+                       {"class" ":mm/Memory"
+                        "slots" {"mm.memory/name" "class-ok-edge-bad"
+                                 "mm.memory/visibility" ":public"
+                                 "mm.memory/owning-project" ":proj/pub"
+                                 "mm.memory/cites" priv-eid}})]
+        (is (dispatch-error? resp)
+            "the composed dispatch refuses the class-permitted / edge-forbidden write")
+        (is (re-find #"(?i)firewall" (error-text resp))
+            (str "EP-1 refusal must surface through the create handler; got "
+                 (pr-str (error-text resp))))))
+    (testing "SECONDARY (primitive layer) — the same edge at dt/make throws the
+              directional :firewall-violation directly (the underlying floor)"
+      (is (fw-violation?
+            #(dt/make :mm/Memory
+                      {:mm.memory/name "class-ok-edge-bad-prim"
+                       :mm.memory/visibility :public
+                       :mm.memory/owning-project :proj/pub
+                       :mm.memory/cites priv-eid}))
+          "the DIRECTIONAL firewall refuses the forbidden edge at the primitive"))))
 
 (deftest c3-navigate-anchor-allowed-hop-forbidden
   (seed-world!)
