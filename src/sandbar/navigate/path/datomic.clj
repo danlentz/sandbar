@@ -42,7 +42,8 @@
       (d/q q (db) rules start-eid))"
   (:refer-clojure :exclude [compile])
   (:require [clojure.string :as str]
-            [sandbar.navigate.path.ast :as ast]))
+            [sandbar.navigate.path.ast :as ast]
+            [sandbar.security.query :as secq]))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Fresh-variable generation — stable per-compile counter via atom.
@@ -442,24 +443,18 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (def test-fn-registry
-  "Registry of fn-name → fully-qualified symbol for use in :TEST path
-  expressions.  Atom so consumers can register additional fns."
-  (atom
-    {:pos?              'clojure.core/pos?
-     :neg?              'clojure.core/neg?
-     :zero?             'clojure.core/zero?
-     :nil?              'clojure.core/nil?
-     :some?             'clojure.core/some?
-     :true?             'clojure.core/true?
-     :false?            'clojure.core/false?
-     :string?           'clojure.core/string?
-     :keyword?          'clojure.core/keyword?
-     :integer?          'clojure.core/integer?
-     :number?           'clojure.core/number?
-     :coll?             'clojure.core/coll?
-     :map?              'clojure.core/map?
-     :empty?            'clojure.core/empty?
-     :not-empty         'clojure.core/not-empty}))
+  "Runtime registry of fn-name → fully-qualified symbol for `:TEST` path
+  expressions.  Atom so consumers can register additional fns via
+  `register-test-fn!`.
+
+  INITIALIZED FROM the single source of truth
+  `sandbar.security.query/safe-path-test-registry` (it6-f5 allowlist
+  unification): the default membership is that constant VERBATIM, and BOTH
+  `register-test-fn!` and `compile-test` gate every symbol through
+  `secq/safe-operator-symbol?`, so this atom can never resolve a symbol outside
+  the reviewed `secq/safe-operator-vocabulary`.  Do NOT re-fork the default set
+  here — extend the single source (a security review) instead."
+  (atom secq/safe-path-test-registry))
 
 (defn register-test-fn!
   "Register a Clojure fn for use in `:TEST` path expressions.
@@ -471,9 +466,15 @@
 
   Returns the updated registry map.
 
-  Security note: Sandbar substrate ships a default registry of safe
-  predicates; consumers register additional ones explicitly rather
-  than supplying arbitrary closures."
+  Security note (it6-f5 allowlist unification): `fn-symbol` must be on the
+  single-source `sandbar.security.query/safe-operator-vocabulary` — a
+  caller-supplied `:TEST` fn-name can drive the server to resolve+invoke this
+  symbol (`compile-test` splices it into a `d/q` clause), so registering an
+  arbitrary symbol would reopen the AP-S3-6 RCE vector on the path plane.  To
+  add a genuinely-new safe predicate, extend
+  `sandbar.security.query/safe-path-test-registry` (a security review) FIRST,
+  then register — this makes it impossible to build `:TEST` against a list that
+  has diverged from the `:where`-plane allowlist."
   [fn-name fn-symbol]
   (when-not (keyword? fn-name)
     (throw (ex-info "register-test-fn! fn-name must be a keyword"
@@ -481,6 +482,19 @@
   (when-not (and (symbol? fn-symbol) (namespace fn-symbol))
     (throw (ex-info "register-test-fn! fn-symbol must be a fully-qualified symbol"
                     {:received fn-symbol})))
+  (when-not (secq/safe-operator-symbol? fn-symbol)
+    (throw (ex-info
+             (str "register-test-fn! fn-symbol " fn-symbol " is not on the "
+                  "single-source safe-operator vocabulary "
+                  "(sandbar.security.query/safe-operator-vocabulary). A :TEST "
+                  "predicate may only resolve to a reviewed pure/total/"
+                  "side-effect-free operator; add it to "
+                  "sandbar.security.query/safe-path-test-registry (a security "
+                  "review) before registering.")
+             {:received     fn-symbol
+              :sanitizer     'sandbar.navigate.path.datomic/register-test-fn!
+              :reason        :operator-not-on-safe-vocabulary
+              :allowed-names (vec (sort (keys secq/safe-path-test-registry)))})))
   (swap! test-fn-registry assoc fn-name fn-symbol))
 
 (defn- compile-test
@@ -493,7 +507,16 @@
     [(fn-symbol ?to)]
 
   `fn-name` (keyword in AST) must be in the test-fn-registry.  Unknown
-  fn-names raise ex-info at compile time."
+  fn-names raise ex-info at compile time.
+
+  SECURITY GATE (it6-f5 allowlist unification): before splicing `fn-symbol`
+  into the executable `d/q` clause, this refuses any symbol NOT on the
+  single-source `sandbar.security.query/safe-operator-vocabulary`.  This is the
+  path-plane analogue of `sanitize-where`'s `check-call-head` — it gates at the
+  splice site, so even a directly-mutated `test-fn-registry` atom (bypassing
+  `register-test-fn!`'s guard) cannot cause the server to resolve+invoke an
+  unvetted symbol.  The default registry is drawn from the single source, so
+  every default `:TEST` predicate passes unchanged."
   [ast from-var to-var ctr]
   (let [child   (:child ast)
         fn-kw   (:fn-name ast)
@@ -505,6 +528,17 @@
                     "or pick from the default registry.")
                {:fn-name fn-kw
                 :registered (keys @test-fn-registry)})))
+    (when-not (secq/safe-operator-symbol? fn-sym)
+      (throw (ex-info
+               (str ":TEST fn-name " fn-kw " resolves to " fn-sym " which is "
+                    "NOT on the single-source safe-operator vocabulary "
+                    "(sandbar.security.query/safe-operator-vocabulary) — "
+                    "refusing to splice an unvetted symbol into an executable "
+                    "query (the path-plane AP-S3-6 gate).")
+               {:fn-name    fn-kw
+                :fn-symbol  fn-sym
+                :sanitizer  'sandbar.navigate.path.datomic/compile-test
+                :reason     :operator-not-on-safe-vocabulary})))
     (let [child-comp (compile-node child from-var to-var ctr)
           test-clause [(list fn-sym to-var)]]
       {:where (conj (:where child-comp) test-clause)

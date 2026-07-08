@@ -154,6 +154,96 @@
         (map (fn [v] [(symbol (name (symbol v))) v]))
         safe-query-op-allowlist))
 
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Path-grammar :TEST unary-predicate projection — the LIVE 4th consumer.
+;;
+;; `sandbar.navigate.path.datomic/compile-test` compiles a path-grammar
+;; `[:TEST child fn-name]` node into a Datalog predicate clause `[(fn-sym ?to)]`
+;; and — via `path-via`'s endpoint-only compiler fallback
+;; (`sandbar.navigate.path/path-via`, the non-`:paths` branch) — hands it to
+;; `d/q`.  So a caller-supplied `:via` string CAN cause the server to
+;; resolve+invoke `fn-sym`: the EXACT AP-S3-6 vector-A shape the `:where`
+;; allowlist closes, reproduced on the path plane.  This is NOT prospective — it
+;; has compiled since 2026-05-14 (`03cbe7e`).  The F5 Layer-1 design
+;; (`audit-results/xminus-build-2026-07-04/READPLANE-LAYER1-ALLOWLIST-DESIGN.md`
+;; §2.2) verified the path plane \"clean\" by checking only `search.clj`'s
+;; cross-axis route + `evaluate.clj`'s `unsupported-op` throw, and MISSED this
+;; direct compiler fallback; the historical `test-fn-registry` therefore forked
+;; its own operator list.  it6-f5 wires it onto this single source.
+;;
+;; The `:TEST` registry is a DIFFERENT PROJECTION of the single safe-operator
+;; vocabulary than `safe-query-op-allowlist`:
+;;   - `safe-query-op-allowlist`  = call-HEAD operators (mixed arity) admissible
+;;                                  as a `:where` clause head;
+;;   - `safe-path-test-registry`  = UNARY predicates admissible as a `:TEST`
+;;                                  predicate `(pred ?to)` over one bound var.
+;; They OVERLAP (nil? some? string? keyword? number?) but neither is a subset of
+;; the other (a `:TEST` predicate must be unary — `=` / `get` / `count` are not;
+;; and pos? / neg? / coll? / empty? / … are safe unary preds with no
+;; `:where`-head need).  Every member of EITHER projection is pure, total, and
+;; side-effect-free — the SAME safety bar.  Housing BOTH here makes any addition
+;; to EITHER surface one security review in ONE namespace: the drift the design
+;; warned of is closed structurally, not by convention.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(def safe-path-test-registry
+  "THE curated {fn-name-keyword → fully-qualified-symbol} registry for the
+  path-grammar `:TEST` unary-predicate surface.  Single source of truth for what
+  a caller-supplied `:TEST` fn-name may resolve to: `sandbar.navigate.path.datomic`
+  initializes its runtime `test-fn-registry` atom FROM this constant and gates
+  BOTH registration and compilation through `safe-operator-symbol?` (below), so
+  it is impossible to build the `:TEST` plane against a divergent list.  Values
+  are fully-qualified symbols — the shape spliced into the Datalog `[(fn-sym
+  ?to)]` clause.  IDENTICAL-SEMANTICS invariant (it6-f5): byte-identical to the
+  historical hand-forked `test-fn-registry` default (15 clojure.core unary
+  predicates) — pinned by `allowlist-single-source-test`.  Each addition is a
+  security review, not a feature tweak."
+  '{:pos?      clojure.core/pos?
+    :neg?      clojure.core/neg?
+    :zero?     clojure.core/zero?
+    :nil?      clojure.core/nil?
+    :some?     clojure.core/some?
+    :true?     clojure.core/true?
+    :false?    clojure.core/false?
+    :string?   clojure.core/string?
+    :keyword?  clojure.core/keyword?
+    :integer?  clojure.core/integer?
+    :number?   clojure.core/number?
+    :coll?     clojure.core/coll?
+    :map?      clojure.core/map?
+    :empty?    clojure.core/empty?
+    :not-empty clojure.core/not-empty})
+
+(def safe-operator-vocabulary
+  "The UNION (set of resolved vars) of every operator any consumer may cause the
+  server to resolve+invoke from untrusted-authored input — the `:where`-head
+  allowlist (`safe-query-op-allowlist`) PLUS the path `:TEST` unary-predicate
+  registry (`safe-path-test-registry`).  The single reviewed vocabulary a
+  prospective CodeAct sandbox / Layer-2 DSL compiler ALSO depends onto (this set,
+  or a DOCUMENTED superset that adds sandbox-only-safe ops — never a divergent
+  list).  Deny-by-default: membership here is NECESSARY (each surface further
+  restricts by arity/shape) for a symbol to be invokable by caller-authored
+  input anywhere in the substrate."
+  (into safe-query-op-allowlist
+        (map (fn [sym] (find-var sym)))
+        (vals safe-path-test-registry)))
+
+(defn safe-operator-symbol?
+  "True iff `sym` (a fully-qualified symbol) resolves — WITHOUT loading any
+  namespace — to a var on `safe-operator-vocabulary`.  THE gate a fn-name
+  resolver (the path `:TEST` compiler; a future CodeAct / Layer-2 compiler)
+  calls before splicing a resolved symbol into a query the server will execute.
+  Never force-loads (a symbol in an unloaded namespace ⇒ false, never a
+  `require` side-effect — so probing `clojure.java.shell/sh` cannot even load
+  that namespace), never invokes.  nil / non-qualified / unresolvable ⇒ false
+  (deny-by-default)."
+  [sym]
+  (boolean
+    (when (and (symbol? sym) (namespace sym))
+      (when (find-ns (symbol (namespace sym)))
+        (let [v (find-var sym)]
+          (and (var? v) (contains? safe-operator-vocabulary v)))))))
+
 (def safe-query-builtin-forms
   "Datomic query BUILT-IN / special forms (`missing?`, `get-else`, `ground`,
   `fulltext`, `tuple`, `untuple`).  Each RESOLVES TO NIL (verified 2026-07-07 —

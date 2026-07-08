@@ -339,24 +339,44 @@
           "sentinel must NOT exist"))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; TRIPWIRE — the prospective 4th consumer (path :TEST/:FILTER fn-resolver)
-;; MUST route through the SAME allowlist when it is built.
+;; The 4th consumer (path :TEST fn-resolver) is now WIRED onto the single source.
+;;
+;; STALE-PREMISE CORRECTION (it6-f5): the original tripwire here assumed the path
+;; :TEST compiler was "not yet compiled" and the path plane "splices no user
+;; expression clause".  That premise was WRONG — `sandbar.navigate.path.datomic/
+;; compile-test` has compiled a :TEST node into a `d/q` predicate clause since
+;; 2026-05-14 (03cbe7e), reachable via `path-via`'s endpoint-only fallback, so
+;; `test-fn-registry` was a LIVE 4th consumer that forked its own operator list.
+;; The F5 design (READPLANE-LAYER1-ALLOWLIST-DESIGN §2.2) verified the path plane
+;; "clean" by checking only search.clj's cross-axis route + evaluate.clj's throw,
+;; MISSING this direct compiler fallback.  it6-f5 wires the :TEST resolver onto
+;; sandbar.security.query's single source: the runtime registry is INITIALIZED
+;; from `safe-path-test-registry`, and both `register-test-fn!` and `compile-test`
+;; gate through `safe-operator-symbol?`.  Deep compile-test integration coverage
+;; lives in `sandbar.navigate.path.datomic-test` + the golden
+;; `sandbar.security.allowlist-single-source-test`; this asserts the
+;; SECURITY-CONTRACT the consumer depends on, at this DB-free suite's level.
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-(deftest tripwire-path-test-filter-not-yet-compiled
-  (testing "path :TEST / :FILTER are NOT yet compiled — they throw
-            unsupported-op today, so the path plane splices no user expression
-            clause.  This is the tripwire: when the :TEST fn-name resolver IS
-            built (navigate/path/evaluate.clj), it MUST resolve names through
-            sandbar.security.query/safe-query-op-allowlist — the SAME shared
-            constant this suite validates — or the path plane rejoins the
-            AP-S3-6 vector-A vulnerable set.  When that lands, replace this
-            assertion with a :TEST-naming-a-non-allowlisted-fn rejection test."
-    (let [evaluate-node (resolve 'sandbar.navigate.path.evaluate/evaluate-node)]
-      (is (thrown? clojure.lang.ExceptionInfo
-                   (evaluate-node {:op :TEST} nil nil)))
-      (is (thrown? clojure.lang.ExceptionInfo
-                   (evaluate-node {:op :FILTER} nil nil))))
-    ;; The shared constant the 4th consumer must depend on exists and is non-empty.
+(deftest fourth-consumer-path-test-wired-to-single-source
+  (testing "the single-source vocabulary + gate the :TEST resolver depends on"
     (is (set? secq/safe-query-op-allowlist))
-    (is (seq secq/safe-query-op-allowlist))))
+    (is (seq secq/safe-query-op-allowlist))
+    (is (map? secq/safe-path-test-registry))
+    (is (set? secq/safe-operator-vocabulary))
+    ;; deny-by-default gate: an RCE symbol is refused; a vetted operator admitted
+    (is (false? (secq/safe-operator-symbol? 'clojure.java.shell/sh)))
+    (is (true?  (secq/safe-operator-symbol? 'clojure.core/keyword?))))
+  (testing "the path :TEST runtime registry is DERIVED from the single source"
+    ;; the var's value is an atom (def test-fn-registry (atom …)) — double-deref
+    (let [registry @@(requiring-resolve
+                       'sandbar.navigate.path.datomic/test-fn-registry)]
+      (is (= secq/safe-path-test-registry registry)
+          "test-fn-registry must equal safe-path-test-registry (no fork)")))
+  (testing "the :include #{:paths} evaluator still defers :TEST/:FILTER (unchanged)"
+    ;; endpoint-only :TEST routes through the datomic compiler (wired above); the
+    ;; path-DATA evaluator (evaluate.clj) still throws for these — untouched here.
+    (let [evaluate-node (requiring-resolve
+                          'sandbar.navigate.path.evaluate/evaluate-node)]
+      (is (thrown? clojure.lang.ExceptionInfo (evaluate-node {:op :TEST} nil nil)))
+      (is (thrown? clojure.lang.ExceptionInfo (evaluate-node {:op :FILTER} nil nil))))))
