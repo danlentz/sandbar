@@ -1,0 +1,22 @@
+#!/bin/sh
+# Catalog single-source drift gate (F6) — checked-in, INERT until deliberately wired.
+#
+# GUARDED CONFIG: this file is committed but NOT installed.  Wiring it changes
+# what blocks a commit, so it is a deliberate lead act (the sandbar repo keeps
+# .git/hooks/ sample-only today).  To activate, per clone:
+#     ln -sf ../../etc/hooks/pre-commit .git/hooks/pre-commit
+#     chmod +x etc/hooks/pre-commit
+#
+# The gate is DB-free (no Datomic fixtures) so it runs in seconds.  It checks the
+# sandbar-LOCAL projections (doc/mcp-affordance-map.md + :mm/Verb parity + the
+# §5.8 classifier/override completeness invariant).  The corpus repo carries its
+# own pre-commit for its two files (etc/verb-edges.edn, memory-open.md) per the
+# self-contained-per-repo posture (PROPOSED-CI-WIRING option b).
+#
+# Bypass in an emergency with:  git commit --no-verify   (CI is the backstop).
+
+if ! lein catalog-check; then
+  echo
+  echo "catalog drift detected — run 'lein catalog-regen' and re-stage the projections."
+  exit 1
+fi
