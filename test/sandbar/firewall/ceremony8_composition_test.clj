@@ -364,7 +364,15 @@
               refused by the directional EP-1 and surfaced as a dispatch isError"
       (let [resp (call "sandbar.entity.create"
                        {"class" ":mm/Memory"
+                        ;; rel-path REQUIRED post-it6: store/create-memory! loud-fails a
+                        ;; corpus-document memorial with no rel-path BEFORE dt/make, which
+                        ;; would preempt the firewall with a rel-path error.  Supplying a
+                        ;; rel-path (as the sibling ep1 firewall tests do) lets the create
+                        ;; proceed to dt/make so EP-1 is the refusing party the test asserts.
+                        ;; Per bugs/entity_create_codec_path_mints_identless_relpathless_-
+                        ;; entities_fs_projection_silently_skipped_2026_07_08.
                         "slots" {"mm.memory/name" "class-ok-edge-bad"
+                                 "mm.memory/rel-path" "leak/c2-edge-bad.md"
                                  "mm.memory/visibility" ":public"
                                  "mm.memory/owning-project" ":proj/pub"
                                  "mm.memory/cites" priv-eid}})]
