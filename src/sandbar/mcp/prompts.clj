@@ -70,6 +70,49 @@
         (keyword (subs suffix 0 dot) (subs suffix (inc dot)))))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Wire-name projection (dots→underscores) — mirrors the tool-name rename so
+;; prompt names also pass the Anthropic API name pattern ^[a-zA-Z0-9_-]{1,64}$
+;; for every client (per the 2026-07-04 underscore ruling, which covers
+;; tool/prompt names).  prompts/list advertises ONLY the underscore names;
+;; prompts/get accepts BOTH the underscore name and the deprecated dotted alias
+;; for one release.  The INTERNAL encoder/decoder above stay dotted (the
+;; substrate identity), so this is a pure boundary projection.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defn prompt-wire-name
+  "Project an internal dotted prompt name (\"sandbar.workflow.validation.resource\")
+   to its MCP WIRE name (\"sandbar_workflow_validation_resource\").  ALL dots
+   collapse to underscores — including any inside a Class.Verb workflow
+   name-part — so the wire form is always dot-free and pattern-conformant; the
+   inverse is resolved by ENUMERATION (see `prompt-name->workflow-ident*`) so it
+   stays correct even when the workflow name-part itself contained dots."
+  [prompt-name]
+  (str/replace (str prompt-name) "." "_"))
+
+(defn prompt-name->workflow-ident*
+  "Resolve an incoming prompts/get `:name` — the NEW underscore wire form OR the
+   DEPRECATED dotted form — to a workflow `:db/ident`.  Returns
+   {:ident <kw-or-nil> :deprecated? <bool>}.  The dotted form uses the direct
+   decoder; the underscore form is resolved by enumerating the live `:mm/Workflow`
+   set and matching the wire projection (correct for any name-part), so no
+   lossy underscore→dot string-split is needed.  A non-matching name yields nil."
+  [prompt-name]
+  (let [s (str prompt-name)]
+    (cond
+      (str/starts-with? s "sandbar.workflow.")
+      {:ident (prompt-name->workflow-ident s) :deprecated? true}
+
+      (str/starts-with? s "sandbar_workflow_")
+      {:ident (some (fn [wf]
+                      (let [ident (:db/ident wf)]
+                        (when (= s (prompt-wire-name (workflow-ident->prompt-name ident)))
+                          ident)))
+                    (dt/named-entities-of :mm/Workflow))
+       :deprecated? false}
+
+      :else {:ident nil :deprecated? false})))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Workflow → MCP prompt description
 
 (defn- workflow->prompt-description
@@ -84,7 +127,7 @@
         transitions (workflow/get-workflow-transitions workflow-def)
         initial     (workflow/get-initial-state workflow-def)
         terminals   (workflow/get-terminal-states workflow-def)]
-    {:name        (workflow-ident->prompt-name ident)
+    {:name        (prompt-wire-name (workflow-ident->prompt-name ident))
      :title       (or (:dt/name workflow-def)
                       (str (name ident) " workflow"))
      :description (or (:dt/description workflow-def)
@@ -188,7 +231,15 @@
   [id params]
   (try
     (let [prompt-name      (:name params)
-          workflow-ident   (prompt-name->workflow-ident prompt-name)]
+          {:keys [ident deprecated?]} (prompt-name->workflow-ident* prompt-name)
+          workflow-ident   ident]
+      ;; One-release dotted-alias: the deprecated dotted prompt name still
+      ;; resolves, but WARN so callers migrate to the underscore wire name.
+      (when (and deprecated? workflow-ident)
+        (log/warn :MCP/deprecated-dotted-prompt-name
+                  {:received prompt-name
+                   :use      (prompt-wire-name prompt-name)
+                   :note     "sandbar MCP prompt names are now underscore-form; the dotted alias is deprecated and will be removed after one release"}))
       (cond
         (nil? workflow-ident)
         {:jsonrpc "2.0"
