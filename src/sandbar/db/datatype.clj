@@ -1748,6 +1748,43 @@
   (let [chain (cons class-ident (ancestors-of class-ident))]
     (some memorial-policy-of chain)))
 
+(def ^{:private true
+       :doc "The three roots of the unified :mm/* runtime lattice (Spec /
+            Activity / Event).  Their subclasses INHERIT :mm/Memory's
+            :first-class memorial-policy but never correspond to a corpus
+            markdown FILE — they carry no :mm.memory/rel-path by design
+            (Schedule/Workflow content-key idents; Run/Process/EventLog
+            telemetry; Event bus primitives).  Per
+            decisions/unified_mm_type_lattice_workflow_process_activity_run_-
+            job_schedule_event_phase_2_2026_05_24."}
+  +runtime-behavioral-roots+
+  [:mm/Spec :mm/Activity :mm/Event])
+
+(defn corpus-document-class?
+  "True when `class-ident` is a FIRST-CLASS memorial that the reactive fs sink
+   projects to a corpus markdown FILE — i.e. its effective memorial-policy is
+   `:first-class` AND it is NOT under any runtime-behavioral root
+   (`:mm/Spec` / `:mm/Activity` / `:mm/Event`).
+
+   This is the precise 'must carry a `:mm.memory/rel-path`' set: the corpus
+   document types (Decision / Plan / Bug / Observation / Interaction /
+   Feedback / Log / Shape / …).  It EXCLUDES the classes that are
+   `:first-class` only by inheritance from `:mm/Memory` yet legitimately have
+   no rel-path — Schedule (content-key ident), EventLog (telemetry, created via
+   a bare `dt/make`), and their kin.
+
+   THE single shared predicate behind two it6 defenses (so they can never
+   diverge): `sandbar.store/create-memory!`'s create-time loud-fail and
+   `sandbar.reactive.sinks/fs-projection-sink`'s WARN-on-skip.  Non-throwing —
+   any lookup failure returns false (never reject/alarm on uncertainty).  Per
+   bugs/entity_create_codec_path_mints_identless_relpathless_entities_fs_-
+   projection_silently_skipped_2026_07_08."
+  [class-ident]
+  (boolean
+   (try (and (= :first-class (effective-memorial-policy-of class-ident))
+             (not (some #(type-isa? % class-ident) +runtime-behavioral-roots+)))
+        (catch Throwable _ false))))
+
 (defn direct-subclasses-of
   "Returns the idents of classes that directly extend class dt.
   Only returns immediate children, not transitive descendants."

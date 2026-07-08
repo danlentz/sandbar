@@ -227,20 +227,29 @@
 
       (nil? rel-path)
       ;; This branch is reached ONLY when the policy IS :first-class (the first
-      ;; cond arm caught every non-first-class class), so a nil rel-path here is
-      ;; ANOMALOUS: the class is expected to project an FS file but carries no
-      ;; corpus path — the entity is a DB-only orphan, an FS↔DB bijection break.
-      ;; WARN (not debug) so the skip is visible in logs + reactive-health rather
-      ;; than a silent projection-success.  The create-path loud-fail
-      ;; (sandbar.store/create-memory! first-class-memorial? guard) is the
-      ;; primary defense; this is the sink-side backstop for any first-class
-      ;; memorial that reaches transact identless-and-relpathless anyway.  Per
-      ;; bugs/entity_create_codec_path_mints_identless_relpathless_entities_-
+      ;; cond arm caught every non-first-class class).  Split on whether the
+      ;; class is a CORPUS-DOCUMENT type (the shared `dt/corpus-document-class?`
+      ;; predicate, same one the create-path loud-fail uses):
+      ;;   - corpus document + no rel-path → ANOMALOUS: it is expected to project
+      ;;     a corpus FILE but carries no path, i.e. a DB-only orphan / FS↔DB
+      ;;     bijection break.  WARN (was a silent debug) so the skip is visible
+      ;;     in logs + reactive-health rather than a silent projection-success.
+      ;;     The create-path loud-fail (sandbar.store/create-memory!) is the
+      ;;     primary defense; this is the sink-side backstop.
+      ;;   - runtime-behavioral class (Spec → Schedule/Workflow; Activity →
+      ;;     Run/EventLog; Event) → :first-class only by inheritance and
+      ;;     legitimately rel-path-less; a routine debug skip, NOT an orphan.
+      ;; Per bugs/entity_create_codec_path_mints_identless_relpathless_entities_-
       ;; fs_projection_silently_skipped_2026_07_08 (it6, fix b).
-      (log/warn :REACTIVE/fs-write-skipped
-                {:ident ident :eid eid :class class-ident
-                 :reason :no-rel-path-first-class-orphan
-                 :policy :first-class})
+      (if (dt/corpus-document-class? class-ident)
+        (log/warn :REACTIVE/fs-write-skipped
+                  {:ident ident :eid eid :class class-ident
+                   :reason :no-rel-path-first-class-orphan
+                   :policy :first-class})
+        (log/debug :REACTIVE/fs-write-skipped
+                   {:ident ident :eid eid :class class-ident
+                    :reason :no-rel-path-runtime-behavioral
+                    :policy :first-class}))
 
       :else
       (try

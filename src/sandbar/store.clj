@@ -46,24 +46,6 @@
     (some-> (codec-md/rel-path->memory-ident rel-path)
             codec-md/edn-safe-ident)))
 
-(defn- first-class-memorial?
-  "True when `class`'s EFFECTIVE `:dt/memorial-policy` is `:first-class` — i.e.
-   the reactive fs-projection sink is expected to write an FS file for its
-   instances.  This is the SAME predicate the sink itself uses to decide whether
-   to project (sandbar.reactive.sinks), so the create-path loud-fail below fires
-   for EXACTLY the classes the sink would otherwise skip-for-no-rel-path.
-
-   Conservative + non-throwing: any lookup failure (or a non-:first-class /
-   undeclared policy) returns false, so we NEVER reject a create on uncertainty
-   — a genuinely-first-class class whose policy lookup fails still falls through
-   to (at worst) the pre-fix behavior, where the sink's now-WARN skip is the
-   backstop.  Per bugs/entity_create_codec_path_mints_identless_relpathless_-
-   entities_fs_projection_silently_skipped_2026_07_08 (it6)."
-  [class]
-  (boolean
-   (try (= :first-class (dt/effective-memorial-policy-of class))
-        (catch Throwable _ false))))
-
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; :mm/Schedule create-time stable ident (proliferation fix, W3.B)
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -245,14 +227,16 @@
          derived-rel-path (when (and memory? (not rel-path) explicit-ident)
                             (codec-md/memory-ident->rel-path explicit-ident))
          rel-path       (or rel-path derived-rel-path)
-         ;; LOUD-FAIL (it6): a first-class :mm/Memory with NEITHER a rel-path NOR
-         ;; an ident from which one is derivable cannot be given a corpus path,
-         ;; so the sink would skip it and mint a DB-only orphan — the FS↔DB
+         ;; LOUD-FAIL (it6): a CORPUS-DOCUMENT memorial with NEITHER a rel-path
+         ;; NOR an ident from which one is derivable cannot be given a corpus
+         ;; path, so the sink would skip it and mint a DB-only orphan — the FS↔DB
          ;; bijection break this bug fixes, on the PRIMARY capture path.  Reject
          ;; at the create boundary rather than orphan silently.  Gated on the
-         ;; SAME :first-class policy the sink uses (`first-class-memorial?`), so
-         ;; :db-only / :inline memory subclasses pass through untouched.
-         _ (when (and memory? (not rel-path) (first-class-memorial? class))
+         ;; SAME shared `dt/corpus-document-class?` predicate the sink's WARN
+         ;; uses, so the runtime-behavioral branches that are :first-class only
+         ;; by inheritance yet legitimately rel-path-less (Spec → Schedule /
+         ;; Workflow; Activity → Run / EventLog; Event) pass through untouched.
+         _ (when (and memory? (not rel-path) (dt/corpus-document-class? class))
              (throw (ex-info
                      (str "Cannot create first-class memorial " class
                           " without :mm.memory/rel-path: no corpus path can be"

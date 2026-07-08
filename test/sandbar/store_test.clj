@@ -5,6 +5,7 @@
   (:require [clojure.test :refer :all]
             [clojure.edn :as edn]
             [sandbar.codec.markdown :as codec-md]
+            [sandbar.db.datatype :as dt]
             [sandbar.store :as store]
             [sandbar.test-util :as tu]))
 
@@ -66,3 +67,82 @@
                                    :mm.memory/body-raw    "b"})]
       (is (= :memory.decisions/explicit_store_test (:db/ident e)) "explicit ident wins")
       (is (uuid? (:mm/id e)) ":mm/id still minted from the explicit ident"))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; it6 create-path fix — bugs/entity_create_codec_path_mints_identless_-
+;; relpathless_entities_fs_projection_silently_skipped_2026_07_08
+;;
+;; The bug: entity.create for a :mm/Memory WITHOUT :mm.memory/rel-path minted an
+;; entity with NO :db/ident and NO rel-path, which the reactive fs sink then
+;; silently skipped — a DB-only orphan, FS↔DB bijection break on the PRIMARY
+;; capture path.  Fix (a): when an explicit memory :db/ident is present but no
+;; rel-path, DERIVE the rel-path from the ident so the entity carries a corpus
+;; path (yields ident + mm/id + a projectable rel-path); when NEITHER a rel-path
+;; NOR a derivable ident is present, REJECT LOUDLY rather than orphan silently.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(deftest create-memory-derives-rel-path-from-explicit-ident
+  (testing "explicit memory :db/ident, NO rel-path → rel-path derived from ident,
+            :mm/id minted, ident preserved (now projectable instead of orphaned)"
+    (let [e (store/create-memory! :mm/Memory
+                                  {:db/ident              :memory.decisions/it6_from_ident
+                                   :mm.memory/name        "it6 from ident"
+                                   :mm.memory/memory-type :decision
+                                   :mm.memory/body-raw    "body"})]
+      (is (= :memory.decisions/it6_from_ident (:db/ident e)) "explicit ident preserved")
+      (is (= "decisions/it6_from_ident.md" (:mm.memory/rel-path e))
+          "rel-path derived from the ident via the shared inverse")
+      (is (uuid? (:mm/id e)) ":mm/id minted from the ident"))))
+
+(deftest create-memory-rejects-first-class-without-rel-path-or-ident
+  (testing "first-class :mm/Memory with NEITHER rel-path NOR :db/ident → loud reject
+            (the exact bug scenario: frontmatter name/type only, no corpus path)"
+    (let [ex (try (store/create-memory! :mm/Memory
+                                        {:mm.memory/name        "it6 orphan attempt"
+                                         :mm.memory/memory-type :decision
+                                         :mm.memory/body-raw    "body"})
+                  nil
+                  (catch clojure.lang.ExceptionInfo e e))]
+      (is (some? ex) "must throw (not silently mint a DB-only orphan)")
+      (is (= :create-path-missing-rel-path (:sandbar/error (ex-data ex)))
+          "carries the actionable :sandbar/error tag")
+      (is (re-find #"rel-path" (.getMessage ^Exception ex))
+          "message names the missing rel-path remedy"))))
+
+(deftest create-memory-rejects-when-ident-not-corpus-derivable
+  (testing "explicit but NON-corpus :db/ident (name that yields no rel-path), no
+            rel-path → derivation impossible → loud reject"
+    (let [ex (try (store/create-memory! :mm/Memory
+                                        {:db/ident              :not-a-memory/garbage
+                                         :mm.memory/name        "garbage ident"
+                                         :mm.memory/memory-type :decision
+                                         :mm.memory/body-raw    "body"})
+                  nil
+                  (catch clojure.lang.ExceptionInfo e e))]
+      (is (some? ex) "must throw when the ident cannot be mapped to a corpus path")
+      (is (= :create-path-missing-rel-path (:sandbar/error (ex-data ex)))))))
+
+(deftest corpus-document-class-predicate-gates-only-document-types
+  (testing "dt/corpus-document-class? (the shared reject+WARN gate) is TRUE for
+            corpus-document types and FALSE for the runtime-behavioral branches
+            that are :first-class only by inheritance"
+    ;; corpus documents → must carry a rel-path
+    (is (dt/corpus-document-class? :mm/Decision))
+    (is (dt/corpus-document-class? :mm/Plan))
+    (is (dt/corpus-document-class? :mm/Bug))
+    ;; runtime-behavioral (Spec / Activity) → legitimately rel-path-less
+    (is (not (dt/corpus-document-class? :mm/Schedule)) ":mm/Spec branch excluded")
+    (is (not (dt/corpus-document-class? :mm/Run))      ":mm/Activity branch excluded")
+    ;; :db-only / :inline classes → excluded (policy is not :first-class)
+    (is (not (dt/corpus-document-class? :mm/Tag))      ":inline excluded")))
+
+(deftest create-memory-spec-branch-not-rejected
+  (testing "a :mm/Spec-branch class (:mm/Schedule) without rel-path is NOT subject
+            to the corpus-document loud-fail — it has its own content-key ident
+            derivation and never projects to a corpus file"
+    ;; :mm/Schedule with neither target nor recurrence stays identless pass-through
+    ;; (see derive-schedule-ident); the point is it does NOT throw.
+    (is (some? (store/create-memory! :mm/Schedule
+                                     {:mm.memory/name "it6 sched no-reject"}
+                                     {:validate? false}))
+        "schedule create without rel-path must not hit the corpus-document loud-fail")))
