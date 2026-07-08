@@ -3344,6 +3344,57 @@
   (into {} (map (juxt :name identity)) verb-catalog))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Wire-name projection (dots→underscores) + one-release dotted-alias dispatch.
+;;
+;; The Anthropic API tool-NAME pattern ^[a-zA-Z0-9_-]{1,64}$ forbids dots, so a
+;; client that forwards raw names (Claude Desktop/web frontend-remote-MCP,
+;; Codex) bricks on the dotted catalog names.  The DURABLE server-side fix
+;; (decisions/sandbar_mcp_tool_names_underscore_not_dot_durable_fix_not_papering_over_dan_directive_2026_07_04.md)
+;; is to emit underscore names natively.  We keep the INTERNAL catalog identity
+;; dotted — the leaf classifier (verb-behavioral-hints, split on "."), the
+;; read-plane firewall (read-plane-registry-exempt-verbs, keyed by dotted
+;; name), the read-only gate (verb-permitted-for-read-only?), and the prose
+;; composition-graph (catalog-model/extract-refs, matches dotted tokens) all
+;; parse the dotted form — and project to underscores ONLY at the wire
+;; boundary.  Because the classifier/firewall never see the wire form, a verb's
+;; read-only / destructive / exempt classification is provably IDENTICAL
+;; pre/post rename (guarded by the §5.8 completeness invariant + the
+;; tool-name-rename tests).  tools/list advertises ONLY the underscore names;
+;; tools/call accepts BOTH the underscore name (canonical going forward) and
+;; the deprecated dotted name (one-release alias, dispatched with a WARN).
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defn wire-name
+  "Project an internal dotted verb name (\"sandbar.entity.find\") to its MCP
+   WIRE name (\"sandbar_entity_find\").  Only the dotted SEGMENT separators
+   become underscores; hyphens inside leaf tokens (\"validate-all-instances\",
+   \"find-by-rel-path\") are preserved, so the result matches the Anthropic API
+   pattern ^[a-zA-Z0-9_-]{1,64}$ for every client.  Pure boundary projection —
+   the internal catalog identity stays dotted."
+  [verb-name]
+  (str/replace (str verb-name) "." "_"))
+
+(def ^:private wire->canonical
+  "Underscore WIRE name -> canonical dotted verb name, for tools/call dispatch
+   of the NEW names.  Derived once from verb-catalog so it can never drift from
+   the served surface."
+  (into {} (map (fn [{:keys [name]}] [(wire-name name) name])) verb-catalog))
+
+(defn- resolve-tool-name
+  "Resolve an incoming tools/call `:name` — the NEW underscore wire form OR the
+   DEPRECATED dotted form — to the canonical dotted verb name that keys
+   verb-by-name / the classifier / the read-plane firewall.  Returns
+   {:canonical <dotted-or-nil> :deprecated? <bool>}; :deprecated? is true iff
+   the caller used the old dotted name (the alias kept alive for ONE release).
+   Wire forms (dot-free) and dotted forms (≥2 dots) are disjoint key-spaces,
+   so the resolution is unambiguous; an unrecognized name yields nil canonical."
+  [raw-name]
+  (cond
+    (contains? wire->canonical raw-name) {:canonical (get wire->canonical raw-name) :deprecated? false}
+    (contains? verb-by-name raw-name)    {:canonical raw-name                       :deprecated? true}
+    :else                                {:canonical nil                            :deprecated? false}))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Behavioral hints (MCP ToolAnnotations) — derived from the leaf action token.
 ;; ONE derivation feeding BOTH the wire annotations (handle-list, below) AND the
 ;; :mm/Verb entity hint-slots (sandbar.scripts.seed-verb-catalog/verb->slots).
@@ -3409,13 +3460,19 @@
 (defn handle-list
   "MCP `tools/list` — return the stable verb catalog, each tool enriched with
    derived MCP `annotations` (read-only / destructive / idempotent / open-world
-   hints) via verb-annotations.  Catalog is constant regardless of schema state;
+   hints) via verb-annotations.  Advertises ONLY the underscore WIRE names
+   (wire-name) so every client passes the Anthropic tool-name pattern; the
+   annotations are still derived from the original dotted `v` (the classifier
+   parses the dotted form).  Catalog is constant regardless of schema state;
    schema evolution surfaces through the `sandbar.schema.*` + `sandbar.class.*`
    read verbs, not through tools/list."
   [id _params]
   (envelope/jsonrpc-result
    id
-   {:tools (mapv (fn [v] (-> v (dissoc :handler) (assoc :annotations (verb-annotations v))))
+   {:tools (mapv (fn [v] (-> v
+                             (dissoc :handler)
+                             (assoc :annotations (verb-annotations v))
+                             (assoc :name (wire-name (:name v)))))
                  verb-catalog)}))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -3542,30 +3599,44 @@
    Error codes via `sandbar.util.jsonrpc-status` (semantic constants)."
   ([id params] (handle-call id params nil))
   ([id params principal]
-   (let [tool-name (:name params)
+   (let [raw-name  (:name params)
+         {:keys [canonical deprecated?]} (resolve-tool-name raw-name)
          arguments (:arguments params {})
-         verb      (get verb-by-name tool-name)]
+         verb      (when canonical (get verb-by-name canonical))]
+     ;; One-release dotted-alias: the deprecated dotted name still dispatches,
+     ;; but WARN so callers migrate to the underscore wire name.  The classifier
+     ;; / firewall / dispatch below all key off `canonical` (dotted), so a call
+     ;; by either name resolves to the SAME verb with the SAME authorization.
+     (when (and deprecated? canonical)
+       (log/warn :MCP/deprecated-dotted-tool-name
+                 {:received raw-name
+                  :use      (wire-name canonical)
+                  :note     "sandbar MCP tool names are now underscore-form; the dotted alias is deprecated and will be removed after one release"}))
      (cond
        (nil? verb)
        (envelope/jsonrpc-error id jsonrpc-status/invalid-params
-                               (str "Unknown tool: " tool-name)
-                               {:received-name tool-name
-                                :available-tools (mapv :name verb-catalog)})
+                               (str "Unknown tool: " raw-name)
+                               {:received-name raw-name
+                                :available-tools (mapv (comp wire-name :name) verb-catalog)})
 
        ;; Read-only token gate — deny-by-default for a restricted principal.
        ;; Placed after the unknown-verb check (so an unknown verb still reports
        ;; as unknown, not as a permission failure) and before dispatch, the one
        ;; authorization choke point the whole verb surface funnels through.
+       ;; Classifies the CANONICAL dotted name so a rename cannot flip a verb's
+       ;; read-only class.
        (and (auth/read-only-principal? principal)
-            (not (verb-permitted-for-read-only? tool-name)))
-       (read-only-denied id tool-name)
+            (not (verb-permitted-for-read-only? canonical)))
+       (read-only-denied id raw-name)
 
        :else
        (try
          (let [result (try
                         ;; RPAF v3 — central read-plane INPUT firewall (class/attr
                         ;; args) before dispatch; throws map to isError below.
-                        (assert-read-plane-call! tool-name arguments)
+                        ;; Keyed by the CANONICAL dotted name so the registry-
+                        ;; exempt set stays coherent under the wire rename.
+                        (assert-read-plane-call! canonical arguments)
                         ((:handler verb) arguments)
                         (catch clojure.lang.ExceptionInfo e
                           {:_user-error true
@@ -3587,14 +3658,14 @@
          ;; etc. should not be masked as MCP -32603.
          ;; See decisions/sandbar_entity_ref_abstraction_2026_05_14.md §D-3.3.
          (catch AssertionError e
-           (log/error e :MCP/precondition-failed {:tool tool-name})
+           (log/error e :MCP/precondition-failed {:tool canonical})
            (envelope/jsonrpc-error id jsonrpc-status/internal-error
                                    "Internal-invariant precondition failed at MCP boundary"
-                                   {:tool tool-name
+                                   {:tool canonical
                                     :assertion (.getMessage e)}))
          (catch Exception e
-           (log/error e :MCP/tools-call-error {:tool tool-name})
+           (log/error e :MCP/tools-call-error {:tool canonical})
            (envelope/jsonrpc-error id jsonrpc-status/internal-error
                                    "Tool execution failed"
-                                   {:tool tool-name
+                                   {:tool canonical
                                     :exception-message (.getMessage e)})))))))

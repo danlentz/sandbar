@@ -124,13 +124,18 @@
 (def ^:private destructive-verb-leaves  @#'tools/destructive-verb-leaves)
 (def ^:private idempotent-write-leaves  @#'tools/idempotent-write-leaves)
 (def ^:private read-only-denied-overrides @#'tools/read-only-denied-overrides)
+(def ^:private wire->canonical          @#'tools/wire->canonical)
 
 (defn- completeness-report
   "Return {:fail? :report}.  FAILS if a read-only-denied-override no longer
-   names an existing read-only verb (a stale override = latent authz bug).
-   Reports (INFO, non-failing) verbs whose leaf falls through to deny-by-default
-   mutating — a genuinely-new SAFE leaf would be accidentally locked out and
-   should surface for review."
+   names an existing read-only verb (a stale override = latent authz bug), OR
+   if the dots→underscores WIRE rename regresses: a wire name that still carries
+   a dot / breaks the Anthropic pattern, a non-injective wire projection, or a
+   broken wire↔canonical round-trip (any of which could flip a verb's authz
+   class at dispatch, per the 2026-07-04 underscore ruling).  Reports (INFO,
+   non-failing) verbs whose leaf falls through to deny-by-default mutating — a
+   genuinely-new SAFE leaf would be accidentally locked out and should surface
+   for review."
   [model]
   (let [verbs (:verbs model)
         catalog-names  (set (map :name verbs))
@@ -146,8 +151,22 @@
                                       (not (:read-only? hints)))]
                         {:override o
                          :exists? (contains? catalog-names o)
-                         :read-only? (:read-only? hints)})]
-    {:fail? (boolean (seq bad-overrides))
+                         :read-only? (:read-only? hints)})
+        ;; --- wire-name rename invariants (dots→underscores; 2026-07-04) ---
+        wire-pattern    #"^[a-zA-Z0-9_-]{1,64}$"
+        bad-wire        (for [n (sort catalog-names)
+                              :let [w (tools/wire-name n)]
+                              :when (or (str/includes? w ".")
+                                        (not (re-matches wire-pattern w)))]
+                          {:verb n :wire w})
+        bad-roundtrip   (for [n (sort catalog-names)
+                              :let [w    (tools/wire-name n)
+                                    back (get wire->canonical w)]
+                              :when (not= n back)]
+                          {:verb n :wire w :resolves-to back})
+        wire-collision? (not= (count wire->canonical) (count catalog-names))]
+    {:fail? (boolean (or (seq bad-overrides) (seq bad-wire)
+                         (seq bad-roundtrip) wire-collision?))
      :report
      (str
       (when (seq fallthrough)
@@ -156,7 +175,16 @@
              (str/join "\n" (map #(str "      · " %) fallthrough)) "\n"))
       (when (seq bad-overrides)
         (str "  FAIL stale read-only-denied-override(s) — no longer load-bearing:\n"
-             (str/join "\n" (map #(str "      x " (pr-str %)) bad-overrides)) "\n")))}))
+             (str/join "\n" (map #(str "      x " (pr-str %)) bad-overrides)) "\n"))
+      (when (seq bad-wire)
+        (str "  FAIL wire name(s) not pattern-conformant (^[a-zA-Z0-9_-]{1,64}$; no dots):\n"
+             (str/join "\n" (map #(str "      x " (pr-str %)) bad-wire)) "\n"))
+      (when (seq bad-roundtrip)
+        (str "  FAIL wire↔canonical round-trip broken (dispatch could flip authz class):\n"
+             (str/join "\n" (map #(str "      x " (pr-str %)) bad-roundtrip)) "\n"))
+      (when wire-collision?
+        (str "  FAIL wire-name collision — " (count wire->canonical) " wire names for "
+             (count catalog-names) " verbs (dots→underscores not injective here)\n")))}))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Run the gate
