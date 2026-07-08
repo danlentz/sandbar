@@ -37,9 +37,20 @@
       (is (some? (:serverInfo result)))
       (is (= "sandbar" (-> result :serverInfo :name))))
 
-    (testing "serverInfo version matches project version (UR-10 guard)"
-      (is (= "0.1.0" (-> result :serverInfo :version))
-          "server-info :version must match project.clj's declared version"))
+    (testing "serverInfo version is the 0.2.0 co-release, consistent with the catalog projection (UR-10 guard)"
+      (is (= "0.2.0" (-> result :serverInfo :version))
+          "server-info :version must agree with the project-export catalog projection (:dump/sandbar-version \"0.2.0\") — S11/Rec-2 version bump"))
+
+    (testing "instructions affordance is present, a non-empty string, and token-bounded (S11/Rec-2)"
+      (let [instr (:instructions result)]
+        (is (string? instr)
+            "initialize result must carry an :instructions string (MCP InitializeResult.instructions)")
+        (is (seq instr)
+            "instructions must be non-empty")
+        (is (< (count instr) 1500)
+            "instructions must stay token-bounded — a hard char ceiling keeps it well under any client context budget")
+        (is (re-find #"sandbar\.search\.bm25f" instr)
+            "instructions must orient the client to the workhorse retrieval verb")))
 
     (testing "capabilities include tools / resources / prompts / logging"
       (let [caps (:capabilities result)]

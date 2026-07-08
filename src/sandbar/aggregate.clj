@@ -19,7 +19,6 @@
   (:refer-clojure :exclude [count-by group-by rank-by])
   (:require [sandbar.api.projection :as projection]
             [sandbar.db.datatype    :as dt]
-            [sandbar.db.datomic     :as db]
             [sandbar.security.query :as secq]))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -190,29 +189,59 @@
 
 (defn tag-histogram
   "Return a frequency histogram of :mm/Tag usage across the corpus.
-   Each bin = {tag-ident, tag-value, count}; count is the number of
-   entities (any class) that reference the tag via any cardinality-many
-   ref slot.
+   Each bin = {:tag <identifier>, :value <string>, :count <int>}; count is
+   the number of entities (any class) that reference the tag via any
+   cardinality-many ref slot.  `:tag` is the canonical tag-ref fallback
+   (:db/ident, else :mm.tag/value, else :db/id — mirrors
+   `sandbar.audit.tag/tag-ref`), so it may be a keyword, string, or Long.
 
    Optional opts:
      :limit — cap returned bins (default 0 = no cap); sorted descending
-              by count, ascending by tag-ident as tie-breaker
+              by count, ascending by the stringified tag identifier as
+              tie-breaker (type-safe across keyword/string/Long)
 
    Returns:
-     {:histogram [{:tag <ident> :value <string> :count <int>} ...]
+     {:histogram [{:tag <ident|value|eid> :value <string> :count <int>} ...]
       :total <int>}
 
    Per Stage 5.B-pre #4 of
    decisions/stage_5_mcp_verb_authoring_sub_arc_2026_05_21.md."
   [{:keys [limit] :or {limit 0}}]
   {:pre [(integer? limit) (>= limit 0)]}
-  (let [tags    (dt/all-named-instances-of :mm/Tag)
-        bins    (for [tag-ident tags
-                      :let [e   (db/entity tag-ident)
+  ;; Enumerate ALL :mm/Tag instances as entity maps via `dt/all-instances-of`.
+  ;; Corpus tags are identless by design (ref-typed-slot upserts carrying only
+  ;; :mm.tag/value — see sandbar.audit.tag), so the former
+  ;; `dt/all-named-instances-of` (a deprecated alias for `named-idents-of`,
+  ;; whose Datalog requires `[?e :db/ident ?ident]`) matched ZERO tags and the
+  ;; histogram collapsed to {:histogram [] :total 0} across all 118 live tags —
+  ;; the S11/Rec-9 anomaly.  Each tag's `:tag` identifier follows the
+  ;; codebase-canonical fallback (mirrors `sandbar.audit.tag/tag-ref`): its
+  ;; :db/ident when interned, else its :mm.tag/value string, else its numeric
+  ;; :db/id — so an identless-but-valued corpus tag surfaces a human-meaningful
+  ;; key (its value) rather than a bare eid, while `:value` still carries the raw
+  ;; :mm.tag/value (redundant for identless tags, which is acceptable).  `:count`
+  ;; is the number of DISTINCT source entities (tool-card contract: "the number of
+  ;; entities ... that reference the tag"), deduped by source :db/id since one
+  ;; entity may cite a tag via >1 ref slot (e.g. both :mm.memory/tags and
+  ;; :mm.memory/themes).  `keep` (not `map`) over the source :db/id is
+  ;; deliberate defence-in-depth (S11 LC1): ceremony-8's read-plane firewall
+  ;; can rewrite a hop-forbidden inbound edge so its `:source` is elided/nil;
+  ;; `map` would fold that spurious nil into the `distinct` set and inflate the
+  ;; count by one phantom, whereas `keep` (drop-nils) is immune.  This cannot
+  ;; fire today — tag-citation slots are firewall-EXEMPT, so `hop-forbidden?`
+  ;; never rewrites a :mm/Tag inbound edge and every `:source` is present
+  ;; (`map` == `keep` here); it is robust-by-construction for a hypothetical
+  ;; future schema that routes a governed slot at a :mm/Tag.
+  (let [tags    (dt/all-instances-of :mm/Tag)
+        bins    (for [e tags
+                      :let [tag (or (:db/ident e) (:mm.tag/value e) (:db/id e))
                             val (:mm.tag/value e)
-                            n   (count (dt/inbound-edges-of tag-ident {}))]]
-                  {:tag tag-ident :value val :count n})
-        sorted  (sort-by (juxt #(- (:count %)) :tag) bins)
+                            n   (->> (dt/inbound-edges-of (:db/id e) {})
+                                     (keep (comp :db/id :source))
+                                     distinct
+                                     count)]]
+                  {:tag tag :value val :count n})
+        sorted  (sort-by (juxt #(- (:count %)) (comp str :tag)) bins)
         limited (if (zero? limit) sorted (take limit sorted))]
     {:histogram (vec limited)
      :total     (count tags)}))
