@@ -1004,7 +1004,7 @@
 ;; YAML emission helpers
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-(defn- memory-ident->rel-path
+(defn memory-ident->rel-path
   "Inverse of `rel-path->memory-ident` — convert a memorial :db/ident
    keyword back to a corpus rel-path string.
 
@@ -1012,7 +1012,14 @@
    :memory.patterns.x/y       → 'patterns/x/y.md'
 
    Returns nil for keywords whose namespace doesn't start with 'memory.'
-   (those weren't derived from rel-paths)."
+   (those weren't derived from rel-paths).
+
+   Public per it6 create-path fix (bugs/entity_create_codec_path_mints_-
+   identless_relpathless_entities_fs_projection_silently_skipped_2026_07_08):
+   `sandbar.store/create-memory!` reuses THIS single inverse to derive a
+   rel-path when a :mm/Memory is created with an explicit :db/ident but no
+   rel-path, so the create-path and the emit-path cite-derivation cannot
+   drift."
   [ident]
   ;; P6 (2026-06-30): un-dodge FIRST — a dodged ident (e.g. :memory.logs/log-
   ;; 2026-…) must map back to its TRUE filename (logs/2026-….md), not

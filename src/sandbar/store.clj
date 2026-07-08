@@ -213,10 +213,41 @@
    authoring a memorial, so the entity is never identless."
   ([class props] (create-memory! class props {}))
   ([class props opts]
-   (let [memory? (dt/type-isa? :mm/Memory class)
-         rel-path (or (:mm.memory/rel-path props)
-                      (get props "mm.memory/rel-path"))
-         derived  (when (and memory? rel-path (not (:db/ident props)))
+   (let [memory?        (dt/type-isa? :mm/Memory class)
+         explicit-ident (:db/ident props)
+         rel-path       (or (:mm.memory/rel-path props)
+                            (get props "mm.memory/rel-path"))
+         ;; CREATE-PATH FIX (it6, bugs/entity_create_codec_path_mints_identless_-
+         ;; relpathless_entities_fs_projection_silently_skipped_2026_07_08):
+         ;; when a :mm/Memory is created with an explicit :db/ident but NO
+         ;; rel-path, DERIVE the rel-path from the ident via the single shared
+         ;; inverse `codec-md/memory-ident->rel-path`, so the reactive fs sink
+         ;; can still project a file instead of silently skipping.  Absent-only,
+         ;; :mm/Memory-only; nil for non-`memory.*` idents (nothing to derive).
+         derived-rel-path (when (and memory? (not rel-path) explicit-ident)
+                            (codec-md/memory-ident->rel-path explicit-ident))
+         rel-path       (or rel-path derived-rel-path)
+         ;; LOUD-FAIL (it6): a CORPUS-DOCUMENT memorial with NEITHER a rel-path
+         ;; NOR an ident from which one is derivable cannot be given a corpus
+         ;; path, so the sink would skip it and mint a DB-only orphan — the FS↔DB
+         ;; bijection break this bug fixes, on the PRIMARY capture path.  Reject
+         ;; at the create boundary rather than orphan silently.  Gated on the
+         ;; SAME shared `dt/corpus-document-class?` predicate the sink's WARN
+         ;; uses, so the runtime-behavioral branches that are :first-class only
+         ;; by inheritance yet legitimately rel-path-less (Spec → Schedule /
+         ;; Workflow; Activity → Run / EventLog; Event) pass through untouched.
+         _ (when (and memory? (not rel-path) (dt/corpus-document-class? class))
+             (throw (ex-info
+                     (str "Cannot create first-class memorial " class
+                          " without :mm.memory/rel-path: no corpus path can be"
+                          " composed, so it would be a DB-only orphan (FS↔DB"
+                          " bijection break on the capture path). Supply"
+                          " :mm.memory/rel-path (e.g. \"decisions/foo.md\") — or"
+                          " an explicit memory :db/ident it can be derived from.")
+                     {:class class
+                      :sandbar/error :create-path-missing-rel-path
+                      :supplied-slots (vec (keys props))})))
+         derived  (when (and memory? rel-path (not explicit-ident))
                     (derive-memory-ident class rel-path))
          ;; Canonicalize an idented :mm/Schedule target passed as a raw eid to its
          ;; :db/ident keyword BEFORE keying, so the create-key matches the prune-
@@ -224,11 +255,14 @@
          props    (canonicalize-schedule-target class props)
          ;; :mm/Schedule content-key ident (W3.B proliferation fix) — absent-only,
          ;; and only when the memory-ident derivation did not already supply one.
-         sched-id (when-not (or derived (:db/ident props))
+         sched-id (when-not (or derived explicit-ident)
                     (derive-schedule-ident class props))
          props    (cond-> props
-                    derived  (assoc :db/ident derived)
-                    sched-id (assoc :db/ident sched-id))
+                    ;; Persist the ident-derived rel-path so the entity carries
+                    ;; the slot the sink routes on (and re-ingest round-trips).
+                    derived-rel-path (assoc :mm.memory/rel-path derived-rel-path)
+                    derived          (assoc :db/ident derived)
+                    sched-id         (assoc :db/ident sched-id))
          the-id   (:db/ident props)
          props    (cond-> props
                     (and memory? the-id (not (:mm/id props)))
