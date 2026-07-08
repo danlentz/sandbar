@@ -223,13 +223,21 @@
   ;; is the number of DISTINCT source entities (tool-card contract: "the number of
   ;; entities ... that reference the tag"), deduped by source :db/id since one
   ;; entity may cite a tag via >1 ref slot (e.g. both :mm.memory/tags and
-  ;; :mm.memory/themes).
+  ;; :mm.memory/themes).  `keep` (not `map`) over the source :db/id is
+  ;; deliberate defence-in-depth (S11 LC1): ceremony-8's read-plane firewall
+  ;; can rewrite a hop-forbidden inbound edge so its `:source` is elided/nil;
+  ;; `map` would fold that spurious nil into the `distinct` set and inflate the
+  ;; count by one phantom, whereas `keep` (drop-nils) is immune.  This cannot
+  ;; fire today — tag-citation slots are firewall-EXEMPT, so `hop-forbidden?`
+  ;; never rewrites a :mm/Tag inbound edge and every `:source` is present
+  ;; (`map` == `keep` here); it is robust-by-construction for a hypothetical
+  ;; future schema that routes a governed slot at a :mm/Tag.
   (let [tags    (dt/all-instances-of :mm/Tag)
         bins    (for [e tags
                       :let [tag (or (:db/ident e) (:mm.tag/value e) (:db/id e))
                             val (:mm.tag/value e)
                             n   (->> (dt/inbound-edges-of (:db/id e) {})
-                                     (map (comp :db/id :source))
+                                     (keep (comp :db/id :source))
                                      distinct
                                      count)]]
                   {:tag tag :value val :count n})
