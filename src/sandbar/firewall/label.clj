@@ -95,14 +95,17 @@
                           frontier)]
         (recur seen' (set/difference parents seen'))))))
 
-(defn- class-isa?
+(defn class-isa?
   "Is `class-ident` the SAME class as, or a `:dt/subclass-of` descendant of,
   `ancestor` — walked over `db`?  The firewall's total, datatype-free
-  `type-isa?` analog."
+  `type-isa?` analog.  Public so the shared spine's routing dispatch
+  (`route/route-of`) uses the SAME subclass-aware class test as `label-of`, not
+  an exact `(= …)` match (A-9(i)); callers guard nil `class-ident` themselves
+  (as `label-of` does), never passing nil here."
   [db ancestor class-ident]
   (contains? (ancestor-idents db class-ident) ancestor))
 
-(defn- class-ident-of
+(defn class-ident-of
   "The `:dt/type` class IDENT of entity map `e` (a keyword), or nil."
   [e]
   (let [t (:dt/type e)]
@@ -170,29 +173,65 @@
 ;;; PROJECT-AXIS COMPOSITION (shared by the Project + Memory branches)
 ;;; ===========================================================================
 
-(defn- project-context-eids
-  "The SET of `:mm.project/runs-in-context` Context eids of project entity
-  `proj` (card-MANY), each normalized via `ref->eid`.  Empty when the project
-  ties to no context."
+(defn- runs-in-context-members
+  "The RAW `:mm.project/runs-in-context` member seq of project entity `proj`
+  (card-MANY), normalized to a seq of ref-shaped values — NOT yet resolved to
+  eids.  Empty when the slot is absent.  The SINGLE normalization site that both
+  the sensitivity leg (`context-firewall-sensitivity`, where an unresolvable
+  member fail-closes :private) and the compartment set (`project-context-eids`)
+  read, so the card-many shape is parsed ONCE and the two consumers cannot
+  drift (A-1: the sensitivity leg must SEE the unresolvable members the
+  compartment set legitimately drops)."
+  [proj]
+  (let [raw (:mm.project/runs-in-context proj)]
+    (cond
+      (nil? raw)  nil
+      (coll? raw) raw
+      :else       [raw])))
+
+(defn project-context-eids
+  "The SET of RESOLVABLE `:mm.project/runs-in-context` Context eids of project
+  entity `proj` (card-MANY), each normalized via `ref->eid`.  Empty when the
+  project ties to no resolvable context.
+
+  This is the COMPARTMENT coordinate (the `:contexts` set): only live context
+  eids, by construction.  It deliberately does NOT carry the unresolvable-member
+  signal — the SENSITIVITY fail-close on an unresolvable member lives in
+  `context-firewall-sensitivity` (A-1), which reads the same
+  `runs-in-context-members`.  Public so the shared spine has ONE
+  runs-in-context resolver: `route/project-route`'s `:contexts` consumes THIS,
+  never a divergent second `keep`-idiom (central-guard discipline; the A-1
+  `keep`-widening lived in exactly such a duplicate)."
   [db proj]
   (into #{}
         (keep #(ref/ref->eid db %))
-        (let [raw (:mm.project/runs-in-context proj)]
-          (cond
-            (nil? raw)  nil
-            (coll? raw) raw
-            :else       [raw]))))
+        (runs-in-context-members proj)))
 
 (defn- context-firewall-sensitivity
-  "The most-restrictive `sensitivity-of-firewall-class` over EVERY context in
-  `context-eids` (card-MANY runs-in-context — private in ANY context composes
-  `:private`, CA-4).  Empty set ⇒ `:public` (no context axis to restrict)."
-  [db context-eids]
+  "The most-restrictive `sensitivity-of-firewall-class` over EVERY raw
+  runs-in-context `member` (card-MANY — private in ANY context composes
+  `:private`, CA-4).  Each member is resolved via `ref->eid`:
+
+    RESOLVABLE   ⇒ its Context's `sensitivity-of-firewall-class`
+    UNRESOLVABLE ⇒ `:private`   (A-1 FAIL-CLOSE)
+
+  A-1 (CODEX-1 HIGH): a member that resolves to NO live entity — a dangling
+  ident / lookup-ref, reachable on the pre-commit spec shapes the label core
+  sees via `firewall-guard!` — must NOT be silently dropped from the meet.  The
+  bare `(keep ref->eid)` idiom DID drop it, so `{public-ctx, dangling}` composed
+  `:public` (a WIDEN, violating the most-restrictive law this spine promotes to
+  doctrine).  Treating any unresolvable member as a `:private` axis makes it
+  WIDEN the leg toward :private (W1.H §3.1: ∅/unresolvable ⇒ :private).  Empty
+  member seq ⇒ `:public` (no context axis); the empty runs-in-context SET is
+  fail-closed to :private by the caller (`project-effective-sensitivity`)."
+  [db members]
   (most-restrictive
-    (map (fn [ctx-eid]
-           (sensitivity-of-firewall-class
-             (:mm.context/firewall-class (d/entity db ctx-eid))))
-         context-eids)))
+    (map (fn [member]
+           (if-let [eid (ref/ref->eid db member)]
+             (sensitivity-of-firewall-class
+               (:mm.context/firewall-class (d/entity db eid)))
+             :private))
+         members)))
 
 (defn project-effective-sensitivity
   "The PROJECT-LEVEL entry point of the shared label-resolution core — the
@@ -208,19 +247,24 @@
   leg).  This is the 3-axis form W1.deploy's DEP-7 closure label-compatibility
   check consumes and the project leg of the memory-level 4-axis composition.
 
-  FAIL-CLOSED over the empty / unresolvable context set (W1.deploy §6.1
-  verbatim): `runs-in-context = ∅` ⇒ `:private` — because `most-restrictive`
-  treats the empty seq as the `:public` neutral element, an unanchored project
-  must NOT compose `:public` off its container axes.  (An unresolvable context
-  eid already fail-closes: `(:mm.context/firewall-class nil) ⇒ nil ⇒ :private`
-  inside `context-firewall-sensitivity`; only the EMPTY set needs this guard.)
-  A project running in ANY private context can therefore never enter a public
-  closure — the fork-1 (most-restrictive-wins) answer to the multi-context case
-  (P-COMPOSE-4)."
+  FAIL-CLOSED over the empty AND the unresolvable context set (W1.deploy §6.1
+  verbatim + A-1):
+    • `runs-in-context = ∅` ⇒ `:private` — the EMPTY guard here, because
+      `most-restrictive` treats the empty seq as the `:public` neutral element,
+      so an unanchored project must NOT compose `:public` off its container axes.
+    • any UNRESOLVABLE member of a NON-empty set ⇒ `:private` — the A-1
+      fail-close inside `context-firewall-sensitivity`, which resolves each raw
+      member and treats a dangling ident / lookup-ref as a `:private` axis
+      rather than dropping it (the `(keep ref->eid)` widening CODEX-1 flagged;
+      reachable on the pre-commit spec shapes the label core sees).
+  A project running in ANY private OR unresolvable context can therefore never
+  enter a public closure — the fork-1 (most-restrictive-wins) answer to the
+  multi-context case (P-COMPOSE-4)."
   [db proj]
-  (let [ctx-eids    (project-context-eids db proj)
-        context-leg (if (seq ctx-eids)
-                      (context-firewall-sensitivity db ctx-eids)
+  (let [members     (runs-in-context-members proj)
+        context-leg (if (seq members)
+                      ;; A-1: an unresolvable member inside this leg ⇒ :private
+                      (context-firewall-sensitivity db members)
                       :private)]                     ; FAIL-CLOSED empty context set
     (most-restrictive
       [(visibility->sensitivity (:mm.project/default-visibility proj))

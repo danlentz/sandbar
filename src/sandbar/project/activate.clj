@@ -54,7 +54,19 @@
   The env/prop reads route through `config/getenv` / `config/getprop` (the
   redefinable seams) so a test can stub the launched-from-dir signal without
   touching the real environment.  Never throws — an un-activated session
-  resolves to `:project/UNASSIGNED`."
+  resolves to `:project/UNASSIGNED`.
+
+  TRUST ASSUMPTION (A-3 / CODEX-1 LOW).  The three activation surfaces —
+  `SANDBAR_PROJECT`, the `sandbar.project` JVM prop, and the client-project
+  config `:project` key — are OPERATOR-CONTROLLED inputs (the operator chooses
+  which project directory to launch the tool from; fork-5 operating model), NOT
+  attacker-controlled or memory-content-derived.  Reading a LOGICAL project
+  ident from them is trusted config, not a physical-topology build: this ns
+  opens no connection, starts no process, and reads no transactor URL (that is
+  W1.deploy).  No attacker-controlled data flows into the activation key, and a
+  mis-configured key can only MIS-NAME the active project — which fail-closes to
+  a private per-project scope (`:routes-to-public? false`), never widening to
+  the public bottom."
   []
   (or (->project-key (config/getenv "SANDBAR_PROJECT"))
       (->project-key (config/getprop "sandbar.project"))

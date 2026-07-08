@@ -14,6 +14,11 @@
      CTX-2        no public-bottom presumed before Dan's stamp (absent
                   firewall-class ⇒ :private).
      CTX-3        a private (:project-isolated) context resolves :private.
+     CTX-4        `visible-projects` is the SOLE membership authority — a project
+                  present via the runs-in-context reverse-tie (a poisoned-registry
+                  shape) but ABSENT from `:mm.context/visible-projects` is NOT a
+                  member (must not enter the private closure).  FAILS against an
+                  impl that unions a per-machine registry / the reverse-tie.
      CTX-5        Context STRING-carrier fail-closed backstop (unresolvable
                   carrier toward public ⇒ REFUSE, not silent-permit).
      CTX-6        intra-context cross-project PERMIT vs cross-private REFUSE
@@ -27,12 +32,24 @@
      P-COMPOSE-4  multi-context MEET over the card-many runs-in-context SET
                   (private in ANY context ⇒ :private; ∅ ⇒ :private) — FAILS
                   against a pick-one / first-context / scalar leg.
+     A-1          mixed resolvable+UNRESOLVABLE runs-in-context ⇒ :private
+                  (fail-close; R-3).  A dangling ident member must WIDEN the meet
+                  toward :private, NOT be silently dropped by `keep` (CODEX-1
+                  HIGH).  FAILS against the bare `(keep ref->eid)` idiom.
 
-   Fresh datomic:mem per test — never the live store (mirrors the S7 battery)."
+   Fresh datomic:mem per test — never the live store (mirrors the S7 battery).
+
+   ENV REQUIREMENT (R-5): these suites need a throwaway SANDBAR_CLIENT_DIR whose
+   `<dir>/.sandbar/config.edn` carries the 22-key `:required-schema` (the bare
+   worktree's classpath `config/config.edn` is gitignored, so `:required-schema`
+   is otherwise nil and the fixture errors ENVIRONMENTALLY — not a code defect).
+   The exact key list + the differential-vs-pinned-14 battery protocol are in
+   `audit-results/loop-2026-07-08/it5-w1ctx/IMPLEMENT-REPORT.md`."
   (:require [clojure.set :as set]
             [clojure.test :refer [deftest testing is use-fixtures]]
             [datomic.api :as d]
             [sandbar.db.datomic :as db]
+            [sandbar.db.ref :as ref]
             [sandbar.firewall.core :as fw]
             [sandbar.firewall.label :as label]
             [sandbar.firewall.support :as sup]
@@ -112,6 +129,42 @@
   (testing "visible-projects is the membership authority carrying P2 (W1.ctx §3)"
     (is (= #{(sup/eid-of :proj/p2)}
            (route/visible-projects (db/db) (d/entity (db/db) (sup/eid-of :ctx/priv)))))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; CTX-4 — `visible-projects` is the SOLE, corpus-canonical membership authority
+;;   (W1.ctx §3).  A project enrolled ONLY via the runs-in-context reverse-tie
+;;   (the shape a poisoned per-machine registry would surface as a "member") but
+;;   ABSENT from `:mm.context/visible-projects` must NOT be a member — it must
+;;   not enter the context's private closure.  FAILS against an impl that unions
+;;   the runs-in-context reverse-tie or merges a gitignored registry file.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(deftest ctx4-visible-projects-is-sole-membership-authority
+  ;; a private context; its CANONICAL membership authority (visible-projects) is
+  ;; enrolled with EXACTLY :proj/enrolled.  :proj/poison ties itself to the SAME
+  ;; context via runs-in-context but is deliberately NOT enrolled.
+  (sup/seed-context! :ctx/closed :project-isolated)
+  (sup/seed-project! :proj/enrolled :private :ctx/closed)
+  (sup/seed-project! :proj/poison   :private :ctx/closed)   ; runs-in-context, NOT enrolled
+  (sup/raw-transact! [{:db/ident :ctx/closed
+                       :mm.context/visible-projects (sup/eid-of :proj/enrolled)}])
+  (let [db      (db/db)
+        ctx     (d/entity db (sup/eid-of :ctx/closed))
+        members (route/visible-projects db ctx)]
+    (testing "sanity — the poison project GENUINELY runs-in the context (so the
+              exclusion is the authority's doing, not a missing reverse-tie)"
+      (is (contains? (label/project-context-eids db (d/entity db (sup/eid-of :proj/poison)))
+                     (sup/eid-of :ctx/closed))
+          ":proj/poison's runs-in-context really includes :ctx/closed"))
+    (testing "visible-projects returns EXACTLY the enrolled member (sole authority)"
+      (is (= #{(sup/eid-of :proj/enrolled)} members)
+          "only the git-tracked :mm.context/visible-projects member is present"))
+    (testing "the poisoned project is NOT a member — it must not enter the private
+              closure (visible-projects is the sole membership authority)"
+      (is (not (contains? members (sup/eid-of :proj/poison)))
+          "a project absent from visible-projects is NOT a member even though its
+           runs-in-context ties it to the context — a reverse-tie / registry
+           forgery must not confer membership (FAILS against a union impl)"))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; CTX-5 — Context STRING-carrier FAIL-CLOSED backstop (W1.ctx §4).  An
@@ -324,3 +377,58 @@
     (is (= :private (proj-sens :proj/no-ctx))
         "empty runs-in-context must fail-closed :private, NOT compose :public off
          the neutral-element context leg (W1.deploy §6.1 fail-closed)")))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; A-1 (R-3 / CODEX-1 HIGH) — a MIXED resolvable+UNRESOLVABLE runs-in-context
+;;   composes :private (fail-close).  The bare `(keep ref->eid)` idiom silently
+;;   DROPPED an unresolvable member, so `{public-ctx, dangling}` narrowed the
+;;   meet to {public} ⇒ :public (a WIDEN, violating most-restrictive).  The fix:
+;;   any member that resolves to no live entity contributes :private to the leg.
+;;
+;;   Shape notes (load-bearing):
+;;     • PRE-COMMIT spec, because a COMMITTED Datomic ref cannot dangle (the
+;;       label core sees pre-commit specs via firewall-guard! / label-from-props).
+;;     • the dangling member is an UNSEEDED IDENT keyword — `ref->eid` returns
+;;       nil for it, the exact shape `keep` dropped.  A bare bogus long does NOT
+;;       reproduce the leak: Datomic resolves a bare long to an empty entity
+;;       whose nil firewall-class ALREADY fail-closes :private inside the leg.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(deftest a1-mixed-resolvable-unresolvable-context-fails-closed
+  (sup/seed-context! :ctx/pub  :public-bottom)
+  (sup/seed-context! :ctx/pub2 :public-bottom)              ; second resolvable public ctx
+  (let [db          (db/db)                                 ; snapshot AFTER both seeds
+        pub-ctx-eid (sup/eid-of :ctx/pub)
+        pub2-eid    (sup/eid-of :ctx/pub2)
+        dangling    :ctx/never-seeded-ghost          ; unseeded ident ⇒ ref->eid nil
+        base-spec   {:dt/type                       :mm/Project
+                     :mm.project/ident              :proj/precommit-mixed
+                     :mm.project/corpus-repo        "test-repo"
+                     :mm.project/default-visibility :public
+                     :mm.project/firewall-class     :public-bottom}]
+    (testing "sanity — the dangling ident really resolves to NO live entity"
+      (is (nil? (ref/ref->eid db dangling))
+          "the unseeded ident must be unresolvable for this to falsify the keep-drop"))
+    (testing "control — the SAME spec with ONLY the resolvable public member is :public"
+      (is (= :public (label/project-effective-sensitivity
+                       db (assoc base-spec :mm.project/runs-in-context [pub-ctx-eid])))
+          "an all-public single-context project composes :public (baseline)"))
+    (testing "MIXED {resolvable-public, dangling} ⇒ :private (the fail-close)"
+      (let [spec (assoc base-spec :mm.project/runs-in-context [pub-ctx-eid dangling])]
+        (is (= :private (label/project-effective-sensitivity db spec))
+            "an unresolvable member must WIDEN the meet toward :private, NOT be
+             dropped — the bare (keep ref->eid) idiom would compose :public here")
+        (is (= :private (:sensitivity (label/label-of db spec)))
+            "the front-door label-of over the pre-commit spec agrees")
+        (is (false? (:routes-to-public? (route/project-route db spec)))
+            "and the route derived from the SAME shared core is not public (R-3 mirror)")))
+    (testing "member ORDER is irrelevant — {dangling, resolvable-public} also :private"
+      (is (= :private (label/project-effective-sensitivity
+                        db (assoc base-spec :mm.project/runs-in-context [dangling pub-ctx-eid])))))
+    (testing "TWO resolvable-public members (no dangling) still compose :public
+              (guards against an over-broad fix that fail-closes any multi-member set)"
+      (is (= :public (label/project-effective-sensitivity
+                       db (assoc base-spec :mm.project/runs-in-context
+                                 [pub-ctx-eid pub2-eid])))
+          "two resolvable public contexts must remain :public — the fail-close is
+           for UNRESOLVABLE members only, not for cardinality > 1"))))
