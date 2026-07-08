@@ -16,6 +16,7 @@
             [sandbar.navigate.path.ast :as ast]
             [sandbar.navigate.path.datomic :as compiler]
             [sandbar.navigate.path.ir :as ir]
+            [sandbar.security.query :as secq]
             [sandbar.test-util :as tu]))
 
 (use-fixtures :each (tu/make-test-db-fixture {:test-name "navigate-path-datomic-test"}))
@@ -422,6 +423,44 @@
                  (compiler/register-test-fn! "not-a-keyword" 'foo/bar)))
     (is (thrown? clojure.lang.ExceptionInfo
                  (compiler/register-test-fn! :ok-keyword 'bare-symbol)))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; it6-f5 — :TEST resolver wired onto the single-source safe-operator vocabulary
+;; (sandbar.security.query).  compile-test is the LIVE 4th consumer reachable via
+;; path-via's endpoint-only fallback; it must never splice a symbol off the
+;; shared vocabulary.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(deftest test-fn-registry-derives-from-single-source
+  (testing "the runtime :TEST registry default IS the security.query single source"
+    (is (= secq/safe-path-test-registry @compiler/test-fn-registry))))
+
+(deftest register-test-fn-rejects-off-vocabulary-symbol
+  (testing "register-test-fn! refuses a symbol off the safe-operator vocabulary"
+    ;; throwaway registry so the shared atom is never mutated by this test
+    (with-redefs [compiler/test-fn-registry (atom @compiler/test-fn-registry)]
+      (is (thrown-with-msg?
+            clojure.lang.ExceptionInfo #"(?i)safe-operator vocabulary"
+            (compiler/register-test-fn! :pwn 'clojure.java.shell/sh)))
+      (is (thrown-with-msg?
+            clojure.lang.ExceptionInfo #"(?i)safe-operator vocabulary"
+            (compiler/register-test-fn! :pwn2 'clojure.core/eval)))
+      ;; a vetted vocabulary member (here a :where-head op) IS accepted
+      (is (contains? (compiler/register-test-fn! :int? 'clojure.core/int?)
+                     :int?)))))
+
+(deftest compile-test-refuses-tampered-off-vocabulary-symbol
+  (testing "compile-test gates at the splice site even if the atom is tampered"
+    ;; simulate a direct atom mutation that bypasses register-test-fn!'s guard
+    (with-redefs [compiler/test-fn-registry
+                  (atom (assoc @compiler/test-fn-registry
+                               :pwn 'clojure.java.shell/sh))]
+      (is (thrown-with-msg?
+            clojure.lang.ExceptionInfo #"(?i)safe-operator vocabulary"
+            (compile-expr [:TEST :cites :pwn]))
+          "an off-vocabulary symbol must NOT be spliced into the query")
+      ;; a legit default predicate still compiles from the same (tampered) atom
+      (is (= 2 (count (:where (compile-expr [:TEST :cites :keyword?]))))))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Tier-3 operators still reject (vocabulary registered; compilation deferred)
