@@ -58,6 +58,75 @@
 
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; G2 rel-path traversal sanitizer (write-side containment)
+;;
+;; bugs/reactive_sink_rel_path_traversal_exposure_pre_existing_2026_07_04:
+;; the sink derives its write target from the entity rel-path with NO
+;; `..`/absolute/symlink normalization, so a hostile or corrupted rel-path
+;; could direct a projection write OUTSIDE the corpus tree (potentially into
+;; a sibling public repo) — BELOW where the W1 export filter + the process
+;; boundary operate.  The physical firewall spine (air-gap) stops git PUSH;
+;; the sink write happens before push, on the local tree, so this is the one
+;; leak vector the spine does not close.  Canonicalize the resolved target
+;; and REFUSE (fail-closed) unless it lands strictly under
+;; `<corpus-root>/memory` — the write-side twin of the AM-13 test-side rule.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defn corpus-memory-root
+  "Canonical containment root for reactive fs-projection writes:
+   `<corpus-root>/memory`, with `..`/`.` segments and symlinks resolved via
+   `getCanonicalFile`.  Every sink write MUST canonicalize strictly under
+   this path (see `assert-under-corpus-root!`)."
+  ^java.io.File []
+  (.getCanonicalFile (io/file (corpus-root) "memory")))
+
+(defn assert-under-corpus-root!
+  "Refuse — fail-closed — unless `target` canonicalizes strictly under
+   `<corpus-root>/memory`.  `getCanonicalFile` resolves BOTH `..`/`.`
+   segments AND symlinks, so `../`-traversal, symlink escapes, and any other
+   form that resolves outside the corpus tree are all caught here (a purely
+   lexical `.normalize` would miss the symlink-escape class).  The trailing
+   `File/separator` on the base prevents a prefix-sibling false-accept
+   (`<root>/memory-evil` is NOT under `<root>/memory`).
+
+   Returns the canonical target `File` on success; throws a
+   `:rel-path-traversal-refusal` ex-info otherwise — symmetric with the
+   `:registry-strip-refusal` guard, so `fs-projection-sink` RETHROWS it and
+   the refusal surfaces in `sandbar_reactive_health` rather than being
+   silently swallowed."
+  ^java.io.File [^java.io.File target]
+  (let [base-p  (.getCanonicalPath (corpus-memory-root))
+        canon   (.getCanonicalFile target)
+        canon-p (.getCanonicalPath canon)]
+    (when-not (or (= canon-p base-p)
+                  (.startsWith canon-p (str base-p java.io.File/separator)))
+      (throw (ex-info "reactive fs-projection write refused: target escapes corpus root"
+                      {:sandbar/error :rel-path-traversal-refusal
+                       :corpus-root   base-p
+                       :requested     (.getPath target)
+                       :canonical     canon-p})))
+    canon))
+
+(defn contained-target-path
+  "Resolve the fs-projection write target for `rel-path` under
+   `<corpus-root>/memory`, REFUSING (fail-closed) any rel-path that is
+   absolute or whose canonical resolution escapes the corpus tree.
+
+   A rel-path is RELATIVE by contract; an absolute form is malformed/hostile
+   and is refused outright (the `str`-concat the sink previously used would
+   have silently swallowed the leading `/`).  Traversal / symlink escapes
+   are caught by `assert-under-corpus-root!` after canonical resolution.
+
+   Returns the validated canonical absolute path string."
+  ^String [^String rel-path]
+  (when (.isAbsolute (io/file rel-path))
+    (throw (ex-info "reactive fs-projection write refused: absolute rel-path"
+                    {:sandbar/error :rel-path-traversal-refusal
+                     :rel-path      rel-path})))
+  (.getPath (assert-under-corpus-root! (io/file (corpus-memory-root) rel-path))))
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; FS-projection sink — codec.emit + atomic fs write
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
@@ -80,6 +149,12 @@
    no longer a silent no-write — it throws an `:atomic-rename-failed`
    ex-info (an ordinary IO failure, caught+warn-logged by
    `fs-projection-sink`'s catch, NOT rethrown as a fidelity refusal).
+
+   This is the low-level write PRIMITIVE and intentionally writes whatever
+   `target-path` it is handed (its only caller, `fs-projection-sink`, has
+   already run the G2 containment sanitizer `contained-target-path` on the
+   derived target — that is where an out-of-root write is refused, before
+   any filesystem effect).
 
    Returns nil.  Raises on failure."
   [^String target-path ^String content]
@@ -163,7 +238,12 @@
           (if (nil? content)
             (log/debug :REACTIVE/fs-write-skipped
                        {:ident ident :eid eid :class class-ident :reason :no-native-codec})
-            (let [target-path (str (corpus-root) "/memory/" rel-path)
+            ;; G2: resolve + CONTAIN the write target under <corpus-root>/memory
+            ;; (refuses absolute / `..`-traversal / symlink-escape rel-paths
+            ;; fail-closed) BEFORE emitting the :REACTIVE/fs-write start log or
+            ;; touching the filesystem.  A refusal throws :rel-path-traversal-
+            ;; refusal, caught+rethrown below (symmetric with registry-strip).
+            (let [target-path (contained-target-path rel-path)
                   _           (log/debug :REACTIVE/fs-write
                                          {:ident ident :eid eid :class class-ident
                                           :rel-path rel-path :phase :start})
@@ -174,19 +254,28 @@
                         {:ident ident :eid eid :class class-ident :rel-path rel-path
                          :duration-ms done-ms :bytes bytes}))))
         (catch Throwable t
-          ;; Companion rethrow: a registry-strip refusal must ESCAPE the
-          ;; sink so `dispatch-sinks!` increments :sink-error-total and the
-          ;; refusal is visible in sandbar_reactive_health.  Everything
-          ;; else (ordinary IO, :atomic-rename-failed, emit-path throws)
-          ;; keeps today's warn+swallow.
-          (if (= :registry-strip-refusal (:sandbar/error (ex-data t)))
-            (do (log/error t :REACTIVE/registry-strip-refused
-                           {:ident ident :eid eid :class class-ident :rel-path rel-path
-                            :error (.getMessage t) :ex-data (ex-data t)})
-                (throw t))
-            (log/warn t :REACTIVE/fs-write-failed
-                      {:ident ident :eid eid :class class-ident :rel-path rel-path
-                       :error (.getMessage t)})))))))
+          ;; Companion rethrow: a SECURITY refusal must ESCAPE the sink so
+          ;; `dispatch-sinks!` increments :sink-error-total and the refusal
+          ;; is visible in sandbar_reactive_health.  Two such refusals:
+          ;;   - :registry-strip-refusal    (pre-write registry guard, S2)
+          ;;   - :rel-path-traversal-refusal (G2 corpus-root containment)
+          ;; A traversal attempt is a first-class security event, not an
+          ;; ordinary IO hiccup — swallowing it would leave the counter at 0
+          ;; and log projection-success on a refused write.  Everything else
+          ;; (ordinary IO, :atomic-rename-failed, emit-path throws) keeps
+          ;; today's warn+swallow.
+          (let [err (:sandbar/error (ex-data t))]
+            (if (or (= :registry-strip-refusal err)
+                    (= :rel-path-traversal-refusal err))
+              (do (log/error t (if (= :rel-path-traversal-refusal err)
+                                 :REACTIVE/rel-path-traversal-refused
+                                 :REACTIVE/registry-strip-refused)
+                             {:ident ident :eid eid :class class-ident :rel-path rel-path
+                              :error (.getMessage t) :ex-data (ex-data t)})
+                  (throw t))
+              (log/warn t :REACTIVE/fs-write-failed
+                        {:ident ident :eid eid :class class-ident :rel-path rel-path
+                         :error (.getMessage t)}))))))))
 
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
