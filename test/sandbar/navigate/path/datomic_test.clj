@@ -436,18 +436,52 @@
     (is (= secq/safe-path-test-registry @compiler/test-fn-registry))))
 
 (deftest register-test-fn-rejects-off-vocabulary-symbol
-  (testing "register-test-fn! refuses a symbol off the safe-operator vocabulary"
+  (testing "register-test-fn! refuses a symbol off the path :TEST projection"
     ;; throwaway registry so the shared atom is never mutated by this test
     (with-redefs [compiler/test-fn-registry (atom @compiler/test-fn-registry)]
+      ;; dangerous symbols (RCE) — refused (deny-by-default)
       (is (thrown-with-msg?
-            clojure.lang.ExceptionInfo #"(?i)safe-operator vocabulary"
+            clojure.lang.ExceptionInfo #"(?i)path :TEST"
             (compiler/register-test-fn! :pwn 'clojure.java.shell/sh)))
       (is (thrown-with-msg?
-            clojure.lang.ExceptionInfo #"(?i)safe-operator vocabulary"
+            clojure.lang.ExceptionInfo #"(?i)path :TEST"
             (compiler/register-test-fn! :pwn2 'clojure.core/eval)))
-      ;; a vetted vocabulary member (here a :where-head op) IS accepted
-      (is (contains? (compiler/register-test-fn! :int? 'clojure.core/int?)
-                     :int?)))))
+      ;; FF-1 TRIPWIRE (it7): clojure.core/int? IS on the UNION vocabulary
+      ;; (secq/safe-operator-vocabulary — a :where-head allowlist member) but is
+      ;; NOT a curated :TEST unary predicate, so the per-consumer PROJECTION gate
+      ;; REFUSES it.  (it6-f5 wrongly ACCEPTED it via the union gate; FF-1 flips
+      ;; that.)  This assertion FLIPS — the register would succeed, this `thrown?`
+      ;; would fail — the moment the :TEST gate is widened back to the union: the
+      ;; exact projection-merge drift the single-source design makes impossible.
+      (is (thrown-with-msg?
+            clojure.lang.ExceptionInfo #"(?i)path :TEST"
+            (compiler/register-test-fn! :int? 'clojure.core/int?))
+          ":where-only int? must be REFUSED at the :TEST consumer")
+      ;; a genuine :TEST projection member IS accepted (positive path)
+      (is (contains? (compiler/register-test-fn! :my-pos 'clojure.core/pos?)
+                     :my-pos)
+          "a curated :TEST unary predicate registers fine"))))
+
+(deftest register-test-fn-rejects-where-only-operators
+  (testing "FF-1: every :where-head-only operator (on the union vocabulary but
+            NOT the :TEST projection) is REFUSED as a :TEST predicate — a battery
+            of tripwires that FLIP if the :TEST gate widens to the union"
+    (with-redefs [compiler/test-fn-registry (atom @compiler/test-fn-registry)]
+      (doseq [sym '[clojure.core/int?          ; type pred, :where-head-only
+                    clojure.core/get           ; accessor, :where-head-only
+                    clojure.core/nth           ; accessor, :where-head-only
+                    clojure.string/includes?]] ; string pred, :where-head-only
+        ;; precondition: each IS a union-vocabulary member …
+        (is (secq/safe-operator-symbol? sym)
+            (str sym " must be a union-vocabulary member (precondition)"))
+        ;; … but is NOT on the :TEST projection …
+        (is (not (secq/safe-path-test-symbol? sym))
+            (str sym " must NOT be on the :TEST projection"))
+        ;; … so register-test-fn! refuses it at the :TEST consumer.
+        (is (thrown-with-msg?
+              clojure.lang.ExceptionInfo #"(?i)path :TEST"
+              (compiler/register-test-fn! :where-only sym))
+            (str "register-test-fn! must refuse :where-only " sym))))))
 
 (deftest compile-test-refuses-tampered-off-vocabulary-symbol
   (testing "compile-test gates at the splice site even if the atom is tampered"
@@ -456,10 +490,30 @@
                   (atom (assoc @compiler/test-fn-registry
                                :pwn 'clojure.java.shell/sh))]
       (is (thrown-with-msg?
-            clojure.lang.ExceptionInfo #"(?i)safe-operator vocabulary"
+            clojure.lang.ExceptionInfo #"(?i)path :TEST"
             (compile-expr [:TEST :cites :pwn]))
-          "an off-vocabulary symbol must NOT be spliced into the query")
+          "an off-projection symbol must NOT be spliced into the query")
       ;; a legit default predicate still compiles from the same (tampered) atom
+      (is (= 2 (count (:where (compile-expr [:TEST :cites :keyword?]))))))))
+
+(deftest compile-test-rejects-where-only-operator-at-splice
+  (testing "FF-1: compile-test gates on the :TEST PROJECTION at the splice site —
+            a tampered atom mapping a fn-kw to a :where-head-only op (on the union
+            but not the :TEST projection) is REFUSED before it reaches d/q, so the
+            splice-site gate and the register gate agree on the same projection"
+    (with-redefs [compiler/test-fn-registry
+                  (atom (assoc @compiler/test-fn-registry
+                               :where-only-int 'clojure.core/int?
+                               :where-only-get 'clojure.core/get))]
+      (is (thrown-with-msg?
+            clojure.lang.ExceptionInfo #"(?i)path :TEST"
+            (compile-expr [:TEST :cites :where-only-int]))
+          ":where-only int? must not be spliced into a :TEST clause")
+      (is (thrown-with-msg?
+            clojure.lang.ExceptionInfo #"(?i)path :TEST"
+            (compile-expr [:TEST :cites :where-only-get]))
+          ":where-only get must not be spliced into a :TEST clause")
+      ;; a legit :TEST projection member still compiles from the same atom
       (is (= 2 (count (:where (compile-expr [:TEST :cites :keyword?]))))))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
