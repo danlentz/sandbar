@@ -2,45 +2,197 @@
 
 All notable changes to Sandbar are documented in this file.  Format informed by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html) at and after 0.1.0.
 
-## [Unreleased] — Memory-Model Co-Evolution arc
+## [0.2.0] — unreleased (tag Dan-gated)
 
-This release is being authored as the **Memory-Model Co-Evolution arc** per Dan-directive 2026-05-20 (memory-corpus side decision at [`memory/decisions/sandbar_0_1_1_coevolution_with_memory_model_2026_05_20.md`](https://github.com/danlentz/claude/blob/master/memory/decisions/sandbar_0_1_1_coevolution_with_memory_model_2026_05_20.md); arc plan at [`memory/plans/sandbar_0_1_1_coevolution_arc_2026_05_20.md`](https://github.com/danlentz/claude/blob/master/memory/plans/sandbar_0_1_1_coevolution_arc_2026_05_20.md)).
+> **Version-narrative note (pending Dan's confirmation).**  The prior `[Unreleased]`
+> section of this file narrated a **0.1.1** cut to Clojars — the "Memory-Model
+> Co-Evolution arc" opened 2026-05-20 (`12a2a5c`) as `0.1.1-SNAPSHOT`, with the
+> plan to bump `0.1.1-SNAPSHOT → 0.1.1` and deploy at arc close.  **That 0.1.1
+> Clojars cut never happened.**  The arc instead grew well past a point release:
+> a read-plane security firewall, a provenance/isolation centerpiece (`:mm/Project`
+> schema + directional firewall), a reactive DB↔FS projection, the scheduler
+> substrate, the workflow/session lifecycle, and an MCP hardening pass.  Per the
+> 0.2.0 co-release plan of record (`memory/plans/sandbar_0_2_0_co_release_plan_of_record_2026_07_08.md`)
+> the release is **renumbered 0.2.0**.  The only version bump landed so far is the
+> **wire-visible** one — MCP `server-info.version` and the project-export catalog
+> both read `0.2.0` (`bb4b5d6`) — while `project.clj` still carries
+> `0.1.1-SNAPSHOT`.  The `project.clj` coordinate bump and the git tag are **both
+> Dan-gated** (`memory/authorizations/dan_v0_2_0_tag_is_hard_dan_gated_do_not_tag_without_explicit_approval_other_tasks_precede_2026_07_08.md`)
+> and are intentionally NOT part of this changelog change.  This heading and the
+> "0.1.1 → 0.2.0" renumbering await Dan's version-narrative confirmation.
 
-Rather than the corpus immediately switching to canonical Clojars consumption of 0.1.0 (the path anticipated by the 2026-05-12 prior decision), Dan opened a co-evolution branch: corpus (memory-model client) begins integrating + consuming Sandbar 0.1.1-SNAPSHOT via local `lein install`; integration friction surfacing during memory-model consumption is analyzed at the architectural boundary; evolutions land on either the Sandbar foundation OR the memory-model per layering principles + substrate-first-friction discipline + improve-abstraction-not-bypass.
+Everything in this section is traceable to the git history since `v0.1.0`
+(`877c9e1..3ab31a8`, 233 commits) or to a dated landing record under
+`memory/decisions/`.  Organized by theme, not commit order.
 
-When the arc closes:
+### The provenance + isolation firewall (release centerpiece)
 
-- `project.clj` bumps from `0.1.1-SNAPSHOT` → `0.1.1`
-- Sandbar 0.1.1 cuts to Clojars (Dan-deploy)
-- Corpus migrates to canonical Clojars consumption per the prior 2026-05-12 decision
+The 0.2.0 headline: the memory model becomes usable for real, often **private**
+projects — each with its own corpus projected to its own git repo, with
+provenance and a proprietary-isolation firewall.
 
-Follow-on after 0.1.1 ships: return to the actor-context-rules deep-dive arc with sandbar-backend awareness in hand (per `authorizations/actor_context_rules_deep_dive_arc_2026_05_11.md` — standing since 2026-05-11; paused during Phase R).
+- **`:mm/Project` schema mint (S6)** — new `:mm/Project` class (parent `:mm/Artifact`,
+  inheriting `name` / `description` / `scope` / `:mm/id`; 10 `:mm.project/*` slots),
+  the `:project/UNASSIGNED` and `:context/UNASSIGNED` sentinels (default-visibility
+  `:private`), and 4 `:mm/Shape` entities (project-layout-safety,
+  no-absolute-path + no-absolute-path-codebase, repo-handle-url-safety).  Schema EDN
+  landed at `b081096`; minted **live** during Ceremony #8 (additive schema loaded at
+  restart), MCP-verified.  Per `memory/decisions/ceremony_8_COMPLETE_directional_firewall_live_project_schema_minted_public_bottom_stamped_2026_07_08.md`.
+- **Directional read/write firewall (S7)** — deny-by-default cross-boundary flow
+  control; a write that would move a public entity's reference toward a
+  `:private`/unassigned target is refused (`flow-forbidden`).  Built + twice-hardened
+  at `204c3f6`, remediated over a codex+opus+fable review round at `b72fd99`.
+- **Public-bottom baseline** — the global corpus context
+  (`memory.contexts/unsandboxed-home-laptop`) is stamped
+  `:mm.context/firewall-class :public-bottom`, establishing the public co-load ROOT.
+  This is a **live DB transaction** performed during Ceremony #8 (not a code commit);
+  it arms the public baseline but makes NO corpus memorial public on its own
+  (memorial sensitivity resolves via owning-project → `:project/UNASSIGNED` =
+  `:private`).  Ceremony #8 completed on the second attempt via a
+  stamp-before-enforcement re-order (zero code change); attempt 1's firewall-refused
+  stamp and clean rollback are recorded in
+  `memory/bugs/ceremony_8_public_bottom_stamp_blocked_by_live_firewall_bootstrapping_ordering_fail_closed_before_baseline_2026_07_08.md`.
+- **W1 Phase-0 — traversal sanitizer + `:mm/id` covenant** (`7f3a788` → merged `3140634`).
+  G2 rel-path traversal sanitizer in `reactive/sinks.clj` (survived a codex bypass
+  corpus; the sole VULNERABLE-class TOCTOU adjudicated pre-existing → S9 lane) and D1
+  `:mm/id` covenant read-back in `codec/markdown.clj`, with new `mm_id_covenant_test`
+  + `sinks_g2_test` suites.  Condition **C2**: the emit identity-preference must flip
+  to `:mm/id`-first (over legacy `:mm.memory/identity`) BEFORE any ζ-backfill or
+  Tempo-C rebuild (byte-identical on base today; dual-slot cohort empty on live).
+  Per `memory/decisions/w1_phase0_LANDED_live_3140634_...md`.
+- **W1.ctx spine — most-restrictive label core** (`5757e55` → merged `1725cf5`, after a
+  revise round).  ONE shared label core (`compose` / `effective-sensitivity` /
+  `project-effective-sensitivity`, MOST-RESTRICTIVE per Dan's fork ruling), project
+  routing (`route-of`, subclass-aware), per-project activation (`active-project-key`,
+  env > prop > config precedence, DB fail-closed), and a CTX/P-COMPOSE battery (17
+  tests / 569 assertions incl. two proven falsifiers).  Zero schema delta
+  (`:projection` is a data value on a pre-existing open slot).  The W1.E provenance
+  recorder was **severed** to held branch `arc/w1e-provenance-held-20260708` (out of
+  spine scope).  Live-path delta = two leak-safe fail-closes (empty-context ⇒
+  `:private`; unresolvable-member ⇒ `:private`), both verified no-ops on committed
+  data.  Per `memory/decisions/w1_ctx_spine_LANDED_live_1725cf5_...md`.
 
-### Added
+### Security hardening (read-plane)
 
-- **`lein issue-mcp-token`** — bootstrap script for provisioning MCP-client service-accounts.  Creates an `auth/ServiceAccount` entity, hashes the API key via Buddy, and emits the `<service-name>:<api-key>` Bearer-token shape plus a ready-to-paste `export SANDBAR_TOKEN=...` shell line.  Resolves Friction Item #1 of the memory-corpus arc plan (`memory/plans/sandbar_0_1_1_coevolution_arc_2026_05_20.md` §3) — the MCP client could not previously authenticate without a hand-rolled REPL session.  New namespace at `src/sandbar/scripts/issue_mcp_token.clj`; lein alias added to `project.clj`; usage documented in `doc/auth.md` §'Issuing tokens for MCP clients'.
+- **Read-plane query law + allowlist single-source (F5).**  The read-plane query
+  surface is closed against parse-time reader-eval and against arbitrary Datalog
+  predicate injection.  Landed incrementally: read-eval closed on `search :where`
+  (`c7d836c`); the F1 global `*read-eval* false` backstop reverted after it broke
+  fresh-start ns init (`6c2d679`); `sanitize-where` deny-by-default allowlist
+  (`9f8f983`) with a contract + splice-site wiring battery (`b85a38b`); map/set-literal
+  launder bypass closed + built-ins passlist + bare-preds + regex-drop (`c1884af`,
+  `c55fad8`).  **Allowlist unification (It-6, `a1284f2` → merged `ca09994`):** one
+  `safe-operator-vocabulary` (31 reviewed pure operators) becomes the single source;
+  the lane **discovered a live 4th consumer** — the path-grammar `:TEST` compiler
+  (`navigate/path/datomic.clj`) had a forked `test-fn-registry` splicing caller-named
+  symbols into `d/q` since 2026-05-14, which the F5 design's "path plane is clean"
+  premise had missed — now gated through the same vocabulary.  Accept sets
+  byte-identical for every live consumer; one disclosed deny-more delta
+  (off-vocabulary registration refused; zero production callers).  Per
+  `memory/decisions/it6_LANDED_live_3ab31a8_...md`.
+- **Read-plane namespace firewall (RPAF v1–v3.1).**  Deny-by-default class / attribute /
+  entity / `:where` read-scope so a read-only MCP client cannot exfiltrate `:auth/*`
+  credential values.  v1 entry guards (`6ef43b7`); v2 projection-layer OUTPUT scrub —
+  sanitizes RETURNED entities + slots, closing traversal-output relocation, **credential
+  VALUES closed here and stay closed** (`40707bf`); v3 central dispatch-boundary
+  class-arg guard + registry-accept + multi-class fix (`a65c593`); v3.1 numeric-eid
+  `:where` firewall + group-by result-key scrub (`639705e`).  Dan **accepted the 0.2.0
+  logical firewall as the posture**, with physical auth-store separation as the durable
+  post-0.2.0 close (`memory/decisions/dan_accepts_0_2_0_logical_readplane_firewall_..._2026_07_07.md`).
+- **Read-only MCP token gate** — centralized `handle-call` deny-by-default for the
+  read-only service-account posture (`ff176c2`, ceremony #4).
+- **Reactive pre-write registry guard** — refuses frontmatter-key strips at the write
+  boundary (`eeac6b4`, S2).
 
-- **Tag-modeling first-class arc — Stage 6 ADR + Stage 7 substrate (2026-05-20).**  Sub-arc of the memory-model co-evolution work.  Per [`memory/decisions/tag_as_first_class_introspectable_type_in_metamodel_2026_05_20.md`](https://github.com/danlentz/claude/blob/master/memory/decisions/tag_as_first_class_introspectable_type_in_metamodel_2026_05_20.md):
-  - **`:mm/Tag` enriched** from anonymous-only (`:mm.tag/value` string) to first-class introspectable type with 17 slots across 5 tiers: Identity (value / alt-label / hidden-label — SKOS three-label partition); Documentation (definition / scope-note / example / editorial-note / change-note / history-note — SKOS six-note); Concept-relations (broader-generic / broader-instantial / broader-partitive / related / in-scheme — ISO 25964 three-way broader subtype split); Lifecycle (vocabulary-level / lifecycle-status / superseded-by / category-type / canonical?); Federation+provenance+mapping (introduced-in / constraints / sort-key / exact-match / close-match / broader-match / narrower-match / related-match — SKOS cross-vocabulary mapping).
-  - **7 supporting classes** declared in `schema/mm.edn`: `:mm/ConceptScheme` (SKOS analog); `:mm/Shape` (SHACL-targeting full slot set: shape-id / applies-to / description / required-property); `:mm/Dataset`, `:mm/Vocabulary`, `:mm/Linkset`, `:mm/ThesaurusArray`, `:mm/ConceptGroup` (VoID + iso-thes minimal declarations; fuller slot vocabularies pending Stage 7.B+).
-  - **DCAT two-tier pattern on `:mm/Memory`** — `:mm.memory/themes` (controlled tier, ref→:mm/Tag) alongside existing `:mm.memory/tags` (free-text tier).
-  - **`sandbar.audit.tag` namespace** with 7 tag-lifecycle invariants: `undefined-used` / `defined-unused` / `orphan` / `date-pattern` / `type-pattern` / `drift` (case + plural clusters) / `closure-consistency` (broader-* acyclicity + :related symmetric reciprocity + :supersedes inverse-pair).  Aggregate `audit-all` + 10 tests / 70 assertions.
-  - **Codec class-routing via `:dt/codec-type-keyword`** — new metamodel attribute (`:db.unique/identity`) declares per-class wire-form `type:` value; `dt/class-for-codec-type-keyword` helper does O(1) lookup-ref resolution; `sandbar.codec.markdown/parse-document` peeks frontmatter `type:` + routes accordingly (no hardcoded `:mm/Tag` knowledge in substrate per `interaction/no_hardcoded_consumer_class_knowledge_in_substrate_2026_05_13.md`).  `:mm/Memory` routing unchanged.
-  - **9 MCP verbs** per ADR §2.5 — `sandbar.ground <concept>` (compositional grounding workflow at sandbar level); `sandbar.tag.lookup` (tag-vocabulary primitive backed by `sandbar.search/search-bm25f` over `:mm/Tag`'s `:dt/bm25f-weights`); `sandbar.tag.define`, `.audit`, `.consolidate`, `.split`, `.rename`, `.align`, `.harmonize`.  43 DB-backed handler tests + 11 catalog tests / all green.
-  - **9 substrate-level bootstrap tags** at `memory/tags/` — `mm-type` / `mm-class` / `mm-property` / `predicate` / `decision` / `reference` / `library` / `tag-governance` / `controlled-vocabulary`.  Each `type: tag` routes to `:mm/Tag` via class-routing.  README documents the C.5 substrate/editorial boundary.
-  - **Resolves F#18** (anonymous `:mm/Tag` upserts) from the parent `bootstrap-memory-substrate` sub-arc.
+### Substrate features
 
-### Changed
-
-- _(pending)_
+- **Reactive DB→FS projection** — a `sandbar.reactive` hook at the `dt/*` substrate
+  boundary with a three-layer opt-out (per-call > binding > class-skip-list) (`5cb7db6`);
+  a bounded core.async queue with per-entity coalescing + a `sandbar.reactive.health`
+  MCP verb (`dd020e3`); forward DB→FS projection live, closing the one-way-ingest gap on
+  `entity.create :format :markdown` (`85cf2bd`).  A `:dt/memorial-policy` substrate
+  primitive classifies each class `:first-class` / `:db-only` / `:inline` and the sink
+  enforces it (`4e91d6a`, `39a4d3f`).  This is the mechanism CLAUDE.md calls the
+  "reactive projection maintaining the FS↔DB bijection."
+- **Workflow + session lifecycle (ι.3 / W4.1)** — a `sandbar.workflow.orchestrate`
+  namespace with a canonical phase vocabulary, a `:mm.event/WorkflowTransition` event
+  class hierarchy (`423f27a`), event emission wired into the dispatcher (`703382d`), the
+  `sandbar.workflow.orchestrate` MCP verb (`7e5cd89`), `:phase-timeout` hard-fail
+  detection (`ded4a67`), a 6-method `phase-work` multimethod (`f3ed495`…`3258e9d`), and
+  end-to-end open+handoff integration tests (`837bf12`).  Server-side banner composition
+  with lean MCP wire payloads (`32c973a`); session-lifecycle hardening P1–P5 (`499a6b9`).
+  This is the substrate under `/memory-open` and `/memory-handoff`.
+- **γ scheduler** — a `:mm.event/ScheduleEvent` family + `sandbar.schedule.state`
+  (`f990dff`), RFC-5545 RRULE recurrence boundary (`8160025`), a native min-heap
+  fire-thread (`7313031`), a `:mm.event/Scheduled` subscriber + Run lifecycle (`aa8d17e`),
+  the `sandbar.schedule` public facade (`40b8a37`), 8 `sandbar.schedule.*` MCP verbs
+  (`0582aed`), core-lifecycle wiring (`3d4dcf6`), and boot-time demo/system jobs
+  (`f6ca7b8`, `0b7e15f`).
+- **BM25F async indexing** — the BM25F refresh rides a dedicated single-thread executor
+  (`entity-changed-async!` + `await-bm25f-quiescent!`, `095ee28`); MCP writes enqueue the
+  refresh and reads await quiescence bounded (`9e894b2`); contract tests for the
+  inline-free write path, flush hook, failure isolation, and read barrier (`54644f1`).
+- **F6 — single-source verb catalog + CI drift gate** (`93a9b7f` → merged `7ddaf55`).
+  One pure DB-free `catalog-model` is the single source; affordance-map + edges
+  generators retarget onto it; a `catalog-check` gate fails CI on catalog↔code drift.
+  82 verbs / 22 axes, wire parity green.  Gates every consolidation move
+  (drift-gate-before-collapse).  Per
+  `memory/decisions/f6_verb_catalog_drift_gate_LANDED_live_7ddaf55_..._2026_07_08.md`.
+- **MCP tool-name wire rename — dots → underscores + one-release dotted alias**
+  (`7e26853` → merged `7a47122`).  A wire-boundary projection: canonical dotted names
+  (`sandbar.entity.find`) stay internal; the underscore form (`sandbar_entity_find`) is
+  emitted at `tools/list` and reversed at call entry, so authz classification is provably
+  name-independent (asserted identical for all 82 verbs).  Dotted names stay accepted for
+  ONE release via a never-advertised deprecation-WARN alias (tools AND prompts);
+  `catalog-check` gained wire-name injectivity / round-trip / pattern invariants.  This
+  is a Dan-ruled 0.2.0 release gate.  Alias retirement is a KNOWN GAP (see below).  Per
+  `memory/decisions/mcp_tool_name_rename_LANDED_live_7a47122_..._2026_07_08.md`.
+- **Create-path loud-reject** (`008e56b`/`d578211` → merged `3ab31a8`).  `entity.create`
+  without a resolvable rel-path no longer silently mints a DB-only orphan the FS sink
+  skips: rel-path present ⇒ unchanged; absent + explicit ident ⇒ derived from ident;
+  absent + underivable ⇒ **rejected loudly** (`:create-path-missing-rel-path`).  The
+  reactive sink logs WARN (corpus docs) / debug (runtime); a `corpus-document-class?`
+  predicate exempts the `:mm/Spec`/`:mm/Activity`/`:mm/Event` runtime roots so
+  `:mm/Schedule` creates keep working.  Live probe confirms the loud rejection.  Fixes
+  `memory/bugs/entity_create_codec_path_mints_identless_relpathless_entities_..._2026_07_08.md`.
+- **Foundational co-evolution + tag-modeling substrate** (rolled in from the retired
+  `[Unreleased]` narrative).  `lein issue-mcp-token` service-account bootstrap
+  (`2d90d04`); the `:mm/Tag` first-class enrichment + 7 supporting SKOS/DCAT classes +
+  `sandbar.audit.tag` invariants + codec class-routing + 9 tag/ground MCP verbs
+  (`9d5f8f4`, `d6df72f`); 22 typed-edge attributes on `:mm/Memory` (`7fbdd51`); the
+  `sandbar.util.diff` re-port (`3912525`); full-corpus ingest + codec fidelity work
+  (Friction items #4/#8/#9/#11/#12/#14/#17).
 
 ### Fixed
 
-- **`sandbar.util.diff` namespace path/declaration mismatch** — `src/sandbar/util/diff.clj` previously declared its namespace as `sandbar.diff` (path was `sandbar/util/diff.clj`), which caused `lein check` to fail with `Could not locate sandbar/diff.clj on classpath`.  Re-ported from upstream `fgl.diff` ([clj-fgl](https://github.com/danlentz/clj-fgl/blob/master/src/fgl/diff.clj)) per Dan-directive 2026-05-20: copy code, no dependency.  The re-port also restores the upstream `merge*` (which the prior port dropped) + drops inert `:require [fgl.util]` and `:use [print.foo]` (neither's symbols referenced in upstream or port).  Resolves Friction Item #4 of the memory-corpus arc plan `memory/plans/sandbar_0_1_1_coevolution_arc_2026_05_20.md` §3.
+- **Schedule seed idempotency (W3.B)** — stable content-key `:db/ident` at create +
+  `prune-duplicate-schedules!` self-heal + seed-twice test (`fe7cacd`); content-key
+  WIDENING + prune gating to fix silent data-loss on non-target axes (`320b103`,
+  `e4b5fc7`).
+- **`XorConstraint` seed idempotency** — stable `:db/idents` on the interval XOR
+  sub-entities (upsert-on-reload instead of ~40/shape append-proliferation) +
+  `prune-duplicate-seed-constraint-subentities!` self-heal migration (`1bc426b`,
+  Dan-approved 2026-07-03).
+- **Tag-histogram = 0 across all 118 tags** — root cause was enumeration via
+  `dt/all-named-instances-of` (requires `[?e :db/ident ?ident]`) while all 118 corpus
+  `:mm/Tag` are identless ref-slot upserts; re-pointed to `dt/all-instances-of` (`bb4b5d6`),
+  with a `:tag` canonical fallback ident→value→db/id (`fb26020`) and nil-source hardening
+  (`8fe9466`, S11).
+- **SSE encoder** — real SSE encoder for POST `/mcp` content negotiation, fixing the
+  SSE-first `Accept` ArityException that blocked Codex MCP clients (`463d24e`); SSE
+  encoder later consolidated into `util.codec/clj->sse-stream` (`e759468`).
+- **Codec shadow-slot + digit-dodge fixes** — strip-shadow-collisions on emit so legacy
+  doubly-declared shadow slots no longer clobber canonical YAML keys (`2ce81a7`);
+  EDN-safe ident round-trip (`cac6570`).
 
-- **F#9 body-params follow-on — symmetric custom body-parser on production-connector AND test-http paths.**  F#9 commit `032e22f` correctly removed the duplicate route-level body-params interceptor, but didn't land the parallel substrate fix of replacing the JSON-only default body-params with sandbar's full `content/body-parsers` (JSON + EDN + CSV + form-encoded).  Tests posting `application/edn` (auth API, event API, zorp-auth) saw `:edn-params nil` and returned 400.  Resolved by `sandbar.server.pedestal/with-sandbar-interceptors` (production Connector API path; mirrors upstream `conn/with-default-interceptors` stack verbatim but substitutes `(body-params/body-params (content/body-parsers))`) + `sandbar.service.config/inject-body-params` (test http API path; injects body-params just before the router interceptor since `http/default-interceptors` doesn't add it without CSRF).  Test outcomes on `arc/0.1.2-bootstrap-memory-substrate`: 36 failures + 5 errors → 0 failures / 0 errors.  Per `memory/bugs/sandbar_arc_0_1_2_branch_test_regression_pre_tag_modeling_stage_7_2026_05_20.md`.
+### Known gaps
 
-- **`parse-document` tx-ordering for `:mm.memory/first-section` + `:mm.section/parent/sibling` refs — add `entity-specs->tx-data` transact-boundary helper.**  Datomic fails to resolve keyword-ident ref values when the target entity is created in the SAME tx-data (memory's `:mm.memory/first-section <section-ident>` issued in the same `d/transact` as the section's `:db/ident` assertion).  Affected every memorial with markdown headings — only frontmatter-only memorials would transact cleanly.  Discovered during the M.1 preview run against the corpus (177 of 200 failures pre-fix; 3 of 200 post-fix, all unrelated).  Architectural choice: keep `parse-document` returning ident-form (backward-compatible with test fixtures + emit-document round-trip); add `sandbar.codec.markdown/entity-specs->tx-data` that translates keyword-ident refs to string-tempid refs at the transact boundary.  Callers ingesting parse-document output into Datomic call `(d/transact conn (entity-specs->tx-data entities))`.  Translates `:mm.memory/first-section`, `:mm.section/parent`, `:mm.section/previous-sibling`, `:mm.section/next-sibling`.  Memory + section `:db/ident` assertions stay intact.  Per `memory/bugs/sandbar_parse_document_tx_ordering_section_ident_resolution_2026_05_20.md`.
+See `doc/known-gaps-0.2.0.md` for the full riding-gaps ledger (each with what / why it
+rides / authorizing record / planned close): the read-plane structure-only oracles
+(`resources/list` `:auth/*` metadata enumeration, `entity.update` RPAF dispatch gap,
+aggregate/registry structure oracles); the OPEN public-bottom-edit firewall bug; the 14
+pinned baseline codec test vars (posture pending Dan); the dotted-alias retirement
+prerequisites (621 in-card refs); and physical auth-store separation (post-0.2.0).
 
 ## [0.1.0] — 2026-05-15 — first public release
 
