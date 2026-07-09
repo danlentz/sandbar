@@ -81,7 +81,7 @@ provenance and a proprietary-isolation firewall.
   fresh-start ns init (`6c2d679`); `sanitize-where` deny-by-default allowlist
   (`9f8f983`) with a contract + splice-site wiring battery (`b85a38b`); map/set-literal
   launder bypass closed + built-ins passlist + bare-preds + regex-drop (`c1884af`,
-  `c55fad8`).  **Allowlist unification (It-6, `a1284f2` → merged `3ab31a8`):** one
+  `c55fad8`).  **Allowlist unification (It-6, `a1284f2` → merged `ca09994`):** one
   `safe-operator-vocabulary` (31 reviewed pure operators) becomes the single source;
   the lane **discovered a live 4th consumer** — the path-grammar `:TEST` compiler
   (`navigate/path/datomic.clj`) had a forked `test-fn-registry` splicing caller-named

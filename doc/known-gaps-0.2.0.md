@@ -56,8 +56,13 @@ over the co-resident `:auth/*` records.
 ### 1c. Aggregate / registry / path structure oracles
 
 - **What.**  Documented residual structure-only oracles that survive the logical
-  firewall: aggregate read-plane verbs with no per-attribute authz
-  (`memory/bugs/read_plane_aggregate_verbs_no_attribute_authz_credential_hash_exfil_orthogonal_to_f5_2026_07_07.md`);
+  firewall.  (For the record: the aggregate credential-VALUE exfil bug —
+  `memory/bugs/read_plane_aggregate_verbs_no_attribute_authz_credential_hash_exfil_orthogonal_to_f5_2026_07_07.md`
+  — is **CLOSED**; every aggregate verb now runs the deny-by-default namespace
+  firewall on its `:class`/`:group-by`/`:where` args per
+  `memory/decisions/read_plane_namespace_firewall_deny_by_default_closes_auth_exfil_dan_delegated_direction_2026_07_07.md`.)
+  What still rides is the structure-not-value residue: aggregate count/membership
+  structure oracles over the allow-listed read surface;
   the count-of-redaction-markers weak oracle (kept-markers ruling); registry-shape
   class/property DEFINITION exposure (registry-accept ruling); and the
   `navigate.path-via` `:RESTRICT`/`:TEST`/`:FILTER` value positions (fleet #4,
