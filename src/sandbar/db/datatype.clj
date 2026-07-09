@@ -1760,21 +1760,51 @@
   +runtime-behavioral-roots+
   [:mm/Spec :mm/Activity :mm/Event])
 
+(def ^{:private true
+       :doc "Runtime-root descendants that ARE corpus documents (project to a
+            corpus markdown FILE and MUST carry a :mm.memory/rel-path) despite
+            living under a runtime-behavioral root — so the root-ancestry
+            exclusion must NOT drop them:
+              :mm/Log      (:mm/Activity) — session-handoff chronicle → memory/logs/
+              :mm/Fn       (:mm/Spec)     — first-class function memorial → memory/fns/
+              :mm/Workflow (:mm/Spec)     — user-visible behavioral spec → memory/workflows/
+            (and their descendants, e.g. :mm/Rule under :mm/Fn — also a corpus
+            document at memory/rules/.)  Per it7 FF-2 (it6 BOARD-MINUTE Lane-B
+            fast-follow #1): the it6 root-ancestry gate SILENTLY EXCLUDED these
+            three (:mm/Log was re-parented under :mm/Activity; :mm/Fn / :mm/Workflow
+            live under :mm/Spec), leaving them at BASE behavior (silent skip / no
+            create-time loud-reject).  Listing them here as an explicit CLASS-LEVEL
+            inclusion restores derive-or-reject + WARN coverage.  This override is
+            MONOTONE — it can only ADD coverage; :mm/Schedule / :mm/EventLog /
+            :mm/Run / :mm/Job / :mm/Event / :mm/Process and every other runtime
+            class stay rel-path-less (regression-pinned)."}
+  +corpus-document-runtime-classes+
+  [:mm/Log :mm/Fn :mm/Workflow])
+
 (defn corpus-document-class?
   "True when `class-ident` is a FIRST-CLASS memorial that the reactive fs sink
    projects to a corpus markdown FILE — i.e. its effective memorial-policy is
-   `:first-class` AND it is NOT under any runtime-behavioral root
+   `:first-class` AND EITHER it is an explicit corpus-document class under a
+   runtime root (`+corpus-document-runtime-classes+`: :mm/Log / :mm/Fn /
+   :mm/Workflow + descendants) OR it is NOT under any runtime-behavioral root
    (`:mm/Spec` / `:mm/Activity` / `:mm/Event`).
 
    This is the precise 'must carry a `:mm.memory/rel-path`' set: the corpus
-   document types (Decision / Plan / Bug / Observation / Interaction /
-   Feedback / Log / Shape / …).  It EXCLUDES the classes that are
-   `:first-class` only by inheritance from `:mm/Memory` yet legitimately have
-   no rel-path — Schedule (content-key ident), EventLog (telemetry, created via
-   a bare `dt/make`), and their kin.
+   document types (Decision / Plan / Bug / Observation / Interaction / Feedback /
+   Shape / … PLUS Log / Fn / Workflow).  It EXCLUDES the classes that are
+   `:first-class` only by inheritance from `:mm/Memory` yet legitimately have no
+   rel-path — Schedule (content-key ident), EventLog (telemetry, created via a
+   bare `dt/make`), Run (:db-only), Event/Process/Job kin.
 
-   THE single shared predicate behind two it6 defenses (so they can never
-   diverge): `sandbar.store/create-memory!`'s create-time loud-fail and
+   it7 FF-2 (it6 BOARD-MINUTE Lane-B fast-follow #1) moved this from a pure
+   root-ancestry exclusion to CLASS-LEVEL gating: the coarse root exclusion
+   wrongly dropped :mm/Log (re-parented under :mm/Activity) and :mm/Fn /
+   :mm/Workflow (under :mm/Spec), which ARE corpus documents.  The explicit
+   inclusion is MONOTONE-SAFE — it only ADDS those three (+ descendants) to
+   coverage; it removes nothing, so no rel-path-less runtime create regresses.
+
+   THE single shared predicate behind two defenses (so they can never diverge):
+   `sandbar.store/create-memory!`'s create-time loud-fail and
    `sandbar.reactive.sinks/fs-projection-sink`'s WARN-on-skip.  Non-throwing —
    any lookup failure returns false (never reject/alarm on uncertainty).  Per
    bugs/entity_create_codec_path_mints_identless_relpathless_entities_fs_-
@@ -1782,7 +1812,8 @@
   [class-ident]
   (boolean
    (try (and (= :first-class (effective-memorial-policy-of class-ident))
-             (not (some #(type-isa? % class-ident) +runtime-behavioral-roots+)))
+             (or (some #(type-isa? % class-ident) +corpus-document-runtime-classes+)
+                 (not (some #(type-isa? % class-ident) +runtime-behavioral-roots+))))
         (catch Throwable _ false))))
 
 (defn direct-subclasses-of

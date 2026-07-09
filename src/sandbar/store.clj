@@ -26,6 +26,8 @@
    needs `sandbar.codec.markdown`, and the codec already depends on datatype —
    so putting it in datatype would be a cycle."
   (:require [clj-uuid :as uuid]
+            [clojure.string :as str]
+            [datomic.api :as d]
             [sandbar.codec.markdown :as codec-md]
             [sandbar.db.datatype :as dt]
             ;; sandbar.db.datomic is the LOWEST layer (datatype→datomic), so it is
@@ -34,6 +36,13 @@
             ;; content-key string so the create-path key and the prune-path key
             ;; can never drift byte-for-byte (W3.B REVISE must-fix #1).
             [sandbar.db.datomic :as db]
+            ;; sandbar.reactive.sinks is the write-side projection layer; it does
+            ;; NOT require store (only names it in a comment), so store→sinks is
+            ;; acyclic.  Reused for its LANDED G2 containment sanitizer
+            ;; `contained-target-path` — the SAME check the fs sink runs, applied
+            ;; pre-transact (it7 FF-2) so a traversal/absolute rel-path is refused
+            ;; before it commits to the DB, not only at the sink.
+            [sandbar.reactive.sinks :as sinks]
             [sandbar.identifier :as ident]))
 
 (defn derive-memory-ident
@@ -189,6 +198,84 @@
           (keyword "sandbar.schedule"
                    (str "s-" (uuid/v5 +schedule-ns+ content-key))))))))
 
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Pre-transact corpus rel-path hardening (it7 FF-2; it6 BOARD-MINUTE Lane-B
+;; fast-follow #2).  Normalization + containment/grammar + collision/ownership,
+;; MOVED before dt/make so an unprojectable or colliding rel-path is refused at
+;; the create boundary rather than committing a malformed DB row.  Centralized +
+;; class-agnostic so update / bulk-import can share it (the single-point-of-
+;; enforcement shape F5 established for the read plane).
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defn normalize-corpus-rel-path
+  "Canonicalize a corpus rel-path to the STORED form: relative to the `memory/`
+   subtree, no leading `./` or `memory/` segment, trimmed.  Idempotent.  Does
+   NOT strip a leading `/` — an absolute path stays absolute so the containment
+   guard still refuses it.  The codec's `rel-path->memory-ident` already strips a
+   leading `memory/` when deriving the ident; normalizing the STORED slot to
+   match keeps the ident, the stored rel-path, and the sink's write target
+   mutually consistent (a `memory/decisions/foo.md` input otherwise yields ident
+   :memory.decisions/foo but a `<root>/memory/memory/decisions/foo.md` target)."
+  [rel-path]
+  (-> rel-path
+      str/trim
+      (str/replace #"^\./" "")
+      (str/replace #"^memory/" "")))
+
+(defn assert-corpus-rel-path-safe!
+  "Pre-transact rel-path hardening for a corpus `:mm/Memory` `rel-path` about to
+   be persisted under ident `the-id`.  Two guards, both loud (fail-closed):
+
+     1. CONTAINMENT + GRAMMAR — routes `rel-path` through the LANDED G2 sanitizer
+        `sandbar.reactive.sinks/contained-target-path` (the SAME check the
+        reactive fs sink runs, MOVED before `dt/make`).  Refuses an absolute /
+        `..`-traversal / symlink-escape rel-path with a `:rel-path-traversal-
+        refusal` ex-info at create time, so an unprojectable rel-path never
+        commits to the DB on a 'successful' create (the it6 sink-only containment
+        held the FS backstop, but let a pathological rel-path STRING reach the
+        store — codex #2/#3).
+
+     2. COLLISION / OWNERSHIP — when `the-id` is known, refuses (loud
+        `:rel-path-collision`) if a DIFFERENT existing entity already owns
+        `rel-path`.  Two memorials sharing one rel-path would project to the same
+        corpus file, one clobbering the other's FS↔DB bijection.  An existing
+        entity with the SAME ident is an idempotent upsert (allowed).  The query
+        is best-effort (an unbound DB / query failure is swallowed — no worse
+        than base, which had NO check); a DETECTED collision is a hard error.
+
+   Class-agnostic + reusable at the mutation boundary (create today; update /
+   bulk-import fold in here next).  Returns `rel-path`."
+  [class rel-path the-id]
+  ;; (1) containment + grammar via the landed G2 sanitizer (throws on escape).
+  (sinks/contained-target-path rel-path)
+  ;; (2) collision / ownership — only meaningful once we know our own ident.
+  (when the-id
+    (let [owners (try
+                   (d/q '[:find [?e ...] :in $ ?rp
+                          :where [?e :mm.memory/rel-path ?rp]]
+                        (db/db) rel-path)
+                   (catch Throwable _ nil))
+          others (when (seq owners)
+                   (->> owners
+                        (map db/entity)
+                        (remove #(= (:db/ident %) the-id))
+                        (seq)))]
+      (when others
+        (throw (ex-info
+                (str "Cannot create " class " at :mm.memory/rel-path \"" rel-path
+                     "\": that corpus path is already owned by a DIFFERENT entity "
+                     (pr-str (mapv #(or (:db/ident %) (:db/id %)) others))
+                     ".  Two memorials cannot project to the same corpus file "
+                     "(one would clobber the other's FS<->DB bijection).  Pick a "
+                     "distinct rel-path, or update the existing entity via "
+                     "entity.update.")
+                {:class          class
+                 :sandbar/error  :rel-path-collision
+                 :rel-path       rel-path
+                 :creating-ident the-id
+                 :colliding      (mapv #(or (:db/ident %) (:db/id %)) others)})))))
+  rel-path)
+
 (defn create-memory!
   "Create a `class` entity with full ζ identity, then transact via `dt/make`.
 
@@ -226,7 +313,11 @@
          ;; :mm/Memory-only; nil for non-`memory.*` idents (nothing to derive).
          derived-rel-path (when (and memory? (not rel-path) explicit-ident)
                             (codec-md/memory-ident->rel-path explicit-ident))
-         rel-path       (or rel-path derived-rel-path)
+         ;; NORMALIZE (it7 FF-2): canonicalize the finalized rel-path (explicit or
+         ;; ident-derived) to the stored form — strips a leading `memory/`/`./` so
+         ;; the ident, the stored slot, and the sink write target stay consistent.
+         ;; Idempotent + preserves absolute paths (so containment still refuses).
+         rel-path       (some-> (or rel-path derived-rel-path) normalize-corpus-rel-path)
          ;; LOUD-FAIL (it6): a CORPUS-DOCUMENT memorial with NEITHER a rel-path
          ;; NOR an ident from which one is derivable cannot be given a corpus
          ;; path, so the sink would skip it and mint a DB-only orphan — the FS↔DB
@@ -258,12 +349,20 @@
          sched-id (when-not (or derived explicit-ident)
                     (derive-schedule-ident class props))
          props    (cond-> props
-                    ;; Persist the ident-derived rel-path so the entity carries
-                    ;; the slot the sink routes on (and re-ingest round-trips).
-                    derived-rel-path (assoc :mm.memory/rel-path derived-rel-path)
+                    ;; Persist the NORMALIZED rel-path (explicit OR ident-derived)
+                    ;; so the entity carries the canonical slot the sink routes on
+                    ;; (and re-ingest round-trips); drop any redundant string key.
+                    (and memory? rel-path) (-> (dissoc "mm.memory/rel-path")
+                                               (assoc :mm.memory/rel-path rel-path))
                     derived          (assoc :db/ident derived)
                     sched-id         (assoc :db/ident sched-id))
          the-id   (:db/ident props)
+         ;; PRE-TRANSACT GUARD (it7 FF-2): containment/grammar (via the landed G2
+         ;; sanitizer) + collision/ownership, BEFORE dt/make — so a traversal /
+         ;; absolute / colliding rel-path is refused at the create boundary rather
+         ;; than committing a malformed or clobbering DB row.
+         _ (when (and memory? rel-path)
+             (assert-corpus-rel-path-safe! class rel-path the-id))
          props    (cond-> props
                     (and memory? the-id (not (:mm/id props)))
                     (assoc :mm/id (ident/ident-uuid the-id)))]

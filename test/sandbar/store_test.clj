@@ -146,3 +146,133 @@
                                      {:mm.memory/name "it6 sched no-reject"}
                                      {:validate? false}))
         "schedule create without rel-path must not hit the corpus-document loud-fail")))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; it7 FF-2 — class-level corpus-document coverage (Log/Fn/Workflow) + pre-transact
+;; rel-path normalize / containment / collision at the create boundary.  it6
+;; BOARD-MINUTE Lane-B fast-follows #1 + #2.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(deftest ff2-corpus-document-class-covers-log-fn-workflow
+  (testing "the three runtime-root corpus-document classes the it6 root-ancestry
+            gate silently EXCLUDED are NOW covered by class-level gating (:mm/Log
+            under :mm/Activity; :mm/Fn / :mm/Workflow under :mm/Spec)"
+    (is (dt/corpus-document-class? :mm/Log)      ":mm/Log (Activity) IS a corpus doc")
+    (is (dt/corpus-document-class? :mm/Fn)       ":mm/Fn (Spec) IS a corpus doc")
+    (is (dt/corpus-document-class? :mm/Workflow) ":mm/Workflow (Spec) IS a corpus doc")))
+
+(deftest ff2-runtime-classes-stay-rel-path-less
+  (testing "CAREFUL: :mm/Schedule + the runtime event/activity classes MUST stay
+            rel-path-less (NOT corpus-document) — the inclusion override is
+            MONOTONE, adding Log/Fn/Workflow only and removing nothing"
+    (is (not (dt/corpus-document-class? :mm/Schedule)) ":mm/Spec content-key ident")
+    (is (not (dt/corpus-document-class? :mm/EventLog)) ":mm/Activity telemetry")
+    (is (not (dt/corpus-document-class? :mm/Run))      ":mm/Activity :db-only")
+    (is (not (dt/corpus-document-class? :mm/Job))      ":mm/Spec runtime job")
+    (is (not (dt/corpus-document-class? :mm/Event))    ":mm/Event bus primitive")))
+
+(deftest ff2-corpus-doc-runtime-class-without-rel-path-or-ident-now-rejects
+  (testing "a :mm/Log / :mm/Fn / :mm/Workflow create with NEITHER rel-path NOR a
+            derivable ident now loud-rejects (was a silent DB-only orphan under
+            the it6 root-ancestry gate) — derive-or-reject coverage extended"
+    (doseq [cls [:mm/Log :mm/Fn :mm/Workflow]]
+      (let [ex (try (store/create-memory! cls
+                                          {:mm.memory/name (str "ff2 orphan " cls)}
+                                          {:validate? false})
+                    nil
+                    (catch clojure.lang.ExceptionInfo e e))]
+        (is (some? ex) (str cls " must loud-reject a rel-path-less create"))
+        (is (= :create-path-missing-rel-path (:sandbar/error (ex-data ex)))
+            (str cls " carries the actionable :sandbar/error tag"))))))
+
+(deftest ff2-log-with-rel-path-still-creates
+  (testing "the newly-covered :mm/Log still creates fine WITH a rel-path (the
+            handoff path) — coverage adds a loud-fail on the anomaly only"
+    (let [e (store/create-memory! :mm/Log
+                                  {:mm.memory/rel-path    "logs/ff2_log_ok.md"
+                                   :mm.memory/name        "ff2 log ok"
+                                   :mm.memory/memory-type :log
+                                   :mm.memory/body-raw    "b"}
+                                  {:validate? false})]
+      (is (= :memory.logs/ff2_log_ok (:db/ident e)) "ident derived from rel-path")
+      (is (= "logs/ff2_log_ok.md" (:mm.memory/rel-path e))))))
+
+(deftest ff2-runtime-activity-create-without-rel-path-not-rejected
+  (testing "CAREFUL regression: a rel-path-less runtime class create still passes
+            through create-memory! WITHOUT the corpus-document loud-fail
+            (:mm/EventLog telemetry-shape here) — the monotone override left it"
+    (is (some? (store/create-memory! :mm/EventLog
+                                     {:mm.memory/name "ff2 eventlog no-reject"}
+                                     {:validate? false}))
+        "an :mm/EventLog create without rel-path must NOT hit the loud-fail")))
+
+;; ---- pre-transact rel-path hardening (FF-2 #2) ----
+
+(deftest ff2-rejects-traversal-rel-path-pre-transact
+  (testing "a `..`-traversal rel-path is refused by the G2 containment sanitizer
+            BEFORE dt/make (not just at the sink) — no malformed DB row commits"
+    (let [ex (try (store/create-memory! :mm/Memory
+                                        {:mm.memory/rel-path    "../../etc/ff2_evil.md"
+                                         :mm.memory/name        "ff2 traversal"
+                                         :mm.memory/memory-type :decision
+                                         :mm.memory/body-raw    "x"}
+                                        {:validate? false})
+                  nil
+                  (catch clojure.lang.ExceptionInfo e e))]
+      (is (some? ex) "traversal rel-path must be refused")
+      (is (= :rel-path-traversal-refusal (:sandbar/error (ex-data ex)))))))
+
+(deftest ff2-rejects-absolute-rel-path-pre-transact
+  (testing "an absolute rel-path is refused pre-transact (normalization preserves
+            the leading `/` so containment still catches it)"
+    (let [ex (try (store/create-memory! :mm/Memory
+                                        {:mm.memory/rel-path    "/etc/ff2_absolute.md"
+                                         :mm.memory/name        "ff2 absolute"
+                                         :mm.memory/memory-type :decision
+                                         :mm.memory/body-raw    "x"}
+                                        {:validate? false})
+                  nil
+                  (catch clojure.lang.ExceptionInfo e e))]
+      (is (some? ex) "absolute rel-path must be refused")
+      (is (= :rel-path-traversal-refusal (:sandbar/error (ex-data ex)))))))
+
+(deftest ff2-normalizes-stored-rel-path
+  (testing "a leading `memory/` is stripped from the stored rel-path so ident,
+            stored slot, and sink write target stay mutually consistent"
+    (let [e (store/create-memory! :mm/Memory
+                                  {:mm.memory/rel-path    "memory/decisions/ff2_norm.md"
+                                   :mm.memory/name        "ff2 norm"
+                                   :mm.memory/memory-type :decision
+                                   :mm.memory/body-raw    "x"})]
+      (is (= "decisions/ff2_norm.md" (:mm.memory/rel-path e)) "leading memory/ stripped")
+      (is (= :memory.decisions/ff2_norm (:db/ident e))))))
+
+(deftest ff2-rejects-rel-path-collision-with-different-entity
+  (testing "a create whose rel-path is already owned by a DIFFERENT entity is
+            refused (ownership/collision); an idempotent re-create of the SAME
+            entity (same derived ident) is allowed (upsert)"
+    ;; entity A owns decisions/ff2_collide.md (derived ident :memory.decisions/ff2_collide)
+    (store/create-memory! :mm/Memory
+                          {:mm.memory/rel-path    "decisions/ff2_collide.md"
+                           :mm.memory/name        "ff2 collide A"
+                           :mm.memory/memory-type :decision
+                           :mm.memory/body-raw    "a"})
+    ;; a DIFFERENT entity (explicit distinct ident) claiming the SAME rel-path → refused
+    (let [ex (try (store/create-memory!
+                    :mm/Memory
+                    {:db/ident              :memory.decisions/ff2_collide_other
+                     :mm.memory/rel-path    "decisions/ff2_collide.md"
+                     :mm.memory/name        "ff2 collide B"
+                     :mm.memory/memory-type :decision
+                     :mm.memory/body-raw    "b"})
+                  nil
+                  (catch clojure.lang.ExceptionInfo e e))]
+      (is (some? ex) "a different entity claiming the same rel-path must be refused")
+      (is (= :rel-path-collision (:sandbar/error (ex-data ex)))))
+    ;; re-creating A at the same rel-path (same derived ident) is an idempotent upsert
+    (is (some? (store/create-memory! :mm/Memory
+                                     {:mm.memory/rel-path    "decisions/ff2_collide.md"
+                                      :mm.memory/name        "ff2 collide A v2"
+                                      :mm.memory/memory-type :decision
+                                      :mm.memory/body-raw    "a2"}))
+        "idempotent re-create of the same entity must NOT be a collision")))
