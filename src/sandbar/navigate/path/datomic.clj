@@ -466,15 +466,18 @@
 
   Returns the updated registry map.
 
-  Security note (it6-f5 allowlist unification): `fn-symbol` must be on the
-  single-source `sandbar.security.query/safe-operator-vocabulary` — a
-  caller-supplied `:TEST` fn-name can drive the server to resolve+invoke this
-  symbol (`compile-test` splices it into a `d/q` clause), so registering an
-  arbitrary symbol would reopen the AP-S3-6 RCE vector on the path plane.  To
-  add a genuinely-new safe predicate, extend
-  `sandbar.security.query/safe-path-test-registry` (a security review) FIRST,
-  then register — this makes it impossible to build `:TEST` against a list that
-  has diverged from the `:where`-plane allowlist."
+  Security note (it6-f5 allowlist unification; it7 FF-1 per-consumer projection):
+  `fn-symbol` must be on the single-source path `:TEST` PROJECTION
+  `sandbar.security.query/safe-path-test-registry` (checked via
+  `secq/safe-path-test-symbol?`) — a caller-supplied `:TEST` fn-name can drive
+  the server to resolve+invoke this symbol (`compile-test` splices it into a
+  `d/q` clause), so registering an arbitrary symbol would reopen the AP-S3-6 RCE
+  vector on the path plane.  The gate is the `:TEST`-specific projection, NOT the
+  wider union `safe-operator-vocabulary`: a `:where`-head-only operator (e.g.
+  `clojure.core/int?`, arity-1 but `:where`-plane) is REFUSED as a `:TEST`
+  predicate even though it is a union member.  To add a genuinely-new safe
+  `:TEST` predicate, extend `sandbar.security.query/safe-path-test-registry` (a
+  security review) FIRST, then register."
   [fn-name fn-symbol]
   (when-not (keyword? fn-name)
     (throw (ex-info "register-test-fn! fn-name must be a keyword"
@@ -482,18 +485,20 @@
   (when-not (and (symbol? fn-symbol) (namespace fn-symbol))
     (throw (ex-info "register-test-fn! fn-symbol must be a fully-qualified symbol"
                     {:received fn-symbol})))
-  (when-not (secq/safe-operator-symbol? fn-symbol)
+  (when-not (secq/safe-path-test-symbol? fn-symbol)
     (throw (ex-info
-             (str "register-test-fn! fn-symbol " fn-symbol " is not on the "
-                  "single-source safe-operator vocabulary "
-                  "(sandbar.security.query/safe-operator-vocabulary). A :TEST "
-                  "predicate may only resolve to a reviewed pure/total/"
-                  "side-effect-free operator; add it to "
+             (str "register-test-fn! fn-symbol " fn-symbol " is not a curated "
+                  "path :TEST unary predicate "
+                  "(sandbar.security.query/safe-path-test-registry). A :TEST "
+                  "fn-name may only resolve to one of the reviewed UNARY "
+                  "predicates on the path :TEST projection — NOT the wider "
+                  ":where-head operator vocabulary (int?/get/nth/=/includes? are "
+                  ":where-only, not :TEST-admissible).  Add it to "
                   "sandbar.security.query/safe-path-test-registry (a security "
                   "review) before registering.")
              {:received     fn-symbol
               :sanitizer     'sandbar.navigate.path.datomic/register-test-fn!
-              :reason        :operator-not-on-safe-vocabulary
+              :reason        :operator-not-a-safe-path-test
               :allowed-names (vec (sort (keys secq/safe-path-test-registry)))})))
   (swap! test-fn-registry assoc fn-name fn-symbol))
 
@@ -509,14 +514,19 @@
   `fn-name` (keyword in AST) must be in the test-fn-registry.  Unknown
   fn-names raise ex-info at compile time.
 
-  SECURITY GATE (it6-f5 allowlist unification): before splicing `fn-symbol`
-  into the executable `d/q` clause, this refuses any symbol NOT on the
-  single-source `sandbar.security.query/safe-operator-vocabulary`.  This is the
-  path-plane analogue of `sanitize-where`'s `check-call-head` — it gates at the
-  splice site, so even a directly-mutated `test-fn-registry` atom (bypassing
-  `register-test-fn!`'s guard) cannot cause the server to resolve+invoke an
-  unvetted symbol.  The default registry is drawn from the single source, so
-  every default `:TEST` predicate passes unchanged."
+  SECURITY GATE (it6-f5 allowlist unification; it7 FF-1 per-consumer projection):
+  before splicing `fn-symbol` into the executable `d/q` clause, this refuses any
+  symbol NOT on the path `:TEST` PROJECTION
+  `sandbar.security.query/safe-path-test-registry` (checked via
+  `secq/safe-path-test-symbol?`).  This is the path-plane analogue of
+  `sanitize-where`'s `check-call-head` — it gates at the splice site, so even a
+  directly-mutated `test-fn-registry` atom (bypassing `register-test-fn!`'s
+  guard) cannot cause the server to resolve+invoke an unvetted symbol.  The gate
+  is the `:TEST`-specific projection, NOT the wider union
+  `safe-operator-vocabulary`: a `:where`-head-only operator (e.g.
+  `clojure.core/int?`) is refused here even though it is a union member.  The
+  default registry is drawn from the same single source, so every default
+  `:TEST` predicate passes unchanged."
   [ast from-var to-var ctr]
   (let [child   (:child ast)
         fn-kw   (:fn-name ast)
@@ -528,17 +538,18 @@
                     "or pick from the default registry.")
                {:fn-name fn-kw
                 :registered (keys @test-fn-registry)})))
-    (when-not (secq/safe-operator-symbol? fn-sym)
+    (when-not (secq/safe-path-test-symbol? fn-sym)
       (throw (ex-info
                (str ":TEST fn-name " fn-kw " resolves to " fn-sym " which is "
-                    "NOT on the single-source safe-operator vocabulary "
-                    "(sandbar.security.query/safe-operator-vocabulary) — "
-                    "refusing to splice an unvetted symbol into an executable "
-                    "query (the path-plane AP-S3-6 gate).")
+                    "NOT a curated path :TEST unary predicate "
+                    "(sandbar.security.query/safe-path-test-registry) — refusing "
+                    "to splice an unvetted symbol into an executable query (the "
+                    "path-plane per-consumer :TEST projection gate; a :where-head "
+                    "operator like int?/get/nth is NOT admissible as a :TEST).")
                {:fn-name    fn-kw
                 :fn-symbol  fn-sym
                 :sanitizer  'sandbar.navigate.path.datomic/compile-test
-                :reason     :operator-not-on-safe-vocabulary})))
+                :reason     :operator-not-a-safe-path-test})))
     (let [child-comp (compile-node child from-var to-var ctr)
           test-clause [(list fn-sym to-var)]]
       {:where (conj (:where child-comp) test-clause)

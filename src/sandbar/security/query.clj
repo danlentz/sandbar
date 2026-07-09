@@ -244,6 +244,54 @@
         (let [v (find-var sym)]
           (and (var? v) (contains? safe-operator-vocabulary v)))))))
 
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Per-consumer :TEST PROJECTION gate (it7 FF-1).
+;;
+;; `safe-operator-symbol?` above gates on the UNION vocabulary — the right check
+;; for a generic fn-name resolver (a future CodeAct / Layer-2 compiler that may
+;; legitimately admit any reviewed operator).  But the path-grammar `:TEST`
+;; consumer is NARROWER: a `:TEST` node compiles to a UNARY predicate clause
+;; `(pred ?to)`, so it must project onto its OWN reviewed set — the unary
+;; predicates in `safe-path-test-registry` — NOT the whole union.  The union
+;; also carries `:where`-head-only operators (`= < <= > >= get count nth int?
+;; contains?` + the `clojure.string` preds) that are NOT curated `:TEST`
+;; predicates; admitting one as a `:TEST` (e.g. `clojure.core/int?`, a
+;; `:where`-plane operator that happens to be arity-1) silently merges the two
+;; projections the single-source design keeps distinct.  This gate enforces
+;; "one home, two projections" PER CONSUMER: the path `:TEST` compiler
+;; (`compile-test`) and `register-test-fn!` gate here; the `:where` plane keeps
+;; `safe-query-op-allowlist`.  Per it6 BOARD-MINUTE Lane-A fast-follow #1.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(def safe-path-test-vocabulary
+  "The path `:TEST` unary-predicate PROJECTION — the set of fully-qualified
+  symbols `safe-path-test-registry` can yield (its vals).  A STRICT subset of
+  `safe-operator-vocabulary`: the `:where`-head-only operators (`= not= < <= >
+  >= get count nth int? contains?` and the `clojure.string` predicates) are NOT
+  here, because they are not curated UNARY `:TEST` predicates.  `safe-path-test-symbol?`
+  gates the path `:TEST` consumer on THIS set (per-consumer projection), so e.g.
+  `clojure.core/int?` — a `:where`-plane operator that IS on the union — is
+  refused as a `:TEST` predicate.  Kept as SYMBOLS (not resolved vars): the
+  symbol is exactly what `compile-test` splices into the `[(fn-sym ?to)]`
+  Datalog clause, so symbol-identity IS the security-relevant identity, and a
+  pure set-membership check has zero namespace-load side-effect risk."
+  (set (vals safe-path-test-registry)))
+
+(defn safe-path-test-symbol?
+  "THE per-consumer gate for the path-grammar `:TEST` surface: true iff `sym` is
+  one of the curated `:TEST` unary predicates (`safe-path-test-vocabulary`).
+  NARROWER than `safe-operator-symbol?` (which admits the whole union
+  vocabulary): a `:where`-head-only operator like `clojure.core/int?` /
+  `clojure.core/get` / `clojure.core/nth` / `clojure.string/includes?` — on the
+  union but NOT a curated unary `:TEST` predicate — is REFUSED here.  Called by
+  `sandbar.navigate.path.datomic/compile-test` (at the `d/q` splice site) and
+  `register-test-fn!` before a caller-supplied `:TEST` fn-name can drive the
+  server to resolve+invoke a symbol.  Pure symbol-set membership — no
+  resolution, no namespace load, no invocation; nil / non-symbol / off-projection
+  ⇒ false (deny-by-default)."
+  [sym]
+  (contains? safe-path-test-vocabulary sym))
+
 (def safe-query-builtin-forms
   "Datomic query BUILT-IN / special forms (`missing?`, `get-else`, `ground`,
   `fulltext`, `tuple`, `untuple`).  Each RESOLVES TO NIL (verified 2026-07-07 —

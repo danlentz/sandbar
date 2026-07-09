@@ -128,3 +128,72 @@
     (is (false? (secq/safe-operator-symbol? 'bare-symbol)))
     (is (false? (secq/safe-operator-symbol? :not-a-symbol)))
     (is (false? (secq/safe-operator-symbol? nil)))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; it7 FF-1 — the per-consumer :TEST PROJECTION gate (safe-path-test-symbol?) is
+;; STRICTLY NARROWER than the union gate (safe-operator-symbol?): a
+;; :where-head-only operator that IS on the union is REFUSED as a :TEST predicate.
+;; "One home, two projections" — enforced PER CONSUMER, not merged at the union.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(def ^:private expected-where-head-only-symbols
+  "The 16 :where-head operators that are NOT curated :TEST unary predicates —
+  i.e. `safe-query-op-allowlist` MINUS the 5 overlaps (nil? some? string?
+  keyword? number?).  Frozen tripwire set: each is on the UNION vocabulary but
+  must be REFUSED by `safe-path-test-symbol?`.  Any drift in EITHER projection's
+  membership breaks the equality pin below (loud)."
+  '#{clojure.core/= clojure.core/not=
+     clojure.core/< clojure.core/<= clojure.core/> clojure.core/>=
+     clojure.core/int? clojure.core/boolean? clojure.core/contains?
+     clojure.core/get clojure.core/count clojure.core/nth
+     clojure.string/starts-with? clojure.string/ends-with?
+     clojure.string/includes? clojure.string/blank?})
+
+(deftest path-test-vocabulary-is-the-registry-vals
+  (testing "safe-path-test-vocabulary == the vals of safe-path-test-registry (15 syms)"
+    (is (= (set (vals secq/safe-path-test-registry))
+           secq/safe-path-test-vocabulary))
+    (is (= 15 (count secq/safe-path-test-vocabulary)))))
+
+(deftest where-head-only-set-is-the-projection-difference
+  (testing "the frozen :where-head-only tripwire set is EXACTLY the where-head
+            allowlist minus the :TEST projection (validates the enumeration;
+            flips if either projection's membership drifts)"
+    (let [test-syms (set (vals secq/safe-path-test-registry))
+          diff      (into #{} (remove test-syms) (map symbol secq/safe-query-op-allowlist))]
+      (is (= expected-where-head-only-symbols diff))
+      (is (= 16 (count expected-where-head-only-symbols))))))
+
+(deftest path-test-projection-is-strict-subset-of-union
+  (testing ":TEST projection (as vars) is a STRICT subset of the union vocabulary"
+    (let [test-vars (into #{} (map find-var) secq/safe-path-test-vocabulary)]
+      (is (every? secq/safe-operator-vocabulary test-vars)
+          "every :TEST projection member is on the union vocabulary")
+      (is (< (count test-vars) (count secq/safe-operator-vocabulary))
+          "STRICT subset — the union carries members the :TEST projection lacks")
+      ;; the :where-head-only ops witness the strictness
+      (doseq [sym expected-where-head-only-symbols]
+        (is (contains? secq/safe-operator-vocabulary (find-var sym))
+            (str sym " is on the union vocabulary"))
+        (is (not (contains? secq/safe-path-test-vocabulary sym))
+            (str sym " is NOT on the :TEST projection"))))))
+
+(deftest path-test-gate-accepts-projection-refuses-where-only-and-junk
+  (testing "safe-path-test-symbol? accepts every :TEST default and REFUSES every
+            :where-head-only op + dangerous op + junk (deny-by-default)"
+    ;; accepts all 15 curated :TEST unary predicates
+    (doseq [sym (vals secq/safe-path-test-registry)]
+      (is (secq/safe-path-test-symbol? sym)
+          (str "curated :TEST predicate must pass: " sym)))
+    ;; FF-1 TRIPWIRES: refuses every :where-head-only op (union but not :TEST) —
+    ;; these assertions FLIP if the :TEST gate is widened to the union.
+    (doseq [sym expected-where-head-only-symbols]
+      (is (false? (secq/safe-path-test-symbol? sym))
+          (str ":where-only op must be REFUSED at the :TEST gate: " sym)))
+    ;; refuses dangerous ops + junk (deny-by-default, no resolution/load)
+    (doseq [sym '[clojure.java.shell/sh clojure.core/eval clojure.core/slurp
+                  clojure.core/spit clojure.core/apply no.such.ns/foo bare-sym]]
+      (is (false? (secq/safe-path-test-symbol? sym))
+          (str "must be denied at the :TEST gate: " sym)))
+    (is (false? (secq/safe-path-test-symbol? :not-a-symbol)))
+    (is (false? (secq/safe-path-test-symbol? nil)))))
