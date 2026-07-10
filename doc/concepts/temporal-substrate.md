@@ -101,7 +101,7 @@ The substrate composes all four.  A `:mm/Schedule` carries an RRULE for recurren
 
 ## The four first-class entities
 
-Four classes anchor the temporal substrate.  Three were new in the temporal arc (now authored in `schema/mm-temporal.edn`); one is reused.
+Four classes anchor the temporal substrate.  `:mm/Schedule` and `:mm/Job` were new in the temporal arc (authored in `schema/mm-temporal.edn`); `:mm/Run` predates it (the PROV-O Activity lift in `schema/mm-artifact.edn`, with the temporal arc adding new `:mm.run/*` slots); one is reused.
 
 ### `:mm/Schedule` — three-layer expression
 

@@ -61,7 +61,7 @@ The pipeline shape replaces per-sink ad-hoc logic.  Each operator is a Manifold 
 | `:dt/Event` → `:event/ServerEvent` → `:event/HttpRequest` | RUNTIME SUBSTRATE       | `:db-only` typically (high-volume) |
 | `:workflow/History`                    | PROCESS-MANAGER TRANSITION LOG (distinct)| `:db-only` typically    |
 
-The three serve distinct roles; no deprecations.  Workflow transitions ALSO emit `:mm.event/WorkflowTransition` instances on the event bus so reactive subscribers see them without conflating with the durable Process-Manager log.
+The three serve distinct roles; no deprecations.  Workflow transitions also mint `:mm.event/WorkflowTransition`-family event ENTITIES (via `sandbar.util.event/log-event!`, i.e. `dt/make`); bus-firing them so reactive subscribers see them without conflating with the durable Process-Manager log is design intent — not yet built (see the Phase-7 status in `doc/concepts/event-substrate.md`).
 
 ### Catchup-on-disconnect (design — not yet built)
 
