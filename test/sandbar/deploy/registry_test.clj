@@ -185,9 +185,95 @@
                                           :corpus-repo public-repo}}}]  ; ← routes to PUBLIC
       (is (= :private-repo-collision
              (refusal-marker #(reg/assert-private-repo-distinct! collide))))))
-  (testing "a private-only registry (no :public entry) has no public repo to
-            collide with — vacuously passes"
-    (is (nil? (reg/assert-private-repo-distinct! private-owner-registry)))))
+  (testing "a private-ONLY owner registry whose private :corpus-repo is DISTINCT
+            from its :public-corpus-ref passes (the R9 work-machine posture done
+            right — meaningful now that :public-corpus-ref is in the check, no
+            longer a vacuous no-public-entry pass)"
+    (is (nil? (reg/assert-private-repo-distinct! private-owner-registry))))
+  (testing "a private-ONLY owner registry whose private :corpus-repo EQUALS its
+            :public-corpus-ref (the R9 by-reference public repo it carries) is
+            REFUSED with :private-repo-collision.  The earlier round vacuously
+            PASSED this — it compared only against [:public :corpus-repo], absent
+            in a private-only registry — so a private store could route straight
+            to the public repo undetected.  FAILS against an impl that ignores
+            :public-corpus-ref"
+    (let [collide-ref {:schema-version 1
+                       :owner-scope [:trust-scope/private :proj/alpha]
+                       :public-corpus-ref public-repo
+                       :private {:proj/alpha {:transactor-endpoint private-endpoint
+                                              :corpus-repo public-repo}}}]  ; ← == :public-corpus-ref
+      (is (= :private-repo-collision
+             (refusal-marker #(reg/assert-private-repo-distinct! collide-ref)))))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; owner-scope loudness — a registry that cannot name its own trust scope is
+;;   REFUSED loudly at bring-up (:registry-owner-unresolved), never a silent
+;;   air-gap no-op.  reachable? already fail-closes CONNECTIONS; the refuse
+;;   CONTRACT must fire too.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(deftest owner-scope-must-be-well-formed
+  (testing "a well-formed public / private owner scope resolves"
+    (is (true? (reg/owner-scope-resolved? clean-public-registry)))
+    (is (true? (reg/owner-scope-resolved? private-owner-registry))))
+  (testing "an ABSENT / nil / malformed :owner-scope is UNRESOLVED and REFUSED
+            loudly with :registry-owner-unresolved at EVERY bring-up entry point
+            — assert-owner-scope-resolved!, validate-registry! (FIRST, before any
+            other gate), AND the standalone air-gap assertion (no longer a silent
+            no-op for a non-:public owner).  FAILS against the earlier round's
+            air-gap body that fired only for an exactly-:public owner"
+    (doseq [bad [{:schema-version 1 :public {:transactor-endpoint public-endpoint}}   ; absent
+                 {:schema-version 1 :owner-scope nil :public {}}                       ; nil
+                 {:schema-version 1 :owner-scope :garbage :public {}}                  ; unknown keyword
+                 {:schema-version 1 :owner-scope :trust-scope/private :public {}}      ; bare kw, not [.. key]
+                 {:schema-version 1 :owner-scope [:trust-scope/private nil] :public {}}; vector, nil key
+                 {:schema-version 1 :owner-scope [:trust-scope/private] :public {}}]]  ; vector, missing key
+      (is (false? (reg/owner-scope-resolved? bad)))
+      (is (= :registry-owner-unresolved
+             (refusal-marker #(reg/assert-owner-scope-resolved! bad))))
+      (is (= :registry-owner-unresolved
+             (refusal-marker #(reg/validate-registry! bad)))
+          "validate-registry! refuses a malformed owner FIRST")
+      (is (= :registry-owner-unresolved
+             (refusal-marker #(reg/assert-credential-air-gap! bad)))
+          "and the standalone air-gap assertion is loud, not a silent no-op"))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; air-gap BREADTH — a public-owner registry refuses ANY private entry, not
+;;   only endpoint-bearing ones.  A public process has no business holding a
+;;   private scope's :local-disk-path or :corpus-repo either.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(deftest air-gap-refuses-any-private-entry-under-public-owner
+  (testing "a public-owner registry carrying a private entry with ONLY a
+            :local-disk-path (NO transactor endpoint) is STILL REFUSED with
+            :credential-air-gap-violation — closing the disclosed disk-path hole.
+            FAILS against the endpoint-only form that tolerated this"
+    (let [disk-only (assoc-in clean-public-registry [:private :proj/alpha]
+                              {:local-disk-path "/Users/you/src/alpha"})]  ; no endpoint
+      (is (= :credential-air-gap-violation
+             (refusal-marker #(reg/assert-credential-air-gap! disk-only))))
+      (is (= :credential-air-gap-violation
+             (refusal-marker #(reg/validate-registry! disk-only))))))
+  (testing "a private entry carrying ONLY a :corpus-repo handle under a public
+            owner is likewise refused (no legitimate use for it)"
+    (let [repo-only (assoc-in clean-public-registry [:private :proj/alpha]
+                              {:corpus-repo "git@example.com:org/alpha-private.git"})]
+      (is (= :credential-air-gap-violation
+             (refusal-marker #(reg/assert-credential-air-gap! repo-only))))))
+  (testing "the sharpest sub-case (a live transactor endpoint) still refuses,
+            and is surfaced in :with-transactor-endpoint for the operator"
+    (let [with-ep (assoc-in clean-public-registry [:private :proj/beta]
+                            {:transactor-endpoint private-endpoint})]
+      (is (= :credential-air-gap-violation
+             (refusal-marker #(reg/assert-credential-air-gap! with-ep))))
+      (is (= [:proj/beta]
+             (try (reg/assert-credential-air-gap! with-ep)
+                  (catch clojure.lang.ExceptionInfo e
+                    (:with-transactor-endpoint (ex-data e))))))))
+  (testing "an EMPTY private map under a public owner is fine (no entries)"
+    (is (nil? (reg/assert-credential-air-gap!
+                (assoc clean-public-registry :private {}))))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; validate-registry! — the composite gate + fail-closed load.

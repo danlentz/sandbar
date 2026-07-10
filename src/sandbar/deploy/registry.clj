@@ -35,9 +35,17 @@
      :private {:proj/foo {:transactor-endpoint \"datomic:dev://localhost:4336/\"
                           :sid \"foo\" :corpus-repo \"…\" :local-disk-path \"…\"}}}
 
-  `:owner-scope` is the air-gap key.  A `:trust-scope/public` owner registry
-  MUST expose no private transactor endpoint (`assert-credential-air-gap!`);
-  the strongest posture on the sandboxed work machine is a PRIVATE-only owner
+  `:owner-scope` is the air-gap key, and it must be WELL-FORMED: exactly
+  `:trust-scope/public` or a `[:trust-scope/private <key>]` vector.  A registry
+  that cannot name its own scope (absent / nil / malformed `:owner-scope`) is
+  REFUSED loudly at bring-up (`assert-owner-scope-resolved!`) — never a silent
+  no-op of the air-gap assertion.  A `:trust-scope/public` owner registry MUST
+  carry NO private-scope ENTRY at all (`assert-credential-air-gap!`) — not
+  merely no private transactor endpoint: a public process has no legitimate use
+  for a private scope's `:local-disk-path` / `:corpus-repo` handles either, and
+  the registry is location indirection, so an entry-level refusal closes the
+  disclosed `:local-disk-path` hole in one move (strengthen-never-widen).  The
+  strongest posture on the sandboxed work machine is a PRIVATE-only owner
   registry that reaches the public corpus read-only BY REFERENCE
   (`public-corpus-reference`, R9) and never co-locates a public transactor.
 
@@ -126,6 +134,17 @@
   [registry]
   (:owner-scope registry))
 
+(defn owner-scope-resolved?
+  "Is `registry`'s `:owner-scope` a WELL-FORMED trust scope — exactly
+  `:trust-scope/public`, or a `[:trust-scope/private <key>]` vector with a
+  non-nil key?  A registry whose owner scope is absent / nil / malformed has no
+  air-gap anchor to enforce, so the bring-up composite refuses it loudly
+  (`assert-owner-scope-resolved!`).  Fail-closed: anything that is neither the
+  public bottom nor a well-formed private vector is unresolved."
+  [registry]
+  (let [s (owner-scope registry)]
+    (or (public-scope? s) (private-scope? s))))
+
 ;;; ===========================================================================
 ;;; Entry lookup (LOCATION only — never membership)
 ;;; ===========================================================================
@@ -201,29 +220,69 @@
                 (keep    (fn [[_ entry]] (:transactor-endpoint entry))))
           (scope-entry-pairs registry))))
 
+(defn assert-owner-scope-resolved!
+  "LOUD refuse-to-serve on a MALFORMED owner scope: a store-registry whose
+  `:owner-scope` is absent / nil / neither `:trust-scope/public` nor a
+  well-formed `[:trust-scope/private <key>]` vector cannot name the loading
+  process's trust scope, so the credential air-gap has no anchor.  THROWS
+  `:sandbar/error :registry-owner-unresolved`; returns nil when the owner scope
+  is well-formed.
+
+  Why loud, not silent: `reachable?` already fail-closes live CONNECTIONS from a
+  malformed owner (it reaches nothing), but the refuse-to-serve CONTRACT must
+  fire too — a registry that cannot name its own scope must be refused at
+  BRING-UP, not slip past the composite to be caught only later at connect time.
+  Called FIRST by `validate-registry!`, and defensively at the head of
+  `assert-credential-air-gap!` so the standalone air-gap check is likewise never
+  a silent no-op on a malformed owner (the earlier round's air-gap body fired
+  ONLY for an exactly-`:public` owner, so a nil owner slipped through)."
+  [registry]
+  (when-not (owner-scope-resolved? registry)
+    (throw (ex-info (str "store-registry :owner-scope is absent or malformed "
+                         "(" (pr-str (owner-scope registry)) "); refusing at "
+                         "bring-up — the credential air-gap has no anchor")
+                    {:sandbar/error :registry-owner-unresolved
+                     :owner-scope   (owner-scope registry)})))
+  nil)
+
 (defn assert-credential-air-gap!
   "The LOUD refuse-to-serve assertion realizing the credential air-gap (A-1 /
-  DEP-3).  A `:trust-scope/public`-owner registry MUST expose NO private
-  transactor endpoint: if one is present, THROW `:sandbar/error
-  :credential-air-gap-violation` — the public process's connection surface may
-  never contain a private-scope credential.  Returns nil (proceed) when the gap
-  holds.  Mirrors the `guard-registry-critical-write!` refuse-to-serve shape
-  (`projection.clj:235`): a marker-tagged ex-info that a bring-up must let abort
-  the process, not swallow.
+  DEP-3).  A `:trust-scope/public`-owner registry MUST carry NO `:private`
+  ENTRY at all — not merely no private transactor endpoint.  If ANY private
+  entry is present (even one bearing only a `:local-disk-path` / `:corpus-repo`
+  and no endpoint), THROW `:sandbar/error :credential-air-gap-violation`.
+  Returns nil (proceed) when the gap holds.
+
+  Why entry-level, not endpoint-only (strengthen-never-widen): the registry is
+  location indirection; a PUBLIC process has no legitimate use for a private
+  scope's disk path or repo handle either, and disclosing them is the same
+  air-gap breach as an endpoint.  Refusing any private entry closes the
+  `:local-disk-path` hole the endpoint-only form left open, in one move
+  consistent with this module's governance duty.  Preconditions on a RESOLVED
+  owner scope (`assert-owner-scope-resolved!` is re-run here so a malformed
+  owner is refused loudly rather than falling through the `public-scope?`
+  guard).  Mirrors the `guard-registry-critical-write!` refuse-to-serve shape
+  (`projection.clj:235`): a marker-tagged ex-info a bring-up must let abort the
+  process, not swallow.
 
   This is the standing physical lock the CA-6 deferral rests on — it exists to
   STRENGTHEN, never weaken, physical exclusion (two-lock collapse rule)."
   [registry]
+  (assert-owner-scope-resolved! registry)
   (when (public-scope? (owner-scope registry))
-    (when-let [leaked (seq (for [[k entry] (private-entries registry)
-                                 :when      (:transactor-endpoint entry)]
-                             {:private-scope-key   k
-                              :transactor-endpoint (:transactor-endpoint entry)}))]
-      (throw (ex-info (str "public-scope process registry exposes a private "
-                           "transactor endpoint; refusing (credential air-gap)")
-                      {:sandbar/error         :credential-air-gap-violation
-                       :owner-scope           (owner-scope registry)
-                       :leaked-private-scopes (vec leaked)}))))
+    (when-let [entries (private-entries registry)]
+      (throw (ex-info (str "public-scope process registry carries a private-"
+                           "scope entry; refusing (credential air-gap — a public "
+                           "process holds NO private location or endpoint)")
+                      {:sandbar/error      :credential-air-gap-violation
+                       :owner-scope        (owner-scope registry)
+                       :private-scope-keys (vec (map first entries))
+                       ;; The sharpest exfil sub-case, surfaced for the operator:
+                       ;; which (if any) of the refused entries carried a LIVE
+                       ;; transactor endpoint (vs a bare disk-path/repo handle).
+                       :with-transactor-endpoint
+                       (vec (for [[k entry] entries
+                                  :when (:transactor-endpoint entry)] k))}))))
   nil)
 
 (defn resolve-endpoint
@@ -263,27 +322,49 @@
 ;;; DEP-4 — a private store's corpus-repo is NEVER the public corpus repo
 ;;; ===========================================================================
 
+(defn forbidden-public-repos
+  "The SET of repo handles a `:private` store's `:corpus-repo` may NEVER equal —
+  BOTH the public scope's own `:corpus-repo` (`[:public :corpus-repo]`) AND the
+  R9 by-reference `:public-corpus-ref` a PRIVATE-only owner registry carries.  A
+  private corpus routing to EITHER would push private material onto the public
+  corpus's git remote (the catastrophic-push shape).  nils dropped, so a
+  registry declaring only one of the two handles compares against just that one."
+  [registry]
+  (into #{}
+        (remove nil?)
+        [(get-in registry [:public :corpus-repo])
+         (:public-corpus-ref registry)]))
+
 (defn assert-private-repo-distinct!
   "DEP-4 refuse-to-serve: every `:private` entry's `:corpus-repo` MUST differ
-  from the public scope's `:corpus-repo`.  A registry that routes a private
-  corpus to the PUBLIC repo URL would push private material onto the public
-  corpus's git remote — the catastrophic-push shape W1.F's air-gap guards.  On
-  any collision THROW `:sandbar/error :private-repo-collision`; return nil
-  otherwise.  (Fork-6 corpus≠code separation, W1.deploy §9: the registry never
-  routes a private corpus to the public repo.)
+  from EVERY public corpus handle the registry names — BOTH the public scope's
+  `[:public :corpus-repo]` AND the R9 `:public-corpus-ref` (the by-reference
+  public repo a PRIVATE-only owner registry carries so a sandboxed private
+  process can restore public material WITHOUT a live public transactor).  A
+  private corpus routing to EITHER handle would push private material onto the
+  public corpus's git remote — the catastrophic-push shape W1.F's air-gap
+  guards.  On any collision THROW `:sandbar/error :private-repo-collision`;
+  return nil otherwise.  (Fork-6 corpus≠code separation, W1.deploy §9.)
 
-  A private-only owner registry with no `:public` entry has no public-repo to
-  collide with; the check is vacuously satisfied and returns nil."
+  Why `:public-corpus-ref` too: the earlier round compared ONLY against
+  `[:public :corpus-repo]`, so a private-only owner registry (no `:public`
+  entry, only `:public-corpus-ref`) — the exact sandboxed work-machine posture
+  R9 recommends — vacuously passed even when its private corpus EQUALLED the
+  by-reference public repo.  Folding `:public-corpus-ref` into the forbidden set
+  closes that hole; a registry naming NEITHER public handle has an empty
+  forbidden set and returns nil (nothing to collide with)."
   [registry]
-  (when-let [public-repo (get-in registry [:public :corpus-repo])]
-    (when-let [collisions (seq (for [[k entry] (private-entries registry)
-                                     :when      (= public-repo (:corpus-repo entry))]
-                                 {:private-scope-key k :corpus-repo (:corpus-repo entry)}))]
-      (throw (ex-info (str "private store routes to the PUBLIC corpus repo; "
-                           "refusing (DEP-4 corpus separation)")
-                      {:sandbar/error   :private-repo-collision
-                       :public-repo     public-repo
-                       :colliding       (vec collisions)}))))
+  (let [forbidden (forbidden-public-repos registry)]
+    (when (seq forbidden)
+      (when-let [collisions (seq (for [[k entry] (private-entries registry)
+                                       :when (contains? forbidden (:corpus-repo entry))]
+                                   {:private-scope-key k
+                                    :corpus-repo       (:corpus-repo entry)}))]
+        (throw (ex-info (str "a private store routes to a PUBLIC corpus repo "
+                             "handle; refusing (DEP-4 corpus separation)")
+                        {:sandbar/error          :private-repo-collision
+                         :forbidden-public-repos (vec forbidden)
+                         :colliding              (vec collisions)})))))
   nil)
 
 (defn public-corpus-reference
@@ -306,10 +387,17 @@
   "Run every store-registry refuse-to-serve gate over `registry` and return it
   unchanged on success (so a bring-up can thread `(-> (load-registry p)
   validate-registry! …)`); throws the first marker-tagged violation otherwise.
-  The composite standing-lock check: `assert-credential-air-gap!` (A-1/DEP-3) +
-  `assert-private-repo-distinct!` (DEP-4).  Intended to run at process bring-up,
-  BEFORE any transactor connection is opened."
+  The composite standing-lock check, in fail-closed order:
+    1. `assert-owner-scope-resolved!` — a registry that cannot name its own
+       trust scope is refused FIRST (:registry-owner-unresolved), so no later
+       gate silently no-ops on a malformed owner;
+    2. `assert-credential-air-gap!`   — no private ENTRY under a public owner
+       (:credential-air-gap-violation, A-1/DEP-3);
+    3. `assert-private-repo-distinct!` — no private corpus routes to a public
+       repo handle (:private-repo-collision, DEP-4).
+  Intended to run at process bring-up, BEFORE any transactor connection opens."
   [registry]
-  (assert-credential-air-gap! registry)
+  (assert-owner-scope-resolved!  registry)
+  (assert-credential-air-gap!    registry)
   (assert-private-repo-distinct! registry)
   registry)
