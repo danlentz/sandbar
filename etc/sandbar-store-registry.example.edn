@@ -67,6 +67,22 @@
 ;; co-locates a public transactor.  DEP-4: the private :corpus-repo is the
 ;; project's OWN repo, never the public corpus repo.
 ;;
+;; THE AIR-GAP, PRIVATE DIRECTION.  A private-owner registry carries EXACTLY its
+;; OWN scope's :private entry (the :proj/example-private key below) — and no
+;; other.  A :private entry keyed to a DIFFERENT scope (a FOREIGN private
+;; project) is REFUSED at bring-up (assert-credential-air-gap! —
+;; :credential-air-gap-violation, :air-gap-direction
+;; :private-owner-holds-foreign-private), whether that foreign entry bears a
+;; :transactor-endpoint or only a :local-disk-path / :corpus-repo handle.  This
+;; is the private↔private separation (W1.deploy §1): this process names only its
+;; own location, never a sibling private project's.
+;;
+;; ONE INTENDED ASYMMETRY.  A private-owner registry MAY hold a :public
+;; transactor ENTRY without refusal (it is permitted-but-unreachable — public
+;; location handles are the shared-bottom, not secrets, and a live private→public
+;; connect is already refused at resolve-endpoint).  R9 recommends omitting it
+;; and using :public-corpus-ref instead; this template follows R9.
+;;
 ;; {:schema-version 1
 ;;  :owner-scope [:trust-scope/private :proj/example-private]
 ;;
@@ -74,6 +90,7 @@
 ;;  ;; transactor endpoint (the by-reference half of the air-gap, R9).
 ;;  :public-corpus-ref "git@example.com:org/public-corpus.git"
 ;;
+;;  ;; EXACTLY this owner's own scope — a foreign private key here is REFUSED.
 ;;  :private
 ;;  {:proj/example-private
 ;;   {:transactor-endpoint "datomic:dev://localhost:4336/"          ; NET-NEW, +2 slot

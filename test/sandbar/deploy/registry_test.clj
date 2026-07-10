@@ -276,6 +276,84 @@
                 (assoc clean-public-registry :private {}))))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; air-gap PRIVATE↔PRIVATE leg — a PRIVATE-owner registry ([:trust-scope/private
+;;   k]) refuses ANY :private entry keyed to a scope OTHER than k.  alpha's
+;;   registry names ONLY alpha's location, never beta's (W1.deploy §1 / brief
+;;   line 28: "separation holds across every public↔private AND private↔private
+;;   boundary").  Same ENTRY-LEVEL breadth as the public leg — the foreign entry
+;;   is refused whether it bears a :transactor-endpoint or only a disk/repo
+;;   handle.  FAILS against an impl that gates ONLY the public direction.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(deftest air-gap-refuses-foreign-private-entry-under-private-owner
+  (testing "the clean R9 posture stays GREEN: an alpha-owner registry carrying
+            ONLY its own :proj/alpha entry + :public-corpus-ref passes the
+            air-gap AND validate-registry! returns itself (positive control)"
+    (is (nil? (reg/assert-credential-air-gap! private-owner-registry)))
+    (is (= private-owner-registry (reg/validate-registry! private-owner-registry))))
+  (testing "an alpha-owner registry carrying beta's FULL entry is REFUSED at BOTH
+            assert-credential-air-gap! AND validate-registry! with
+            :credential-air-gap-violation, naming :proj/beta (FAILS against an
+            impl that gates only the PUBLIC direction and lets a private process
+            hold a FOREIGN private scope's location — private↔private §1)"
+    (let [alpha+beta (assoc-in private-owner-registry [:private :proj/beta]
+                               {:transactor-endpoint "datomic:dev://localhost:4338/"
+                                :sid "beta"
+                                :corpus-repo "git@example.com:org/beta-private.git"
+                                :local-disk-path "/Users/you/src/beta"})]
+      (is (= :credential-air-gap-violation
+             (refusal-marker #(reg/assert-credential-air-gap! alpha+beta))))
+      (is (= :credential-air-gap-violation
+             (refusal-marker #(reg/validate-registry! alpha+beta))))
+      (is (= [:proj/beta]
+             (try (reg/assert-credential-air-gap! alpha+beta)
+                  (catch clojure.lang.ExceptionInfo e (:private-scope-keys (ex-data e)))))
+          "ex-data names the FOREIGN key, NOT the owner's own :proj/alpha")
+      (is (= :private-owner-holds-foreign-private
+             (try (reg/assert-credential-air-gap! alpha+beta)
+                  (catch clojure.lang.ExceptionInfo e (:air-gap-direction (ex-data e)))))
+          "the private leg is disambiguated from the public leg by :air-gap-direction")))
+  (testing "ENTRY-LEVEL, not endpoint-only: a beta entry bearing ONLY a
+            :local-disk-path (NO transactor endpoint) under an alpha owner is
+            STILL REFUSED at both entry points — a foreign scope's disk handle is
+            as much a disclosure as its endpoint (FAILS against an endpoint-only
+            private leg)"
+    (let [alpha+beta-disk (assoc-in private-owner-registry [:private :proj/beta]
+                                    {:local-disk-path "/Users/you/src/beta"})]  ; no endpoint
+      (is (= :credential-air-gap-violation
+             (refusal-marker #(reg/assert-credential-air-gap! alpha+beta-disk))))
+      (is (= :credential-air-gap-violation
+             (refusal-marker #(reg/validate-registry! alpha+beta-disk))))
+      (is (= []
+             (try (reg/assert-credential-air-gap! alpha+beta-disk)
+                  (catch clojure.lang.ExceptionInfo e (:with-transactor-endpoint (ex-data e)))))
+          "a disk-only foreign entry refuses with an EMPTY :with-transactor-endpoint
+           sub-case (it carried no live endpoint) — the refusal is entry-level")))
+  (testing "the sharpest sub-case — a foreign beta entry WITH a live transactor
+            endpoint — surfaces :proj/beta in :with-transactor-endpoint"
+    (let [alpha+beta-ep (assoc-in private-owner-registry [:private :proj/beta]
+                                  {:transactor-endpoint "datomic:dev://localhost:4338/"})]
+      (is (= [:proj/beta]
+             (try (reg/assert-credential-air-gap! alpha+beta-ep)
+                  (catch clojure.lang.ExceptionInfo e (:with-transactor-endpoint (ex-data e))))))))
+  (testing "the ONE retained, INTENDED asymmetry: an alpha-owner registry holding
+            a :public transactor ENTRY (alongside its own :proj/alpha) is
+            permitted-but-unreachable — the air-gap does NOT refuse it and
+            validate-registry! returns it (public handles are shared-bottom, not
+            secrets; R9 private-only is a recommendation), yet the live
+            private→public connect is STILL refused at resolve-endpoint"
+    (let [alpha+public (assoc private-owner-registry :public
+                              {:transactor-endpoint public-endpoint :sid "global"
+                               :corpus-repo public-repo})]
+      (is (nil? (reg/assert-credential-air-gap! alpha+public))
+          "the private-holds-public posture passes the air-gap BY DESIGN")
+      (is (= alpha+public (reg/validate-registry! alpha+public))
+          "and validates end-to-end (permitted-but-unreachable, not refused)")
+      (is (= :cross-scope-connection-refused
+             (refusal-marker #(reg/resolve-endpoint alpha+public :trust-scope/public)))
+          "but the live public connect REFUSES at the resolver boundary (A-2)"))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; validate-registry! — the composite gate + fail-closed load.
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 

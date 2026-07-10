@@ -39,13 +39,32 @@
   `:trust-scope/public` or a `[:trust-scope/private <key>]` vector.  A registry
   that cannot name its own scope (absent / nil / malformed `:owner-scope`) is
   REFUSED loudly at bring-up (`assert-owner-scope-resolved!`) — never a silent
-  no-op of the air-gap assertion.  A `:trust-scope/public` owner registry MUST
-  carry NO private-scope ENTRY at all (`assert-credential-air-gap!`) — not
-  merely no private transactor endpoint: a public process has no legitimate use
-  for a private scope's `:local-disk-path` / `:corpus-repo` handles either, and
-  the registry is location indirection, so an entry-level refusal closes the
-  disclosed `:local-disk-path` hole in one move (strengthen-never-widen).  The
-  strongest posture on the sandboxed work machine is a PRIVATE-only owner
+  no-op of the air-gap assertion.
+
+  The air-gap is ONE invariant with two directions (`assert-credential-air-gap!`,
+  `foreign-private-entries`): a registry may carry a `:private` ENTRY only for
+  its OWNER's own scope.
+    • a `:trust-scope/public` owner carries NO `:private` entry at all — not
+      merely no private transactor endpoint: a public process has no legitimate
+      use for a private scope's `:local-disk-path` / `:corpus-repo` handles
+      either, and the registry is location indirection, so an entry-level refusal
+      closes the disclosed `:local-disk-path` hole in one move
+      (strengthen-never-widen); and
+    • a `[:trust-scope/private k]` owner carries EXACTLY its own `:proj/k` entry
+      — any `:private` entry keyed to a DIFFERENT scope is a FOREIGN disclosure
+      and is refused (the private↔private separation, W1.deploy §1 / brief line
+      28; alpha's registry names only alpha's location, never beta's).
+  Both legs throw the same `:credential-air-gap-violation` marker,
+  disambiguated by `:air-gap-direction` in ex-data.
+
+  ONE retained, INTENDED asymmetry: a `[:trust-scope/private k]` owner holding a
+  `:public` transactor ENTRY is permitted-but-unreachable — NOT refused by the
+  air-gap (public location handles are the shared-bottom, not secrets; R9
+  private-only is a recommendation), because a private→public live connect is
+  already refused at `resolve-endpoint` (`reachable?` false).  This stays
+  explicitly distinct from the foreign-PRIVATE refusal above.
+
+  The strongest posture on the sandboxed work machine is a PRIVATE-only owner
   registry that reaches the public corpus read-only BY REFERENCE
   (`public-corpus-reference`, R9) and never co-locates a public transactor.
 
@@ -170,6 +189,38 @@
   [registry]
   (seq (:private registry)))
 
+(defn own-private-scope-key
+  "The single `:mm.project/ident` key the registry's OWNER is entitled to carry a
+  `:private` ENTRY for: the owner's own private-scope key when `:owner-scope` is
+  `[:trust-scope/private k]`, or nil for a `:trust-scope/public` owner (which is
+  entitled to NO private entry at all).  The air-gap admits a private entry keyed
+  by this value ONLY — every other `:private` key is a FOREIGN scope's location
+  the owning process has no business holding.  Requires a resolved owner scope
+  (callers run `assert-owner-scope-resolved!` first)."
+  [registry]
+  (private-scope-key (owner-scope registry)))
+
+(defn foreign-private-entries
+  "The `[project-key entry]` pairs under `registry`'s `:private` map that the
+  OWNER is NOT entitled to carry — every private entry whose key is not the
+  owner's own private-scope key (`own-private-scope-key`).  This is the ONE
+  predicate BOTH air-gap directions share:
+
+    • PUBLIC owner (`own-private-scope-key` nil ⇒ allowed set `#{}`): EVERY
+      private entry is foreign — a public process holds NO private location.
+    • `[:trust-scope/private k]` owner (allowed set `#{k}`): every private entry
+      keyed != k is foreign — alpha's registry discloses ONLY alpha's own
+      location, never beta's (the private↔private separation, W1.deploy §1).
+
+  Partitioned against the explicit allowed-key SET (not a bare `not=` on the
+  owner key) so a pathological nil-keyed private entry is still foreign under a
+  public owner.  Requires a resolved owner scope."
+  [registry]
+  (let [allowed (if-let [k (own-private-scope-key registry)] #{k} #{})]
+    (for [[k entry] (private-entries registry)
+          :when     (not (contains? allowed k))]
+      [k entry])))
+
 (defn scope-entry-pairs
   "Every `[logical-trust-scope physical-entry]` pair `registry` declares — the
   `:public` entry keyed `:trust-scope/public`, plus each `:private` entry keyed
@@ -247,41 +298,75 @@
 
 (defn assert-credential-air-gap!
   "The LOUD refuse-to-serve assertion realizing the credential air-gap (A-1 /
-  DEP-3).  A `:trust-scope/public`-owner registry MUST carry NO `:private`
-  ENTRY at all — not merely no private transactor endpoint.  If ANY private
-  entry is present (even one bearing only a `:local-disk-path` / `:corpus-repo`
-  and no endpoint), THROW `:sandbar/error :credential-air-gap-violation`.
-  Returns nil (proceed) when the gap holds.
+  DEP-3).  The ONE invariant, BOTH directions: a registry may carry a `:private`
+  ENTRY only for its OWNER's own scope — never a FOREIGN scope's location.
 
-  Why entry-level, not endpoint-only (strengthen-never-widen): the registry is
-  location indirection; a PUBLIC process has no legitimate use for a private
-  scope's disk path or repo handle either, and disclosing them is the same
-  air-gap breach as an endpoint.  Refusing any private entry closes the
-  `:local-disk-path` hole the endpoint-only form left open, in one move
-  consistent with this module's governance duty.  Preconditions on a RESOLVED
-  owner scope (`assert-owner-scope-resolved!` is re-run here so a malformed
-  owner is refused loudly rather than falling through the `public-scope?`
-  guard).  Mirrors the `guard-registry-critical-write!` refuse-to-serve shape
-  (`projection.clj:235`): a marker-tagged ex-info a bring-up must let abort the
-  process, not swallow.
+    • a `:trust-scope/public` owner may carry NO `:private` entry at all (a
+      public process holds no private location — the load-bearing public→private
+      leg the CA-6 lock rests on); and
+    • a `[:trust-scope/private k]` owner may carry EXACTLY its own `:proj/k`
+      entry — ANY private entry keyed != k is a FOREIGN private disclosure and is
+      refused (the private↔private separation, W1.deploy §1: alpha's registry
+      names only alpha's location, never beta's; brief line 28 — \"separation
+      holds across every public↔private AND private↔private boundary\").
+
+  Refusal is ENTRY-LEVEL, not endpoint-only (strengthen-never-widen): the
+  registry is location indirection, and a foreign scope's `:local-disk-path` /
+  `:corpus-repo` handle is as much a disclosure as its transactor endpoint.  If
+  ANY foreign private entry is present (`foreign-private-entries`) — even one
+  bearing only a disk-path / repo handle — THROW `:sandbar/error
+  :credential-air-gap-violation`.  ONE uniform marker for both legs (bring-up
+  catches a single tag), disambiguated by ex-data: `:air-gap-direction` names
+  which leg fired (`:public-owner-holds-private` |
+  `:private-owner-holds-foreign-private`), `:private-scope-keys` names the
+  refused FOREIGN keys, and `:with-transactor-endpoint` surfaces the sharpest
+  exfil sub-case (which refused entries carried a LIVE transactor endpoint vs a
+  bare handle).  Returns nil (proceed) when the gap holds.
+
+  Preconditions on a RESOLVED owner scope: `assert-owner-scope-resolved!` is
+  re-run here FIRST, so a malformed / nil owner is refused loudly with
+  `:registry-owner-unresolved` rather than reaching the sweep (a nil owner would
+  otherwise take the empty-allowed-set branch and refuse every private entry
+  under a bogus reading).  Mirrors the `guard-registry-critical-write!`
+  refuse-to-serve shape (`projection.clj:235`): a marker-tagged ex-info a
+  bring-up must let abort the process, not swallow.
+
+  ── the ONE retained, INTENDED asymmetry ────────────────────────────────────
+  A `[:trust-scope/private k]` owner holding a `:public` transactor ENTRY is
+  NOT refused here — this gate sweeps `:private` entries only.  That is
+  DELIBERATE, not an undisclosed hole: public location handles (the shared-bottom
+  corpus repo / transactor endpoint) are NOT secrets; R9 private-only is a
+  RECOMMENDATION, not a hard rule; and a private→public LIVE connect is ALREADY
+  refused at `resolve-endpoint` (`reachable?` false).  So the residual
+  private-holds-public posture is permitted-but-unreachable — kept explicitly
+  DISTINCT from the foreign-PRIVATE refusal above so the next reviewer does not
+  rediscover it as a gap.
 
   This is the standing physical lock the CA-6 deferral rests on — it exists to
   STRENGTHEN, never weaken, physical exclusion (two-lock collapse rule)."
   [registry]
   (assert-owner-scope-resolved! registry)
-  (when (public-scope? (owner-scope registry))
-    (when-let [entries (private-entries registry)]
-      (throw (ex-info (str "public-scope process registry carries a private-"
-                           "scope entry; refusing (credential air-gap — a public "
-                           "process holds NO private location or endpoint)")
+  (when-let [foreign (seq (foreign-private-entries registry))]
+    (let [public? (public-scope? (owner-scope registry))]
+      (throw (ex-info (if public?
+                        (str "public-scope process registry carries a private-"
+                             "scope entry; refusing (credential air-gap — a "
+                             "public process holds NO private location or endpoint)")
+                        (str "private-scope process registry carries a FOREIGN "
+                             "private-scope entry; refusing (credential air-gap — "
+                             "a private process holds ONLY its own scope's "
+                             "location, never another private scope's)"))
                       {:sandbar/error      :credential-air-gap-violation
+                       :air-gap-direction  (if public?
+                                             :public-owner-holds-private
+                                             :private-owner-holds-foreign-private)
                        :owner-scope        (owner-scope registry)
-                       :private-scope-keys (vec (map first entries))
+                       :private-scope-keys (vec (map first foreign))
                        ;; The sharpest exfil sub-case, surfaced for the operator:
                        ;; which (if any) of the refused entries carried a LIVE
                        ;; transactor endpoint (vs a bare disk-path/repo handle).
                        :with-transactor-endpoint
-                       (vec (for [[k entry] entries
+                       (vec (for [[k entry] foreign
                                   :when (:transactor-endpoint entry)] k))}))))
   nil)
 
@@ -391,8 +476,9 @@
     1. `assert-owner-scope-resolved!` — a registry that cannot name its own
        trust scope is refused FIRST (:registry-owner-unresolved), so no later
        gate silently no-ops on a malformed owner;
-    2. `assert-credential-air-gap!`   — no private ENTRY under a public owner
-       (:credential-air-gap-violation, A-1/DEP-3);
+    2. `assert-credential-air-gap!`   — no FOREIGN private ENTRY: none at all
+       under a public owner, and only the owner's own scope under a private
+       owner (:credential-air-gap-violation, A-1/DEP-3 + private↔private §1);
     3. `assert-private-repo-distinct!` — no private corpus routes to a public
        repo handle (:private-repo-collision, DEP-4).
   Intended to run at process bring-up, BEFORE any transactor connection opens."
