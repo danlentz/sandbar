@@ -34,6 +34,15 @@
   (println (format "  %-15s %5d" (name a) (count (by-action a)))))
 (println (format "  %-15s %5d" "ACTIONABLE" (:actionable stats)))
 
+;; byte-fidelity gate: run byte-verifies every actionable file in memory (no write)
+(println "\n--- byte-fidelity (verify-surgical over every actionable file; 0 writes) ---")
+(println (format "  byte-clean : %5d" (:byte-clean stats)))
+(println (format "  byte-drift : %5d %s" (:byte-drift stats)
+                 (if (zero? (:byte-drift stats)) "(OK — every non-id byte preserved)" "*** NON-SURGICAL DRIFT DETECTED ***")))
+(when (pos? (:byte-drift stats))
+  (doseq [p (filter #(and (#{:insert :rewrite} (:action %)) (false? (:byte-ok? %))) plans)]
+    (println "   ! DRIFT" (:rel p) "—" (:byte-check p))))
+
 ;; per-class actionable breakdown
 (println "\n--- actionable (insert+rewrite) per class ---")
 (let [cls (fn [p] (first (str/split (:rel p) #"/")))
@@ -68,10 +77,13 @@
   (spit (str scratch "/id-backfill.no-db-id.edn")
         (with-out-str (pp/pprint (mapv :rel nodb)))))
 
-;; sample diffs (first 3 inserts + first 3 rewrites) for eyeball
-(println "\n=== SAMPLE DIFFS ===")
+;; sample diffs (first 3 inserts + first 3 rewrites) for eyeball — derived from
+;; the ACTUAL before/after bytes (escaped), so any non-target drift is visible.
+(println "\n=== SAMPLE DIFFS (escaped byte-delta; drift banner if any) ===")
 (doseq [p (concat (take 3 (by-action :insert)) (take 3 (by-action :rewrite)))]
-  (println (bf/unified-diff (:rel p) p)))
+  (let [content (slurp (:file p))
+        applied (bf/apply-plan content p)]
+    (println (bf/unified-diff (:rel p) content applied p))))
 
 ;; idempotence proof: re-plan the inserts/rewrites AS IF applied, confirm they
 ;; then classify :skip-clean.
