@@ -683,12 +683,14 @@
 (defn- project-export-handler [args]
   (let [to     (or (get args "to") (get args :to))
         filter-spec (->filter-spec (or (get args "filter") (get args :filter)))
-        ;; W1.E provenance recording is OPT-IN.  Default OFF keeps a routine
-        ;; live `project.export` a read-only projection (no `:mm/Run` mint) until
-        ;; the E/F/G handshake ratifies the recorder as a live gate; a caller
-        ;; (or W1.K's project-routing arg) passing `:provenance true` records
-        ;; one projection-run + returns its committed manifest.
-        record?     (boolean (or (get args "provenance") (get args :provenance)))
+        ;; W1.E provenance recording is DOUBLE-GATED (default OFF).  Minting a
+        ;; live `:mm/Run` requires BOTH (a) the per-call `:provenance` opt AND
+        ;; (b) a server-side operator flag (`prov/recording-enabled?` — env/prop/
+        ;; config, absent by default).  So a bare MCP caller CANNOT mint live
+        ;; provenance rows before Dan's E/F/G ratification flips the operator
+        ;; flag; absent either lock the export stays a read-only projection.
+        want-record? (boolean (or (get args "provenance") (get args :provenance)))
+        record?     (and want-record? (prov/recording-enabled?))
         proj-raw    (or (get args "project") (get args :project) :project/UNASSIGNED)
         proj        (if (string? proj-raw) (->ident proj-raw) proj-raw)]
     (when-not to
@@ -726,9 +728,22 @@
       (if record?
         ;; Delegate to the W1.E recorder (`sandbar.project.provenance`): one
         ;; :mm/Run per export + the committed manifest whose firewall-class is
-        ;; DERIVED from the DB-resolved project (CODEX-1 forgery fix).
+        ;; DERIVED from the DB-resolved project (CODEX-1 forgery fix).  The
+        ;; recorder also VERIFIES the whole written-set against that derived
+        ;; route and THROWS a marker-tagged `:sandbar/error` (refuse-not-filter)
+        ;; on a class-inconsistent export — that refusal propagates as the tool
+        ;; error, aborting the (future W1.F) commit path loudly.
         (let [{:keys [written manifest]}
               (prov/with-export-provenance (db/db) {:project proj} export-thunk)]
+          ;; NB `with-export-provenance` also returns an `:audit` record (the
+          ;; EXACT G4 exclusion/redaction enumeration), DELIBERATELY NOT
+          ;; destructured/surfaced here — it is audit-side / private-scope
+          ;; material and returning it to a public MCP caller would itself be
+          ;; the P-CITE-2 leak.  Only the COMMITTED manifest (audience-split
+          ;; scrubbed for a :public target) is returned.  Persisting that audit
+          ;; record to a private audit sink keyed by the run's `:mm/id`
+          ;; (= `:manifest/audit-ref`) is the DEFERRED E/F/G seam (W1.H produces
+          ;; the real exclusions; no-new-schema this round).
           {:to         to
            :filter     filter-spec
            :exported   (count written)
