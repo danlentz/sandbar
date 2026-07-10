@@ -155,9 +155,18 @@
    graphs, DB-free.  Reuses tools/verb-behavioral-hints (the SAME classifier
    feeding the wire annotations + the authz gate), so the model can never
    disagree with either.  Per-verb map:
-     {:name :axis :title :description :safety :read-only? :destructive?
-      :idempotent? :open-world? :transition-kind :hint-status :arg-summary
-      :which :when :how :combines-with :prereqs}
+     {:name :wire-name :axis :title :description :safety :read-only?
+      :destructive? :idempotent? :open-world? :transition-kind :hint-status
+      :arg-summary :input-schema :which :when :how :order :combination
+      :combines-with :prereqs}
+   :wire-name     = the underscore tools/list projection of :name (the SAME
+                    tools/wire-name the dispatcher + authz gate use).
+   :input-schema  = the verb's :inputSchema, verbatim — carried so a
+                    full-reference projection (doc/api/mcp-verbs.md) can
+                    render per-arg detail without reaching past the model.
+   :order / :combination = raw prose sections (the derived edge sets below
+                    are parsed FROM these; both surfaces stay in the model
+                    so no projection re-splits the description).
    :combines-with = undirected prose-parsed neighbor names (sorted).
    :prereqs       = INBOUND prereq-of set (verbs prerequisite OF this verb),
                     the same inversion the verb-edges map performs."
@@ -174,6 +183,7 @@
                            (let [secs  (split-sections description)
                                  hints (tools/verb-behavioral-hints name)]
                              {:name            name
+                              :wire-name       (tools/wire-name name)
                               :axis            (axis-of name)
                               :title           (str title)
                               :description     (str description)
@@ -187,9 +197,12 @@
                                                  :safe "safe" :idempotent "idem"
                                                  :unsafe "unsafe" "?")
                               :arg-summary     (arg-summary inputSchema)
+                              :input-schema    inputSchema
                               :which           (:which secs)
                               :when            (:when secs)
                               :how             (:how secs)
+                              :order           (:order secs)
+                              :combination     (:combination secs)
                               :combines-with   (vec (sort (get combine-adj name #{})))
                               :prereqs         (vec (sort (get prereq-inverse name #{})))})))
                     (sort-by :name)
