@@ -107,30 +107,14 @@ over the co-resident `:auth/*` records.
 
 ---
 
-## 3. The 14 pinned baseline codec test vars (posture pending Dan)
+## 3. The 14 pinned baseline codec test vars (CLOSED)
 
-- **What.**  `lein test` carries **14 pre-existing failing vars**, all in the
-  codec / round-trip / projection family — no auth / wire / dispatch var among them.  The
-  full set (re-recorded 2026-07-05):
-  `ingest-graph-applies-tree-filter`, `ingest-graph-reads-nested-directories`,
-  `r1-semantic-fidelity`, `r2-extras-byte-identity`, `r3-idempotency`,
-  `r4-full-byte-identity-target`, `r5-db-round-trip`, `r6-drift-sweep`,
-  `round-trip-memory-with-sections`, `round-trip-multiple-memories`,
-  `round-trip-simple-memory`, `t1-reimport-upserts-carrier-in-place`,
-  `t2-carrier-ident-is-derived-from-host`, `t3-identless-host-falls-back-to-anonymous-carrier`.
-- **Why it rides.**  Pinned as a baseline: every Wave-3 landing gated on "zero NEW
-  failures beyond these 14" (`comm -13` against the pinned baseline file), and the
-  authoritative gate is the **live-store re-gate**, which is deterministic and green.  The
-  14 have not regressed any consumer surface; they are round-trip-fidelity edge cases.
-- **Authorizing record.**  `memory/observations/s5_baseline_rerecorded_14_vars_wire_test_passes_build_workflow_launched_2026_07_05.md`
-  (the exact 14);  `memory/observations/w1_phase0_approved_baseline_pinning_lesson_and_no_stash_fleet_rule_2026_07_07.md`
-  (the baseline-pinning discipline);  §1 of
-  `memory/plans/sandbar_0_2_0_co_release_plan_of_record_2026_07_08.md` (14 pinned, zero new
-  through ceremony-8).
-- **Planned close.**  **Posture pending Dan** — either fix the round-trip-fidelity family
-  before tag, or explicitly accept the 14 as documented baseline for 0.2.0 and schedule
-  the codec-fidelity repair for 0.2.1.  Dan's ruling is one of the enumerated pre-tag
-  tasks.
+CLOSED 2026-07-10 with receipts: the pinned 14 decomposed to 5 stale test
+expectations (fixed), 8 non-portable fixtures (vendored +
+SANDBAR_CORPUS_ROOT-parametrized), 1 corpus-data drift pinned on a live
+emit-path leak (production fix @fd134ec + corpus heal); full-suite acceptance
+run green (1823 tests, 9975 assertions, 0 failures, 0 errors). Dan's A2
+ruling satisfied.
 
 ---
 
