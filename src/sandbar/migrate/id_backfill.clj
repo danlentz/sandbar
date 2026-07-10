@@ -144,45 +144,187 @@
       :else                             ; :missing
       {:action :insert :reason "insert trailing id: line" :db-id db-id :current cur :new-line (id-line db-id)})))
 
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Byte-offset primitives — the whole point is NEVER to round-trip the file
+;; through str/split-lines + rejoin (which silently DROPS trailing blank lines
+;; and NORMALIZES CRLF->LF).  We splice on raw character offsets so every byte
+;; outside the one id: line is preserved verbatim.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defn scan-lines
+  "Split `content` into physical-line records preserving EXACT byte offsets and
+   line terminators.  Returns a vector of
+   `{:text <line-without-terminator> :start <int> :end <int> :term <str>}`
+   where the line's full span in `content` is `[:start, (+ :end (count :term)))`,
+   `:text` is `content[:start :end)` (terminator excluded), and `:term` is the
+   terminator (\"\\n\", \"\\r\\n\", or \"\" for an unterminated final line).
+
+   Round-trip law (byte-exact):
+     (= content (apply str (mapcat (juxt :text :term) (scan-lines content))))
+   This is the property str/split-lines VIOLATES — it discards trailing empties
+   and collapses \\r\\n — which is the whole class of corruption we are fixing."
+  [^String content]
+  (let [n (count content)]
+    (loop [i 0, acc (transient [])]
+      (if (>= i n)
+        (persistent! acc)
+        (let [nl (.indexOf content "\n" (int i))]
+          (if (neg? nl)
+            (persistent! (conj! acc {:text (subs content i n) :start i :end n :term ""}))
+            (let [cr?      (and (> nl i) (= \return (.charAt content (dec nl))))
+                  text-end (if cr? (dec nl) nl)
+                  term     (if cr? "\r\n" "\n")]
+              (recur (inc nl)
+                     (conj! acc {:text (subs content i text-end) :start i :end text-end :term term})))))))))
+
+(defn fence-indices
+  "Indices `[open close]` into `(scan-lines content)` of the opening and closing
+   `---` fences, or `[nil nil]` when there is no leading fenced frontmatter block
+   (no opening `---`, or an unterminated fence).  Matches `split-frontmatter`'s
+   notion of a fence: a line whose trimmed text is exactly `---`."
+  [recs]
+  (if (and (seq recs) (= frontmatter-delim (str/trim (:text (first recs)))))
+    (if-let [close (first (keep-indexed
+                           (fn [i r] (when (and (pos? i)
+                                                (= frontmatter-delim (str/trim (:text r))))
+                                       i))
+                           recs))]
+      [0 close]
+      [nil nil])
+    [nil nil]))
+
+(defn splice-plan
+  "Pure splice COORDINATES for an actionable `plan` over `content`, or nil when
+   the plan is non-actionable / there is no usable frontmatter block.  Both
+   `apply-plan` and `verify-surgical` derive from this single byte-exact anchor
+   computation, so the write and its check agree on WHERE the edit lands while
+   the check independently proves the RESULT changed nothing else.
+     :insert  -> {:op :insert  :at <offset-of-closing-fence> :eol <str> :text <new-line>}
+     :rewrite -> {:op :replace :start <s> :end <e> :text <new-line>}
+   For :replace, `[s,e)` is the old id: line's TEXT span (terminator excluded),
+   so the terminator after it is never touched."
+  [content {:keys [action new-line]}]
+  (let [recs (scan-lines content)
+        [open close] (fence-indices recs)]
+    (when (and open close)
+      (case action
+        :insert
+        (let [close-rec (nth recs close)
+              ;; reuse the terminator of the line just before the closing fence
+              ;; (always present — a fence follows it), so an all-CRLF block gets
+              ;; a CRLF-terminated inserted line and an all-LF block gets LF.
+              eol (or (not-empty (:term (nth recs (dec close)))) "\n")]
+          {:op :insert :at (:start close-rec) :eol eol :text new-line})
+
+        (:rewrite :conflict)
+        (when-let [rec (first (filter #(re-find #"^id:\s" (:text %))
+                                      (subvec recs (inc open) close)))]
+          {:op :replace :start (:start rec) :end (:end rec) :text new-line})
+
+        nil))))
+
 (defn apply-plan
-  "Produce the new file content for an actionable `plan` over `content`,
-   PURELY.  For :rewrite the id: line is replaced IN PLACE (position preserved,
-   minimal diff); for :insert the clean id: line is appended as the LAST
-   frontmatter line before the closing `---` (the corpus convention — id:
-   trails, matching the emit path).  Non-actionable plans return `content`
-   unchanged.  Every non-id byte is preserved."
-  [content {:keys [action new-line current] :as _plan}]
-  (let [lines (vec (str/split-lines content))
-        trailing-nl? (or (str/ends-with? content "\n") (str/blank? content))
-        rejoin (fn [ls] (cond-> (str/join "\n" ls) trailing-nl? (str "\n")))]
-    (case action
-      (:rewrite :conflict)
-      ;; fm block starts at line 1 (line 0 is the opening ---); the id: idx is
-      ;; relative to fm-lines, so the absolute line is (inc idx).
-      (rejoin (assoc lines (inc (:idx current)) new-line))
+  "Produce the new file content for an actionable `plan` over `content`, PURELY
+   and BYTE-EXACTLY.  Splices on raw character offsets (via `splice-plan`) — it
+   NEVER splits+rejoins the whole file — so multiple trailing newlines, a missing
+   final newline, and CRLF endings are all preserved verbatim; only the one id:
+   line is inserted (`:insert`, before the closing fence) or replaced in place
+   (`:rewrite`/`:conflict`).  Non-actionable plans return `content` unchanged."
+  [content plan]
+  (if-let [{:keys [op at eol start end text]} (splice-plan content plan)]
+    (case op
+      :insert  (str (subs content 0 at) text eol (subs content at))
+      :replace (str (subs content 0 start) text (subs content end)))
+    content))
 
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Byte-fidelity invariant — the falsifier the dry-run runs on EVERY file.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defn common-prefix-length
+  "Length of the maximal common prefix of strings `a` and `b`."
+  [^String a ^String b]
+  (let [n (min (count a) (count b))]
+    (loop [i 0]
+      (if (and (< i n) (= (.charAt a i) (.charAt b i))) (recur (inc i)) i))))
+
+(defn common-suffix-length
+  "Length of the maximal common suffix of strings `a` and `b`."
+  [^String a ^String b]
+  (let [na (count a) nb (count b) n (min na nb)]
+    (loop [i 0]
+      (if (and (< i n) (= (.charAt a (- na 1 i)) (.charAt b (- nb 1 i)))) (recur (inc i)) i))))
+
+(defn diff-region
+  "Byte-level single-region diff of original `a` vs modified `b`.  Returns
+   `{:prefix <int> :suffix <int> :a-mid <str> :b-mid <str>}` — the maximal common
+   prefix/suffix lengths (clamped so they never overlap in EITHER string) and the
+   sole differing spans.  Round-trip law:
+     a == (str (subs a 0 prefix) a-mid (subs a (- (count a) suffix)))
+     b == (str (subs b 0 prefix) b-mid (subs b (- (count b) suffix)))
+   Because every non-mid byte is proven identical, any drift OUTSIDE the intended
+   id: line (a lost trailing newline, a flipped CRLF) is forced INTO a-mid/b-mid,
+   where the caller's exact-match assertion catches it."
+  [^String a ^String b]
+  (let [cp  (common-prefix-length a b)
+        cap (- (min (count a) (count b)) cp)         ; suffix cannot cross prefix
+        cs  (min (common-suffix-length a b) cap)]
+    {:prefix cp :suffix cs
+     :a-mid (subs a cp (- (count a) cs))
+     :b-mid (subs b cp (- (count b) cs))}))
+
+(defn verify-surgical
+  "The plan-level fidelity invariant: assert `applied` differs from `content` by
+   EXACTLY the one intended id: line, byte for byte.  Anchors on `splice-plan`
+   (byte-exact) and then proves the RESULT preserved every other byte by direct
+   `subs`-equality of the unchanged prefix and suffix — independent of HOW
+   `apply-plan` produced `applied`, so a lost EOF newline or a CRLF flip fails it.
+   Returns `{:ok? bool :op <kw> :reason str ...}`; `run` aggregates it and
+   `run-apply!` REFUSES to write when `:ok?` is false."
+  [content applied plan]
+  (if-let [{:keys [op at eol start end text]} (splice-plan content plan)]
+    (case op
       :insert
-      ;; find the closing --- (first delim after line 0) and inject before it.
-      (let [close (first (keep-indexed
-                          (fn [i l] (when (and (pos? i) (= frontmatter-delim (str/trim l))) i))
-                          lines))]
-        (if close
-          (rejoin (vec (concat (subvec lines 0 close) [new-line] (subvec lines close))))
-          content))
+      (let [inj    (str text eol)
+            la     (count applied)
+            pre-ok (= (subs content 0 at) (subs applied 0 (min at la)))
+            len-ok (= la (+ (count content) (count inj)))
+            mid    (subs applied (min at la) (min la (+ at (count inj))))
+            suf-ok (= (subs content at) (subs applied (min la (+ at (count inj)))))]
+        (if (and pre-ok suf-ok len-ok (= mid inj))
+          {:ok? true  :op op :reason "surgical single-line insert; all other bytes byte-identical"}
+          {:ok? false :op op :reason (format "NON-SURGICAL insert (pre=%s suf=%s len=%s)" pre-ok suf-ok len-ok)
+           :expected-mid inj :actual-mid mid}))
 
-      content)))
+      :replace
+      (let [tail   (- (count content) end)
+            la     (count applied)
+            hi     (max 0 (- la tail))
+            lo     (min start la hi)
+            pre-ok (= (subs content 0 start) (subs applied 0 (min start la)))
+            suf-ok (= (subs content end) (subs applied (max 0 (- la tail))))
+            mid    (subs applied lo hi)]
+        (if (and pre-ok suf-ok (= mid text))
+          {:ok? true  :op op :reason "surgical in-place id: rewrite; all other bytes byte-identical"}
+          {:ok? false :op op :reason (format "NON-SURGICAL rewrite (pre=%s suf=%s)" pre-ok suf-ok)
+           :expected-mid text :actual-mid mid})))
+    {:ok? true :op :noop :reason "non-actionable; content returned unchanged"}))
 
 (defn unified-diff
-  "Minimal unified-diff string for a single-line frontmatter change on `rel`.
-   Dry-run artifact only — shows the id: context, not a full-file diff."
-  [rel {:keys [action current new-line]}]
-  (let [hdr (str "--- a/" rel "\n+++ b/" rel "\n")]
-    (case action
-      (:rewrite :conflict)
-      (str hdr "@@ frontmatter id: line @@\n-" (:line current) "\n+" new-line "\n")
-      :insert
-      (str hdr "@@ frontmatter (append trailing id:) @@\n+" new-line "\n")
-      (str hdr "(no change: " (name action) ")\n"))))
+  "Unified-diff string for `rel`, DERIVED FROM THE ACTUAL before/after bytes (via
+   `diff-region`) so it can NEVER conceal non-target drift — the removed/added
+   spans are `pr-str`-escaped, making any trailing-newline or CRLF delta visible,
+   and a loud NON-SURGICAL DRIFT banner is prepended whenever `verify-surgical`
+   fails.  Takes the real `content` and `applied`, not just the planned line."
+  [rel content applied plan]
+  (let [{:keys [ok? reason]} (verify-surgical content applied plan)
+        {:keys [a-mid b-mid]} (diff-region content applied)
+        hdr (str "--- a/" rel "\n+++ b/" rel "\n")]
+    (str hdr
+         (when-not ok? (str "!!! NON-SURGICAL DRIFT — " reason "\n"))
+         "@@ id: line (byte-delta, escaped) @@\n"
+         "-" (pr-str a-mid) "\n"
+         "+" (pr-str b-mid) "\n")))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; DB-driven orchestration — dry-run FIRST
@@ -213,60 +355,84 @@
     (not (contains? non-dogfood-dirs top))))
 
 (defn run
-  "Plan (and, only when `:apply? true`, perform) the id: backfill.  DRY-RUN by
-   default — returns `{:stats {...} :plans [...] :diffs [...]}` and writes
-   NOTHING.  Options:
+  "Plan the id: backfill — DRY-RUN ONLY.  `run` writes NOTHING; the WRITE arm is
+   the separate, Dan-gated `run-apply!`.  Returns
+   `{:stats {...} :plans [...] :diffs [...]}` where every actionable plan is
+   additionally byte-verified in memory (`apply-plan` + `verify-surgical`, no
+   write) so a non-surgical result is surfaced BEFORE any ceremony.  Options:
      :corpus-root      absolute path whose `memory/` subtree is scanned
      :id-map           `{rel-path -> uuid-string}` (from `id-map-from-db`, the
                        EDN dump, or a mem fixture) — the authoritative id source
-     :files            explicit seq of absolute file paths (else glob memory/**.md
-                       via the caller; this fn takes files to stay IO-light)
+     :files            explicit seq of absolute file paths (the caller globs
+                       memory/**.md; this fn takes files to stay IO-light)
      :non-dogfood-dirs override the excluded top-level dirs
-     :apply?           when true, WRITE each actionable change (guarded); the
-                       Dan-gated ceremony step.  Default false.
-     :guard!           optional 2-arg (path, content) pre-write guard; when
-                       supplied it is called before every spit (wire
-                       `sandbar.projection/guard-registry-critical-write!`).
 
-   The caller supplies `:files` + `:corpus-root`; rel-path is the file path
-   relative to `<corpus-root>/`.  Actionable = :insert/:rewrite (NOT :conflict —
-   conflicts are reported, never auto-applied).
+   `run` has NO `:apply?` or `:guard!` option — passing either throws, so a
+   write request can never silently degrade into a dry-run no-op.  The caller
+   supplies `:files` + `:corpus-root`; rel-path is the path relative to
+   `<corpus-root>/`.  Actionable = :insert/:rewrite (NOT :conflict — conflicts
+   are reported, never auto-applied).
 
-   `run` is READ-ONLY by construction — it slurps + plans + diffs and returns.
-   The WRITE arm is the separate, Dan-gated `run-apply!`; there is no `:apply?`
-   branch here, so no code path in `run` can mutate the corpus."
+   `run` is READ-ONLY by construction — it slurps + plans + diffs and returns;
+   no code path in `run` can mutate the corpus.  `:stats` carries `:byte-clean`
+   / `:byte-drift` counts; a non-zero `:byte-drift` is a hard failure signal."
   [{:keys [corpus-root id-map files non-dogfood-dirs]
-    :or   {non-dogfood-dirs default-non-dogfood-dirs}}]
+    :or   {non-dogfood-dirs default-non-dogfood-dirs}
+    :as   opts}]
+  (when (or (contains? opts :apply?) (contains? opts :guard!))
+    (throw (ex-info (str "`run` is DRY-RUN ONLY and has no :apply?/:guard! option — "
+                         "the write arm is `run-apply!` (Dan-gated ceremony). "
+                         "Pass the dry-run plans to `run-apply!`; do not ask `run` to write.")
+                    {:offending-options (select-keys opts [:apply? :guard!])
+                     :write-arm 'sandbar.migrate.id-backfill/run-apply!})))
   (let [root-prefix (str corpus-root "/")
         rel-of (fn [f] (if (str/starts-with? f root-prefix) (subs f (count root-prefix)) f))
-        plans (for [f files
-                    :let [rel (rel-of f)]
-                    :when (and (str/starts-with? rel "memory/")
-                               (dogfood? (subs rel (count "memory/")) non-dogfood-dirs))
-                    :let [mem-rel (subs rel (count "memory/"))
-                          content (slurp f)
-                          plan (plan-file content (get id-map mem-rel))]]
-                (assoc plan :file f :rel mem-rel))
         actionable? #(contains? #{:insert :rewrite} (:action %))
-        stats (-> (frequencies (map :action plans))
-                  (assoc :total (count plans)
-                         :actionable (count (filter actionable? plans))))]
+        entries (for [f files
+                      :let [rel (rel-of f)]
+                      :when (and (str/starts-with? rel "memory/")
+                                 (dogfood? (subs rel (count "memory/")) non-dogfood-dirs))
+                      :let [mem-rel  (subs rel (count "memory/"))
+                            content  (slurp f)
+                            plan     (assoc (plan-file content (get id-map mem-rel))
+                                            :file f :rel mem-rel)
+                            applied  (when (actionable? plan) (apply-plan content plan))
+                            verify   (when applied (verify-surgical content applied plan))]]
+                  {:plan plan :content content :applied applied :verify verify})
+        plans (mapv (fn [{:keys [plan verify]}]
+                      (cond-> plan
+                        verify (assoc :byte-ok? (:ok? verify) :byte-check (:reason verify))))
+                    entries)
+        act-entries (filterv (comp actionable? :plan) entries)
+        stats (-> (frequencies (map (comp :action :plan) entries))
+                  (assoc :total (count entries)
+                         :actionable (count act-entries)
+                         :byte-clean (count (filter (comp :ok? :verify) act-entries))
+                         :byte-drift (count (remove (comp :ok? :verify) act-entries))))]
     {:stats stats
-     :plans (vec plans)
-     :diffs (mapv (fn [p] (unified-diff (:rel p) p)) (filter actionable? plans))}))
+     :plans plans
+     :diffs (mapv (fn [{:keys [plan content applied]}]
+                    (unified-diff (:rel plan) content applied plan))
+                  act-entries)}))
 
 (defn run-apply!
   "The Dan-gated WRITE arm, factored out so the dry-run `run` never touches the
-   filesystem.  For each actionable plan, computes the new content, runs the
-   optional `guard!` (throws on registry-critical strip), then spits.  Returns a
-   per-file outcome vector.  Invoked ONLY under the human-supervised ceremony —
-   NEVER from a test or an unattended run."
+   filesystem.  For each actionable plan: recompute the new content, REFUSE (throw)
+   if `verify-surgical` reports non-surgical drift — the write cannot corrupt EOF
+   bytes or line endings even under ceremony — then run the optional `guard!`
+   (throws on registry-critical strip) and spit.  Returns a per-file outcome
+   vector.  Invoked ONLY under the human-supervised ceremony — NEVER from a test
+   or an unattended run."
   [{:keys [plans guard!]}]
   (vec
    (for [{:keys [file action] :as p} plans
          :when (contains? #{:insert :rewrite} action)]
-     (let [content (slurp file)
-           new-content (apply-plan content p)]
+     (let [content     (slurp file)
+           new-content (apply-plan content p)
+           v           (verify-surgical content new-content p)]
+       (when-not (:ok? v)
+         (throw (ex-info (str "REFUSING to write non-surgical change to " file " — " (:reason v))
+                         {:file file :verify v})))
        (when guard! (guard! file new-content))
        (spit file new-content)
-       {:file file :action action :bytes (count new-content)}))))
+       {:file file :action action :bytes (count new-content) :byte-ok? true}))))
