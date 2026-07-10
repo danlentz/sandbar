@@ -4,8 +4,9 @@
    its committed copy, exiting non-zero on ANY mismatch.
 
    This is the landed JVM form of the F6 staging `drift_gate.bb`.  It shares the
-   EXACT generator code the `lein affordance-map` / `verb-edges-map` /
-   `memory-open-affordance` aliases use (it calls their `render` fns), so the
+   EXACT generator code the `lein affordance-map` / `mcp-verbs-doc` /
+   `verb-edges-map` / `memory-open-affordance` aliases use (it calls their
+   `render` fns), so the
    check can never diverge from what `lein catalog-regen` produces.  Because the
    catalog-model is DB-free, this runs in seconds with no Datomic spin-up — fit
    for a pre-commit hook or a CI job that need not wait on the test matrix.
@@ -20,7 +21,8 @@
 
    SCOPE (design open-question #3 / PROPOSED-CI-WIRING option b): by default the
    gate checks only the sandbar-LOCAL projections (doc/mcp-affordance-map.md +
-   the :mm/Verb parity + §5.8 completeness) so `lein catalog-check` is
+   doc/api/mcp-verbs.md + the :mm/Verb parity + §5.8 completeness) so
+   `lein catalog-check` is
    self-contained — green with no sibling corpus checkout.  The two CORPUS
    projections (etc/verb-edges.edn, .claude/commands/memory-open.md) are checked
    only when their paths are supplied (--verb-edges / --memory-open or the
@@ -33,6 +35,7 @@
    Usage:
      lein catalog-check
        [--affordance PATH]   (default: doc/mcp-affordance-map.md, cwd-relative)
+       [--mcp-verbs PATH]    (default: doc/api/mcp-verbs.md, cwd-relative; F6_MCP_VERBS)
        [--verb-edges PATH]   (opt-in; F6_VERB_EDGES)
        [--memory-open PATH]  (opt-in; F6_MEMORY_OPEN)
        [--editorial PATH]    (default: vendored resources/catalog/affordance-editorial.edn)
@@ -42,6 +45,7 @@
             [sandbar.mcp.tools                  :as tools]
             [sandbar.mcp.catalog-model          :as model]
             [sandbar.scripts.affordance-map     :as aff]
+            [sandbar.scripts.mcp-verbs-doc      :as vdoc]
             [sandbar.scripts.verb-edges-map     :as edges]
             [sandbar.scripts.memory-open-affordance :as moa]))
 
@@ -197,6 +201,7 @@
   [args]
   (let [cli (parse-args args)
         affordance-path (resolve-path cli :affordance "F6_AFFORDANCE" "doc/mcp-affordance-map.md")
+        mcp-verbs-path  (resolve-path cli :mcp-verbs "F6_MCP_VERBS" "doc/api/mcp-verbs.md")
         verb-edges-path (resolve-path cli :verb-edges "F6_VERB_EDGES" nil)
         memory-open-path (resolve-path cli :memory-open "F6_MEMORY_OPEN" nil)
         editorial-path  (resolve-path cli :editorial "F6_EDITORIAL" nil)  ; nil -> vendored resource
@@ -216,6 +221,12 @@
       (let [d (line-diff (slurp affordance-path) (aff/render m))]
         (record! "doc/mcp-affordance-map.md" (if d :DRIFT :OK) d))
       (record! "doc/mcp-affordance-map.md" :MISSING (str "  file not found: " affordance-path)))
+
+    ;; ---- projection: full verb reference doc (sandbar-local, always) ----
+    (if (exists? mcp-verbs-path)
+      (let [d (line-diff (slurp mcp-verbs-path) (vdoc/render m))]
+        (record! "doc/api/mcp-verbs.md" (if d :DRIFT :OK) d))
+      (record! "doc/api/mcp-verbs.md" :MISSING (str "  file not found: " mcp-verbs-path)))
 
     ;; ---- projection: verb-edges.edn (corpus, opt-in) ----
     (when verb-edges-path
