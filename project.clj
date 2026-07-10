@@ -125,6 +125,7 @@
             "affordance-map"      ["run" "-m" "sandbar.scripts.affordance-map"]
             "verb-edges-map"      ["run" "-m" "sandbar.scripts.verb-edges-map"]
             "memory-open-affordance" ["run" "-m" "sandbar.scripts.memory-open-affordance"]
+            "mcp-verbs-doc"       ["run" "-m" "sandbar.scripts.mcp-verbs-doc"]
             "catalog-check"       ["run" "-m" "sandbar.scripts.catalog-check"]
             "catalog-regen"       ["do" ["affordance-map"] ["verb-edges-map"] ["memory-open-affordance"]]
             ;; W1.J standing composed release gate (G1 precondition): CHECK 1
