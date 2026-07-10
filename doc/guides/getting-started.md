@@ -150,7 +150,7 @@ curl -s -X POST http://localhost:8080/mcp \
         "class": ":mm/Memory",
         "query": "projection pipeline ground-truth",
         "limit": 5,
-        "include": ["snippets", "scores"]
+        "include": ["snippets", "field-scores"]
       }
     }
   }' | jq -r '.result.content[0].text' | jq .
