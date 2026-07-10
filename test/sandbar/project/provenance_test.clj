@@ -28,13 +28,17 @@
    seeds Projects/Contexts/Memories via RAW d/transact (setup never trips the
    guard) in SEPARATE non-co-batched steps (CA-6 window discipline); the
    recorder writes go through `sandbar.project.provenance`."
-  (:require [clojure.string :as str]
+  (:require [clojure.java.io :as io]
+            [clojure.string :as str]
             [clojure.test :refer [deftest testing is use-fixtures]]
             [datomic.api :as d]
             [sandbar.config :as config]
+            [sandbar.db.datatype :as dt]
             [sandbar.db.datomic :as db]
             [sandbar.firewall.support :as sup]
+            [sandbar.mcp.tools]                            ; #'project-export-handler (double-gate)
             [sandbar.project.provenance :as prov]
+            [sandbar.projection :as pg]
             [sandbar.test-util :as tu]))
 
 (use-fixtures :each (tu/make-test-db-fixture {:test-name "provenance" :auth? false}))
@@ -60,6 +64,37 @@
   [ident visibility project-ident rel-path]
   (sup/seed-memory! ident visibility project-ident
                     {:mm.memory/rel-path rel-path}))
+
+(defn- seed-emittable-memory!
+  "Like `seed-memory-at!` but carries an empty `:mm.memory/body-raw` so
+   `project-graph`'s markdown emit produces a real file (the fix-14 real
+   file-writing thunk)."
+  [ident visibility project-ident rel-path]
+  (sup/seed-memory! ident visibility project-ident
+                    {:mm.memory/rel-path rel-path :mm.memory/body-raw ""}))
+
+(defn- scratch-to
+  "A fresh scratch output directory path for a project-graph write."
+  [label]
+  (let [d (io/file (System/getProperty "java.io.tmpdir")
+                   (str "w1e-" label "-" (System/nanoTime)))]
+    (.mkdirs d)
+    (.getPath d)))
+
+;; ── The server-side recording flag (double-gate half).  ON via the config
+;; value seam; OFF with every seam falsey (env/prop/config), matching how a
+;; deployed server would read `prov/recording-enabled?`. ────────────────────
+(defn- with-recording-on* [f]
+  (with-redefs [config/getenv  (constantly nil)
+                config/getprop (constantly nil)
+                config/value   (fn [k] (when (= k :provenance-record?) true))]
+    (f)))
+
+(defn- with-recording-off* [f]
+  (with-redefs [config/getenv  (constantly nil)
+                config/getprop (constantly nil)
+                config/value   (constantly nil)]
+    (f)))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; CODEX-1 — forged-route falsifier (the held-note travelling requirement)
@@ -134,18 +169,28 @@
         (is (some #(= "nowhere/ghost.md" (:rel-path %)) (:offending-rows (ex-data ex))))))))
 
 (deftest with-export-provenance-refusal-records-a-failed-run-only
+  ;; fix-3/14: a REAL file-writing thunk (`project-graph` to a scratch :to), not a
+  ;; hand-built row-vector.  A :proj/secret-owned memory projected into a :proj/pub
+  ;; export — the gate routes the row's CARRIED :entity (proj/secret, private) and
+  ;; REFUSES for the public target.  Only a :failed run is recorded; the refused
+  ;; file IS on disk (the documented spill seam: the thunk wrote before the gate).
   (seed-public-project!)
   (seed-private-project!)
-  (seed-memory-at! :memory/leak :private :proj/secret "secret/leak.md")
-  (let [db (db/db)
-        ex (try (prov/with-export-provenance
-                  db {:project :proj/pub}
-                  (fn [] [{:rel-path "secret/leak.md" :written true}]))
-                nil
-                (catch clojure.lang.ExceptionInfo e e))]
+  (seed-emittable-memory! :memory/leak :private :proj/secret "secret/leak.md")
+  (let [db    (db/db)
+        to    (scratch-to "refusal")
+        ;; realize → project-graph, exactly as the export handler does; the
+        ;; written rows carry :entity (source-descriptor → owning-project
+        ;; :proj/secret), so the gate routes the ACTUAL projected entity.
+        thunk (fn [] (pg/project-graph (dt/realize-with :memory/leak pg/mm-walker)
+                                       {:to to}))
+        ex    (try (prov/with-export-provenance db {:project :proj/pub} thunk)
+                   nil
+                   (catch clojure.lang.ExceptionInfo e e))]
     (testing "the boundary refusal propagates (aborting the future W1.F commit path)"
       (is (some? ex))
-      (is (= :public-manifest-contains-private-rows (:sandbar/error (ex-data ex)))))
+      (is (= :public-manifest-contains-private-rows (:sandbar/error (ex-data ex))))
+      (is (some #(= "secret/leak.md" (:rel-path %)) (:offending-rows (ex-data ex)))))
     (let [runs (prov/projection-runs (db/db))]
       (testing "NO :succeeded run exists — a refused export is not a projection"
         (is (empty? (filter #(= :succeeded (:mm.activity/status %)) runs))))
@@ -153,7 +198,12 @@
         (is (= 1 (count runs)))
         (is (= :failed (:mm.activity/status (first runs)))))
       (testing "no run's manifest/file-set could carry the private path — none was built"
-        (is (not (str/includes? (pr-str (mapv d/touch runs)) "secret/leak.md")))))))
+        (is (not (str/includes? (pr-str (mapv d/touch runs)) "secret/leak.md")))))
+    (testing "SPILL SEAM (documented, W1.F unbuilt): the projection file WAS
+              written to :to before the gate fired — the gate aborts the
+              manifest/:succeeded-run/future-commit, NOT the on-disk files"
+      (is (.exists (io/file to "secret/leak.md"))
+          "project-graph wrote the file before verify-written-against-route! refused"))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; P-CITE-2 (whole-file-set) — a :private export REFUSES a FOREIGN private scope
@@ -175,6 +225,98 @@
       (is (some? ex))
       (is (= :private-manifest-contains-foreign-rows (:sandbar/error (ex-data ex))))
       (is (some #(= "other/x.md" (:rel-path %)) (:offending-rows (ex-data ex)))))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; REL-PATH COLLISION (fix-1/2/5/6/10/11) — a rel-path is NOT unique; a :public
+;; twin and a :private twin can share one.  A row WITHOUT a carried :entity is
+;; resolved over the SET of ALL entities at the rel-path (fail-closed), so the
+;; refusal is INDEPENDENT of eid/seed order — a scalar find could fail open.
+;; The two rel-paths seed the twins in OPPOSITE orders to prove that.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(deftest public-export-refuses-a-colliding-private-twin-both-seed-orders
+  (seed-public-project!)
+  (seed-private-project!)
+  ;; rel-path A: the PUBLIC twin is seeded FIRST, then the private twin.
+  (seed-memory-at! :memory/twin-pub-a :public  :proj/pub    "collide/a.md")
+  (seed-memory-at! :memory/twin-sec-a :private :proj/secret "collide/a.md")
+  ;; rel-path B: the PRIVATE twin is seeded FIRST, then the public twin.
+  (seed-memory-at! :memory/twin-sec-b :private :proj/secret "collide/b.md")
+  (seed-memory-at! :memory/twin-pub-b :public  :proj/pub    "collide/b.md")
+  (let [db     (db/db)
+        refuse (fn [rel-path]
+                 (try (prov/manifest-for-export
+                        db {:run 1 :project :proj/pub
+                            :written [{:rel-path rel-path :written true}] ; NO :entity ⇒ set-find
+                            :basis-t (d/basis-t db)})
+                      nil
+                      (catch clojure.lang.ExceptionInfo e e)))]
+    (doseq [[rel-path order] [["collide/a.md" "public-twin-seeded-first"]
+                              ["collide/b.md" "private-twin-seeded-first"]]]
+      (let [ex (refuse rel-path)]
+        (testing (str "a :public export REFUSES the colliding private twin (" order ")")
+          (is (some? ex) "the collision must refuse — never fail open on eid/seed order")
+          (is (= :public-manifest-contains-private-rows (:sandbar/error (ex-data ex))))
+          (is (some #(and (= rel-path (:rel-path %)) (= :private (:sensitivity %)))
+                    (:offending-rows (ex-data ex)))
+              "the refusal names the colliding rel-path + its :private candidate"))))))
+
+(deftest private-export-refuses-a-colliding-foreign-twin-both-seed-orders
+  (seed-private-project!)                                  ; :proj/secret — the TARGET
+  (seed-other-private-project!)                            ; :proj/other  — FOREIGN
+  ;; rel-path P: the TARGET-scope twin first, then the foreign twin.
+  (seed-memory-at! :memory/pin-sec-p :private :proj/secret "collide/p.md")
+  (seed-memory-at! :memory/pin-oth-p :private :proj/other  "collide/p.md")
+  ;; rel-path Q: the FOREIGN twin first, then the target-scope twin.
+  (seed-memory-at! :memory/pin-oth-q :private :proj/other  "collide/q.md")
+  (seed-memory-at! :memory/pin-sec-q :private :proj/secret "collide/q.md")
+  (let [db     (db/db)
+        refuse (fn [rel-path]
+                 (try (prov/manifest-for-export
+                        db {:run 1 :project :proj/secret                 ; DERIVES [:private :proj/secret]
+                            :written [{:rel-path rel-path :written true}]
+                            :basis-t (d/basis-t db)})
+                      nil
+                      (catch clojure.lang.ExceptionInfo e e)))]
+    (doseq [[rel-path order] [["collide/p.md" "target-twin-seeded-first"]
+                              ["collide/q.md" "foreign-twin-seeded-first"]]]
+      (let [ex (refuse rel-path)]
+        (testing (str "a :private export REFUSES the colliding FOREIGN twin (" order ")")
+          (is (some? ex) "the foreign twin must refuse regardless of seed order")
+          (is (= :private-manifest-contains-foreign-rows (:sandbar/error (ex-data ex))))
+          (is (some #(and (= rel-path (:rel-path %))
+                          (= [:trust-scope/private :proj/other] (:trust-scope %)))
+                    (:offending-rows (ex-data ex)))
+              "the refusal names the colliding rel-path + the foreign scope"))))))
+
+(deftest carried-source-entity-routes-the-exact-projected-twin
+  ;; fix-1/10 PREFERRED path: with the source entity carried on the row
+  ;; (project-graph stamps :entity), the gate routes the ACTUAL projected entity
+  ;; — so a :public twin colliding at a rel-path with a :private twin is admitted
+  ;; on its OWN identity (no over-refusal) while a row carrying the PRIVATE twin
+  ;; is refused (no fail-open), even though BOTH share the rel-path.
+  (seed-public-project!)
+  (seed-private-project!)
+  (seed-memory-at! :memory/twp :public  :proj/pub    "collide/x.md")
+  (seed-memory-at! :memory/tws :private :proj/secret "collide/x.md")
+  (let [db       (db/db)
+        ;; the exact descriptor shape project-graph stamps (source-descriptor)
+        pub-desc {:dt/type :mm/Memory :mm.memory/owning-project :proj/pub    :db/ident :memory/twp}
+        sec-desc {:dt/type :mm/Memory :mm.memory/owning-project :proj/secret :db/ident :memory/tws}
+        export   (fn [entity-desc]
+                   (prov/manifest-for-export
+                     db {:run 1 :project :proj/pub
+                         :written [{:rel-path "collide/x.md" :written true :entity entity-desc}]
+                         :basis-t (d/basis-t db)}))]
+    (testing "a row carrying the PUBLIC twin is ADMITTED (exact — no set-find over-refusal)"
+      (is (= :public
+             (:manifest/firewall-class (:committed (export pub-desc))))))
+    (testing "a row carrying the PRIVATE twin is REFUSED (exact — no fail-open)"
+      (let [ex (try (export sec-desc) nil (catch clojure.lang.ExceptionInfo e e))]
+        (is (some? ex))
+        (is (= :public-manifest-contains-private-rows (:sandbar/error (ex-data ex))))
+        (is (some #(and (= "collide/x.md" (:rel-path %)) (= :private (:sensitivity %)))
+                  (:offending-rows (ex-data ex))))))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; FAIL-CLOSE — the derived route defaults to :private (locks the handler
@@ -353,3 +495,52 @@
                   config/getprop (constantly nil)
                   config/value   (constantly nil)]
       (is (false? (prov/recording-enabled?))))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; fix-4/8/13 — the DOUBLE-GATE at the WIRING POINT (project-export-handler).
+;; A live :mm/Run mints ONLY when BOTH the per-call `:provenance` opt AND the
+;; server-side `recording-enabled?` flag are open — driven end-to-end through
+;; the (private) handler var against a mem fixture + scratch :to.  This pins the
+;; AND so a regression defaulting `want-record?` true cannot ship silently.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(def ^:private export-handler #'sandbar.mcp.tools/project-export-handler)
+
+(deftest handler-double-gate-both-locks-open-mints-one-succeeded-run
+  ;; The fixture corpus's only rel-path memory is UNASSIGNED, admissible into the
+  ;; default :project/UNASSIGNED target — so with BOTH locks open the export
+  ;; succeeds and records exactly one :succeeded projection run + a manifest.
+  (let [to (scratch-to "gate-on")]
+    (with-recording-on*
+      (fn []
+        (let [result (export-handler {"to" to "provenance" true})
+              runs   (prov/projection-runs (db/db))]
+          (testing "both locks open ⇒ exactly one projection run is minted"
+            (is (= 1 (count runs))))
+          (testing "it is a :succeeded projection run"
+            (is (= :succeeded (:mm.activity/status (first runs))))
+            (is (prov/projection-run? (first runs))))
+          (testing "the committed manifest is returned under :provenance, run-linked"
+            (is (contains? result :provenance))
+            (is (= [:mm/id (:mm/id (first runs))]
+                   (:manifest/run (:provenance result))))))))))
+
+(deftest handler-double-gate-any-lock-closed-mints-no-run
+  ;; The three CLOSED cells share ONE fresh mem fixture precisely because none of
+  ;; them may write a run: after each, ZERO :mm/Run rows must exist and the
+  ;; result must carry NO :provenance manifest (a plain read-only projection).
+  (let [check
+        (fn [label args recording-on?]
+          (let [to     (scratch-to (str "gate-" label))
+                runner (fn [] (export-handler (assoc args "to" to)))
+                result (if recording-on?
+                         (with-recording-on* runner)
+                         (with-recording-off* runner))]
+            (testing (str label " ⇒ no :mm/Run minted")
+              (is (empty? (prov/projection-runs (db/db)))))
+            (testing (str label " ⇒ no committed manifest surfaced")
+              (is (not (contains? result :provenance)))
+              (is (contains? result :files)))))]         ; still a real read-only export
+    (check "opt-true--flag-OFF"  {"provenance" true}  false)
+    (check "opt-FALSE-flag-on"   {"provenance" false} true)
+    (check "opt-absent-flag-on"  {}                   true)))
