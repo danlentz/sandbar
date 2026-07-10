@@ -1,0 +1,78 @@
+;; etc/sandbar-store-registry.example.edn — W1.deploy per-machine store-registry
+;; TEMPLATE.  Copy per host, edit the physical paths/URLs, DO NOT commit a
+;; populated copy (it is per-machine, not corpus-canonical).
+;;
+;; WHAT THIS IS.  Location-only indirection: a LOGICAL trust-scope → THIS host's
+;; PHYSICAL {transactor-endpoint, corpus-repo, local-disk-path, sid}.  It is NOT
+;; the membership authority — membership is corpus-canonical
+;; (:mm.context/visible-projects, resolved by sandbar.project.route).  A project
+;; present only here but absent from visible-projects is NOT a member.
+;; Consumed by sandbar.deploy.registry (parse/resolve/air-gap).
+;;
+;; THE CREDENTIAL AIR-GAP (the load-bearing security property; W1.deploy §5).
+;; `:owner-scope` names the trust scope of the PROCESS that loads this file.  A
+;; :trust-scope/public owner registry MUST expose NO private transactor endpoint
+;; (assert-credential-air-gap! refuses one) — a public process holds no
+;; credential for any private transactor, so a public→private connection is
+;; IMPOSSIBLE, not merely disallowed.  This air-gap is the standing physical
+;; lock the CA-6 write-side deferral rests on (two-lock collapse rule): it must
+;; only ever STRENGTHEN physical exclusion.
+;;
+;; PORT ALLOCATION (reconciled with the 2026-05-12 hybrid ADR D.3 amendment).
+;; The dev/free protocol opens a 2-PORT SLOT per scope (transactor port +
+;; h2-port); the transactor port increments by 2 ACROSS scopes.  So the public
+;; scope owns 4334 (transactor) + 4335 (h2), and the NET-NEW private scope owns
+;; 4336 (transactor) + 4337 (h2).  NB: the W1.deploy brief §2's illustrative
+;; "localhost:4335" for the private transactor is a slip — 4335 is the public
+;; scope's h2-port; co-locating a private transactor there would COLLIDE with
+;; public storage and defeat "one transactor per scope".  4336 keeps the two
+;; processes genuinely distinct (distinct ports/PIDs — DEP-1), STRENGTHENING
+;; physical exclusion.  Per decisions/datomic_multi_store_deployment_strategy_-
+;; hybrid_s1_within_scope_s2_across_scopes_2026_05_12.md (D.3, amended).
+;;
+;; ────────────────────────────────────────────────────────────────────────────
+;; THIS FILE = the PUBLIC-scope process's registry (the "existing process" of
+;; the G3-thin two-scope topology).  Public-only: no private endpoint (air-gap).
+;; ────────────────────────────────────────────────────────────────────────────
+
+{:schema-version 1
+
+ ;; The scope of the process that loads THIS registry.  Public here ⇒ the
+ ;; air-gap assertion refuses any :private transactor endpoint below.
+ :owner-scope :trust-scope/public
+
+ ;; The shared public bottom — the existing running public-scope transactor.
+ :public
+ {:transactor-endpoint "datomic:dev://localhost:4334/"
+  :sid                  "global"
+  :corpus-repo          "git@example.com:org/public-corpus.git"   ; the PUBLIC corpus repo
+  :local-disk-path      "/Users/you/claude"}                      ; this host's public checkout
+
+ ;; A public-owner registry exposes NO private scope (credential air-gap).  The
+ ;; private scope's endpoint lives ONLY in the private process's own registry
+ ;; (the companion template below) — never here.
+ :private {}}
+
+;; ────────────────────────────────────────────────────────────────────────────
+;; COMPANION TEMPLATE — the PRIVATE-scope process's registry (the "one net-new"
+;; scope).  Loaded by a session started FROM the private project's own directory
+;; (fork-5 operating model).  On the sandboxed WORK machine this is the ONLY
+;; registry (R9 private-only posture): it reaches the public corpus read-only BY
+;; REFERENCE via :public-corpus-ref (a git handle for clone/restore) and NEVER
+;; co-locates a public transactor.  DEP-4: the private :corpus-repo is the
+;; project's OWN repo, never the public corpus repo.
+;;
+;; {:schema-version 1
+;;  :owner-scope [:trust-scope/private :proj/example-private]
+;;
+;;  ;; Public reachable read-only BY REFERENCE only — a repo handle, NO
+;;  ;; transactor endpoint (the by-reference half of the air-gap, R9).
+;;  :public-corpus-ref "git@example.com:org/public-corpus.git"
+;;
+;;  :private
+;;  {:proj/example-private
+;;   {:transactor-endpoint "datomic:dev://localhost:4336/"          ; NET-NEW, +2 slot
+;;    :sid                  "example-private"
+;;    :corpus-repo          "git@example.com:org/example-private.git" ; the project's OWN repo (≠ public)
+;;    :local-disk-path      "/Users/you/src/example-private"}}}
+;; ────────────────────────────────────────────────────────────────────────────
