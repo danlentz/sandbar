@@ -423,9 +423,25 @@
         (dt/all-classes)))
 
 (defn- referencing-eids
-  "Returns the set of `dependent-class` eids whose entries reference
-  `target-eid` via any ref-slot in `dependent-class`'s bm25f-weights
-  whose range is `target-class`.  Pure metamodel-driven Datalog walk."
+  "Returns the set of `dependent-class` INSTANCE eids whose entries reference
+  `target-eid` via any ref-slot in `dependent-class`'s bm25f-weights whose
+  range is `target-class`.  Metamodel-driven Datalog walk, subclass-inclusive.
+
+  The `(instance-of ?dep-class ?e)` join is LOAD-BEARING, not decorative:
+  the ref-slots that trigger transitive invalidation are frequently the
+  tag/theme slots (`:mm.memory/tags` / `:mm.memory/themes`) that
+  `dependent-class` INHERITS from `:mm/Memory`.  Those slots exist on EVERY
+  memorial (Bug / Plan / Decision / Memory / …), so a bare `[?e ?slot ?target]`
+  walk returns every tag-sharing memorial regardless of class — and
+  `entity-changed!` then writes those foreign-class entries into
+  `dependent-class`'s per-class analyzed cache.  That corpus-pollution is the
+  root cause of the `search.bm25f` `:class`-scope silent widening
+  (`:mm/Verb` scope returning `:mm/Plan` / `:mm/Decision` hits; `:mm/Tag`
+  was immune only because its weight slots are all string-valued, so it is
+  never a dependent class).  Constraining `?e` to instances-of
+  `dependent-class` keeps every per-class cache a faithful instance index.
+
+  Per `bugs/search_bm25f_class_scoping_silently_degrades_to_corpus_wide_for_memorial_classes_2026_07_10.md`."
   [dependent-class target-class target-eid]
   (let [db        (db/db)
         ref-slots (->> (dt/effective-bm25f-weights-of dependent-class)
@@ -435,9 +451,10 @@
     (into #{}
           (mapcat (fn [slot]
                     (d/q '[:find [?e ...]
-                           :in $ ?slot ?target
-                           :where [?e ?slot ?target]]
-                         db slot target-eid)))
+                           :in $ % ?dep-class ?slot ?target
+                           :where (instance-of ?dep-class ?e)
+                                  [?e ?slot ?target]]
+                         db (all-rules) dependent-class slot target-eid)))
           ref-slots)))
 
 (defn entity-changed!
@@ -652,6 +669,29 @@
                       s))]
     [(vec (vals entries)) stats]))
 
+(defn- class-instance-eids
+  "Authoritative, subclass-inclusive eid-set of instances-of `class`.
+
+  The `:class`-scope contract of `search-bm25f` — 'return only instances-of
+  `:class`' — is enforced by intersecting the (cached) analyzed corpus with
+  this set at the read boundary, INDEPENDENT of cache state.  The per-class
+  analyzed cache is maintained as an instance-faithful index (see
+  `referencing-eids` + `warm-bm25f-cache!`), but this guard makes the
+  observable contract hold even if some future mutation path re-pollutes a
+  per-class cache with foreign-class entries — a fail-CLOSED read boundary
+  rather than the fail-open silent corpus-widening this closes.
+
+  One eid-only Datalog walk over the `instance-of` rule per search (no entity
+  realization); the cost sits alongside the existing `:where` / `:from`+`:via`
+  eid-set computations and is dwarfed by the score loop.
+
+  Per `bugs/search_bm25f_class_scoping_silently_degrades_to_corpus_wide_for_memorial_classes_2026_07_10.md`."
+  [class]
+  (into #{}
+        (map first)
+        (d/q '[:find ?e :in $ % ?class :where (instance-of ?class ?e)]
+             (db/db) (all-rules) class)))
+
 (defn- search-bm25f-single
   "Single-class BM25F search over Datomic-stored entities of `:class`.
 
@@ -780,9 +820,18 @@
                           where-eids     where-eids
                           from-via-eids  from-via-eids
                           :else          nil)
-        scoring-corpus  (if candidate-eids
-                          (filter #(contains? candidate-eids (:eid %)) analyzed-corpus)
-                          analyzed-corpus)
+        ;; :class-scope guard (board-blessed instance-filter in candidate
+        ;; assembly): ALWAYS restrict scoring to authoritative instances-of
+        ;; `class` (subclass-inclusive), THEN intersect any :where / :from+:via
+        ;; candidate set.  Fail-CLOSED read boundary against per-class analyzed-
+        ;; cache pollution — closes the silent corpus-widening.  See
+        ;; class-instance-eids.  Per bugs/search_bm25f_class_scoping_silently_
+        ;; degrades_to_corpus_wide_for_memorial_classes_2026_07_10.md.
+        class-eids      (class-instance-eids class)
+        effective-eids  (if candidate-eids
+                          (clojure.set/intersection class-eids candidate-eids)
+                          class-eids)
+        scoring-corpus  (filter #(contains? effective-eids (:eid %)) analyzed-corpus)
         scored          (for [ae    scoring-corpus
                               :let  [s (bm25f/score q-tokens ae stats weights)]
                               :when (pos? s)]

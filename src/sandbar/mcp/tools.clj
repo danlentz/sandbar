@@ -1202,6 +1202,14 @@
           res   (search/search-bm25f (cond-> {:query query :class :mm/Verb
                                               :projection :full :limit limit}
                                        where (assoc :where where)))
+          ;; nil-guard (defense-in-depth): project ONLY genuine :mm/Verb hits.
+          ;; A hit whose entity lacks :mm.verb/name is non-verb residue and must
+          ;; never render as an all-null verb card.  With the :class-scope fix
+          ;; (search-bm25f now fail-closes on instances-of :mm/Verb) this residue
+          ;; set is empty; the guard keeps the discovery surface honest even if a
+          ;; future cache-pollution vector reappears.  Per
+          ;; bugs/tools_search_axisless_returns_corpus_memorials_as_null_verb_cards_2026_07_10.md.
+          verb-hits (filterv #(:mm.verb/name (:entity %)) (:hits res))
           cards (mapv (fn [{:keys [entity score]}]
                         {:verb            (:mm.verb/name entity)
                          :ident           (some-> (:db/ident entity) str)
@@ -1211,7 +1219,10 @@
                          :read-only?      (:mm.verb/read-only? entity)
                          :arg-summary     (:mm.verb/arg-summary entity)
                          :score           score})
-                      (:hits res))]
+                      verb-hits)]
+      ;; :total is the full verb-scoped match count (before :limit); :returned
+      ;; is this page's guarded card count.  Post-fix the two agree when the
+      ;; match-set fits under :limit.
       {:query query :matches cards :total (:total res) :returned (count cards)})))
 
 (defn- tools-describe-handler
