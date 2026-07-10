@@ -59,7 +59,7 @@
    so :mm.memory/* slots remain the canonical home of name/rel-path/etc."
   []
   {:dt/type :mm/Decision
-   :db/ident :decisions/foo
+   :db/ident :memory.decisions/foo
    :mm.memory/rel-path "decisions/foo.md"
    :mm.memory/name "Foo Decision"
    :mm.memory/memory-type :decision
@@ -69,9 +69,9 @@
   "An mm/Decision (subclass of mm/Memory) with two top-level sections.
    Post-2026-05-21: `type: decision` routes to :mm/Decision via codec."
   []
-  (let [memory-ident :decisions/bar
-        ctx-ident    :decisions/bar__context
-        dec-ident    :decisions/bar__decision]
+  (let [memory-ident :memory.decisions/bar
+        ctx-ident    :memory.decisions/bar__context
+        dec-ident    :memory.decisions/bar__decision]
     [{:dt/type :mm/Decision
       :db/ident memory-ident
       :mm.memory/rel-path "decisions/bar.md"
@@ -167,7 +167,7 @@
                         :db/ident :patterns.architectural.sandbar/x)
           _      (pg/project-graph [entity] {:to dir})
           back   (pg/ingest-graph dir)]
-      (is (= :patterns.architectural.sandbar/x
+      (is (= :memory.patterns.architectural.sandbar/x
              (-> back first :db/ident))))))
 
 (deftest ingest-graph-rejects-non-directory
@@ -191,9 +191,9 @@
 (deftest round-trip-multiple-memories
   ;; Two independent mm/Memory entities; project + ingest both
   (let [m1 (assoc (simple-memory) :mm.memory/rel-path "decisions/m1.md"
-                                  :db/ident :decisions/m1)
+                                  :db/ident :memory.decisions/m1)
         m2 (assoc (simple-memory) :mm.memory/rel-path "bugs/m2.md"
-                                  :db/ident :bugs/m2)
+                                  :db/ident :memory.bugs/m2)
         result (pg/round-trip-test [m1 m2])]
     (is (true? (:ok? result))
         (str "multi-memory round-trip diff: " (pr-str (:diff result))))))
@@ -253,7 +253,7 @@
       (pg/project-graph [m1 m2] {:to dir})
       (let [back (pg/ingest-graph dir {:filter {:tree-filter "decisions/"}})]
         (is (= 1 (count back)))
-        (is (= :decisions/m1 (-> back first :db/ident)))))))
+        (is (= :memory.decisions/m1 (-> back first :db/ident)))))))
 
 (deftest project-graph-filter-preserves-sections-under-matching-memory
   (with-tmp-dir [dir nil]
