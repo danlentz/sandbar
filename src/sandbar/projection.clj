@@ -155,10 +155,23 @@
              sections-present? (some #(not= class-ident (:dt/type %)) (rest entity-vec))]
          (if sections-present?
            (md/emit-document entity-vec)
-           (codec/emit (first entity-vec) (assoc opts :format native-codec))))
+           ;; Belt-and-braces strip parity: the raw codec `emit` excludes
+           ;; :db/* + :mm.memory/rel-path but NOT :mm.memory/first-section,
+           ;; so a section-less memory whose slot still carries a first-
+           ;; section ref would leak `first-section:` into frontmatter.
+           ;; `md/emit-document` strips the derived attrs; mirror it here so
+           ;; the two notions can never diverge.  Per observations/live_sink_-
+           ;; emits_derived_first_section_for_subclass_memorials_regenerating_-
+           ;; debris_130_files_2026_07_10.
+           (codec/emit (md/strip-derived-memory-attrs (first entity-vec))
+                       (assoc opts :format native-codec))))
 
        :else
-       (codec/emit entity (assoc opts :format native-codec))))))
+       ;; No walker (native-codec-bearing non-memory class): same strip
+       ;; parity as the section-less branch above — defense-in-depth so no
+       ;; emit path reachable from here can leak a derived memory attr.
+       (codec/emit (md/strip-derived-memory-attrs entity)
+                   (assoc opts :format native-codec))))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Pre-write registry guard — refuse frontmatter-key strips at the write
