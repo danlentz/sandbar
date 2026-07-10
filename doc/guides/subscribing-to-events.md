@@ -1,41 +1,44 @@
 # Subscribing to Events
 
-> **Status: in-design.**  The event substrate design is ratified (keystone ADR at `memory/decisions/sandbar_event_substrate_architecture_datomic_tx_report_queue_wrapped_behind_dt_star_manifold_transport_class_hierarchical_subscription_2026_05_23.md`); Phases 1 (`sandbar.reactive.tx-source`) and 2 (`sandbar.event/subscribe` + dispatch cache) are not yet built.  This guide describes the API shape so consumers can prepare; it will become a worked example once the substrate lands.
+> **Status: partially landed.**  The event substrate design is ratified (keystone ADR at `memory/decisions/sandbar_event_substrate_architecture_datomic_tx_report_queue_wrapped_behind_dt_star_manifold_transport_class_hierarchical_subscription_2026_05_23.md`).  Phases 1 (`sandbar.reactive.tx-source`) and 2 (`sandbar.event` — `subscribe!` / `unsubscribe!` / `fire!` + the class-hierarchical dispatch cache) are **built**, and Phase 8 (the γ-scheduler's `:mm.event/Scheduled` / `:mm.event/Job*` events) is the bus's first production consumer.  Still design-only: the Flow operators, catchup-on-disconnect, per-class buffer policy, and the sink migration off the `dt/*` callsite hook (Phases 4–5).  See [`doc/concepts/event-substrate.md`](../concepts/event-substrate.md) for the verified phase-by-phase status.
 
 How to subscribe to substrate events — class-hierarchical subscription over a Manifold-backed, Datomic-`tx-report-queue`-sourced event bus.  The substrate translates committed transactions into typed `:mm/Event` (or `:dt/Event` subtype) instances and fans them out to subscribers by event class.
 
 ## What's landed today
 
-Two pieces of the event substrate are in production at 0.2.0:
+Four pieces of the event substrate are in production:
 
-- **`sandbar.reactive`** — the callsite-hook layer at the `dt/*` boundary (per `doc/concepts/reactive-substrate.md`).  Callbacks register via `register-callback!` and receive `[entity-eid post-tx-slots]` after every projection-eligible mutation.  This is the Stage A.5 dispatch point — opt-out checks, callback registry, structured logging.
-- **`memorial-projection-handler`** (Stage D, landed) — the Telemere bridge that promotes `(sb-log/info ... :first-class)` signals to durable `:mm/Log` memorials projected to `memory/logs/<>.md`.
+- **`sandbar.event`** (Phase 2, landed) — the boundary verb: `subscribe!` / `unsubscribe!` / `fire!` / `dispatch-set` with the mandatory class-hierarchical dispatch cache and per-handler exception isolation.  Dispatch is synchronous today; per-subscriber async isolation is a follow-on phase.
+- **`sandbar.reactive.tx-source`** (Phase 1, landed) — the `d/tx-report-queue` boundary primitive: `start!` / `stop!` / `stream` / `tx-report->event`, publishing `{:event/kind :tx ...}` maps onto a Manifold stream.  Not yet started at server boot, and not yet bridged into the `sandbar.event` dispatcher.
+- **`sandbar.reactive`** — the callsite-hook layer at the `dt/*` boundary (per `doc/concepts/reactive-substrate.md`).  Callbacks register via `register-callback!` and receive `[entity-eid post-tx-slots]` after every projection-eligible mutation.  This remains the live production projection path until Phases 4–5.
+- **`memorial-projection-handler`** (Stage D, landed) — the Telemere bridge that promotes `(sb-log/info ... :first-class)` signals to durable `:mm/Log` memorials projected to `memory/logs/<>.md`.  It currently bridges via `dt/make`, not via the bus (the D.5 unification is pending).
 
-Both work today.  What's *in-design* is the unified `sandbar.event/subscribe` API that subsumes the callsite-hook into a substrate-wide event bus.
+What's *in-design* is the rest: Flow operators, catchup, buffer policy, and subsuming the callsite-hook into the bus.
 
-## The in-design surface
+## The landed subscription surface
 
 ### Subscribing by event class
 
 ```clojure
 (require '[sandbar.event :as event])
 
-;; Subscribe to every :event/HttpRequest (or subclass) — receives ServerEvent instances too
-(def sub (event/subscribe :event/HttpRequest
+;; Subscribe to every :mm.event/Scheduled fire (or subclass)
+;; The handler fn is the unsubscribe handle
+(def sub (event/subscribe! :mm.event/Scheduled
             (fn [evt]
-              (println "saw http request:" (:event.http/path evt)))))
+              (println "schedule fired:" (:mm.schedule-event/schedule evt)))))
 
-;; Or subscribe to the runtime-event root for maximum fan-in
-(event/subscribe :dt/Event
+;; Or subscribe to a hierarchy root for maximum fan-in
+(event/subscribe! :dt/Event
   (fn [evt] (audit-sink/enqueue! evt)))
 
 ;; Cancel
-(event/unsubscribe sub)
+(event/unsubscribe! :mm.event/Scheduled sub)
 ```
 
 Class-hierarchical dispatch via `dt/type-isa?` — subscribers on `:dt/Event` see events of every subclass; subscribers on `:event/HttpRequest` see only that class and its descendants.  The dispatch cache (keyed `{class-ident → subscriber-set}`) is invalidated on hierarchy mutation; the cost of one event is one set-lookup, not an ancestor-chain walk.
 
-### Subscribing with composed flow operators
+### Subscribing with composed flow operators (design — not yet built)
 
 Akka-Streams-flavored operators compose between source and subscriber:
 
@@ -60,7 +63,7 @@ The pipeline shape replaces per-sink ad-hoc logic.  Each operator is a Manifold 
 
 The three serve distinct roles; no deprecations.  Workflow transitions ALSO emit `:mm.event/WorkflowTransition` instances on the event bus so reactive subscribers see them without conflating with the durable Process-Manager log.
 
-### Catchup-on-disconnect
+### Catchup-on-disconnect (design — not yet built)
 
 ```clojure
 ;; Subscribe and catch up from the last basis-t we processed
@@ -71,7 +74,7 @@ The three serve distinct roles; no deprecations.  Workflow transitions ALSO emit
 
 The substrate uses `d/tx-range` against the Datomic peer to replay missed transactions as typed events — no event-store-management code on the consumer side.
 
-### Buffer policy per event class
+### Buffer policy per event class (design — not yet built)
 
 Two populations with opposite backpressure needs:
 
@@ -105,11 +108,11 @@ Every subscriber runs in its own isolation domain — per-sink Manifold consume,
 
 OTP-flavored discipline; loud-failure detection via cumulative-restart cap.
 
-## What this looks like before Phases 1+2 land
+## The projection path today — still the callsite hook
 
-The `sandbar.reactive` callsite-hook IS in production and IS available — it just doesn't yet expose the unified class-hierarchical subscription surface above.
+Phases 1+2 are built, but the projection sinks have not migrated onto the bus (Phases 4–5, not started).  The `sandbar.reactive` callsite-hook IS in production and remains how projection sinks attach.
 
-To register a downstream sink TODAY:
+To register a downstream projection sink TODAY:
 
 ```clojure
 (require '[sandbar.reactive :as reactive])
@@ -129,19 +132,19 @@ Every `dt/make` / `dt/make-all` / `dt/update-entity!` mutation that passes the t
 
 Per the keystone ADR §D.8 — eight phases:
 
-| Phase | Work                                                                 |
-|-------|----------------------------------------------------------------------|
-| 0     | Architecture ratified (THIS ADR, landed)                              |
-| 1     | Build `sandbar.reactive.tx-source` (wraps `d/tx-report-queue`; emits typed `:mm/Event` instances) |
-| 2     | Build `sandbar.event/subscribe` + dispatch-table cache (`dt/type-isa?` keyed) |
-| 3     | Author `:mm.event/*` schema (HttpRequest existing; add EntityCreated, EntityUpdated, WorkflowTransition, Log, ...) |
-| 4     | Migrate existing `register-callback!` consumers onto the new substrate (parallel-run) |
-| 5     | Deprecate the `dt/make` callsite-hook once new substrate proves out  |
-| 6     | Wire Telemere `memorial-projection-handler` into the unified substrate (resolves logging-arc Stage D) |
-| 7     | Workflow.History composes with `:mm.event/WorkflowTransition`         |
-| 8     | (Future) Scheduler emits `:mm.event/Scheduled` instances             |
+| Phase | Work                                                                 | Status |
+|-------|----------------------------------------------------------------------|--------|
+| 0     | Architecture ratified (THIS ADR)                                      | Landed |
+| 1     | Build `sandbar.reactive.tx-source` (wraps `d/tx-report-queue`)        | Landed (not boot-wired; catchup deferred) |
+| 2     | Build `sandbar.event` subscribe/fire + dispatch-table cache            | Landed (Flow operators pending) |
+| 3     | Author `:mm.event/*` schema (add EntityCreated, EntityUpdated, WorkflowTransition, Log, ...) | Partial (WorkflowTransition family authored; EntityCreated/EntityUpdated/Log + buffer-policy pending) |
+| 4     | Migrate existing `register-callback!` consumers onto the new substrate (parallel-run) | Not started |
+| 5     | Deprecate the `dt/make` callsite-hook once new substrate proves out   | Not started |
+| 6     | Wire Telemere `memorial-projection-handler` into the unified substrate (resolves logging-arc Stage D) | Partial (handler landed + boot-registered; bridges via `dt/make`, not the bus) |
+| 7     | Workflow.History composes with `:mm.event/WorkflowTransition`          | Partial (ι.3 orchestrator emits WorkflowSession* event entities; not bus-fired) |
+| 8     | Scheduler emits `:mm.event/Scheduled` instances                        | Landed (γ arc; first production bus consumer) |
 
-Phase 6 already passes through the existing memorial-projection-handler in a Stage-D-shaped form (which IS landed) — the unification work moves it onto the same fan-out as the rest of the bus.
+Phase 6 already passes through the existing memorial-projection-handler in a Stage-D-shaped form (which IS landed and boot-registered) — the unification work moves it onto the same fan-out as the rest of the bus.
 
 ## Subscribing today via SSE (MCP)
 

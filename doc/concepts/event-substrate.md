@@ -1,6 +1,6 @@
 # Event Substrate
 
-> Sandbar's reactive-projection pipeline (see [`reactive-substrate.md`](reactive-substrate.md)) was the first step.  The event substrate is the next: a typed in-process event bus rooted in Datomic's own `tx-report-queue`, wrapped behind the `sandbar.reactive.tx-source` boundary primitive so no Datomic shape leaks past it; transported on Manifold streams; dispatched by class hierarchy via `dt/type-isa?` with a mandatory dispatch cache; structured around three distinct event class hierarchies — `:mm/Event` for memorial-significant events, `:dt/Event` for substrate-runtime, `:workflow/History` for the Process Manager — each with its own role.  The architecture was ratified 2026-05-23 after three-agent research convergence (event sourcing + CQRS, Erlang/Akka/Pony, core.async/Manifold/Flow API); phases 1 through 8 of implementation are **proposed but not yet built**.
+> Sandbar's reactive-projection pipeline (see [`reactive-substrate.md`](reactive-substrate.md)) was the first step.  The event substrate is the next: a typed in-process event bus rooted in Datomic's own `tx-report-queue`, wrapped behind the `sandbar.reactive.tx-source` boundary primitive so no Datomic shape leaks past it; transported on Manifold streams; dispatched by class hierarchy via `dt/type-isa?` with a mandatory dispatch cache; structured around three distinct event class hierarchies — `:mm/Event` for memorial-significant events, `:dt/Event` for substrate-runtime, `:workflow/History` for the Process Manager — each with its own role.  The architecture was ratified 2026-05-23 after three-agent research convergence (event sourcing + CQRS, Erlang/Akka/Pony, core.async/Manifold/Flow API); implementation is **partially landed** — Phases 1, 2, and 8 are in the tree (`sandbar.reactive.tx-source`, `sandbar.event`, and the γ-scheduler's event integration respectively); Phases 4 and 5 (sink migration + callsite-hook deprecation) are not started; Phases 3, 6, and 7 are partial.  See the phase-by-phase status below.
 
 ## Thesis
 
@@ -30,65 +30,59 @@ Property Sourcing is forbidden.  Events carry business meaning.  `:mm.event/Work
 
 CQRS is explicitly **not** adopted.  Sandbar is single-actor and low-throughput; read/write loads do not diverge enough to justify separate models.  Event sourcing is adopted *implicitly* — Datomic is the event store, `:mm/Event` is the typed event surface — but commands remain sandbar's existing `entity.create` / `entity.update` MCP verbs.
 
-## Status — what is proposed, what exists
+## Status — phase-by-phase (verified against the tree)
 
-**Proposed (not yet implemented).**  The eight phases are sequenced for parallel-run safety:
+The eight phases are sequenced for parallel-run safety.  Status as verified against the source tree:
 
-- **Phase 0** — Architecture ratified.  Done — this concept doc and the keystone ADR are its durable form.
-- **Phase 1** — Build `sandbar.reactive.tx-source` (wraps `d/tx-report-queue`; emits typed `:mm/Event` instances).
-- **Phase 2** — Build `sandbar.event/subscribe` boundary verb + dispatch-table cache (`dt/type-isa?` keyed) + Akka-Streams-flavored Flow operators (`filter` / `map` / `batch` / `throttle`).
-- **Phase 3** — Author `:mm.event/*` schema (`:mm.event/EntityCreated`, `:mm.event/EntityUpdated`, `:mm.event/WorkflowTransition`, `:mm.event/Log`, etc.) and the `:mm.event/buffer-policy` slot.
-- **Phase 4** — Migrate existing `register-sink!` consumers onto the new substrate.  Parallel-run: old + new both fire; verify equivalence under load.
-- **Phase 5** — Deprecate the `dt/make` callsite hook once Phase 4 demonstrates equivalence.
-- **Phase 6** — Wire the Telemere `memorial-projection-handler` into the unified substrate (resolves the logging arc's Stage D).
-- **Phase 7** — Compose `:workflow/History` with `:mm.event/WorkflowTransition` (events fire alongside History entries).
-- **Phase 8** — Future scheduler integration (`:mm.event/Scheduled`, `:mm.event/JobStarted`, `:mm.event/JobCompleted`).
+- **Phase 0** — Architecture ratified.  **Done** — this concept doc and the keystone ADR are its durable form.
+- **Phase 1** — Build `sandbar.reactive.tx-source` (wraps `d/tx-report-queue`).  **Landed** — `src/sandbar/reactive/tx_source.clj` implements the boundary primitive: `start!` / `stop!` / `stream` / `tx-report->event`, a daemon polling worker over the `tx-report-queue` `BlockingQueue`, and a 1024-event Manifold stream; Datomic types are strictly confined to the namespace.  Two caveats: events currently carry `:event/kind :tx` with `[e a v added?]` datom tuples (the typed `:mm.event/*` classification is deferred to Phase 3), and `catchup-from` via `d/tx-range` (Phase 1.5) is not implemented.  The tx-source is also not started at server boot — no production caller invokes `start!` yet; the Phase-1→Phase-2 bridge (`ms/consume` of the stream into the dispatcher) is unwired.
+- **Phase 2** — Build the `sandbar.event` boundary verb + dispatch-table cache.  **Landed** — `src/sandbar/event.clj` implements `subscribe!` / `unsubscribe!` / `fire!` / `dispatch-set` with the mandatory dispatch cache (keyed `{event-class-ident → subscriber-set}`, invalidated on subscriber change and via the post-schema-reload registry) and per-handler exception isolation.  Dispatch is synchronous within the caller's thread; per-subscriber async isolation domains and the Akka-Streams-flavored Flow operators (`filter` / `map` / `batch` / `throttle`) are **not yet built**.
+- **Phase 3** — Author `:mm.event/*` schema and the `:mm.event/buffer-policy` slot.  **Partial** — `schema/mm-temporal.edn` authors the `:mm.event/WorkflowTransition` hierarchy (abstract umbrella + five `:mm.event/WorkflowSession*` subtypes, W4.1 Increment A) and the LODE-quadrant `:mm.event/*` slots on the abstract `:mm/Event` root; the scheduler event family (`:mm.event/Scheduled`, `:mm.event/Job{Started,Completed,Failed,Rejected,Cancelled}`, `:mm.event/ScheduleConcurrencyViolation`) and `:mm.event/EntityRetracted` are live as event-class keywords on the bus.  `:mm.event/EntityCreated`, `:mm.event/EntityUpdated`, `:mm.event/Log`, and the `:mm.event/buffer-policy` slot are **not yet authored**.
+- **Phase 4** — Migrate existing sink consumers onto the new substrate (parallel-run).  **Not started** — the reactive-projection pipeline (`fs-projection-sink`, `sse-emit-sink`) still runs on the `dt/*` callsite hook + `sandbar.reactive` callback registry, wired at boot in `sandbar.core`.
+- **Phase 5** — Deprecate the `dt/make` callsite hook once Phase 4 demonstrates equivalence.  **Not started** — the callsite hook remains the live production path.
+- **Phase 6** — Wire the Telemere `memorial-projection-handler` into the unified substrate.  **Partial** — the handler exists (`sandbar.logging.handlers`) and is registered at boot (`sandbar.logging.init/start!` adds it as the `:sandbar/memorial-projection` Telemere handler), resolving the logging arc's Stage D; but it bridges via direct `dt/make` (creating `:mm/EventLog` / `:event/SystemEvent` entities) rather than publishing typed events onto the unified bus — the D.5 one-fan-out unification is pending.
+- **Phase 7** — Compose `:workflow/History` with `:mm.event/WorkflowTransition`.  **Partial** — the ι.3 orchestrator (`sandbar.workflow.orchestrate`) emits `:mm.event/WorkflowSession{Opened,HandoffAuthored,Closed,Degraded,Failed}` at phase boundaries and the hierarchy is schema-authored, but emission goes through `sandbar.util.event/log-event!` (typed event *entities* via `dt/make`), not through `sandbar.event/fire!` on the bus.
+- **Phase 8** — Scheduler integration (`:mm.event/Scheduled`, `:mm.event/JobStarted`, `:mm.event/JobCompleted`).  **Landed** (ahead of Phases 4–7) — the γ-scheduler's fire-thread emits `:mm.event/Scheduled` via `sandbar.event/fire!`; `sandbar.schedule.job-dispatcher` subscribes via `subscribe!` and emits the full `:mm.event/Job*` lifecycle family on the bus.  This is the event bus's first production consumer.
 
-**Existing today (at `0.2.0`).**  The reactive-projection substrate documented in [`reactive-substrate.md`](reactive-substrate.md) — `dt/*` callsite hook, three-layer opt-out, bounded sliding-buffer queue with per-entity coalescing, `fs-projection-sink` and `sse-emit-sink`.  This is what the event substrate *replaces* under the parallel-run migration; it is not in any sense *missing*.
+**Also existing today (at `0.2.0`).**  The reactive-projection substrate documented in [`reactive-substrate.md`](reactive-substrate.md) — `dt/*` callsite hook, three-layer opt-out, bounded sliding-buffer queue with per-entity coalescing, `fs-projection-sink` and `sse-emit-sink`.  This is what the event substrate *replaces* under the parallel-run migration (Phases 4–5, not started); it is not in any sense *missing*.
 
-The remainder of this document describes the design — citing the keystone ADR — so future readers can hold the destination in mind while reading the existing substrate.  Nothing here is claimed to be running.
+The remainder of this document describes the ratified design — citing the keystone ADR — including the pieces above that have not yet landed.  Where a section describes machinery beyond Phases 1/2/8's landed surface (Flow operators, catch-up, buffer policy, the unified Telemere fan-out), treat it as design, not as running behavior.
 
 ## The boundary primitive — `sandbar.reactive.tx-source`
 
-The intended new namespace, `src/sandbar/reactive/tx_source.clj`, owns the Datomic interaction.  It is sandbar.db.* family — it may use `datomic.api/*` directly; no consumer outside `sandbar.reactive.*` should require it.  Its responsibilities:
+The namespace `src/sandbar/reactive/tx_source.clj` (landed — Phase 1) owns the Datomic interaction.  It is sandbar.db.* family — it may use `datomic.api/*` directly; no consumer outside `sandbar.reactive.*` should require it.  Its responsibilities:
 
 - Subscribe to `d/tx-report-queue` on the connection.
 - Translate each `{db-before db-after tx-data tempids t}` map into one or more typed sandbar event values — never raw datom-shaped maps; never `TxReport` shapes.
 - Publish to the Manifold event-bus stream that backs `sandbar.event`.
-- Support `(catchup-from conn basis-t)` — replay missed events via `d/tx-range` from a subscriber's last-seen checkpoint.
+- Support `(catchup-from conn basis-t)` — replay missed events via `d/tx-range` from a subscriber's last-seen checkpoint.  (Design — deferred to Phase 1.5; not yet implemented.)
 
 The translation is where the boundary discipline is enforced.  A `{:a 42 :e 12345 :v "foo" :tx 100 :added true}` datom does not appear in any consumer signature; instead, `tx-source` recognizes the entity's `:dt/type`, constructs a typed `:mm/Event` (or subclass) instance carrying business-meaning slots, and publishes that.  A future retarget to a non-Datomic backend rewrites this translation; nothing else changes.
 
 ## The boundary verb — `sandbar.event/subscribe`
 
-The intended new namespace, `src/sandbar/event.clj`, is THE BOUNDARY.  Consumers see sandbar-typed handles and sandbar-typed events; Manifold and Datomic do not surface.
+The namespace `src/sandbar/event.clj` (landed — Phase 2) is THE BOUNDARY.  Consumers see sandbar-typed handles and sandbar-typed events; Manifold and Datomic do not surface.  The landed surface is `subscribe!` / `unsubscribe!` / `fire!` / `dispatch-set` / `subscribers-of`:
 
 ```clojure
 (ns my.module
   (:require [sandbar.event :as event]))
 
-;; Subscribe to a single event class
+;; Subscribe to a single event class (the fn is the unsubscribe handle)
 (def sub1
-  (event/subscribe :event/HttpRequest
-                   (fn [evt]
-                     (println "got request" (:event.http/path evt)))
-                   {}))
+  (event/subscribe! :event/HttpRequest
+                    (fn [evt]
+                      (println "got request" (:event.http/path evt)))))
 
-;; Subscribe to an entire branch — every :mm.event/* descendant
+;; Subscribe to an entire branch — every :mm/Event descendant
 (def sub2
-  (event/subscribe :mm/Event
-                   (fn [evt]
-                     (audit-log-callback evt))
-                   {:buffer-policy :block}))
+  (event/subscribe! :mm/Event
+                    (fn [evt]
+                      (audit-log-callback evt))))
 
-;; Compose with Flow operators
-(def sub3
-  (->> (event/subscribe :mm.event/WorkflowTransition handler {})
-       (event/filter #(= :session/close (:mm.event.workflow/to-state %)))
-       (event/throttle 10)))
-
-(event/unsubscribe sub1)
+(event/unsubscribe! :event/HttpRequest sub1)
 ```
+
+Per-subscriber opts (`:buffer-policy` et al.) and the Flow-operator composition surface (`event/filter` / `event/map` / `event/batch` / `event/throttle`) are design — not yet built; today's dispatch is synchronous with per-handler exception isolation.
 
 Behind the surface: the dispatch cache resolves `{class-ident → subscriber-set}` once per event, hashing the event's `:dt/type` and union-ing the resolved set.  Hierarchy mutations (a new subclass derived at runtime) flush the cache via `clear-type-relation-cache!`; subscribers registered before the new subclass appears receive its events automatically after the cache rebuilds.
 
