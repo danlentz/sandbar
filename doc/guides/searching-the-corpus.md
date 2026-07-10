@@ -8,7 +8,7 @@
 |-----------------------------------------------------------|----------------------------------------|
 | "Single-field search; return matches"                     | `sandbar.search/search-attribute`      |
 | "Multi-field weighted search across a class's slots"      | `sandbar.search/search-bm25f`          |
-| "Facet counts over a search result set"                   | `:include [:facets]` on `search-bm25f` |
+| "Facet counts over a search result set"                   | `:facet-by` on `search-bm25f` |
 | "Snippets / highlights"                                   | `:include [:snippets]` on `search-bm25f` |
 | "Combine fulltext + structured filter"                    | `:where` opt on `search-bm25f`         |
 
@@ -155,14 +155,13 @@ Highlighting is `**term**` markdown syntax.  Snippet window ~240 chars centered 
 
 ## Pattern 5 — Facets
 
-`:include [:facets]` + `:facet-by` emits per-slot value counts over the BM25F match set:
+`:facet-by` emits per-slot value counts over the full BM25F match set (before `:limit`):
 
 ```clojure
 (search/search-bm25f
   {:class    :mm/Memory
    :query    "datomic"
    :limit    20
-   :include  [:facets]
    :facet-by [:mm.memory/memory-type :mm.memory/scope]})
 ;; => {:hits   [...]
 ;;     :facets {:mm.memory/memory-type {:decision 12 :plan 7 :observation 4 :pattern 2}
@@ -173,14 +172,14 @@ Highlighting is `**term**` markdown syntax.  Snippet window ~240 chars centered 
 
 ## Pattern 6 — Per-field score breakdown
 
-`:include [:scores]` exposes the per-field score contributions for debugging or relevance tuning:
+`:include [:field-scores]` exposes the per-field score contributions for debugging or relevance tuning:
 
 ```clojure
 (search/search-bm25f
   {:class :mm/Memory
    :query "datomic"
    :limit 5
-   :include [:scores]})
+   :include [:field-scores]})
 ;; => {:hits [{:entity <entity-map>
 ;;             :score 12.34
 ;;             :field-scores {:mm.memory/name        8.2
@@ -194,10 +193,9 @@ Highlighting is `**term**` markdown syntax.  Snippet window ~240 chars centered 
 
 ## Through MCP
 
-The `sandbar.search.bm25f` MCP verb accepts the same opts (forthcoming at Stage 27 — currently search MCP verbs are not yet exposed; use in-process Clojure form):
+The `sandbar.search.bm25f` MCP verb is live — it is the corpus's primary retrieval verb.  It accepts the same opts as the in-process form: `query` + `class` (required; `class` also accepts a JSON array of 2–8 class idents for multi-class strategic-subgroup retrieval), plus optional `limit`, `where` (EDN-string Datalog clauses over `?e`), `facet-by`, `include` (`"snippets"` / `"field-scores"`), `field-weights`, the Stage-29 composition opts `from` + `via` / `rank-by` / `temporal-slot`, and `projection` (defaults to `metadata-only` at the MCP boundary — opt into `"full"` when you need slot bodies):
 
 ```bash
-# Pending: Stage 27 of the comprehensive arc wires search MCP verbs
 curl -X POST http://localhost:8080/mcp \
   -H "Authorization: Bearer $SANDBAR_TOKEN" \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{
@@ -206,12 +204,13 @@ curl -X POST http://localhost:8080/mcp \
           "class":":mm/Memory",
           "query":"datomic recursive rules",
           "limit":20,
-          "include":["snippets","facets"]}}}'
+          "facet-by":[":mm.memory/memory-type"],
+          "include":["snippets"]}}}'
 ```
 
 ## Cross-axis composition
 
-Search composes with aggregation directly via `:facet-by`.  Future Stage 29 will compose with navigation via `:from` + `:via` (path-grammar restriction) — a graph-walk neighborhood becomes the candidate set for BM25F ranking.
+Search composes with aggregation directly via `:facet-by`.  Stage 29 composition with navigation is live: `:from` + `:via` (path-grammar restriction) makes a graph-walk neighborhood the candidate set for BM25F ranking, and `:rank-by` (`:degree` / `:backlink-density` / `:recency` / `:freshness`, the latter two requiring `:temporal-slot`) re-ranks the top-K by a structural axis while preserving the BM25F score as `:relevance-score`.
 
 ## Performance notes
 
@@ -224,6 +223,6 @@ Search composes with aggregation directly via `:facet-by`.  Future Stage 29 will
 
 - [`doc/concepts/fulltext-search.md`](../concepts/fulltext-search.md) — lineage, theory, references
 - [`doc/concepts/aggregation.md`](../concepts/aggregation.md) — the `:facet-by` composition pattern
-- [`doc/guides/navigating-with-paths.md`](navigating-with-paths.md) — composing search + path-grammar (Stage 29)
+- [`doc/guides/navigating-with-paths.md`](navigating-with-paths.md) — composing search + path-grammar (Stage 29, live on the search axis)
 - [`doc/api/dt-star.md`](../api/dt-star.md) — `dt/search-fulltext` / `dt/bm25f-weights-of` / `dt/fulltext-indexed?` substrate primitives
 - The corpus's `decisions/bm25f_canonical_robertson_zaragoza_form.md` — ADR locking the canonical form
