@@ -119,6 +119,120 @@
              (refusal-marker #(closure/assert-serves! (db/db) pub-ctx)))))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; content-class? — the taxonomy the DEP-2 row sweep ranges over.  Content
+;;   (must-carry-owning-project) vs SUBSTRATE / container (exempt).
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(deftest content-class-taxonomy
+  (testing "CONTENT classes (must carry owning-project): :mm/Memory + its
+            Artifact / Signal / Guidance content branches"
+    (is (true? (closure/content-class? (db/db) :mm/Memory)))
+    (is (true? (closure/content-class? (db/db) :mm/Artifact)))
+    (is (true? (closure/content-class? (db/db) :mm/Signal)))
+    (is (true? (closure/content-class? (db/db) :mm/Guidance))))
+  (testing "SUBSTRATE / container classes are EXEMPT from the content sweep:
+            :mm/Meta descendants (incl. :mm/Context, :mm/Shape), :mm/Project
+            (container/closure-member), :mm/Tag (:dt/Resource, NOT :mm/Memory),
+            schema meta-classes, and nil"
+    (is (false? (closure/content-class? (db/db) :mm/Meta)))
+    (is (false? (closure/content-class? (db/db) :mm/Context)))
+    (is (false? (closure/content-class? (db/db) :mm/Shape)))
+    (is (false? (closure/content-class? (db/db) :mm/Project)))
+    (is (false? (closure/content-class? (db/db) :mm/Tag)))
+    (is (false? (closure/content-class? (db/db) :dt/Class)))
+    (is (false? (closure/content-class? (db/db) nil)))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; DEP-2 dimension (b) — a MEMORY-CONTENT row with NO owning-project datom is
+;;   :project/UNASSIGNED (fail-closed) ⇒ in NO closure ⇒ REFUSE.  Closes the
+;;   "leaked row with no owner slips past the owning-project sweep" hole.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(deftest dep2-unassigned-content-row-refuses-to-serve
+  (sup/seed-context! :ctx/pub :public-bottom)
+  (sup/seed-project! :proj/pub :public :ctx/pub :public-bottom)
+  (enroll-visible! :ctx/pub :proj/pub)
+  (sup/seed-memory! :mem/pub :public :proj/pub)
+  (let [pub-ctx (sup/eid-of :ctx/pub)]
+    (testing "NEGATIVE CONTROL — a clean public build has NO unassigned content
+              rows and SERVES (the shipped :mm/Shape seeds are :mm/Meta, exempt)"
+      (is (empty? (closure/unassigned-content-rows (db/db))))
+      (is (some? (closure/assert-serves! (db/db) pub-ctx))))
+    ;; FAULT INJECTION — a :mm/Memory CONTENT row with NO owning-project datom.
+    ;; Even flagged :public, an UNOWNED content row is :project/UNASSIGNED
+    ;; (fail-closed private) — routable to no compartment, in no closure.
+    (sup/raw-transact! [{:db/ident             :mem/orphan
+                         :dt/type              :mm/Memory
+                         :mm.memory/name       "orphan"
+                         :mm.memory/visibility :public}])   ; ← NO :mm.memory/owning-project
+    (testing "the orphan content row resolves to the :project/UNASSIGNED sentinel"
+      (let [rows (closure/unassigned-content-rows (db/db))]
+        (is (= 1 (count rows)))
+        (is (= (sup/eid-of :mem/orphan)        (ffirst rows)))
+        (is (= (sup/eid-of :project/UNASSIGNED) (second (first rows))))))
+    (testing "guard-session-db-closure! REFUSES (:db-firewall-closure-violation) —
+              an unowned content row is in NO closure.  FAILS against the
+              (a)-only sweep that ignored no-owner rows"
+      (is (= :db-firewall-closure-violation
+             (refusal-marker
+               #(closure/guard-session-db-closure!
+                  (db/db) (closure/closure-of (db/db) pub-ctx))))))
+    (testing "assert-serves! likewise REFUSES"
+      (is (= :db-firewall-closure-violation
+             (refusal-marker #(closure/assert-serves! (db/db) pub-ctx)))))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; DEP-2 dimension (c) — a bare PRIVATE :mm/Context injected into a public build
+;;   carries no owning-project (invisible to the row sweep) ⇒ caught by the
+;;   served-context check ⇒ REFUSE.  The bare-private-Context bypass.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(deftest dep2-served-context-refuses-foreign-private-context
+  (sup/seed-context! :ctx/pub :public-bottom)
+  (sup/seed-project! :proj/pub :public :ctx/pub :public-bottom)
+  (enroll-visible! :ctx/pub :proj/pub)
+  (sup/seed-memory! :mem/pub :public :proj/pub)
+  (let [pub-ctx (sup/eid-of :ctx/pub)]
+    (testing "sanity — a fresh public build's served STAMPED contexts are just
+              the public bottom; the shipped :context/UNASSIGNED sentinel (no
+              firewall-class stamp) is exempt"
+      (is (= #{pub-ctx} (set (map first (closure/served-contexts (db/db)))))))
+    (testing "NEGATIVE CONTROL — the clean public build's context check PASSES"
+      (is (nil? (closure/guard-served-contexts!
+                  (db/db) pub-ctx (closure/closure-of (db/db) pub-ctx))))
+      (is (some? (closure/assert-serves! (db/db) pub-ctx))))
+    ;; FAULT INJECTION — a bare PRIVATE :mm/Context (:project-isolated), enrolled
+    ;; in NOTHING, owned by NO project.  It carries no owning-project, so the
+    ;; (a)/(b) row sweep cannot see it — only the (c) context check catches it.
+    (sup/seed-context! :ctx/leak :project-isolated)
+    (testing "the leaked private context is now a served STAMPED context"
+      (is (contains? (set (map first (closure/served-contexts (db/db))))
+                     (sup/eid-of :ctx/leak))))
+    (testing "out-of-closure-contexts names it — private, not the scope's own,
+              not the public bottom, not a runs-in-context of any in-closure
+              public project"
+      (let [oob (closure/out-of-closure-contexts
+                  (db/db) pub-ctx (closure/closure-of (db/db) pub-ctx))]
+        (is (= 1 (count oob)))
+        (is (= (sup/eid-of :ctx/leak) (:context (first oob))))
+        (is (= :private (:context-sensitivity (first oob))))))
+    (testing "the ROW sweep stays CLEAN — a bare context carries no owning-project,
+              so ONLY the (c) context check is load-bearing here"
+      (is (empty? (closure/out-of-closure-rows
+                    (db/db) (closure/closure-of (db/db) pub-ctx)))))
+    (testing "guard-served-contexts! REFUSES (:db-firewall-closure-violation,
+              :out-of-closure-context).  FAILS against a check that only sweeps
+              owning-project rows"
+      (is (= :db-firewall-closure-violation
+             (refusal-marker
+               #(closure/guard-served-contexts!
+                  (db/db) pub-ctx (closure/closure-of (db/db) pub-ctx))))))
+    (testing "assert-serves! likewise REFUSES (the composite runs the context
+              check even though the row sweep is clean)"
+      (is (= :db-firewall-closure-violation
+             (refusal-marker #(closure/assert-serves! (db/db) pub-ctx)))))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; DEP-7 — a :private-resolving project poisoned into the PUBLIC context's
 ;;   visible-projects ⇒ REFUSE at closure CONSTRUCTION (before ingest).
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;

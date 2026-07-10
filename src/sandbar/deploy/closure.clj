@@ -209,61 +209,234 @@
 
 ;;; ===========================================================================
 ;;; POST-BUILD closure check — DEP-2 refuse-to-serve
+;;;
+;;; The served DB is checked along THREE dimensions, all failing to the SAME
+;;; refuse-to-serve marker (`:db-firewall-closure-violation`, `:violation-kind`
+;;; distinguishing them):
+;;;
+;;;   (a) OWNED CONTENT rows — every row carrying `:mm.memory/owning-project`:
+;;;       its owning project MUST be in the closure (the brief §3 ∀-row form).
+;;;   (b) UNASSIGNED CONTENT rows — a `:mm/Memory`-CONTENT row (`content-class?`)
+;;;       LACKING `:mm.memory/owning-project` is treated as `:project/UNASSIGNED`
+;;;       (the substrate's absent⇒UNASSIGNED convention, label.clj) — a private
+;;;       sentinel in NO closure ⇒ refuse.  Closes the "leaked row with no owner
+;;;       datom slips past the owning-project sweep" hole.
+;;;   (c) SERVED `:mm/Context` rows — every STAMPED context present must be the
+;;;       scope's own context, the public bottom, or a runs-in-context of an
+;;;       in-closure project AND label-compatible with the scope.  A context
+;;;       carries no owning-project, so it never appears in (a)/(b) — the bare
+;;;       private-Context bypass the row sweep alone misses.
+;;;
+;;; OUT-OF-BACKSTOP (documented exemption, so stated coverage == actual):
+;;;   • rows NOT `:mm/Memory`-descended — schema `:dt/Class` / `:dt/Property`,
+;;;     `:mm/Tag` (`:dt/subclass-of :dt/Resource`, NOT `:mm/Memory`), literals —
+;;;     carry no firewall label at all;
+;;;   • `:mm/Meta` SUBSTRATE rows (Session / Rule / Shape / Fn / Type /
+;;;     BootstrapSource / workflow) — first-class metamodel entities that
+;;;     legitimately carry no owning-project (the 7 shipped directional-firewall
+;;;     `:mm/Shape` seeds are the canonical fixture example);
+;;;   • `:mm/Context` rows with NO `:mm.context/firewall-class` stamp — the
+;;;     shipped `:context/UNASSIGNED` sentinel + any un-migrated context:
+;;;     unstamped ⇒ not a real compartment (its would-be private CONTENT is
+;;;     caught by (a)/(b) via the owning-project sweep, not by (c)).
+;;;   Reconciling the live meta-substrate's ownership stamping is part of the
+;;;   deferred W1.G scope-bounded reconstruct (ns WIRING note); this round
+;;;   exercises all three checks against datomic:mem fixtures only.
 ;;; ===========================================================================
+
+(defn content-class?
+  "Is class-ident `cls` a MEMORY-CONTENT class — `:mm/Memory`-descended, but
+  NEITHER `:mm/Meta` substrate NOR `:mm/Project`?  These are the authored
+  memorials (`:mm/Artifact`-non-Project / `:mm/Guidance` / `:mm/Signal`
+  descendants, and the root `:mm/Memory` itself) that MUST carry an
+  `:mm.memory/owning-project`; a content row lacking one is `:project/UNASSIGNED`
+  (fail-closed :private) and out of every closure.
+
+  The exclusions are load-bearing (walked via the shared `label/class-isa?`, so
+  no second subclass test):
+    • `:mm/Meta` (Session/Rule/Shape/Fn/Type/Context/BootstrapSource/workflow)
+      is the metamodel SUBSTRATE — first-class entities that legitimately carry
+      no owning-project; sweeping them would refuse every real build (the shipped
+      `:mm/Shape` seeds alone).  `:mm/Context` is `:mm/Meta`-descended, so this
+      clause also keeps contexts out of the content sweep — they are checked
+      separately (dimension (c), `out-of-closure-contexts`);
+    • `:mm/Project` is `:mm/Artifact`-descended (NOT `:mm/Meta`), so it needs an
+      EXPLICIT exclusion — a project is a container / closure MEMBER, not owned
+      content."
+  [db cls]
+  (and (some? cls)
+       (label/class-isa? db :mm/Memory  cls)
+       (not (label/class-isa? db :mm/Meta    cls))
+       (not (label/class-isa? db :mm/Project cls))))
 
 (defn owning-project-rows
   "Every `[row-eid owning-project-eid]` pair in `db` — one per asserted
-  `:mm.memory/owning-project` datom.  The row-set the closure check ranges over:
-  a row is IN-closure iff its owning project is in the closure.  (Rows with NO
-  owning-project — schema/type/tag substrate, bare contexts — are not
-  project-owned CONTENT and are out of this check's scope; hardening that seam
-  is a `what remains` item.)"
+  `:mm.memory/owning-project` datom (dimension (a)).  A row is IN-closure iff its
+  owning project is in the closure."
   [db]
   (d/q '[:find ?e ?p
          :where [?e :mm.memory/owning-project ?p]]
        db))
 
+(defn unassigned-content-rows
+  "Every `[row-eid <:project/UNASSIGNED eid>]` pair for a MEMORY-CONTENT row
+  (`content-class?`) in `db` that LACKS `:mm.memory/owning-project` (dimension
+  (b)).  Absent owning-project ⇒ the `:project/UNASSIGNED` sentinel (the
+  substrate convention, label.clj `owning-project-entity`) — a private anchor in
+  NO closure, so these rows are refused by the SAME `owning-project ∈ closure`
+  predicate once folded in.  Returns `()` when the sentinel is un-seeded (the
+  pre-schema-load floor) or no such rows exist.
+
+  This closes the gap the pure owning-project sweep misses: a leaked private
+  content row transacted WITHOUT an owner datom never appears in
+  `owning-project-rows`, so the (a)-only check would serve it unrefused."
+  [db]
+  (when-let [unassigned (ref/ref->eid db :project/UNASSIGNED)]
+    (for [[e tid] (d/q '[:find ?e ?tid
+                         :where [?e :dt/type ?t]
+                                [?t :db/ident ?tid]
+                                (not [?e :mm.memory/owning-project _])]
+                       db)
+          :when (content-class? db tid)]
+      [e unassigned])))
+
+(defn closure-checked-rows
+  "The full row-set the DEP-2 owning-project check ranges over: the union of
+  OWNED content rows (a, `owning-project-rows`) and UNASSIGNED content rows
+  (b, `unassigned-content-rows`, keyed to the `:project/UNASSIGNED` sentinel) —
+  one uniform `[row-eid owning-project-eid]` shape, so a single `owning-project
+  ∈ closure` predicate covers both dimensions."
+  [db]
+  (concat (owning-project-rows db)
+          (unassigned-content-rows db)))
+
 (defn out-of-closure-rows
   "The seq of `{:row … :owning-project …}` in `db` whose owning project is NOT
   in `closure` — the rows that make a build unservable for the scope `closure`
-  bounds.  PURE over the passed row-set (defaults to `owning-project-rows`), so
-  a fault-injection test can pass a synthesized row-set.  Empty ⇒ the build is
-  within closure."
-  ([db closure] (out-of-closure-rows db closure (owning-project-rows db)))
+  bounds.  Ranges over `closure-checked-rows` (owned (a) + UNASSIGNED-content
+  (b)) by default; the 3-arity is PURE over a passed row-set so a fault-injection
+  test can supply a synthesized one.  Empty ⇒ every checked row is within
+  closure."
+  ([db closure] (out-of-closure-rows db closure (closure-checked-rows db)))
   ([_db closure rows]
    (for [[e p] rows
          :when (not (contains? closure p))]
      {:row e :owning-project p})))
 
 (defn guard-session-db-closure!
-  "The POST-BUILD DEP-2 refuse-to-serve check.  If `db` contains ANY row whose
-  owning project is outside `closure`, THROW `:sandbar/error
-  :db-firewall-closure-violation` (naming the offending rows) — REFUSE TO SERVE
-  the session, NOT filter the row.  Returns nil (serve) when every row is
-  in-closure.  This is the backstop the scope-bounded reconstruct (W1.G) sits
-  in front of: absence is the primary mechanism; this refuses to serve if
-  absence ever failed.  Mirrors `guard-registry-critical-write!`."
+  "The POST-BUILD DEP-2 refuse-to-serve check over OWNED + UNASSIGNED content
+  rows (dimensions (a)+(b)).  If `db` contains ANY content row whose owning
+  project (the `:project/UNASSIGNED` sentinel when the owner datom is absent) is
+  outside `closure`, THROW `:sandbar/error :db-firewall-closure-violation`
+  (`:violation-kind :out-of-closure-row`, naming the offending rows) — REFUSE TO
+  SERVE, NOT filter.  Returns nil (serve) when every checked row is in-closure.
+
+  The `:mm/Context` dimension (c) is a SEPARATE post-build check
+  (`guard-served-contexts!`) — a context carries no owning-project — and both
+  guards run in `assert-serves!`.  This is the backstop the scope-bounded
+  reconstruct (W1.G) sits in front of: absence is the primary mechanism; this
+  refuses to serve if absence ever failed.  Mirrors
+  `guard-registry-critical-write!`."
   [db closure]
   (when-let [violations (seq (out-of-closure-rows db closure))]
-    (throw (ex-info (str "session DB contains " (count violations) " row(s) "
-                         "owned outside the scope closure; refusing to serve")
-                    {:sandbar/error       :db-firewall-closure-violation
+    (throw (ex-info (str "session DB contains " (count violations) " content "
+                         "row(s) owned outside the scope closure; refusing to serve")
+                    {:sandbar/error         :db-firewall-closure-violation
+                     :violation-kind        :out-of-closure-row
                      :closure-project-count (count closure)
-                     :out-of-closure-rows (vec (take 50 violations))
-                     :out-of-closure-total (count violations)})))
+                     :out-of-closure-rows   (vec (take 50 violations))
+                     :out-of-closure-total  (count violations)})))
+  nil)
+
+;;; ===========================================================================
+;;; POST-BUILD closure check — dimension (c): served :mm/Context rows
+;;; ===========================================================================
+
+(defn served-contexts
+  "Every `[context-eid firewall-class]` pair for a STAMPED context in `db` — an
+  entity carrying a `:mm.context/firewall-class` (that slot's domain is
+  `:mm/Context`, so its presence IS the context marker; its ABSENCE is the
+  documented substrate exemption — the shipped `:context/UNASSIGNED` sentinel and
+  any un-migrated context carry no stamp and are out of the (c) backstop)."
+  [db]
+  (d/q '[:find ?c ?fc
+         :where [?c :mm.context/firewall-class ?fc]]
+       db))
+
+(defn- context-of-closure-project?
+  "Does ANY project in `closure` declare `ctx-eid` among its
+  `:mm.project/runs-in-context` (read via the shared `label/project-context-eids`
+  resolver)?  This is what admits a member project's OWN + sibling contexts
+  (R2 multi-context: home AND work) into the served set WITHOUT widening — a
+  foreign private context belongs to no in-closure project, so it fails here."
+  [db closure ctx-eid]
+  (boolean (some (fn [p]
+                   (contains? (label/project-context-eids db (d/entity db p)) ctx-eid))
+                 closure)))
+
+(defn out-of-closure-contexts
+  "The seq of inadmissible STAMPED `:mm/Context` rows in `db` for the scope whose
+  context is `scope-ctx-eid`, bounded by `closure` (dimension (c)).  A served
+  stamped context `c` is ADMISSIBLE iff:
+    • `c` is the scope's own context, OR
+    • `c` is the public bottom, OR
+    • `c` is a runs-in-context of some in-closure project AND label-compatible
+      with the scope sensitivity (`sensitivity-of-firewall-class(c)` vs
+      `scope-sens`, via the shared core).
+  Otherwise `c` is out-of-closure.  For a PUBLIC scope this reduces to \"every
+  stamped context must resolve :public\" — a `:private` context is neither the
+  scope's own (own IS the public bottom) nor label-compatible — the load-bearing
+  CA-6 direction.  Each violation carries the offending context + its resolved
+  sensitivity."
+  [db scope-ctx-eid closure]
+  (let [scope-ctx  (d/entity db scope-ctx-eid)
+        scope-sens (scope-context-sensitivity scope-ctx)
+        pub-eid    (public-bottom-context db)]
+    (for [[c fc] (served-contexts db)
+          :when  (not (or (= c scope-ctx-eid)
+                          (and pub-eid (= c pub-eid))
+                          (and (label-compatible? (label/sensitivity-of-firewall-class fc)
+                                                  scope-sens)
+                               (context-of-closure-project? db closure c))))]
+      {:context             c
+       :firewall-class      fc
+       :context-sensitivity (label/sensitivity-of-firewall-class fc)})))
+
+(defn guard-served-contexts!
+  "The POST-BUILD DEP-2 refuse-to-serve check over served `:mm/Context` rows
+  (dimension (c)).  If `db` contains ANY stamped context outside the scope's
+  admissible set (`out-of-closure-contexts`), THROW `:sandbar/error
+  :db-firewall-closure-violation` (`:violation-kind :out-of-closure-context`) —
+  REFUSE TO SERVE, NOT filter.  Returns nil when every stamped context is
+  admissible.  Closes the bare-private-Context bypass: a context carries no
+  owning-project, so a private context injected into a public build is invisible
+  to the owning-project sweep (a)/(b) yet caught here."
+  [db scope-ctx-eid closure]
+  (when-let [violations (seq (out-of-closure-contexts db scope-ctx-eid closure))]
+    (throw (ex-info (str "session DB contains " (count violations) " :mm/Context "
+                         "row(s) outside the scope closure; refusing to serve")
+                    {:sandbar/error                :db-firewall-closure-violation
+                     :violation-kind               :out-of-closure-context
+                     :scope-context                scope-ctx-eid
+                     :out-of-closure-contexts      (vec (take 50 violations))
+                     :out-of-closure-context-total (count violations)})))
   nil)
 
 (defn assert-serves!
   "The WIRING-POINT composite: construct the closure for the scope whose context
-  is `scope-ctx-eid` (DEP-7/DEP-8 refuse at construction) then run the
-  POST-BUILD DEP-2 closure check over `db`.  Returns `db` unchanged on success
-  (so a caller can thread `(-> (build-session-db …) (assert-serves! ctx))`);
-  throws the first marker-tagged violation otherwise.
+  is `scope-ctx-eid` (DEP-7/DEP-8 refuse at construction) then run BOTH
+  post-build refuse-to-serve checks over `db` — the owned+UNASSIGNED content-row
+  check (`guard-session-db-closure!`, dimensions (a)+(b)) and the served-Context
+  check (`guard-served-contexts!`, dimension (c)).  Returns `db` unchanged on
+  success (so a caller can thread `(-> (build-session-db …) (assert-serves!
+  ctx))`); throws the first marker-tagged violation otherwise.
 
   This is the function a session-build / DatomicPeer start WOULD call to enforce
   refuse-to-serve.  It is NOT wired into the live boot path this round — see the
   ns docstring's WIRING note: live insertion composes with W1.G's scope-bounded
   reconstruct + a fully-stamped closure and is an explicit `what remains` item."
   [db scope-ctx-eid]
-  (guard-session-db-closure! db (closure-of db scope-ctx-eid))
-  db)
+  (let [closure (closure-of db scope-ctx-eid)]
+    (guard-session-db-closure! db closure)
+    (guard-served-contexts!    db scope-ctx-eid closure)
+    db))
