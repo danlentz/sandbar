@@ -10,9 +10,12 @@
    the fixture MUST bind `sandbar.db.datomic/**conn*` before any codec
    call.
 
-   Real corpus files are READ-ONLY; all round-trips run on SCRATCH COPIES
-   under scratchpad/emitter-fidelity-2026-07-02/scratch/ + the drift-set
-   files copied into a per-test tmp dir."
+   Real corpus files are READ-ONLY; all round-trips run on COMMITTED
+   FIXTURE COPIES under test/resources/codec-fixtures/emitter-fidelity/
+   (originally authored at scratchpad/emitter-fidelity-2026-07-02/scratch/)
+   + the drift-set files copied into a per-test tmp dir.  The R6 drift
+   sweep reads the live corpus root from SANDBAR_CORPUS_ROOT and SKIPS
+   loudly when it is unset (mandatory on the release machine)."
   (:require [clojure.test            :refer :all]
             [clojure.edn             :as edn]
             [clojure.string          :as str]
@@ -41,7 +44,12 @@
 ;; Paths + helpers
 
 (def scratch-dir
-  "scratchpad/emitter-fidelity-2026-07-02/scratch")
+  "Committed fixture copies (formerly untracked
+   scratchpad/emitter-fidelity-2026-07-02/scratch/), so fresh
+   clones/worktrees run green.  CWD-relative — `lein test` runs from the
+   project root (same convention as test/resources/w1-fixtures via
+   sandbar.gate.fixture)."
+  "test/resources/codec-fixtures/emitter-fidelity")
 
 (def ground-scratch (str scratch-dir "/ground_new_concepts.md"))
 (def preaction-scratch (str scratch-dir "/pre_action_memory_protocol.md"))
@@ -412,122 +420,151 @@
 ;; (idempotent) + R4 classification.  Zero SEMANTIC-class regressions.
 
 (def drift-set-file
-  "scratchpad/reconcile-2026-07-02/drift-set.edn")
-(def corpus-root "/Users/dan/claude/")
+  "Committed fixture copy (formerly untracked
+   scratchpad/reconcile-2026-07-02/drift-set.edn)."
+  "test/resources/codec-fixtures/reconcile/drift-set.edn")
+
+(def corpus-root
+  "Corpus filesystem root for the R6 drift sweep.  Reads the
+   SANDBAR_CORPUS_ROOT env-var — the same env-read convention as
+   `sandbar.reactive.sinks/corpus-root` — but deliberately WITHOUT that
+   fn's $HOME/claude fallback: a test must never silently assume a
+   machine-local corpus.  nil when unset; R6 then SKIPS loudly (see
+   `r6-drift-sweep`)."
+  (System/getenv "SANDBAR_CORPUS_ROOT"))
+
+(defn corpus-root-available?
+  "True when SANDBAR_CORPUS_ROOT is set AND resolves to a directory."
+  []
+  (boolean (and corpus-root (.isDirectory (io/file corpus-root)))))
 
 (defn drift-entries []
   (edn/read-string (slurp (io/file drift-set-file))))
 
 (deftest r6-drift-sweep
-  (testing "drift-set files parse→emit with zero semantic-class regressions"
-    (let [entries (drift-entries)
-          tmp     (io/file (System/getProperty "java.io.tmpdir")
-                           (str "fidelity-drift-" (System/currentTimeMillis)))]
-      (.mkdirs tmp)
-      (println (str "R6: sweeping " (count entries) " drift-set entries"))
-      (let [results
-            (doall
-              (for [{:keys [rel-path action flags] :as _entry} entries]
-                (let [srcf (io/file corpus-root rel-path)]
-                  (cond
-                    ;; Non-round-trippable entries: registry indexes /
-                    ;; frontmatter-less specials (e.g. memory/MEMORY.md).
-                    ;; parse→emit key-presence is not a meaningful receipt
-                    ;; for these; report + skip the hard gates rather than
-                    ;; false-fail on a file the codec was never meant to
-                    ;; round-trip.  The extras fix touches ONLY frontmatter
-                    ;; emit, so these are provably unaffected.
-                    (or (contains? (set flags) :no-frontmatter)
-                        (= :special action))
-                    {:rel-path rel-path :status :skipped-special
-                     :action action :flags flags}
+  (if-not (corpus-root-available?)
+    ;; POLICY (adopted default 2026-07-10, Dan-overridable): without a
+    ;; corpus root the sweep SKIPS — but LOUDLY, never as a silent pass.
+    ;; The sweep is MANDATORY on the release machine.
+    (testing "R6 SKIPPED — SANDBAR_CORPUS_ROOT unset/not-a-directory"
+      (println "================================================================")
+      (println "R6 SKIPPED: SANDBAR_CORPUS_ROOT is unset (or not a directory) —")
+      (println "the drift-set sweep DID NOT RUN. This sweep is MANDATORY on the")
+      (println "release machine: export SANDBAR_CORPUS_ROOT=<corpus-root> (e.g.")
+      (println "/Users/dan/claude/) and re-run")
+      (println "  lein test :only sandbar.codec.fidelity-test/r6-drift-sweep")
+      (println "before shipping.")
+      (println "================================================================")
+      (is true "R6 drift sweep SKIPPED (SANDBAR_CORPUS_ROOT unset) — mandatory on the release machine"))
+    (testing "drift-set files parse→emit with zero semantic-class regressions"
+      (let [entries (drift-entries)
+            tmp     (io/file (System/getProperty "java.io.tmpdir")
+                             (str "fidelity-drift-" (System/currentTimeMillis)))]
+        (.mkdirs tmp)
+        (println (str "R6: sweeping " (count entries) " drift-set entries"))
+        (let [results
+              (doall
+                (for [{:keys [rel-path action flags] :as _entry} entries]
+                  (let [srcf (io/file corpus-root rel-path)]
+                    (cond
+                      ;; Non-round-trippable entries: registry indexes /
+                      ;; frontmatter-less specials (e.g. memory/MEMORY.md).
+                      ;; parse→emit key-presence is not a meaningful receipt
+                      ;; for these; report + skip the hard gates rather than
+                      ;; false-fail on a file the codec was never meant to
+                      ;; round-trip.  The extras fix touches ONLY frontmatter
+                      ;; emit, so these are provably unaffected.
+                      (or (contains? (set flags) :no-frontmatter)
+                          (= :special action))
+                      {:rel-path rel-path :status :skipped-special
+                       :action action :flags flags}
 
-                    (not (.exists srcf))
-                    {:rel-path rel-path :status :missing-source}
+                      (not (.exists srcf))
+                      {:rel-path rel-path :status :missing-source}
 
-                    :else
-                    (let [;; copy to scratch (READ-ONLY discipline: never
-                          ;; parse the corpus file in place)
-                          scratch (io/file tmp (str/replace rel-path #"/" "__"))
-                          _ (io/copy srcf scratch)
-                          src (slurp scratch)]
-                      (try
-                        (let [once  (parse->emit-doc src rel-path)
-                              twice (parse->emit-doc once rel-path)
-                              src-keys (set (source-fm-keys src))
-                              out-keys (set (source-fm-keys once))
-                              missing  (remove out-keys src-keys)
-                              cls   (semantic-diff? src once)
-                              ;; Only NEWLY-introduced mangles count as a
-                              ;; regression.  Several drift-set corpus files
-                              ;; ALREADY carry `!!java` id: lines (prior
-                              ;; sink-emitter output) or prose text that
-                              ;; literally contains `:db/ident` /
-                              ;; `mm.tag/value` (observations ABOUT those
-                              ;; idents).  The extras fix round-trips such
-                              ;; lines BYTE-FAITHFULLY (that is the whole
-                              ;; point), so a `!!java` / mangle-substring
-                              ;; present in the SOURCE and preserved in the
-                              ;; OUTPUT is NOT a regression — only one that
-                              ;; the emitter INTRODUCES is.
-                              src-java?    (java-tag? src)
-                              out-java?    (java-tag? once)
-                              src-mangle?  (nested-seq-mangle? src)
-                              out-mangle?  (nested-seq-mangle? once)]
-                          {:rel-path rel-path
-                           :status :ok
-                           :r1-keys-present? (empty? missing)
-                           :r1-missing (vec missing)
-                           :src-java? src-java?
-                           :out-java? out-java?
-                           ;; regression = introduced-by-emit only
-                           :r1-no-java? (not (and out-java? (not src-java?)))
-                           :src-mangle? src-mangle?
-                           :out-mangle? out-mangle?
-                           :r1-no-mangle? (not (and out-mangle? (not src-mangle?)))
-                           :r3-idempotent? (= once twice)
-                           :r4-byte-identical? (= src once)
-                           :r4-semantic? (:semantic? cls)
-                           :r4-class cls})
-                        (catch Exception e
-                          {:rel-path rel-path :status :parse-error
-                           :error (.getMessage e)})))))))
-            ok-results (filter #(= :ok (:status %)) results)
-            errored    (filter #(= :parse-error (:status %)) results)
-            skipped    (filter #(= :skipped-special (:status %)) results)
-            missing-src (filter #(= :missing-source (:status %)) results)
-            semantic   (filter :r4-semantic? ok-results)
-            non-idem   (filter #(false? (:r3-idempotent? %)) ok-results)
-            key-loss   (filter #(false? (:r1-keys-present? %)) ok-results)
-            java-leak  (filter #(false? (:r1-no-java? %)) ok-results)
-            mangle     (filter #(false? (:r1-no-mangle? %)) ok-results)]
-        (println (str "R6 summary: total=" (count results)
-                      " ok=" (count ok-results)
-                      " skipped-special=" (count skipped)
-                      " missing-source=" (count missing-src)
-                      " parse-error=" (count errored)
-                      " byte-identical=" (count (filter :r4-byte-identical? ok-results))
-                      " semantic-regressions=" (count semantic)
-                      " non-idempotent=" (count non-idem)
-                      " key-loss=" (count key-loss)
-                      " java-leak=" (count java-leak)
-                      " mangle=" (count mangle)))
-        (doseq [r semantic]  (println "  R6 SEMANTIC:" (:rel-path r) (pr-str (:r4-class r))))
-        (doseq [r non-idem]  (println "  R6 NON-IDEMPOTENT:" (:rel-path r)))
-        (doseq [r key-loss]  (println "  R6 KEY-LOSS:" (:rel-path r) (:r1-missing r)))
-        (doseq [r java-leak] (println "  R6 JAVA-LEAK:" (:rel-path r)))
-        (doseq [r mangle]    (println "  R6 MANGLE:" (:rel-path r)))
-        (doseq [r errored]   (println "  R6 PARSE-ERROR:" (:rel-path r) (:error r)))
-        (doseq [r skipped]   (println "  R6 SKIPPED-SPECIAL:" (:rel-path r) (:action r) (pr-str (:flags r))))
-        (doseq [r missing-src] (println "  R6 MISSING-SOURCE:" (:rel-path r)))
-        ;; HARD: zero semantic regressions, zero key-loss, zero java leaks,
-        ;; zero nested-map mangles, zero non-idempotent, zero parse errors.
-        (is (empty? semantic)  "R6: semantic-class diffs found in drift sweep")
-        (is (empty? key-loss)  "R6: frontmatter key-loss found in drift sweep")
-        (is (empty? java-leak) "R6: !!java tag leak found in drift sweep")
-        (is (empty? mangle)    "R6: nested-map mangle found in drift sweep")
-        (is (empty? non-idem)  "R6: non-idempotent files found in drift sweep")
-        (is (empty? errored)   "R6: parse errors found in drift sweep")))))
+                      :else
+                      (let [;; copy to scratch (READ-ONLY discipline: never
+                            ;; parse the corpus file in place)
+                            scratch (io/file tmp (str/replace rel-path #"/" "__"))
+                            _ (io/copy srcf scratch)
+                            src (slurp scratch)]
+                        (try
+                          (let [once  (parse->emit-doc src rel-path)
+                                twice (parse->emit-doc once rel-path)
+                                src-keys (set (source-fm-keys src))
+                                out-keys (set (source-fm-keys once))
+                                missing  (remove out-keys src-keys)
+                                cls   (semantic-diff? src once)
+                                ;; Only NEWLY-introduced mangles count as a
+                                ;; regression.  Several drift-set corpus files
+                                ;; ALREADY carry `!!java` id: lines (prior
+                                ;; sink-emitter output) or prose text that
+                                ;; literally contains `:db/ident` /
+                                ;; `mm.tag/value` (observations ABOUT those
+                                ;; idents).  The extras fix round-trips such
+                                ;; lines BYTE-FAITHFULLY (that is the whole
+                                ;; point), so a `!!java` / mangle-substring
+                                ;; present in the SOURCE and preserved in the
+                                ;; OUTPUT is NOT a regression — only one that
+                                ;; the emitter INTRODUCES is.
+                                src-java?    (java-tag? src)
+                                out-java?    (java-tag? once)
+                                src-mangle?  (nested-seq-mangle? src)
+                                out-mangle?  (nested-seq-mangle? once)]
+                            {:rel-path rel-path
+                             :status :ok
+                             :r1-keys-present? (empty? missing)
+                             :r1-missing (vec missing)
+                             :src-java? src-java?
+                             :out-java? out-java?
+                             ;; regression = introduced-by-emit only
+                             :r1-no-java? (not (and out-java? (not src-java?)))
+                             :src-mangle? src-mangle?
+                             :out-mangle? out-mangle?
+                             :r1-no-mangle? (not (and out-mangle? (not src-mangle?)))
+                             :r3-idempotent? (= once twice)
+                             :r4-byte-identical? (= src once)
+                             :r4-semantic? (:semantic? cls)
+                             :r4-class cls})
+                          (catch Exception e
+                            {:rel-path rel-path :status :parse-error
+                             :error (.getMessage e)})))))))
+              ok-results (filter #(= :ok (:status %)) results)
+              errored    (filter #(= :parse-error (:status %)) results)
+              skipped    (filter #(= :skipped-special (:status %)) results)
+              missing-src (filter #(= :missing-source (:status %)) results)
+              semantic   (filter :r4-semantic? ok-results)
+              non-idem   (filter #(false? (:r3-idempotent? %)) ok-results)
+              key-loss   (filter #(false? (:r1-keys-present? %)) ok-results)
+              java-leak  (filter #(false? (:r1-no-java? %)) ok-results)
+              mangle     (filter #(false? (:r1-no-mangle? %)) ok-results)]
+          (println (str "R6 summary: total=" (count results)
+                        " ok=" (count ok-results)
+                        " skipped-special=" (count skipped)
+                        " missing-source=" (count missing-src)
+                        " parse-error=" (count errored)
+                        " byte-identical=" (count (filter :r4-byte-identical? ok-results))
+                        " semantic-regressions=" (count semantic)
+                        " non-idempotent=" (count non-idem)
+                        " key-loss=" (count key-loss)
+                        " java-leak=" (count java-leak)
+                        " mangle=" (count mangle)))
+          (doseq [r semantic]  (println "  R6 SEMANTIC:" (:rel-path r) (pr-str (:r4-class r))))
+          (doseq [r non-idem]  (println "  R6 NON-IDEMPOTENT:" (:rel-path r)))
+          (doseq [r key-loss]  (println "  R6 KEY-LOSS:" (:rel-path r) (:r1-missing r)))
+          (doseq [r java-leak] (println "  R6 JAVA-LEAK:" (:rel-path r)))
+          (doseq [r mangle]    (println "  R6 MANGLE:" (:rel-path r)))
+          (doseq [r errored]   (println "  R6 PARSE-ERROR:" (:rel-path r) (:error r)))
+          (doseq [r skipped]   (println "  R6 SKIPPED-SPECIAL:" (:rel-path r) (:action r) (pr-str (:flags r))))
+          (doseq [r missing-src] (println "  R6 MISSING-SOURCE:" (:rel-path r)))
+          ;; HARD: zero semantic regressions, zero key-loss, zero java leaks,
+          ;; zero nested-map mangles, zero non-idempotent, zero parse errors.
+          (is (empty? semantic)  "R6: semantic-class diffs found in drift sweep")
+          (is (empty? key-loss)  "R6: frontmatter key-loss found in drift sweep")
+          (is (empty? java-leak) "R6: !!java tag leak found in drift sweep")
+          (is (empty? mangle)    "R6: nested-map mangle found in drift sweep")
+          (is (empty? non-idem)  "R6: non-idempotent files found in drift sweep")
+          (is (empty? errored)   "R6: parse errors found in drift sweep"))))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; R7 — cycle guard (HARD): a section chain with a deliberate
