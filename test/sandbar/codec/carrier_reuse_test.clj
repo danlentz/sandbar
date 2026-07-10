@@ -15,7 +15,8 @@
    under `tu/make-test-db-fixture` — an isolated `datomic:mem://` conn
    seeded from the required schema.  NO test touches the shared dev
    transactor.  Real corpus files are READ-ONLY; the round-trips run on
-   SCRATCH COPIES under scratchpad/carrier-reuse-2026-07-02/scratch/."
+   COMMITTED FIXTURE COPIES under test/resources/codec-fixtures/carrier-reuse/
+   (originally authored at scratchpad/carrier-reuse-2026-07-02/scratch/)."
   (:require [clojure.test            :refer :all]
             [clojure.edn             :as edn]
             [clojure.java.io         :as io]
@@ -39,7 +40,12 @@
 ;; Paths + helpers
 
 (def scratch-dir
-  "scratchpad/carrier-reuse-2026-07-02/scratch")
+  "Committed fixture copies (formerly untracked
+   scratchpad/carrier-reuse-2026-07-02/scratch/), so fresh
+   clones/worktrees run green.  CWD-relative — `lein test` runs from the
+   project root (same convention as test/resources/w1-fixtures via
+   sandbar.gate.fixture)."
+  "test/resources/codec-fixtures/carrier-reuse")
 
 ;; Two scratch copies of the SAME TIER-0 discipline file (ground_new_concepts).
 ;; They differ ONLY in the extras key `at-startup:` — import1 has `high`,
