@@ -126,7 +126,11 @@
             "verb-edges-map"      ["run" "-m" "sandbar.scripts.verb-edges-map"]
             "memory-open-affordance" ["run" "-m" "sandbar.scripts.memory-open-affordance"]
             "catalog-check"       ["run" "-m" "sandbar.scripts.catalog-check"]
-            "catalog-regen"       ["do" ["affordance-map"] ["verb-edges-map"] ["memory-open-affordance"]]}
+            "catalog-regen"       ["do" ["affordance-map"] ["verb-edges-map"] ["memory-open-affordance"]]
+            ;; W1.J standing composed release gate (G1 precondition): CHECK 1
+            ;; round-trip §D.5 8-query contract AND CHECK 2 firewall scoreboard.
+            ;; Exit 0 iff GREEN — wire this exit into CI as the release gate.
+            "w1-release-gate"     ["run" "-m" "sandbar.scripts.w1-release-gate"]}
 
 
   :asciidoc {:sources ["doc/*.adoc"]
