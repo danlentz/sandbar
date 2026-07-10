@@ -52,6 +52,7 @@
             [sandbar.navigate.siblings  :as nav-siblings]
             [sandbar.orient             :as orient]
             [sandbar.projection      :as pg]
+            [sandbar.project.provenance :as prov]
             [sandbar.reactive.queue     :as reactive-queue]
             [sandbar.retract            :as retract]
             [sandbar.schedule           :as sched]
@@ -681,7 +682,15 @@
 
 (defn- project-export-handler [args]
   (let [to     (or (get args "to") (get args :to))
-        filter-spec (->filter-spec (or (get args "filter") (get args :filter)))]
+        filter-spec (->filter-spec (or (get args "filter") (get args :filter)))
+        ;; W1.E provenance recording is OPT-IN.  Default OFF keeps a routine
+        ;; live `project.export` a read-only projection (no `:mm/Run` mint) until
+        ;; the E/F/G handshake ratifies the recorder as a live gate; a caller
+        ;; (or W1.K's project-routing arg) passing `:provenance true` records
+        ;; one projection-run + returns its committed manifest.
+        record?     (boolean (or (get args "provenance") (get args :provenance)))
+        proj-raw    (or (get args "project") (get args :project) :project/UNASSIGNED)
+        proj        (if (string? proj-raw) (->ident proj-raw) proj-raw)]
     (when-not to
       (throw (ex-info "project.export requires :to (output directory path)"
                       {:args args})))
@@ -710,13 +719,26 @@
                                              %)
                                           realized)))
                                  memories))
-          result       (pg/project-graph entity-maps
-                                         (cond-> {:to to}
-                                           filter-spec (assoc :filter filter-spec)))]
-      {:to       to
-       :filter   filter-spec
-       :exported (count result)
-       :files    (mapv :rel-path result)})))
+          export-thunk (fn []
+                         (pg/project-graph entity-maps
+                                           (cond-> {:to to}
+                                             filter-spec (assoc :filter filter-spec))))]
+      (if record?
+        ;; Delegate to the W1.E recorder (`sandbar.project.provenance`): one
+        ;; :mm/Run per export + the committed manifest whose firewall-class is
+        ;; DERIVED from the DB-resolved project (CODEX-1 forgery fix).
+        (let [{:keys [written manifest]}
+              (prov/with-export-provenance (db/db) {:project proj} export-thunk)]
+          {:to         to
+           :filter     filter-spec
+           :exported   (count written)
+           :files      (mapv :rel-path written)
+           :provenance manifest})
+        (let [result (export-thunk)]
+          {:to       to
+           :filter   filter-spec
+           :exported (count result)
+           :files    (mapv :rel-path result)})))))
 
 ;; F#17 transact-boundary helpers (group-by-source + tempid-translation) moved
 ;; to `sandbar.codec.markdown/group-by-source` + `entity-specs->tx-data` per
