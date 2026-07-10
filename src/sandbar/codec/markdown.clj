@@ -2178,6 +2178,34 @@
     :mm.memory/rel-path
     :mm.memory/first-section})
 
+(defn strip-derived-memory-attrs
+  "Return `entity` as a plain map with the `derived-memory-attrs`
+   (`:db/ident` / `:db/id` / `:mm.memory/rel-path` /
+   `:mm.memory/first-section`) removed — the single-source strip that
+   `emit-document` applies, exposed so the emit paths that BYPASS
+   `emit-document` can enforce the same parity.
+
+   `sandbar.projection/realize-and-emit-entity` has two branches that call
+   the raw codec `emit` instead of `emit-document`: the section-less
+   memory branch and the no-section-tree-walker branch.  The `emit`
+   method's own exclusion list (this file's `emit` impl) drops
+   `:db/*` + `:mm.memory/rel-path` but NOT `:mm.memory/first-section`, so
+   without this strip a `first-section:` line leaks into frontmatter on
+   those branches.  Per
+   observations/live_sink_emits_derived_first_section_for_subclass_-
+   memorials_regenerating_debris_130_files_2026_07_10.
+
+   Coerces via `(into {} …)` first so a LIVE Datomic Entity (which is not
+   a persistent map and rejects `dissoc`) is accepted; `(into {} entity)`
+   preserves `:dt/type` (verified) which the `emit` method requires.
+
+   Does NOT strip the identity slots (`:mm/id` / `:mm.memory/identity`):
+   the D1 :mm/id covenant requires the id to reach the YAML serializer so
+   a reload reads it back rather than re-deriving it (see
+   `derived-memory-attrs`' docstring)."
+  [entity]
+  (apply dissoc (into {} entity) derived-memory-attrs))
+
 (defn emit-document
   "Full mm/Memory document emit: takes a vector of entity-specs (memory +
    sections); reconstructs frontmatter + body via section-tree walk;
@@ -2199,7 +2227,7 @@
   [entities]
   (let [memory   (first entities)
         sections (rest entities)
-        memory-stripped (apply dissoc memory derived-memory-attrs)
+        memory-stripped (strip-derived-memory-attrs memory)
         c        (make-codec)]
     (if (empty? sections)
       (proto/emit c memory-stripped {})

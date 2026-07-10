@@ -505,6 +505,20 @@
                walk-fn should return ALREADY-DEDUPLICATED related entities;
                realize-with dedupes by :db/id across the BFS visited-set.
 
+   walk-fn's related items may be Datomic Entities OR ref-locators
+   (`:db/ident` keywords / eid longs).  A ref slot read off a LIVE
+   `db/entity` whose target carries a `:db/ident` reads back as the
+   IDENT KEYWORD, not an Entity (the corpus-wide ident-ref navigation
+   shape).  Both the seed AND every walked related item are coerced to
+   an Entity via `db/entity` before their `:db/id` is read, so an
+   ident-keyword / eid ref is FOLLOWED rather than silently dropped by
+   `(:db/id <keyword>) => nil`.  (Before this coercion the seed was
+   resolved but walked refs were not, so a sectioned memory read from a
+   live entity realized to `[memory]` only — its section chain lost —
+   and the caller's section-tree emit path was never taken.  Per
+   observations/live_sink_emits_derived_first_section_for_subclass_-
+   memorials_regenerating_debris_130_files_2026_07_10.)
+
    Returns: vector of entity-spec maps; each map is `(into {:dt/type ...}
    datomic-entity)` for the seed and each walked entity.
 
@@ -514,10 +528,11 @@
    refs.  Composable with `sandbar.codec/emit` on collections + with
    `sandbar.projection` entity-collection paths."
   [entity walk-fn]
-  (let [seed (cond
-               (keyword? entity) (db/entity entity)
-               (number?  entity) (db/entity entity)
-               :else entity)]
+  (let [->entity (fn [x]
+                   (if (or (keyword? x) (number? x))
+                     (db/entity x)
+                     x))
+        seed     (->entity entity)]
     (loop [acc      []
            visited  #{}
            frontier [seed]]
@@ -531,8 +546,9 @@
                               a
                               (let [related (or (walk-fn e) [])
                                     e-map   (into {:dt/type (:dt/type e)} e)]
-                                (doseq [r related
-                                        :let [r-eid (:db/id r)]]
+                                (doseq [r0 related
+                                        :let [r     (->entity r0)
+                                              r-eid (:db/id r)]]
                                   (when (and r-eid (not (contains? visited r-eid)))
                                     (swap! next-frontier conj r)))
                                 (conj a e-map)))))
