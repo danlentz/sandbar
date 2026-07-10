@@ -730,9 +730,18 @@
         ;; :mm/Run per export + the committed manifest whose firewall-class is
         ;; DERIVED from the DB-resolved project (CODEX-1 forgery fix).  The
         ;; recorder also VERIFIES the whole written-set against that derived
-        ;; route and THROWS a marker-tagged `:sandbar/error` (refuse-not-filter)
-        ;; on a class-inconsistent export — that refusal propagates as the tool
-        ;; error, aborting the (future W1.F) commit path loudly.
+        ;; route — routing each row's carried `:entity` (the actual projected
+        ;; entity, so a rel-path collision cannot fail open) — and THROWS a
+        ;; marker-tagged `:sandbar/error` (refuse-not-filter) on a
+        ;; class-inconsistent export.  That refusal propagates as the tool error,
+        ;; aborting the (future W1.F) commit path loudly.
+        ;;
+        ;; SPILL SEAM (residual, W1.F unbuilt): the export-thunk has ALREADY
+        ;; written the file-set to `to` by the time the gate fires, so a refusal
+        ;; aborts the manifest + `:succeeded` run + future-commit path but leaves
+        ;; the refused files at `to`.  Nothing publishes `to` until W1.F, and the
+        ;; on-disk content filter / newer-DB restore guard are W1.H / W1.G — so
+        ;; the refused files are un-published local artifacts, not a leak.
         (let [{:keys [written manifest]}
               (prov/with-export-provenance (db/db) {:project proj} export-thunk)]
           ;; NB `with-export-provenance` also returns an `:audit` record (the

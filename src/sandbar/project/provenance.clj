@@ -43,7 +43,7 @@
   ── WHOLE-MANIFEST class/content consistency (P-CITE-2 over the file-set) ────
   The audience-split scrubs the exclusions/redactions ENUMERATION, but a private
   identifier can also ride the `:manifest/file-set` itself — a private-project
-  rel-path smuggled into a `:public`-derived export.  So the manifest boundary
+  row smuggled into a `:public`-derived export.  So the manifest boundary
   ADDITIONALLY VERIFIES the whole written set against the DERIVED route via the
   shared label core (`verify-written-against-route!`): a `:public`-derived
   target REFUSES (throws a marker-tagged `:sandbar/error`, no committed
@@ -52,7 +52,21 @@
   REFUSE-not-filter (mirrors `sandbar.projection/guard-registry-critical-write!`
   / the S7 refuse-at-boundary precedent): a mis-scoped export must ABORT the
   future W1.F commit path loudly, not silently drop the offending rows.
-  Fail-closed — an unresolvable rel-path counts as `:private`.
+
+  Each row is routed EXACTLY when it carries its source entity: `project-graph`
+  stamps every written row with `:entity` (the projected entity's routing
+  descriptor), so the gate routes THAT entity rather than re-resolving the
+  rel-path — closing the R3-flagged fail-open where a rel-path shared by a
+  `:public` and a `:private` entity resolved to the public twin while the private
+  twin's file was what landed.  A row WITHOUT `:entity` (hand-built / legacy)
+  fail-closes over the SET of ALL entities carrying its rel-path (admitted only
+  if EVERY one is admissible); a rel-path resolving to zero live entities routes
+  `:private`.
+
+  RESIDUAL (not an absolute): on the wired emitter path this gate runs AFTER the
+  thunk has written the file-set to disk, so it keeps a COMMITTED (W1.F-published)
+  manifest class-consistent but does NOT unwrite refused files at a scratch `:to`
+  — the on-disk content filter is W1.H, the newer-DB restore guard W1.G.
 
   ── G4 audience-split (E-4 / R3-1 / W1.H P-CITE-2) ──────────────────────────
   A COMMITTED manifest for a `:public`-target run MUST NOT carry any private
@@ -68,7 +82,11 @@
   run MAY commit the exact enumeration (committed manifest + audit ledger
   co-reside in its private repo).  The scrub is applied at the lowest level
   (`export-manifest`), so a `:public` committed manifest carrying an exact
-  private id is unconstructible by construction.
+  private id IN ITS EXCLUSIONS/REDACTIONS ENUMERATION is unconstructible by
+  construction.  (The other channel a private id could ride — the
+  `:manifest/file-set` — is closed by the whole-manifest gate above, which
+  REFUSES rather than scrubs; that gate is a boundary refusal, not an
+  unconstructible-by-construction property.)
 
   ── AUDIT-LEDGER persistence (E-4(a) — DEFERRED E/F/G seam) ──────────────────
   `manifest-for-export` RETURNS the audit-side EXACT enumeration (`:audit`,
@@ -220,7 +238,8 @@
 
   The G4 AUDIENCE-SPLIT is applied HERE (the lowest level) keyed on
   `:firewall-class`, so a `:public` committed manifest carrying an exact private
-  identifier is UNCONSTRUCTIBLE:
+  identifier IN ITS EXCLUSIONS/REDACTIONS is UNCONSTRUCTIBLE (the `:manifest/file-
+  set` channel is closed separately by the whole-manifest gate, which REFUSES):
 
     :public target ⇒ `:manifest/exclusions`/`:manifest/redactions` collapse to
                      the non-linkable `{:count :digest}` form (salted via
@@ -282,45 +301,73 @@
 ;;; ===========================================================================
 ;;; (2c) The whole-manifest class/content-consistency gate (P-CITE-2 over the
 ;;;      WHOLE file-set — REFUSE, not filter).  A `:public`-derived export whose
-;;;      written set contains a private-project rel-path (or any unresolvable
-;;;      one) must ABORT loudly, mirroring guard-registry-critical-write!'s
+;;;      written set contains a private-project row (or any unresolvable one)
+;;;      must ABORT loudly, mirroring guard-registry-critical-write!'s
 ;;;      refuse-at-boundary precedent; a `:private`-derived export refuses a
 ;;;      FOREIGN private scope.  The manifest boundary itself enforces that the
 ;;;      recorded firewall-class equals the sensitivity of the content — until
 ;;;      W1.H/W1.F land, the export path applies NO filter, so THIS check is what
 ;;;      keeps a committed manifest class-consistent.
+;;;
+;;;      ROW ROUTING — EXACT when the row carries its source entity, else
+;;;      COLLISION-SAFE.  `sandbar.projection/project-graph` stamps each written
+;;;      row with `:entity` (a routing descriptor of the ACTUAL projected
+;;;      entity), so the gate routes THAT entity — never re-resolving a rel-path,
+;;;      which is NOT unique and could resolve to a `:public` twin while a
+;;;      colliding `:private` twin's file is what actually landed (the fail-open
+;;;      the R3 board flagged).  A row WITHOUT `:entity` (hand-built / legacy) is
+;;;      resolved over the SET of ALL live entities carrying its rel-path and is
+;;;      admitted only if EVERY one is admissible (fail-closed on zero matches
+;;;      and on ANY inadmissible candidate).
 ;;; ===========================================================================
 
-(defn- rel-path->entity
-  "The live `:mm/Memory` entity whose `:mm.memory/rel-path` is `rel-path`, or nil
-  when no live entity carries it.  Queries the `:mm.memory/rel-path` SLOT
-  directly (not a derived ident) so it resolves regardless of how the entity's
-  `:db/ident` was minted.  nil ⇒ the caller treats the row as FAIL-CLOSED
-  `:private` (an unresolvable exported path is never assumed public)."
+(defn- rel-path->entities
+  "EVERY live entity whose `:mm.memory/rel-path` is `rel-path` — a collision-safe
+  SET find (`:find [?e ...]`, NOT a scalar `:find ?e .`).  The FALLBACK resolver
+  for a written row carrying no source `:entity`: a rel-path is NOT unique (two
+  differently-scoped memories can share one — confirmed), so resolving to ONE
+  arbitrary entity could pick a `:public` twin and fail open on a colliding
+  `:private` twin.  Queries the `:mm.memory/rel-path` SLOT directly (not a derived
+  ident) so it resolves regardless of how each entity's `:db/ident` was minted.
+  Empty ⇒ the caller fail-closes the row to the UNASSIGNED `:private` route (an
+  unresolvable exported path is never assumed public)."
   [db rel-path]
   (when rel-path
-    (some->> (d/q '[:find ?e . :in $ ?rp :where [?e :mm.memory/rel-path ?rp]]
-                  db rel-path)
-             (d/entity db))))
+    (map #(d/entity db %)
+         (d/q '[:find [?e ...] :in $ ?rp :where [?e :mm.memory/rel-path ?rp]]
+              db rel-path))))
 
-(defn- written-row-route
-  "The routing decision (`:sensitivity` + `:trust-scope`) of a written `row`,
-  resolved from its `:rel-path` via the shared core (`route/route-of` over the
-  resolved entity).  FAIL-CLOSED: an unresolvable rel-path routes as nil ⇒
-  `route-of`'s UNASSIGNED leg ⇒ `:private` / `[:trust-scope/private
-  :project/UNASSIGNED]`, so a row that names no live entity can NEVER be admitted
-  into a public (or any real private) target."
+(defn- row-source-routes
+  "The route(s) whose admissibility governs a written `row` — a VECTOR (usually
+  one).
+
+  PREFERRED (exact): the row carries its SOURCE entity descriptor under `:entity`
+  (stamped by `sandbar.projection/project-graph`) — route THAT actual projected
+  entity, ONE route, no rel-path re-resolution.  `route/route-of` over the carried
+  descriptor equals route-of over the live entity (same two routing slots, then
+  owning-project resolved via db), so this is exact without a db round-trip on the
+  descriptor's identity.
+
+  FALLBACK (collision-safe): a row WITHOUT `:entity` (hand-built / legacy) is
+  resolved by rel-path to ALL live entities carrying it (`rel-path->entities`) —
+  each contributes a route, and the row is admitted only if EVERY one is
+  admissible (see `verify-written-against-route!`).  Zero matches ⇒ the single
+  UNASSIGNED `:private` route (`route-of` of nil), so an unresolvable path
+  fail-closes."
   [db row]
-  (route/route-of db (rel-path->entity db (:rel-path row))))
+  (if (contains? row :entity)
+    [(route/route-of db (:entity row))]
+    (if-let [ents (seq (rel-path->entities db (:rel-path row)))]
+      (mapv #(route/route-of db %) ents)
+      [(route/route-of db nil)])))
 
-(defn- row-admissible?
-  "Is a written row (its resolved `row-route`) admissible into a target whose
-  trust-scope is `target-scope`?  A row rides iff it is PUBLIC (a subset of every
-  scope) OR belongs to the SAME private scope as the target.  A foreign private
-  scope — including the fail-closed UNASSIGNED route of an unresolvable rel-path
-  — is INADMISSIBLE.  For a `:public` target (`target-scope`
-  `:trust-scope/public`) this reduces to \"the row is public\"; for a `:private`
-  target it additionally admits the target's own private rows."
+(defn- route-admissible?
+  "Is a resolved `row-route` admissible into a target whose trust-scope is
+  `target-scope`?  A route rides iff it is PUBLIC (a subset of every scope) OR is
+  the SAME private scope as the target.  A foreign private scope — including the
+  fail-closed UNASSIGNED route — is INADMISSIBLE.  For a `:public` target
+  (`target-scope` `:trust-scope/public`) this reduces to \"the route is public\";
+  a `:private` target additionally admits its own private rows."
   [target-scope row-route]
   (or (= :public (:sensitivity row-route))
       (= target-scope (:trust-scope row-route))))
@@ -330,24 +377,39 @@
   INADMISSIBLE into `route` — the DERIVED target route.  This is the manifest
   boundary's class/content-consistency gate: it binds the whole `:manifest/file-
   set` to the derived firewall-class so a `:public`-derived export cannot carry a
-  private-project rel-path (P-CITE-2 over the file-set) and a `:private`-derived
-  export cannot carry a FOREIGN private scope's rows.  REFUSE-not-filter (mirrors
-  `sandbar.projection/guard-registry-critical-write!`): a mis-scoped export
-  ABORTS the future W1.F commit path loudly, naming the offending rel-paths +
-  their resolved sensitivity/scope, rather than silently dropping them.
-  Fail-closed — an unresolvable rel-path resolves `:private` (see
-  `written-row-route`).  Returns nil on success (every row admissible)."
+  private-project row (P-CITE-2 over the file-set) and a `:private`-derived export
+  cannot carry a FOREIGN private scope's rows.  REFUSE-not-filter (mirrors
+  `sandbar.projection/guard-registry-critical-write!`): a mis-scoped export ABORTS
+  the manifest assembly (and the future W1.F commit path) loudly, naming each
+  offending (rel-path, resolved sensitivity/trust-scope) pair, rather than
+  silently dropping rows.
+
+  Each row is routed by `row-source-routes`: EXACT when the row carries its source
+  `:entity` (project-graph rows), else COLLISION-SAFE over the SET of all entities
+  at its rel-path — admitted only if EVERY candidate is admissible, so an
+  ambiguous rel-path surfaces ONE offender entry per inadmissible candidate.
+  Fail-closed — a rel-path resolving to zero live entities routes `:private` (the
+  UNASSIGNED leg of `route-of`).  Returns nil when every row is admissible.
+
+  RESIDUAL (wired path): on the emitter touchpoint this gate runs AFTER the
+  projection thunk has already written the file-set to `:to` (see
+  `with-export-provenance`) — it aborts the manifest + `:succeeded` run + the
+  future W1.F commit path, NOT the on-disk files.  The on-disk content filter is
+  W1.H; the newer-DB restore guard is W1.G.  So a COMMITTED (published) manifest
+  is never class-inconsistent, but a scratch `:to` may hold refused files until
+  W1.G/W1.H land."
   [db route written]
   (let [target-scope (:trust-scope route)
         public?      (= :public (:sensitivity route))
         offenders    (into []
-                           (comp
-                             (map (fn [row] [row (written-row-route db row)]))
-                             (remove (fn [[_ rr]] (row-admissible? target-scope rr)))
-                             (map (fn [[row rr]]
-                                    {:rel-path    (:rel-path row)
-                                     :sensitivity (:sensitivity rr)
-                                     :trust-scope (:trust-scope rr)})))
+                           (mapcat
+                             (fn [row]
+                               (->> (row-source-routes db row)
+                                    (remove #(route-admissible? target-scope %))
+                                    (map (fn [rr]
+                                           {:rel-path    (:rel-path row)
+                                            :sensitivity (:sensitivity rr)
+                                            :trust-scope (:trust-scope rr)})))))
                            written)]
     (when (seq offenders)
       (throw (ex-info (str "export written-set contains rows that do not resolve "
@@ -371,7 +433,11 @@
                 firewall-class is RE-DERIVED from THIS via the DB, never trusted
                 from the caller (CODEX-1 fix)
     :written    the `sandbar.projection/project-graph` result
-                ([{:rel-path \"…\" :written true} …]) — supplies :manifest/file-set
+                ([{:rel-path \"…\" :written true :entity <descriptor>} …]) —
+                supplies :manifest/file-set; each row's `:entity` (a source
+                routing descriptor) is what the whole-file-set gate routes
+                EXACTLY (a row lacking it fail-closes over all entities at its
+                rel-path — see `verify-written-against-route!`)
     :basis-t    the DB basis-t at run time
     :exclusions / :redactions   the EXACT G4 enumeration (audience-split applied)
     :audit-ref  the OPAQUE run-scoped id ties the committed manifest to the
@@ -459,6 +525,16 @@
   + the refuse-not-filter contract).  On any throw a `:failed` run is recorded
   for audit (best-effort, never masking the error) and the original exception
   re-throws.
+
+  SPILL SEAM (residual, W1.F unbuilt): `export-thunk` performs the projection —
+  it has ALREADY WRITTEN the file-set to disk at the caller's `:to` by the time
+  the gate verifies.  A refusal therefore aborts the manifest + the `:succeeded`
+  run + the future W1.F COMMIT/publish path, but does NOT unwrite the refused
+  files from a scratch `:to`.  The on-disk mechanisms are W1.G (newer-DB restore
+  guard) and W1.H (content filter); until they land, nothing PUBLISHES a scratch
+  `:to`, so the refused files are un-published local artifacts, not a leak.  A
+  future pre-write entity-level check at the handler could close this seam by
+  refusing before the thunk runs (deferred — W1.F is unbuilt this round).
 
   The run is minted with a caller-generated `:mm/id` UUID; `:manifest/run` is
   the REBUILD-STABLE `[:mm/id …]` lookup-ref (not a volatile `:db/id` eid) and
