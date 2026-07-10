@@ -122,7 +122,16 @@
     (testing "the private rel-path is UNCONSTRUCTIBLE in any committed artifact
               — the refusal produces no manifest at all"
       (is (nil? (try (prov/manifest-for-export db opts)
-                     (catch clojure.lang.ExceptionInfo _ nil)))))))
+                     (catch clojure.lang.ExceptionInfo _ nil)))))
+    (testing "an UNRESOLVABLE written rel-path is FAIL-CLOSED :private ⇒ a :public
+              target refuses it too (fix-7 'fails to resolve at all' leg)"
+      (let [ex (try (prov/manifest-for-export
+                      db (assoc opts :written [{:rel-path "nowhere/ghost.md" :written true}]))
+                    nil
+                    (catch clojure.lang.ExceptionInfo e e))]
+        (is (some? ex) "an unresolvable row must NOT be assumed public")
+        (is (= :public-manifest-contains-private-rows (:sandbar/error (ex-data ex))))
+        (is (some #(= "nowhere/ghost.md" (:rel-path %)) (:offending-rows (ex-data ex))))))))
 
 (deftest with-export-provenance-refusal-records-a-failed-run-only
   (seed-public-project!)
