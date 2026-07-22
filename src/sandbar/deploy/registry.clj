@@ -64,6 +64,21 @@
   already refused at `resolve-endpoint` (`reachable?` false).  This stays
   explicitly distinct from the foreign-PRIVATE refusal above.
 
+  ── PORT DOCTRINE (the second half of A-1's physical exclusion) ─────────────
+  Reachability is filtered by SCOPE, and the air-gap sweeps `:private` ENTRIES —
+  NEITHER inspects endpoint PORTS.  So the shared `:public` slot needs one more
+  physical lock: its transactor port must be the PUBLIC port (4334), never a
+  RESERVED PRIVATE port (>= 4336).  Without it, a private-port endpoint
+  hand-edited into the `:public` slot would be REACHABLE by the public owner
+  (public→public), and `resolve-endpoint` would hand the public process the
+  ruled-private 4336 — the air-gap misses it because the forgery lives in
+  `:public`, not `:private`.  `assert-endpoint-port-doctrine!` (a
+  `validate-registry!` gate) refuses it, and symmetrically refuses a PUBLIC port
+  in a `:private` slot (a private scope co-located on the public transactor,
+  DEP-1).  This is why A-1 — \"the public process's connection surface does not
+  contain a private endpoint\" — holds for a VALIDATED registry across EVERY
+  slot, not only `:private` (D.3 port policy).
+
   The strongest posture on the sandboxed work machine is a PRIVATE-only owner
   registry that reaches the public corpus read-only BY REFERENCE
   (`public-corpus-reference`, R9) and never co-locates a public transactor.
@@ -134,13 +149,25 @@
   (= public-scope trust-scope))
 
 (defn private-scope?
-  "Is `trust-scope` a per-project private scope — the `[:trust-scope/private
-  <project-key>]` vector `route/trust-scope-of` emits for any non-`:public`
-  sensitivity?"
+  "Is `trust-scope` a per-project private scope — EXACTLY the two-element vector
+  `[:trust-scope/private <project-key>]` `route/trust-scope-of` emits for any
+  non-`:public` sensitivity, whose key is the KEYWORD `:mm.project/ident`
+  (`:db.type/keyword` in schema; the `:project/UNASSIGNED` sentinel is a keyword
+  too)?
+
+  STRICT (fail-closed), because every downstream gate keys on this shape: the
+  vector must be EXACTLY length 2 and its second element must be a keyword.  A
+  junk-tailed `[:trust-scope/private :k :extra]` or a non-keyword key
+  (`[:trust-scope/private \"k\"]`) is NOT a private scope — otherwise a malformed
+  owner could resolve (`owner-scope-resolved?`), look up entries (`scope-entry`),
+  and even satisfy `reachable?` against its own malformed twin.
+  `route/trust-scope-of` only ever emits the exact shape, so this strictness
+  rejects nothing legitimate."
   [trust-scope]
   (and (vector? trust-scope)
+       (= 2 (count trust-scope))
        (= :trust-scope/private (first trust-scope))
-       (some? (second trust-scope))))
+       (keyword? (second trust-scope))))
 
 (defn private-scope-key
   "The `:mm.project/ident` project-key inside a `[:trust-scope/private <key>]`
@@ -333,17 +360,143 @@
   "The SET of transactor endpoints a process loading `registry` can actually
   open a live connection to — the registry's entries filtered through
   `reachable?` from its `:owner-scope`.  For a public-owner registry this is
-  AT MOST the public endpoint; a private endpoint is never in the set even if
-  one were hand-edited into the file (that mere presence is separately REFUSED
-  by `assert-credential-air-gap!`).  This is the connection surface A-1
-  enumerates: `(contains? (reachable-endpoints pub-registry) <private-ep>)`
-  must be false."
+  AT MOST the `:public` slot's endpoint.
+
+  This filter enforces reachability by SCOPE (a public owner ranges over the
+  `:public` slot only); it deliberately does NOT inspect endpoint PORTS.  The
+  A-1 property — a public session's surface never contains a PRIVATE endpoint —
+  therefore holds over a VALIDATED registry, upheld by the two
+  `validate-registry!` gates a bring-up runs BEFORE any connection opens, NOT by
+  this filter dropping a same-scope endpoint on its own:
+    • a private endpoint hand-edited into the `:private` map is a FOREIGN entry a
+      public owner may not hold — refused by `assert-credential-air-gap!` (and
+      dropped here anyway, since a public owner does not reach `:private` scopes);
+      and
+    • a private-PORT endpoint mislabeled into the `:public` slot IS reachable by
+      scope, so this filter WOULD surface it — that is the forgeable hole, and it
+      is refused by `assert-endpoint-port-doctrine!` (the reserved private port
+      never sits in the public slot).
+  So `(contains? (reachable-endpoints validated-pub-registry) <private-ep>)` is
+  false because validation REFUSES the registry that would carry one; an
+  UNVALIDATED forged map may still surface it, which is exactly why the port gate
+  exists."
   [registry]
   (let [owner (owner-scope registry)]
     (into #{}
           (comp (filter (fn [[scope _]] (reachable? owner scope)))
                 (keep    (fn [[_ entry]] (:transactor-endpoint entry))))
           (scope-entry-pairs registry))))
+
+;;; ===========================================================================
+;;; PORT DOCTRINE — the reserved private transactor port (D.3 port policy)
+;;;   The second half of A-1's physical exclusion: `reachable?` filters by
+;;;   SCOPE and the air-gap sweeps `:private` ENTRIES — neither inspects PORTS,
+;;;   so a private-PORT endpoint mislabeled into the `:public` slot slips both.
+;;; ===========================================================================
+
+(def public-transactor-port
+  "The ruled PUBLIC-bottom Datomic transactor port: the public scope owns 4334
+  (transactor) + 4335 (h2 storage) (D.3 port policy / DEP-1; the shipped
+  `etc/sandbar-store-registry.example.edn`).  The public bottom sits strictly
+  BELOW the reserved private range."
+  4334)
+
+(def private-transactor-port-floor
+  "The FLOOR of the RESERVED PRIVATE transactor port range.  Each private scope
+  owns a NET-NEW transactor STRICTLY ABOVE the public 4334/4335 pair, in +2
+  slots (4336/4337, 4338/4339, …), so a transactor port `>= 4336` belongs to a
+  PRIVATE scope and a port `< 4336` (the public 4334/4335) does not.  This is
+  the adopted-default private port the CA-6 lock rests on (FLEET 2026-07-10;
+  example registry — \"4336 keeps the two scopes' storage from colliding\")."
+  4336)
+
+(defn endpoint-transactor-port
+  "The integer TCP port in a `datomic:<proto>://host:PORT/…` transactor endpoint
+  URL, or nil when `endpoint` is not a string or carries no parseable
+  `://host:PORT` segment (a portless / non-string endpoint places no port in the
+  doctrine — a MISSING endpoint is `resolve-endpoint`'s concern, not this
+  gate's).  PURE."
+  [endpoint]
+  (when (string? endpoint)
+    (some-> (re-find #"://[^/:]+:(\d+)" endpoint) second parse-long)))
+
+(defn private-port?
+  "Is `port` in the RESERVED PRIVATE transactor range — an integer at or above
+  `private-transactor-port-floor` (4336)?  A private scope's transactor lives
+  here; the public bottom (4334/4335) is strictly below.  A nil / non-integer
+  port is not private (fail-closed for callers that gate on it)."
+  [port]
+  (and (integer? port) (>= port private-transactor-port-floor)))
+
+(defn slot-port-doctrine-violations
+  "The seq of `{:slot :scope :endpoint :port :expected}` findings naming every
+  slot in `registry` whose transactor endpoint PORT contradicts its slot's scope
+  class.  `scope-entry-pairs` sweeps EVERY slot, so the check covers the
+  `:public` slot AND each `:private` entry — the property the judge required to
+  hold for ALL slots, not just `:private`:
+
+    • a `:public` slot endpoint on a RESERVED PRIVATE port (>= 4336) — the
+      FORGEABLE A-1 hole: `reachable?`/`reachable-endpoints` filter by SCOPE not
+      port, so a private-port endpoint mislabeled into the public slot is
+      reachable by a public owner and `resolve-endpoint` would hand it out; and
+    • a `:private` slot endpoint on a PUBLIC port (< 4336, i.e. 4334/4335) — a
+      private scope co-located on the public transactor, collapsing the
+      one-transactor-per-scope topology (DEP-1).
+
+  Slots whose endpoint has no parseable port are skipped (nothing to place).
+  PURE — the raw finding list `assert-endpoint-port-doctrine!` refuses on."
+  [registry]
+  (for [[scope entry] (scope-entry-pairs registry)
+        :let  [port      (endpoint-transactor-port (:transactor-endpoint entry))
+               pub-slot? (public-scope? scope)]
+        :when (and (some? port)
+                   (if pub-slot? (private-port? port) (not (private-port? port))))]
+    {:slot     (if pub-slot? :public :private)
+     :scope    scope
+     :endpoint (:transactor-endpoint entry)
+     :port     port
+     :expected (if pub-slot?
+                 (str "a PUBLIC-bottom transactor port below the private floor "
+                      private-transactor-port-floor " (canonically "
+                      public-transactor-port ")")
+                 (str "a RESERVED PRIVATE transactor port >= "
+                      private-transactor-port-floor))}))
+
+(defn assert-endpoint-port-doctrine!
+  "The LOUD refuse-to-serve realizing the PORT DOCTRINE — the physical lock that
+  closes the FORGEABLE A-1 hole.  `reachable?` / `reachable-endpoints` filter
+  reachability by SCOPE, not by port, and the credential air-gap sweeps
+  `:private` ENTRIES only — so a private-PORT transactor endpoint hand-edited
+  into the `:public` slot slips BOTH: it is reachable by a public owner, and
+  `resolve-endpoint` would hand the public process the ruled-PRIVATE port
+  (4336).  This gate is where that is caught.
+
+  It checks SLOT/PORT COHERENCE across EVERY slot
+  (`slot-port-doctrine-violations`):
+    • no `:public` slot endpoint on a RESERVED PRIVATE port (>= 4336) — refused
+      REGARDLESS of owner, so neither a public owner (the forgery) nor a private
+      owner can smuggle a private-port endpoint into the shared `:public` slot;
+      and
+    • no `:private` slot endpoint on a PUBLIC port (4334/4335) — the reverse
+      co-location (a private scope pointed at the public transactor, DEP-1).
+
+  On any violation THROW `:sandbar/error :endpoint-port-doctrine-violation`
+  (ex-data `:violations` naming each offending `{:slot :scope :endpoint :port
+  :expected}`); returns nil when every slot's port matches its scope class.
+
+  This STRENGTHENS physical exclusion (two-lock collapse rule): wired into
+  `validate-registry!`, it refuses the forged registry at bring-up, so a
+  VALIDATED public registry's `reachable-endpoints` can never contain a
+  private-port URL — the A-1 property the CA-6 deferral rests on.  PURE."
+  [registry]
+  (when-let [violations (seq (slot-port-doctrine-violations registry))]
+    (throw (ex-info (str "store-registry transactor endpoint violates the port "
+                         "doctrine — a port does not match its slot's scope class "
+                         "(reserved private floor " private-transactor-port-floor
+                         "); refusing at bring-up")
+                    {:sandbar/error :endpoint-port-doctrine-violation
+                     :violations    (vec violations)})))
+  nil)
 
 (defn assert-owner-scope-resolved!
   "LOUD refuse-to-serve on a MALFORMED owner scope: a store-registry whose
@@ -547,19 +700,24 @@
   unchanged on success (so a bring-up can thread `(-> (load-registry p)
   validate-registry! …)`); throws the first marker-tagged violation otherwise.
   The composite standing-lock check, in fail-closed order:
-    1. `assert-owner-scope-resolved!` — a registry that cannot name its own
+    1. `assert-owner-scope-resolved!`   — a registry that cannot name its own
        trust scope is refused FIRST (:registry-owner-unresolved), so no later
        gate silently no-ops on a malformed owner;
-    2. `assert-credential-air-gap!`   — no FOREIGN private ENTRY: none at all
+    2. `assert-credential-air-gap!`     — no FOREIGN private ENTRY: none at all
        under a public owner, and only the owner's own scope under a private
        owner (:credential-air-gap-violation, A-1/DEP-3 + private↔private §1);
-    3. `assert-private-repo-distinct!` — no private corpus routes to a public
+    3. `assert-endpoint-port-doctrine!` — no slot carries a transactor port that
+       contradicts its scope class: no RESERVED PRIVATE port (>= 4336) in the
+       `:public` slot (the forgeable A-1 hole the scope-only air-gap misses), and
+       no PUBLIC port in a `:private` slot (:endpoint-port-doctrine-violation);
+    4. `assert-private-repo-distinct!`  — no private corpus routes to a public
        repo handle (:private-repo-collision, DEP-4).
   Intended to run at process bring-up, BEFORE any transactor connection opens."
   [registry]
-  (assert-owner-scope-resolved!  registry)
-  (assert-credential-air-gap!    registry)
-  (assert-private-repo-distinct! registry)
+  (assert-owner-scope-resolved!   registry)
+  (assert-credential-air-gap!     registry)
+  (assert-endpoint-port-doctrine! registry)
+  (assert-private-repo-distinct!  registry)
   registry)
 
 (defn bring-up-registry!
@@ -570,8 +728,9 @@
   map the process then resolves endpoints through (`resolve-endpoint`); throws
   the first marker-tagged violation (`:registry-not-found` /
   `:registry-parse-error` / `:registry-owner-unresolved` /
-  `:credential-air-gap-violation` / `:private-repo-collision`) — the caller
-  MUST let that abort bring-up, never swallow it.
+  `:credential-air-gap-violation` / `:endpoint-port-doctrine-violation` /
+  `:private-repo-collision`) — the caller MUST let that abort bring-up, never
+  swallow it.
 
   This function realizes the A4 supervision ruling (2026-07-20; ns docstring
   SUPERVISION section): the supervisor IS the in-process component /

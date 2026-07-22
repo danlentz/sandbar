@@ -48,6 +48,70 @@
                           :local-disk-path "/Users/you/src/alpha"}}})
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; private-scope? — EXACTLY [:trust-scope/private <keyword>], nothing looser.
+;;   The scope-key vocabulary every gate keys on: `route/trust-scope-of` emits
+;;   a 2-element vector whose key is the KEYWORD :mm.project/ident
+;;   (:db.type/keyword in schema; the sentinel :project/UNASSIGNED is a keyword
+;;   too), and the docs say "exactly" — so a junk-tailed vector or a
+;;   non-keyword key is NOT a private scope.  The pre-tightening form admitted
+;;   [:trust-scope/private :k :extra :junk] and non-keyword keys, so a
+;;   malformed owner could resolve, look up entries, and even satisfy
+;;   reachable? against its own malformed twin.  Fail-closed now: malformed ⇒
+;;   not a scope ⇒ every consumer refuses.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(deftest private-scope-shape-is-exact
+  (testing "the ONE well-formed shape: a 2-element vector with a KEYWORD key"
+    (is (true? (reg/private-scope? [:trust-scope/private :proj/alpha])))
+    (is (= :proj/alpha (reg/private-scope-key [:trust-scope/private :proj/alpha]))))
+  (testing "EXACTLY means exactly — junk-tailed vectors are NOT private scopes
+            (FAILS against the pre-tightening form, which admitted
+            [:trust-scope/private :k :extra :junk])"
+    (doseq [bad [[:trust-scope/private :proj/alpha :extra]
+                 [:trust-scope/private :proj/alpha :extra :junk]]]
+      (is (false? (reg/private-scope? bad)) (pr-str bad))
+      (is (nil? (reg/private-scope-key bad))
+          "a junk-tailed vector yields NO key — consumers must not honor it")))
+  (testing "non-KEYWORD second elements are NOT private scopes (the project key
+            is :mm.project/ident — :db.type/keyword in schema — and
+            route/trust-scope-of emits keywords only; FAILS against the
+            some?-only pre-tightening form)"
+    (doseq [bad [[:trust-scope/private "alpha"]
+                 [:trust-scope/private 42]
+                 [:trust-scope/private [:proj/alpha]]
+                 [:trust-scope/private {:key :proj/alpha}]]]
+      (is (false? (reg/private-scope? bad)) (pr-str bad))))
+  (testing "short / bare / nil-keyed / non-vector shapes stay refused"
+    (doseq [bad [[:trust-scope/private nil]
+                 [:trust-scope/private]
+                 :trust-scope/private
+                 '(:trust-scope/private :proj/alpha)   ; a LIST is not the vector shape
+                 nil]]
+      (is (false? (reg/private-scope? bad)) (pr-str bad))))
+  (testing "ripple — reachable?: a junk-tailed 'owner' reaches NOTHING, not even
+            its own junk-tailed twin (pre-tightening, private-scope? admitted
+            the junk tail and (= owner target) made twin→twin reachable —
+            FAILS against that form)"
+    (let [junk [:trust-scope/private :proj/alpha :junk]]
+      (is (false? (reg/reachable? junk junk)))
+      (is (false? (reg/reachable? junk [:trust-scope/private :proj/alpha])))
+      (is (false? (reg/reachable? [:trust-scope/private :proj/alpha] junk)))))
+  (testing "ripple — owner resolution: a junk-tailed / string-keyed :owner-scope
+            is UNRESOLVED, and the composite refuses it loudly at bring-up
+            (pre-tightening both shapes slipped past the owner gate)"
+    (doseq [bad-owner [[:trust-scope/private :proj/alpha :junk]
+                       [:trust-scope/private "alpha"]]]
+      (let [r (assoc private-owner-registry :owner-scope bad-owner)]
+        (is (false? (reg/owner-scope-resolved? r)) (pr-str bad-owner))
+        (is (= :registry-owner-unresolved
+               (refusal-marker #(reg/validate-registry! r)))
+            (pr-str bad-owner)))))
+  (testing "ripple — scope-entry: a junk-tailed target looks up NOTHING (the
+            pre-tightening form resolved it to the :proj/alpha entry)"
+    (is (nil? (reg/scope-entry private-owner-registry
+                               [:trust-scope/private :proj/alpha :junk])))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; reachable? — the process-boundary truth table (the connection rule)
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
@@ -87,6 +151,103 @@
           "the private endpoint must be ABSENT from the public connection surface
            (A-1) even when present in the file — FAILS against an impl that
            returns every declared endpoint regardless of owner scope"))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; PORT DOCTRINE — the FORGEABLE A-1 hole the judge reproduced: a private-PORT
+;;   transactor endpoint mislabeled into the :PUBLIC slot.  The credential
+;;   air-gap sweeps :private ENTRIES and reachable? filters by SCOPE — NEITHER
+;;   inspects the PORT — so a public owner would reach, and resolve-endpoint
+;;   would hand out, the ruled-private 4336 port sitting in its own :public
+;;   slot.  assert-endpoint-port-doctrine! (a validate-registry! gate) closes it
+;;   across EVERY slot.  FAILS against the pre-fix impl whose :public slot port
+;;   was unchecked.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(deftest port-doctrine-refuses-forged-public-slot
+  (let [forged {:schema-version 1
+                :owner-scope :trust-scope/public
+                :private {}
+                :public {:transactor-endpoint private-endpoint}}]  ; ← 4336 in :public
+    (testing "the exact gap: WITHOUT the port doctrine the forgery is reachable —
+              the air-gap (sweeps :private only) PASSES it, and a public owner's
+              reachable set / resolver surface the ruled-PRIVATE 4336 port
+              straight from the :public slot"
+      (is (nil? (reg/assert-credential-air-gap! forged))
+          "air-gap does NOT catch a private-PORT endpoint mislabeled into :public")
+      (is (contains? (reg/reachable-endpoints forged) private-endpoint)
+          "public→public is reachable by SCOPE, so the private-port URL is on the
+           surface of the UNVALIDATED map — WHY a PORT gate is needed, not only
+           the scope air-gap")
+      (is (= private-endpoint (reg/resolve-endpoint forged :trust-scope/public))
+          "and the resolver would hand the public process the ruled-private port"))
+    (testing "the port doctrine CLOSES it: assert-endpoint-port-doctrine! AND the
+              validate-registry! composite REFUSE the forged public slot with
+              :endpoint-port-doctrine-violation.  FAILS against the pre-fix impl
+              with an unchecked :public slot"
+      (is (= :endpoint-port-doctrine-violation
+             (refusal-marker #(reg/assert-endpoint-port-doctrine! forged))))
+      (is (= :endpoint-port-doctrine-violation
+             (refusal-marker #(reg/validate-registry! forged)))
+          "validate-registry! refuses the forged public slot")
+      (let [data (try (reg/assert-endpoint-port-doctrine! forged)
+                      (catch clojure.lang.ExceptionInfo e (ex-data e)))]
+        (is (= [:public] (mapv :slot (:violations data)))
+            "the violation names the :public slot as the offender")
+        (is (= [4336] (mapv :port (:violations data)))
+            "and surfaces the ruled-private port 4336")))
+    (testing "end-to-end: bring-up over a forged FILE ABORTS with the same marker
+              (the A4 component/script must let it abort the process)"
+      (let [dir (doto (java.io.File. "target") .mkdirs)
+            tmp (java.io.File/createTempFile "forged-public-slot" ".edn" dir)]
+        (try
+          (spit tmp (pr-str forged))
+          (is (= :endpoint-port-doctrine-violation
+                 (refusal-marker #(reg/bring-up-registry! (str tmp)))))
+          (finally (.delete tmp)))))))
+
+(deftest port-doctrine-reverse-co-location-and-positive-control
+  (testing "the SYMMETRIC leg: a :private slot endpoint on a PUBLIC transactor
+            port (4334) — a private scope co-located on the public transactor —
+            is REFUSED (DEP-1 one-transactor-per-scope).  FAILS against a
+            :public-slot-only check"
+    (let [co-located (assoc-in private-owner-registry
+                               [:private :proj/alpha :transactor-endpoint]
+                               public-endpoint)]  ; alpha's transactor on the PUBLIC 4334
+      (is (= :endpoint-port-doctrine-violation
+             (refusal-marker #(reg/assert-endpoint-port-doctrine! co-located))))
+      (is (= :endpoint-port-doctrine-violation
+             (refusal-marker #(reg/validate-registry! co-located))))
+      (let [data (try (reg/assert-endpoint-port-doctrine! co-located)
+                      (catch clojure.lang.ExceptionInfo e (ex-data e)))]
+        (is (= [:private] (mapv :slot (:violations data))))
+        (is (= [4334] (mapv :port (:violations data)))))))
+  (testing "POSITIVE control: the well-formed registries — public on 4334, private
+            on 4336 — PASS the port doctrine (returns nil) and validate end-to-end,
+            so the gate rejects nothing legitimate"
+    (is (nil? (reg/assert-endpoint-port-doctrine! clean-public-registry)))
+    (is (nil? (reg/assert-endpoint-port-doctrine! private-owner-registry)))
+    (is (= clean-public-registry (reg/validate-registry! clean-public-registry)))
+    (is (= private-owner-registry (reg/validate-registry! private-owner-registry))))
+  (testing "the ONE retained asymmetry stays GREEN: a private owner holding a
+            :public ENTRY on the PUBLIC port (4334) is COHERENT — the port
+            doctrine passes it and validate-registry! returns it; the
+            private→public live connect is refused at resolve-endpoint, not here"
+    (let [alpha+public (assoc private-owner-registry :public
+                              {:transactor-endpoint public-endpoint :sid "global"
+                               :corpus-repo public-repo})]
+      (is (nil? (reg/assert-endpoint-port-doctrine! alpha+public)))
+      (is (= alpha+public (reg/validate-registry! alpha+public)))))
+  (testing "endpoint-transactor-port parses the port, and a portless / storage
+            endpoint places NO port in the doctrine (⇒ nil ⇒ skipped, never a
+            spurious violation)"
+    (is (= 4336 (reg/endpoint-transactor-port private-endpoint)))
+    (is (= 4334 (reg/endpoint-transactor-port public-endpoint)))
+    (is (nil? (reg/endpoint-transactor-port "datomic:mem://scratch")))
+    (is (nil? (reg/endpoint-transactor-port "datomic:dev://localhost/nodb")))
+    (is (nil? (reg/endpoint-transactor-port nil)))
+    (is (nil? (reg/assert-endpoint-port-doctrine!
+                (assoc clean-public-registry :public
+                       {:transactor-endpoint "datomic:mem://scratch"}))))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; assert-credential-air-gap! — the LOUD refusal (A-1 / DEP-3).  A public-owner
