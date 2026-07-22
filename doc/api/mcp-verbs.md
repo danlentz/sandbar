@@ -970,7 +970,7 @@ Multi-field BM25F fulltext search over a class's instances (Stage 29 cross-axis 
 - `from` (string) — Stage 29: seed entity ident (e.g. ':decisions/foo') or eid for `:via` graph-walk pre-filter; require :via together
 - `include` (array) — Projection options: 'field-scores' / 'snippets'
 - `limit` (integer) — Max hits (default 20; 0 = no cap)
-- `projection` (string) — Per-hit entity-shape — 'metadata-only' (default for MCP — :db/id + :db/ident + :dt/type only) or 'full' (all slots; ~10-100× larger payload).  Opt to 'full' when consumers need slot bodies; otherwise default keeps exploration payloads small per Gap 12 / Phase 1 B.3.
+- `projection` (string) — Per-hit entity-shape — 'metadata-only' (default for MCP — :db/id + :db/ident + :dt/type only), 'frontmatter' (all scalar+ref slots EXCEPT the bulky :mm.memory/body-raw — the lean middle ground for consumers that read name/description/rel-path/memory-type without bodies, e.g. the PreToolUse recall hook), or 'full' (all slots; ~10-100× larger payload).  Opt to 'full' only when consumers need slot bodies; otherwise the leaner shapes keep payloads small per Gap 12 / Phase 1 B.3.
 - `query`\* (string) — Query string (bag-of-words; no Lucene query-language operators)
 - `rank-by` (string) — Stage 29: re-rank axis — ':degree' / ':backlink-density' / ':recency' / ':freshness'
 - `temporal-slot` (string) — Stage 29: required for :rank-by :recency / :freshness — temporal-axis slot ident (e.g. ':mm.memory/last-touched')

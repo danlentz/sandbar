@@ -3002,7 +3002,7 @@
                     :temporal-slot {:type "string"
                                     :description "Stage 29: required for :rank-by :recency / :freshness — temporal-axis slot ident (e.g. ':mm.memory/last-touched')"}
                     :projection    {:type "string"
-                                    :description "Per-hit entity-shape — 'metadata-only' (default for MCP — :db/id + :db/ident + :dt/type only) or 'full' (all slots; ~10-100× larger payload).  Opt to 'full' when consumers need slot bodies; otherwise default keeps exploration payloads small per Gap 12 / Phase 1 B.3."}}
+                                    :description "Per-hit entity-shape — 'metadata-only' (default for MCP — :db/id + :db/ident + :dt/type only), 'frontmatter' (all scalar+ref slots EXCEPT the bulky :mm.memory/body-raw — the lean middle ground for consumers that read name/description/rel-path/memory-type without bodies, e.g. the PreToolUse recall hook), or 'full' (all slots; ~10-100× larger payload).  Opt to 'full' only when consumers need slot bodies; otherwise the leaner shapes keep payloads small per Gap 12 / Phase 1 B.3."}}
                    [:query :class])
     :handler search-bm25f-handler}
 

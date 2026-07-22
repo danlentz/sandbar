@@ -178,7 +178,14 @@
                               params/parsed-params
                               params/validated-params
                               mcp-auth/bearer-interceptor
-                              mcp-auth/require-bearer]
+                              mcp-auth/require-bearer
+                              ;; AFTER require-bearer: only AUTHENTICATED
+                              ;; callers may suppress their own event row
+                              ;; (401 probes stay logged).  Serves the
+                              ;; PreToolUse recall hook's per-call header
+                              ;; (~7k rows/day stanched) per the 2026-07-21
+                              ;; reduce-substantially events ruling.
+                              event-util/honor-suppress-event-logging-header]
        {:post mcp-transport/mcp-handler}
        ;; SSE channel for server → client notifications (Stage C.3)
        ;; per ADR B.1.1 + B.1.4 + B.1.5. Subscribers managed by

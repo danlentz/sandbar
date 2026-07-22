@@ -747,6 +747,16 @@
                                       first matched term in each slot,
                                       with `**term**` markdown highlighting
                                       of all matched-term occurrences
+    :projection    — per-hit `:entity` shape (sandbar.api.projection):
+                       :full          all slots incl. body (nil default —
+                                      legacy in-process contract)
+                       :frontmatter   all scalar+ref slots EXCEPT the bulky
+                                      `:mm.memory/body-raw` — the lean shape
+                                      for consumers that read only
+                                      name/description/rel-path/memory-type
+                                      (e.g. the PreToolUse recall hook,
+                                      2026-07-21)
+                       :metadata-only `:db/id` + `:db/ident` + `:dt/type`
 
   Returns:
     {:hits     [{:entity <entity-map> :eid <id> :score <double>
@@ -788,7 +798,9 @@
              (keyword? temporal-slot))
          (or (and (nil? from) (nil? via))
              (and (some? from) (some? via)))
-         (or (nil? projection) (#{:full :metadata-only} projection))]}
+         ;; :frontmatter admitted 2026-07-21 (recall-hook lean path): the
+         ;; mode already existed in projection-fn-for; this guard predated it.
+         (or (nil? projection) (#{:full :metadata-only :frontmatter} projection))]}
   (let [t-start         (System/currentTimeMillis)
         weights         (or field-weights (dt/effective-bm25f-weights-of class))
         _               (when (empty? weights)
