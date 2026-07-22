@@ -42,6 +42,7 @@
   (:import (java.io File)))
 
 (def ^:const default-resource-name "config.edn")
+(def ^:const example-resource-name "config-example.edn")
 (def ^:const client-config-relpath ".sandbar/config.edn")
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -90,11 +91,64 @@
            (edn/read (java.io.PushbackReader. r)))
          (catch Throwable _ nil))))
 
+(defn- warn-stderr!
+  "Loud, dependency-free config-layer warning.  This namespace deliberately
+   depends only on java + clojure.{edn,io,string} (see the lazy-require
+   note in `sandbar.util.edn/resolve-config-fn`), so no logging library —
+   stderr is the loud channel available at zero dependency cost."
+  [& parts]
+  (.println System/err (apply str "[sandbar.config] WARNING: " parts)))
+
+(defn bundled-resource
+  "Classpath-resource lookup seam (with-redefs-able for tests), mirroring
+   the `getenv` / `getprop` seam discipline above."
+  [resource-name]
+  (io/resource resource-name))
+
 (defn read-bundled-defaults
-  "Layer 1 — bundled defaults from the classpath `config.edn` resource."
+  "Layer 1 — bundled defaults from the classpath `config.edn` resource.
+
+   FRESH-CHECKOUT FALLBACK (portability gap, 2026-07-21): `config/config.edn`
+   is GITIGNORED, so a fresh checkout has no `config.edn` resource at all.
+   Before this fallback the layer silently resolved `{}`, `:required-schema`
+   resolved nil, and every schema-dependent acceptance test failed far from
+   the cause with `:db.error/not-an-entity Unable to resolve entity: :dt/slots`
+   cascades.  Resolution order:
+
+     1. `config.edn` present            → use it (unchanged behavior).
+        Present but UNPARSEABLE         → loud stderr warning + `{}`
+        (fail-closed: a corrupt real config is NOT masked by example
+        values — the downstream empty-`:required-schema` guard then
+        refuses loudly).
+     2. `config.edn` absent             → fall back to the COMMITTED
+        `config-example.edn` (identical `:required-schema`; sentinel
+        `:db` values) with a loud stderr notice.
+     3. BOTH absent                     → loud stderr warning + `{}`
+        (a packaging error; the empty-`:required-schema` guards in
+        `sandbar.test-util/load-required-schema` +
+        `sandbar.db.datomic/load-all-schema!` refuse loudly)."
   []
-  (or (read-edn-stream (io/resource default-resource-name))
-      {}))
+  (if-let [primary (bundled-resource default-resource-name)]
+    (or (read-edn-stream primary)
+        (do (warn-stderr! default-resource-name " found at " primary
+                          " but FAILED TO PARSE — treating layer 1 as empty."
+                          "  Fix the EDN syntax; the example fallback is NOT"
+                          " applied over a present-but-corrupt config.")
+            {}))
+    (if-let [example (bundled-resource example-resource-name)]
+      (do (warn-stderr! default-resource-name " not found on the classpath"
+                        " (it is gitignored — absent on a fresh checkout)."
+                        "  Falling back to the committed " example-resource-name
+                        " defaults so schema loading + acceptance runs work"
+                        " out of the box.  Copy config/" example-resource-name
+                        " to config/" default-resource-name
+                        " and edit :db to silence this.")
+          (or (read-edn-stream example) {}))
+      (do (warn-stderr! "NEITHER " default-resource-name " NOR "
+                        example-resource-name " found on the classpath —"
+                        " no bundled defaults; :required-schema will be empty"
+                        " and schema loading will refuse to run.")
+          {}))))
 
 (defn read-client-override
   "Layer 2 — client-project override from `<CLIENT_DIR>/.sandbar/config.edn`.
@@ -171,7 +225,11 @@
    Useful for diagnosing 'why is :port X instead of Y?'."
   []
   {:client-dir         (client-dir)
-   :defaults-resource  (str (io/resource default-resource-name))
+   :defaults-resource  (str (bundled-resource default-resource-name))
+   ;; True iff layer 1 is being served by the committed config-example.edn
+   ;; fallback (fresh checkout — the gitignored config.edn is absent).
+   :defaults-fallback? (nil? (bundled-resource default-resource-name))
+   :example-resource   (str (bundled-resource example-resource-name))
    :client-override    (str (client-dir) "/" client-config-relpath)
    :client-exists?     (.exists (io/file (str (client-dir) "/" client-config-relpath)))
    :env-vars-set       (->> env-overrides-mapping

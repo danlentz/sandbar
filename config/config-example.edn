@@ -1,5 +1,23 @@
+;; sandbar/config/config-example.edn — the COMMITTED example of the
+;; Tier-1 bundled-defaults config (config/config.edn, which is
+;; GITIGNORED and therefore absent on a fresh checkout).
+;;
+;; TWO roles:
+;;   1. Example — copy to config/config.edn and edit :db for your
+;;      deployment.
+;;   2. Fresh-checkout FALLBACK — when config.edn is absent from the
+;;      classpath, `sandbar.config/read-bundled-defaults` serves THIS
+;;      file (with a loud stderr notice) so `:required-schema` resolves
+;;      and a fresh checkout's test/acceptance run works out of the box
+;;      instead of silently loading no schema.  Keep `:required-schema`
+;;      here in lockstep with config.edn — `sandbar.config-test/
+;;      example-required-schema-matches-primary` guards the drift.
 {:db      {:url "datomic:dev://localhost:4334/"
            :sid "example"}
+
+ ;; Sandbar HTTP port — 8389 (in the unused 8380-8399 range; off the
+ ;; universal-dev-default 8080).  Per the deployment-strategy ADR D.E.
+ :port 8389
 
  ;; Schema files loaded at startup, in order.  Each maps to
  ;; schema/<name>.edn under the project resources.  Order matters —

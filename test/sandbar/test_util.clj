@@ -5,6 +5,7 @@
             [datomic.api :as d]
             [io.pedestal.http :as http]
             [io.pedestal.test :refer [response-for]]
+            [sandbar.config :as cfg]
             [sandbar.db.datomic :as db]
             [sandbar.db.datatype :as dt]
             [sandbar.service.config :as config]
@@ -74,9 +75,32 @@
   (db/fire-post-schema-reload-handlers!))
 
 (defn load-required-schema
-  "Load all schema files specified in :required-schema config"
+  "Load all schema files specified in :required-schema config.
+
+   LOUD-FAIL (fresh-checkout portability gap, 2026-07-21): an empty /
+   nil `:required-schema` used to make this a SILENT no-op — the fixture
+   'loaded' zero schemas and every downstream test failed far from the
+   cause with `:db.error/not-an-entity Unable to resolve entity: :dt/slots`
+   cascades (see the Wave-0 note in `sandbar.config-test`).  With
+   `config/config.edn` gitignored, that was the default behavior of every
+   fresh checkout.  Now: refuse loudly, naming the root cause + the
+   `config-example.edn` fallback that should have supplied defaults."
   [conn]
-  (load-schema conn (edn/config-value :required-schema)))
+  (let [names (edn/config-value :required-schema)]
+    (when (empty? names)
+      (throw (ex-info
+              (str "No :required-schema resolved from config — refusing to run "
+                   "with an empty schema set (a silent no-schema load cascades "
+                   "into ':db.error/not-an-entity' failures far from the cause). "
+                   "On a fresh checkout config/config.edn is gitignored-absent and "
+                   "the committed config/config-example.edn fallback should supply "
+                   "defaults; seeing this means BOTH resources are missing from the "
+                   "classpath, config.edn is present but unparseable, or a client "
+                   ".sandbar/config.edn override emptied :required-schema.  "
+                   "Diagnose via (sandbar.config/provenance).")
+              {:required-schema names
+               :provenance      (cfg/provenance)})))
+    (load-schema conn names)))
 
 (defn make-test-db-fixture
   "Create a test fixture that sets up an in-memory Datomic database.
