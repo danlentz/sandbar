@@ -100,7 +100,13 @@
 (deftest project-graph-writes-single-memory
   (with-tmp-dir [dir nil]
     (let [result (pg/project-graph [(simple-memory)] {:to dir})]
-      (is (= [{:rel-path "decisions/foo.md" :written true}] result))
+      ;; One written row; it carries :rel-path + :written plus the additive
+      ;; :entity source-routing descriptor (W1.E collision-safe manifest gate).
+      (is (= 1 (count result)))
+      (is (= "decisions/foo.md" (:rel-path (first result))))
+      (is (true? (:written (first result))))
+      (is (= {:dt/type :mm/Decision :db/ident :decisions/foo} (:entity (first result)))
+          "the written row carries the source entity's routing descriptor (dt/type + ident; no owning-project on this fixture)")
       (let [file (io/file dir "decisions/foo.md")]
         (is (.exists file))
         (is (str/includes? (slurp file) "name: Foo Decision"))))))
