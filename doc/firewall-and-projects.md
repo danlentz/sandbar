@@ -186,7 +186,8 @@ Which yields the charter's directional table:
 | private{A} → private{B} | **refuse** | the cross-compartment diamond |
 | private{h} → private{h,w} | permit | target at least as visible as source |
 | private{h,w} → private{h} | **refuse** | a wider-visible source may not depend on narrower material |
-| UNASSIGNED → anything real | **refuse** | fail-closed until assigned |
+| UNASSIGNED → UNASSIGNED | permit | one private compartment — the pre-multi-project corpus keeps working |
+| UNASSIGNED → any real private compartment | **refuse** | fail-closed until assigned |
 
 The two compartment-tie slots (`:mm.project/runs-in-context`,
 `:mm.context/visible-projects`) get a different predicate
