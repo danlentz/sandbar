@@ -474,10 +474,16 @@
   "Walk a directory recursively; return a seq of rel-paths to .md files.
   Skips files whose basename is in `skip-basenames` (default:
   `+default-skip-basenames+` — README.md + MEMORY.md, the conventional
-  subtree-index / root-index patterns)."
+  subtree-index / root-index patterns).  When `skip-rel-prefixes` (a
+  coll of walk-relative path prefixes, e.g. #{\"memory/\"}) is non-empty,
+  rel-paths starting with any of those prefixes are excluded — the
+  enumeration-level subtree exclusion the η.5 drift-audit hardening uses
+  to keep the `memory/memory/` orphan-twin tree out of the parse set."
   ([^java.io.File root]
    (walk-markdown-files root +default-skip-basenames+))
   ([^java.io.File root skip-basenames]
+   (walk-markdown-files root skip-basenames nil))
+  ([^java.io.File root skip-basenames skip-rel-prefixes]
    (->> (file-seq root)
         (filter #(and (.isFile ^java.io.File %)
                       (str/ends-with? (.getName ^java.io.File %) ".md")
@@ -487,7 +493,35 @@
                (let [root-path   (.getCanonicalPath root)
                      file-path   (.getCanonicalPath f)
                      rel         (subs file-path (inc (count root-path)))]
-                 rel))))))
+                 rel)))
+        (remove (fn [rel]
+                  (boolean (some #(str/starts-with? rel %)
+                                 skip-rel-prefixes)))))))
+
+(defn walk-markdown-rel-paths
+  "PUBLIC enumeration surface over the ingest walk — return a sorted vec
+   of walk-relative rel-paths to `.md` files under `root` (a directory),
+   honoring the same defaults as `ingest-graph`'s internal walk
+   (`+default-skip-basenames+` — README.md + MEMORY.md skipped) so
+   enumeration-only consumers (e.g. `sandbar.audit.fs-substrate-drift`'s
+   orphan-twin detection) see exactly the file universe the parse walk
+   sees, WITHOUT duplicating the walk logic.
+
+   Opts:
+     :skip-basenames    — set of basenames to exclude (default
+                          `+default-skip-basenames+`; pass #{} to disable)
+     :skip-rel-prefixes — coll of walk-relative prefixes to exclude
+                          (default nil — nothing excluded)
+
+   A non-directory `root` returns [] (the single-file ingest short-circuit
+   has no walk to expose)."
+  ([root] (walk-markdown-rel-paths root {}))
+  ([root {:keys [skip-basenames skip-rel-prefixes]
+          :or   {skip-basenames +default-skip-basenames+}}]
+   (let [root-f (io/file root)]
+     (if (.isDirectory root-f)
+       (vec (sort (walk-markdown-files root-f skip-basenames skip-rel-prefixes)))
+       []))))
 
 (defn- filter-ingested-entities
   "Return `entities` reduced to the memories passing `filter-spec` plus
@@ -564,14 +598,25 @@
                  AFTER per-file parse.  Memories that fail :class /
                  :pred / :tree-filter drop; sections under dropped
                  memories drop too (consistency invariant).
+       :skip-basenames — basename skip-set for the walk (default
+                 `+default-skip-basenames+`).
+       :skip-rel-prefixes — coll of walk-relative path prefixes to
+                 EXCLUDE at enumeration time (default nil).  Unlike
+                 :filter's :tree-filter (which matches the STORED
+                 rel-path and so cannot separate a `memory/`-prefixed
+                 orphan-twin from the real file it aliases), this
+                 matches the raw WALK rel-path — the drift-audit uses
+                 #{\"memory/\"} to keep the orphan-twin tree out of
+                 the parse set (η.5 hardening).
 
    Returns: flat vector of entity-spec maps; for each .md file, the
    memory entity + its section entities in chain order are appended.
    Throws ex-info when `from-dir` is neither a directory nor a file."
   ([from-dir] (ingest-graph from-dir {}))
-  ([from-dir {filter-spec      :filter
-              skip-basenames   :skip-basenames
-              :or              {skip-basenames +default-skip-basenames+}}]
+  ([from-dir {filter-spec       :filter
+              skip-basenames    :skip-basenames
+              skip-rel-prefixes :skip-rel-prefixes
+              :or               {skip-basenames +default-skip-basenames+}}]
    (let [root (io/file from-dir)]
      (cond
        ;; Single-file :from short-circuits before the walk — the explicit
@@ -587,7 +632,7 @@
 
        :else
        (let [t-files-start (System/currentTimeMillis)
-             files (vec (walk-markdown-files root skip-basenames))
+             files (vec (walk-markdown-files root skip-basenames skip-rel-prefixes))
              t-files-end (System/currentTimeMillis)
              _ (log/info :INGEST/FILES-WALKED
                          {:from-dir (str from-dir)

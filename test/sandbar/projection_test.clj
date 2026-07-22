@@ -418,3 +418,49 @@
           "single-file :from derives the ident from the file basename")
       (is (= "m1.md" (-> back first :mm.memory/rel-path))
           "stored rel-path is the file basename"))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; η.5 drift-audit hardening — enumeration surface + subtree exclusion
+;;
+;; walk-markdown-rel-paths is the PUBLIC twin-detection enumeration surface
+;; (sandbar.audit.fs-substrate-drift); :skip-rel-prefixes is the opt-in
+;; enumeration-level subtree exclusion that keeps the memory/memory/
+;; orphan-twin tree out of the audit's parse walk.
+
+(deftest walk-markdown-rel-paths-enumeration-and-skip-prefixes
+  (with-tmp-dir [dir nil]
+    (write-md-file! dir "decisions/real_one.md"
+                    (assoc (simple-memory) :db/ident :memory.decisions/real_one))
+    ;; orphan-twin shape: corpus-anchor re-entry subtree
+    (write-md-file! dir "memory/decisions/real_one.md"
+                    (assoc (simple-memory) :db/ident :memory.decisions/real_one))
+    ;; conventional root-index — skipped by default basename set
+    (spit (io/file dir "README.md") "# index\n")
+    (is (= ["decisions/real_one.md" "memory/decisions/real_one.md"]
+           (pg/walk-markdown-rel-paths dir {}))
+        "default enumeration sees both trees (README.md basename-skipped), sorted")
+    (is (= ["decisions/real_one.md"]
+           (pg/walk-markdown-rel-paths dir {:skip-rel-prefixes #{"memory/"}}))
+        ":skip-rel-prefixes excludes the memory/ re-entry subtree at enumeration")
+    (is (= ["README.md" "decisions/real_one.md" "memory/decisions/real_one.md"]
+           (pg/walk-markdown-rel-paths dir {:skip-basenames #{}}))
+        "empty :skip-basenames disables the README/MEMORY skip")
+    (is (= [] (pg/walk-markdown-rel-paths (io/file dir "decisions/real_one.md") {}))
+        "a non-directory root has no walk to expose — []")))
+
+(deftest ingest-graph-skip-rel-prefixes-excludes-subtree-from-parse
+  (with-tmp-dir [dir nil]
+    (write-md-file! dir "decisions/real_two.md"
+                    (assoc (simple-memory) :db/ident :memory.decisions/real_two))
+    (write-md-file! dir "memory/decisions/real_two.md"
+                    (assoc (simple-memory) :db/ident :memory.decisions/real_two))
+    (let [all      (pg/ingest-graph dir {})
+          scoped   (pg/ingest-graph dir {:skip-rel-prefixes #{"memory/"}})
+          mem-cnt  (fn [specs] (count (filter :mm.memory/rel-path specs)))]
+      (is (= 2 (mem-cnt all))
+          "without the opt, BOTH trees parse (the twin aliases the real stored rel-path)")
+      (is (= 1 (mem-cnt scoped))
+          ":skip-rel-prefixes keeps the twin subtree out of the parse set")
+      (is (= "decisions/real_two.md"
+             (:mm.memory/rel-path (first (filter :mm.memory/rel-path scoped))))
+          "the surviving spec is the REAL file's"))))
