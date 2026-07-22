@@ -191,10 +191,30 @@
            (log/warn t :DB/POST-SCHEMA-RELOAD-HANDLER-FAILED
                      {:handler (str handler)})))))
 
-(defn load-all-schema! [uri]
-  (doseq [sd (required-schema)]
-    (load-schema uri sd))
-  (fire-post-schema-reload-handlers!))
+(defn load-all-schema!
+  "Load every schema in `(required-schema)` order, then fire the
+   post-schema-reload handlers.
+
+   LOUD-FAIL (fresh-checkout portability gap, 2026-07-21): an empty /
+   nil `:required-schema` used to make this a SILENT no-op — the boot
+   'loaded' zero schemas and the substrate failed far from the cause
+   (`:db.error/not-an-entity` on `:dt/slots` etc.).  Refuse loudly
+   instead; `sandbar.config/read-bundled-defaults` now falls back to the
+   committed `config-example.edn` on a fresh checkout, so hitting this
+   guard means both bundled configs are missing, config.edn is present
+   but unparseable, or a client override emptied `:required-schema`."
+  [uri]
+  (let [sds (required-schema)]
+    (when (empty? sds)
+      (throw (ex-info
+              (str "No :required-schema resolved from config — refusing a "
+                   "schema-less load-all-schema! (silent no-schema loads cascade "
+                   "into ':db.error/not-an-entity' failures far from the cause). "
+                   "Diagnose via (sandbar.config/provenance).")
+              {:uri uri :required-schema sds})))
+    (doseq [sd sds]
+      (load-schema uri sd))
+    (fire-post-schema-reload-handlers!)))
 
 ; (load-all-schema! (db-uri))
 

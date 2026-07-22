@@ -43,9 +43,33 @@
 ;; search/where-matching-eids) — see that namespace.  No process-wide state.
 
 (defn make-system
+  "Construct the (unstarted) component system map.
+
+   The default `:config` designator resolves through the LAYERED config
+   loader (`edn/config-value` → `sandbar.config/config`): bundled
+   defaults — including the committed `config-example.edn`
+   fresh-checkout fallback — deep-merged with the client
+   `.sandbar/config.edn` override and env-var overrides.
+
+   Fresh-checkout portability (2026-07-22, closes the make-system
+   residual of the 2026-07-21 config-example fallback): this path
+   previously read the raw `config.edn` classpath resource directly via
+   `edn/resource-value`, which (a) threw `Cannot open <nil> as a
+   Reader` on a fresh checkout — `config/config.edn` is gitignored, so
+   `io/resource` resolves nil — BYPASSING the
+   `sandbar.config/read-bundled-defaults` fallback, and (b) ignored the
+   client-override + env layers that the sibling boot-path config
+   consumer `db/db-spec` already honors (per the deployment-strategy
+   ADR D.B, `memory/decisions/sandbar_deployment_consumption_cohabitability_strategy_2026_05_24.md`).
+
+   A NON-`:config` designator is still read as a raw classpath EDN
+   resource via `edn/resource-value` — an extension seam for booting
+   from an alternate bundled config; no production caller uses it."
   ([] (make-system :config))
-  ([configuraton-designator]
-   (let [config (edn/resource-value configuraton-designator nil)]
+  ([configuration-designator]
+   (let [config (if (= :config configuration-designator)
+                  (edn/config-value)
+                  (edn/resource-value configuration-designator nil))]
      (component/system-map
        :config   config
        :pedestal (pedestal/make-pedestal-server :dev)

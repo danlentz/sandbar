@@ -93,8 +93,17 @@
   (resolve 'sandbar.config/config))
 
 (defn config-value
+  "Layered resolved config — the whole map with no args; a single key or
+   a key path otherwise.
+
+   NB (2026-07-22): the zero-arity used to delegate `(config-value nil)`,
+   which the variadic body received as `path = (nil)` — one element, so
+   it resolved `(get conf nil)` → ALWAYS nil.  The whole-map arity had
+   never worked (every pre-existing caller passes keys); surfaced when
+   `sandbar.core/make-system` was routed through this facade for
+   fresh-checkout portability."
   ([]
-   (config-value nil))
+   ((resolve-config-fn)))
   ([& path]
    (let [conf ((resolve-config-fn))]
      (cond
