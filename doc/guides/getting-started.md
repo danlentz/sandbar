@@ -33,7 +33,7 @@ bin/sandbar status
 Expected output, give or take counts:
 
 ```
-RUNNING — port 8080 (PID 47213)
+RUNNING — port 8389 (PID 47213)
 TOKEN  — present (/Users/<you>/claude/.sandbar/token)
 MEMORY — 4827 :mm/Memory entities in DB
 ```
@@ -53,7 +53,7 @@ export SANDBAR_TOKEN="$(cat ~/claude/.sandbar/token)"
 A raw HTTP sanity check confirms the surface is live:
 
 ```bash
-curl -s http://localhost:8080/api/status
+curl -s http://localhost:8389/api/status
 ```
 
 Response:
@@ -62,7 +62,7 @@ Response:
 {"time":"2026-05-23T12:00:00.000Z","clojure":{"major":1,"minor":12,"incremental":4}}
 ```
 
-If you reached `RUNNING` and `/api/status` answered, Sandbar is serving REST on `:8080/api/*` and MCP on `:8080/mcp`, sharing the same metamodel.
+If you reached `RUNNING` and `/api/status` answered, Sandbar is serving REST on `:8389/api/*` and MCP on `:8389/mcp`, sharing the same metamodel.  (8389 is the default port — layered config: `SANDBAR_PORT` env > client `.sandbar/config.edn` `:port` > bundled config > the `8389` fallback.)
 
 ## First memorial
 
@@ -91,10 +91,10 @@ markdown, re-project, observe the change.
 EOF
 ```
 
-Project it into the running DB through the codec layer.  Markdown is the `:mm/Memory` class's native codec — pass `format: markdown` and the codec mediator handles the parse, the section tree, the sibling chain, the tag entity creation:
+Project it into the running DB through the codec layer.  Markdown is the `:mm/Memory` class's native codec — pass `format: markdown` and the codec mediator handles the parse, the section tree, the sibling chain, the tag entity creation.  (Tool-name note: MCP wire names are underscore-joined — `sandbar_entity_create`, `sandbar_search_bm25f` — with hyphens preserved inside leaf tokens, e.g. `sandbar_navigate_path-via`.  The older dotted spellings remain accepted for one release as a deprecation alias; teach yourself the underscore forms.)
 
 ```bash
-curl -s -X POST http://localhost:8080/mcp \
+curl -s -X POST http://localhost:8389/mcp \
   -H "Authorization: Bearer $SANDBAR_TOKEN" \
   -H "Content-Type: application/json" \
   -d "$(jq -nR --arg src "$(cat /tmp/hello.md)" '{
@@ -102,7 +102,7 @@ curl -s -X POST http://localhost:8080/mcp \
         id: 1,
         method: "tools/call",
         params: {
-          name: "sandbar.entity.create",
+          name: "sandbar_entity_create",
           arguments: {
             class: ":mm/Memory",
             format: "markdown",
@@ -134,10 +134,10 @@ The memorial is now in the metamodel.  Validation ran during creation; the secti
 
 ## First substrate query
 
-Find the memorial you just created via BM25F fulltext.  The `sandbar.search.bm25f` verb takes a class scope, a query string, and projection options; the ranking uses the canonical Robertson-Zaragoza form with per-field weights declared on the class:
+Find the memorial you just created via BM25F fulltext.  The `sandbar_search_bm25f` verb takes a class scope, a query string, and projection options; the ranking uses the canonical Robertson-Zaragoza form with per-field weights declared on the class:
 
 ```bash
-curl -s -X POST http://localhost:8080/mcp \
+curl -s -X POST http://localhost:8389/mcp \
   -H "Authorization: Bearer $SANDBAR_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
@@ -145,7 +145,7 @@ curl -s -X POST http://localhost:8080/mcp \
     "id": 2,
     "method": "tools/call",
     "params": {
-      "name": "sandbar.search.bm25f",
+      "name": "sandbar_search_bm25f",
       "arguments": {
         "class": ":mm/Memory",
         "query": "projection pipeline ground-truth",
@@ -162,10 +162,10 @@ The same call against REST (`GET /api/store/search/bm25f?class=mm/Memory&query=p
 
 ## First typed-edge walk
 
-The memorial carries typed edges: `:mm.memory/tags` to its `:mm/Tag` entities, `:mm.memory/cites` to other memorials (when the markdown body contains `[[wikilinks]]`), `:mm.memory/first-section` to the section tree, and so on.  Walk outbound edges with `sandbar.navigate.outbound-edges`:
+The memorial carries typed edges: `:mm.memory/tags` to its `:mm/Tag` entities, `:mm.memory/cites` to other memorials (when the markdown body contains `[[wikilinks]]`), `:mm.memory/first-section` to the section tree, and so on.  Walk outbound edges with `sandbar_navigate_outbound-edges`:
 
 ```bash
-curl -s -X POST http://localhost:8080/mcp \
+curl -s -X POST http://localhost:8389/mcp \
   -H "Authorization: Bearer $SANDBAR_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
@@ -173,7 +173,7 @@ curl -s -X POST http://localhost:8080/mcp \
     "id": 3,
     "method": "tools/call",
     "params": {
-      "name": "sandbar.navigate.outbound-edges",
+      "name": "sandbar_navigate_outbound-edges",
       "arguments": {
         "from": ":memory/my-first-memorial",
         "predicates": [":mm.memory/tags"]
@@ -182,16 +182,16 @@ curl -s -X POST http://localhost:8080/mcp \
   }' | jq -r '.result.content[0].text' | jq .
 ```
 
-You'll see two tag entities returned — `:tag/getting-started` and `:tag/sandbar`.  Drop the `:predicates` filter and you'll see every outbound edge: tags, sections, frontmatter, etc.  Walk the inverse direction with `sandbar.navigate.inbound-edges` from a tag to discover every memorial that uses it.
+You'll see two tag entities returned — `:tag/getting-started` and `:tag/sandbar`.  Drop the `:predicates` filter and you'll see every outbound edge: tags, sections, frontmatter, etc.  Walk the inverse direction with `sandbar_navigate_inbound-edges` from a tag to discover every memorial that uses it.
 
-For multi-hop traversal — "every memorial cited from this decision's transitive citation graph, filtered to decisions only" — reach for `sandbar.navigate.path-via`, which compiles a Wilbur-style path expression to a Datomic recursive rule.  The path-grammar concept doc ([`doc/concepts/path-grammar.md`](../concepts/path-grammar.md)) covers the 21-operator vocabulary; the [`navigating-with-paths.md`](navigating-with-paths.md) guide walks worked examples.
+For multi-hop traversal — "every memorial cited from this decision's transitive citation graph, filtered to decisions only" — reach for `sandbar_navigate_path-via`, which compiles a Wilbur-style path expression to a Datomic recursive rule.  The path-grammar concept doc ([`doc/concepts/path-grammar.md`](../concepts/path-grammar.md)) covers the 21-operator vocabulary; the [`navigating-with-paths.md`](navigating-with-paths.md) guide walks worked examples.
 
 ## The metamodel in 60 seconds
 
 The whole substrate is introspectable through the same surface.  Ask the metamodel to describe itself:
 
 ```bash
-curl -s -X POST http://localhost:8080/mcp \
+curl -s -X POST http://localhost:8389/mcp \
   -H "Authorization: Bearer $SANDBAR_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
@@ -199,7 +199,7 @@ curl -s -X POST http://localhost:8080/mcp \
     "id": 4,
     "method": "tools/call",
     "params": {
-      "name": "sandbar.class.describe",
+      "name": "sandbar_class_describe",
       "arguments": {"class": ":mm/Memory"}
     }
   }' | jq -r '.result.content[0].text' | jq .
@@ -236,4 +236,5 @@ Pick the path that matches your goal.
 - [`doc/concepts/`](../concepts/) — theoretical reference layer; each file leads with a thesis and shows it carried out
 - [`doc/api/`](../api/) — mechanical reference for `dt/*`, REST endpoints, MCP verbs, and the codec protocol
 - [`auth.md`](../auth.md) — service-account token issuance and the auth model
+- [`firewall-and-projects.md`](../firewall-and-projects.md) — `:mm/Project`, contexts, and the directional firewall (the 0.2.0 centerpiece)
 - [`development.md`](../development.md) — running tests, the in-memory fixture, schema-reload workflows
