@@ -225,33 +225,83 @@ ruling satisfied.
 
 ---
 
-## 8. Silent-data-loss substrate bugs riding open (with the related contract family)
+## 8. Substrate write-path silent-loss — the two headline bugs FIXED (receipts); a thin residual family rides
 
-Two active bugs on exactly the surface a new 0.2.0 project exercises, each still open at
-release; both are silent-loss shaped (the write "succeeds" and data is missing):
+The two silent-loss bugs that used to ride here — on exactly the surface a new 0.2.0
+project exercises — are **both fixed at the release source** (`18a8fd3`), each with a
+source receipt and a live regression test.  Re-verified against HEAD, not against the
+prior brief.  What still rides is a thin residual family: one latent bug, and a downstream
+migration the substrate fix *enables* but the release does not require.
 
-- **Colon-prefixed slot-key drop** —
+### 8a. Colon-prefixed slot-key drop — FIXED
+
+- **What it was.**  MCP `entity.create` / `entity.update` silently dropped attribute keys
+  sent with a leading colon (`":mm.memory/cites"`): cheshire's `:key-fn keyword` mangles a
+  leading-colon JSON key into a keyword whose *namespace* carries the colon, which matched
+  no declared slot, so the slot was discarded with no error (producing identless entities
+  + shape-nonconformant memorials).  Memorial:
   `memory/bugs/mcp_entity_create_update_silently_drop_colon_prefixed_slot_keys_2026_06_29.md`.
-  MCP `entity.create`/`entity.update` silently drop attribute keys sent with a leading
-  colon (the natural EDN spelling a Clojure-side client reaches for).  The wire-local
-  colon-strip normalization is a small fix; until it lands, send bare `"mm.memory/name"`
-  style keys.
-- **`dt/make` ref-slot eid/map drop** —
+- **Fix + receipt.**  `slot-candidate-keys` (`src/sandbar/mcp/tools.clj:182-199`) now
+  includes the cheshire-mangled colon-namespace shape as a strict **superset** of the prior
+  four key-shapes, so a colon-prefixed key resolves to its declared slot; both write paths
+  route through it (`entity-create-handler` `tools.clj:498`, `entity-update-handler`
+  `tools.clj:1417`, via `coerce-slot-map`), and any key matching **no** slot is now a LOUD
+  `:MCP/coerce-slot-map-unknown-keys` warn (`tools.clj:247-251`) rather than a silent drop
+  (the caller-visible `unmatched-slot-keys` variant, `tools.clj:254-271`, backs the
+  refuse-not-echo floor used by `tag.define`).  Landed `bb60ba5` (ancestor of `18a8fd3`).
+  Regression test: `test/sandbar/mcp/tools_test.clj:303-314`
+  (`slot-candidate-keys-includes-mangled-and-original-shapes`).
+
+### 8b. `dt/make` ref-slot eid / map drop — FIXED
+
+- **What it was.**  The single-entity `dt/make` create path could not attach a
+  `:db.type/ref` slot value in *any* form: a raw eid or a Datomic EntityMap failed
+  `:dt/Ref` validation, while a `{:db/id eid}` / `{:db/ident kw}` upsert map **validated
+  and then silently dropped** — validation and transaction disagreed.  Consequence:
+  `:event/actor` was never persistable through this path.  Memorial:
   `memory/bugs/dt_make_ref_slots_reject_eids_and_silently_drop_maps_2026_07_02.md`.
-  Ref slots reject numeric eids and silently drop entity-map values — concretely,
-  `:event/actor` is never persistable through this path and `workflow.orchestrate`'s
-  `:actor` is a latent no-op.
-- **Related open contract family** (documented so consumers do not re-discover them):
-  `entity.update` additive-vs-replace semantics are under-documented at the docstring
-  level; no dotted-ident coercion on wire args; and
+- **Fix + receipt.**  `make` now canonicalizes every ref-slot value to a plain eid via
+  `coerce-ref-slot-values` **before both** validation and transact
+  (`src/sandbar/db/datatype.clj:403`, def at `634-662`), delegating to the shared
+  `ref->eid` canon (`datatype.clj:600-626` → `sandbar.db.ref/ref->eid`) that accepts eid /
+  ident-kw / EntityMap / `{:db/id}` / `{:db/ident}` / lookup-ref uniformly; an unresolvable
+  value is left uncoerced so validation rejects it **loudly** — coercion never fabricates
+  or silently drops.  Landed `9204e42` (ancestor of `18a8fd3`).  Regression tests:
+  `test/sandbar/db/ref_test.clj:65-85` (`ref-eid-all-shapes` — every ref shape resolves)
+  and `test/sandbar/datatype_test.clj:470-508` (`dt/make` persists a card-many ref set and
+  reads it back).
+
+- **Combined receipt (basis-stamped).**  `lein test sandbar.db.ref-test
+  sandbar.datatype-test sandbar.mcp.tools-test`, run in the worktree whose source equals the
+  release source (`18a8fd3`), reported **83 tests / 1120 assertions / 0 failures / 0
+  errors** (probe 2026-07-22).
+
+### 8c. What still rides (the thin residual family)
+
+- **Shape-check validator-fn deref — latent, still open.**
   `memory/bugs/shape_check_validator_fn_derefs_ident_bearing_fn_ref_to_keyword_latent_collapse_2026_07_06.md`
-  (a shape-check deref collapse, latent).
-- **Why they ride.**  Each needs a deliberate fix-small / ride-with-ruling /
-  defer-with-record disposition rather than a rushed patch inside the release window;
-  none corrupts existing data (the loss is on the new write, loudly testable).
-- **Planned close.**  The wire-local colon-strip normalization and the ref-slot
-  coercion are both small, test-shaped fixes queued for the post-0.2.0 hardening pass;
-  the dogfood window is expected to force-rank them.
+  (status: open).  A latent deref collapse in the shape validator-fn path
+  (`src/sandbar/shape.clj` `check-validator-fn`); off the create/update silent-loss
+  surface, no data-loss observed, carried for awareness.
+- **`:event/actor` typed-ref migration — enabled by 8b, not yet consumed.**  The substrate
+  fix makes the typed `:event/actor` ref attachable, but the shipped audit-event emitter
+  still carries the actor inside the `:event/description` EDN payload as the pre-fix
+  workaround (`src/sandbar/retract.clj:321-355`; the `retract_test` T8 comment marks the
+  migration point).  The workaround is correct + queryable; migrating it (and
+  `workflow.orchestrate`'s `:actor`) to the typed ref is a post-0.2.0 follow-up, not a
+  data-loss risk.
+- **`entity.update` additive-vs-replace — now documented (was a family note).**  For the
+  record: the card-many **replace-by-default / `additive: true`** contract is now fully
+  spelled out in the verb card (`tools.clj:2728`, per the W0.found 2026-06-30 decision) and
+  covered by `datatype_test.clj:470-508` — no longer an under-documented sharp edge.  A
+  minor caveat remains: no dotted-ident coercion on wire args (keyword/ref slot *values*
+  are coerced via `->ident`, `tools.clj:160-180`).
+- **Why the residuals ride.**  None is silent-data-loss on the create/update path — the two
+  that were are fixed above; each is latent, an awareness-note, or a migration the release
+  does not require.
+- **Planned close.**  The shape-check deref collapse and the `:event/actor` migration are
+  queued for the post-0.2.0 hardening pass; the dogfood window is expected to force-rank
+  them.
 
 ---
 
