@@ -369,17 +369,22 @@
         {:memory memory :sections sections}))))
 
 (defn- source-descriptor
-  "A slim ROUTING descriptor of a projected source entity — `:dt/type` +
-  `:mm.memory/owning-project` (the two slots `sandbar.project.route/route-of`
-  reads to derive a memory's firewall route) plus `:db/ident` for provenance
-  refusal messages.  Carried on every `project-graph` written row under `:entity`
-  so the W1.E manifest gate (`sandbar.project.provenance/verify-written-against-
-  route!`) can route the ACTUAL projected entity instead of re-resolving the
-  written rel-path — closing the collision fail-open where a rel-path shared by a
-  `:public` and a `:private` entity could resolve to the public twin and admit the
-  private twin's file.  A `select-keys` (not the whole entity) so no body/content
-  rides the transient row; route-of over this descriptor equals route-of over the
-  live entity (both read the same two slots, then resolve owning-project via db)."
+  "A slim source-entity descriptor of a projected entity — the ADOPTED 3-key
+  shape (W1 defaults 2026-07-21): `:db/ident` + `:dt/type` +
+  `:mm.memory/owning-project`.  Carried on every `project-graph` written row
+  under `:entity` so the W1.E manifest gate (`sandbar.project.provenance/
+  verify-written-against-route!`) can route the ACTUAL projected entity instead
+  of re-resolving the written rel-path — closing the collision fail-open where
+  a rel-path shared by a `:public` and a `:private` entity could resolve to the
+  public twin and admit the private twin's file.
+
+  TRUST CONTRACT (r4 CODEX-A MEDIUM fix): the gate consumes ONLY `:db/ident`,
+  as an IDENTITY CLAIM it verifies against the DB (ident must resolve to a
+  live entity whose own rel-path equals the row's) before routing the LIVE
+  entity — the two routing slots here are NOT trusted routing inputs (a forged
+  or stale `:mm.memory/owning-project` is inert); they ride for row
+  self-description/debuggability and shape stability.  A `select-keys` (not
+  the whole entity) so no body/content rides the transient row."
   [entity]
   (select-keys entity [:dt/type :mm.memory/owning-project :db/ident]))
 
@@ -447,10 +452,12 @@
           (guard-registry-critical-write! (.getPath target-file) content)
           (spit target-file content)
           (log/debug :PROJECT-GRAPH/wrote {:rel-path rel-path})
-          ;; `:entity` carries the SOURCE entity's routing descriptor so the W1.E
-          ;; provenance manifest gate routes the ACTUAL projected entity, never
-          ;; re-resolving the rel-path (which fails open under a rel-path
-          ;; collision).  Additive key; downstream consumers read only :rel-path.
+          ;; `:entity` carries the SOURCE entity's identity claim so the W1.E
+          ;; provenance manifest gate can verify it against the DB and route the
+          ;; ACTUAL projected entity, never re-resolving the rel-path (which
+          ;; fails open under a rel-path collision) and never trusting the
+          ;; descriptor's own slots (r4).  Additive key; downstream consumers
+          ;; read only :rel-path.
           {:rel-path rel-path :written true
            :entity   (source-descriptor memory)})))))
 

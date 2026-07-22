@@ -53,17 +53,23 @@
   / the S7 refuse-at-boundary precedent): a mis-scoped export must ABORT the
   future W1.F commit path loudly, not silently drop the offending rows.
 
-  Each row is routed EXACTLY when it carries its source entity: `project-graph`
-  stamps every written row with `:entity` (the projected entity's routing
-  descriptor), so the gate routes THAT entity rather than re-resolving the
-  rel-path — closing the R3-flagged fail-open where a rel-path shared by a
-  `:public` and a `:private` entity resolved to the public twin while the private
-  twin's file was what landed.  A row WITHOUT `:entity` (hand-built / legacy)
-  fail-closes over the SET of ALL entities carrying its rel-path (admitted only
-  if EVERY one is admissible); a rel-path resolving to zero live entities routes
-  `:private`.
+  Each row is routed EXACTLY when it carries a VERIFIED source-entity claim:
+  `project-graph` stamps every written row with `:entity` (the projected
+  entity's slim descriptor), and the gate PROVES that claim against the DB —
+  the descriptor's `:db/ident` must resolve to a live entity whose own
+  rel-path equals the row's — then routes the LIVE entity, never the carried
+  map (the r4 CODEX-A MEDIUM fix: the r3 gate trusted the descriptor's routing
+  slots, so a forged `:public` descriptor paired with a private rel-path
+  skipped the fail-closed set-lookup).  Exact routing closes the R3-flagged
+  fail-open where a rel-path shared by a `:public` and a `:private` entity
+  resolved to the public twin while the private twin's file was what landed.
+  A row WITHOUT `:entity` — or with an UNVERIFIABLE one (forged / stale /
+  unresolvable / rel-path-mismatched) — fail-closes over the SET of ALL
+  entities carrying its rel-path (admitted only if EVERY one is admissible);
+  a rel-path resolving to zero live entities routes `:private`.
 
-  RESIDUAL (not an absolute): on the wired emitter path this gate runs AFTER the
+  RESIDUAL (not an absolute; RULED — stays documented-option-(b), W1 adopted
+  defaults 2026-07-21): on the wired emitter path this gate runs AFTER the
   thunk has written the file-set to disk, so it keeps a COMMITTED (W1.F-published)
   manifest class-consistent but does NOT unwrite refused files at a scratch `:to`
   — the on-disk content filter is W1.H, the newer-DB restore guard W1.G.
@@ -309,16 +315,21 @@
 ;;;      W1.H/W1.F land, the export path applies NO filter, so THIS check is what
 ;;;      keeps a committed manifest class-consistent.
 ;;;
-;;;      ROW ROUTING — EXACT when the row carries its source entity, else
-;;;      COLLISION-SAFE.  `sandbar.projection/project-graph` stamps each written
-;;;      row with `:entity` (a routing descriptor of the ACTUAL projected
-;;;      entity), so the gate routes THAT entity — never re-resolving a rel-path,
-;;;      which is NOT unique and could resolve to a `:public` twin while a
-;;;      colliding `:private` twin's file is what actually landed (the fail-open
-;;;      the R3 board flagged).  A row WITHOUT `:entity` (hand-built / legacy) is
-;;;      resolved over the SET of ALL live entities carrying its rel-path and is
-;;;      admitted only if EVERY one is admissible (fail-closed on zero matches
-;;;      and on ANY inadmissible candidate).
+;;;      ROW ROUTING — EXACT when the row carries a VERIFIED source-entity
+;;;      claim, else COLLISION-SAFE.  `sandbar.projection/project-graph` stamps
+;;;      each written row with `:entity` (a slim descriptor of the ACTUAL
+;;;      projected entity); the gate treats it as an IDENTITY CLAIM, proves it
+;;;      against the db (`verified-carried-entity`: ident resolves live +
+;;;      live rel-path == row rel-path), and routes the LIVE entity — never
+;;;      the carried map (r4 CODEX-A MEDIUM fix: trusting the descriptor let a
+;;;      forged `:public` one skip this gate) and never re-resolving a bare
+;;;      rel-path, which is NOT unique and could resolve to a `:public` twin
+;;;      while a colliding `:private` twin's file is what actually landed (the
+;;;      fail-open the R3 board flagged).  A row WITHOUT `:entity` — or whose
+;;;      claim fails verification — is resolved over the SET of ALL live
+;;;      entities carrying its rel-path and is admitted only if EVERY one is
+;;;      admissible (fail-closed on zero matches and on ANY inadmissible
+;;;      candidate).
 ;;; ===========================================================================
 
 (defn- rel-path->entities
@@ -337,26 +348,69 @@
          (d/q '[:find [?e ...] :in $ ?rp :where [?e :mm.memory/rel-path ?rp]]
               db rel-path))))
 
+(defn- verified-carried-entity
+  "The LIVE entity a row's carried `:entity` descriptor VERIFIABLY names under
+  `db`, or nil when the claim does not check out (the CODEX-A make-up-exam
+  MEDIUM fix, r4: a carried descriptor is an IDENTITY CLAIM to be PROVEN
+  against the DB, never a routing input to be trusted — the r3 shape routed
+  the descriptor map itself, so forged routing slots pairing a private
+  rel-path with a `:public` owning-project skipped the fail-closed set-lookup
+  entirely).  The claim verifies iff BOTH:
+
+    (a) the descriptor's `:db/ident` resolves to a LIVE entity
+        (`ref/ref->eid` — total, nil on unresolvable), AND
+    (b) that live entity's OWN `:mm.memory/rel-path` equals the row's
+        `:rel-path` — the descriptor names the entity whose projection this
+        row claims to BE, not some admissible entity living elsewhere.
+
+  On success the caller routes the LIVE entity: the descriptor's carried
+  routing slots (`:dt/type` / `:mm.memory/owning-project`) are NEVER consulted
+  for routing, so forging them is INERT in both directions (a forged `:public`
+  cannot widen a private row; a forged private claim cannot over-refuse a
+  public row).  nil ⇒ the caller falls back to the collision-safe set-lookup
+  (fail-closed) — an unverifiable claim lands IN the fallback, never skips it.
+
+  RESIDUAL (honest scope): verification binds the row to a live entity that
+  REALLY projects to that rel-path, but the gate is metadata-only — it cannot
+  check that the BYTES at the row's path equal that entity's projection.
+  Under a genuine rel-path collision a direct caller could still NAME the
+  admissible twin while the file holds the other twin's content; the on-disk
+  content filter is W1.H (the same residual the spill seam documents), and
+  `project.export` builds rows internally (`project-graph` stamps the entity
+  it actually emitted), so the wired path never exercises that freedom."
+  [db row]
+  (when-let [desc (:entity row)]
+    (when (and (map? desc) (some? (:rel-path row)))
+      (when-let [eid (ref/ref->eid db (:db/ident desc))]
+        (let [ent (d/entity db eid)]
+          (when (= (:rel-path row) (:mm.memory/rel-path ent))
+            ent))))))
+
 (defn- row-source-routes
   "The route(s) whose admissibility governs a written `row` — a VECTOR (usually
   one).
 
-  PREFERRED (exact): the row carries its SOURCE entity descriptor under `:entity`
-  (stamped by `sandbar.projection/project-graph`) — route THAT actual projected
-  entity, ONE route, no rel-path re-resolution.  `route/route-of` over the carried
-  descriptor equals route-of over the live entity (same two routing slots, then
-  owning-project resolved via db), so this is exact without a db round-trip on the
-  descriptor's identity.
+  PREFERRED (exact, VERIFIED — r4): the row carries a source-entity descriptor
+  under `:entity` (stamped by `sandbar.projection/project-graph`) AND that
+  descriptor PROVES OUT against the db (`verified-carried-entity`: its
+  `:db/ident` names a live entity whose own rel-path equals the row's) — route
+  THAT LIVE entity, ONE route.  The carried routing slots are never trusted
+  (CODEX-A MEDIUM fix); the descriptor only selects WHICH live entity at that
+  rel-path the row is, which is what keeps a genuine `:public`/`:private`
+  rel-path collision exact (no over-refusal of the public twin, no fail-open
+  on the private twin).
 
-  FALLBACK (collision-safe): a row WITHOUT `:entity` (hand-built / legacy) is
-  resolved by rel-path to ALL live entities carrying it (`rel-path->entities`) —
-  each contributes a route, and the row is admitted only if EVERY one is
-  admissible (see `verify-written-against-route!`).  Zero matches ⇒ the single
-  UNASSIGNED `:private` route (`route-of` of nil), so an unresolvable path
-  fail-closes."
+  FALLBACK (collision-safe): a row with NO descriptor OR an UNVERIFIABLE one
+  (forged / stale / unresolvable / rel-path-mismatched) is resolved by rel-path
+  to ALL live entities carrying it (`rel-path->entities`) — each contributes a
+  route, and the row is admitted only if EVERY one is admissible (see
+  `verify-written-against-route!`).  Zero matches ⇒ the single UNASSIGNED
+  `:private` route (`route-of` of nil), so an unresolvable path fail-closes.
+  A forged descriptor can therefore never SKIP this fallback — failing
+  verification lands IN it."
   [db row]
-  (if (contains? row :entity)
-    [(route/route-of db (:entity row))]
+  (if-let [ent (verified-carried-entity db row)]
+    [(route/route-of db ent)]
     (if-let [ents (seq (rel-path->entities db (:rel-path row)))]
       (mapv #(route/route-of db %) ents)
       [(route/route-of db nil)])))
@@ -384,20 +438,23 @@
   offending (rel-path, resolved sensitivity/trust-scope) pair, rather than
   silently dropping rows.
 
-  Each row is routed by `row-source-routes`: EXACT when the row carries its source
-  `:entity` (project-graph rows), else COLLISION-SAFE over the SET of all entities
-  at its rel-path — admitted only if EVERY candidate is admissible, so an
-  ambiguous rel-path surfaces ONE offender entry per inadmissible candidate.
-  Fail-closed — a rel-path resolving to zero live entities routes `:private` (the
-  UNASSIGNED leg of `route-of`).  Returns nil when every row is admissible.
+  Each row is routed by `row-source-routes`: EXACT when the row's carried
+  `:entity` claim VERIFIES against the db (project-graph rows — the LIVE entity
+  routes, never the carried map's slots), else COLLISION-SAFE over the SET of
+  all entities at its rel-path — admitted only if EVERY candidate is
+  admissible, so an ambiguous rel-path surfaces ONE offender entry per
+  inadmissible candidate.  Fail-closed — a rel-path resolving to zero live
+  entities routes `:private` (the UNASSIGNED leg of `route-of`), and an
+  unverifiable carried claim lands in the set-lookup rather than skipping it
+  (r4 CODEX-A MEDIUM fix).  Returns nil when every row is admissible.
 
-  RESIDUAL (wired path): on the emitter touchpoint this gate runs AFTER the
-  projection thunk has already written the file-set to `:to` (see
-  `with-export-provenance`) — it aborts the manifest + `:succeeded` run + the
-  future W1.F commit path, NOT the on-disk files.  The on-disk content filter is
-  W1.H; the newer-DB restore guard is W1.G.  So a COMMITTED (published) manifest
-  is never class-inconsistent, but a scratch `:to` may hold refused files until
-  W1.G/W1.H land."
+  RESIDUAL (wired path; RULED — stays documented-option-(b), 2026-07-21): on
+  the emitter touchpoint this gate runs AFTER the projection thunk has already
+  written the file-set to `:to` (see `with-export-provenance`) — it aborts the
+  manifest + `:succeeded` run + the future W1.F commit path, NOT the on-disk
+  files.  The on-disk content filter is W1.H; the newer-DB restore guard is
+  W1.G.  So a COMMITTED (published) manifest is never class-inconsistent, but a
+  scratch `:to` may hold refused files until W1.G/W1.H land."
   [db route written]
   (let [target-scope (:trust-scope route)
         public?      (= :public (:sensitivity route))
@@ -435,8 +492,9 @@
     :written    the `sandbar.projection/project-graph` result
                 ([{:rel-path \"…\" :written true :entity <descriptor>} …]) —
                 supplies :manifest/file-set; each row's `:entity` (a source
-                routing descriptor) is what the whole-file-set gate routes
-                EXACTLY (a row lacking it fail-closes over all entities at its
+                identity CLAIM) is VERIFIED against the db and the LIVE entity
+                routes EXACTLY (a row lacking a descriptor, or carrying one
+                that fails verification, fail-closes over all entities at its
                 rel-path — see `verify-written-against-route!`)
     :basis-t    the DB basis-t at run time
     :exclusions / :redactions   the EXACT G4 enumeration (audience-split applied)
@@ -526,15 +584,16 @@
   for audit (best-effort, never masking the error) and the original exception
   re-throws.
 
-  SPILL SEAM (residual, W1.F unbuilt): `export-thunk` performs the projection —
-  it has ALREADY WRITTEN the file-set to disk at the caller's `:to` by the time
-  the gate verifies.  A refusal therefore aborts the manifest + the `:succeeded`
-  run + the future W1.F COMMIT/publish path, but does NOT unwrite the refused
-  files from a scratch `:to`.  The on-disk mechanisms are W1.G (newer-DB restore
-  guard) and W1.H (content filter); until they land, nothing PUBLISHES a scratch
-  `:to`, so the refused files are un-published local artifacts, not a leak.  A
-  future pre-write entity-level check at the handler could close this seam by
-  refusing before the thunk runs (deferred — W1.F is unbuilt this round).
+  SPILL SEAM (residual; RULED — stays documented-option-(b), W1 adopted
+  defaults 2026-07-21): `export-thunk` performs the projection — it has ALREADY
+  WRITTEN the file-set to disk at the caller's `:to` by the time the gate
+  verifies.  A refusal therefore aborts the manifest + the `:succeeded` run +
+  the future W1.F COMMIT/publish path, but does NOT unwrite the refused files
+  from a scratch `:to`.  The on-disk mechanisms are W1.G (newer-DB restore
+  guard) and W1.H (content filter); until they land, nothing PUBLISHES a
+  scratch `:to`, so the refused files are un-published local artifacts, not a
+  leak.  The alternative pre-write handler gate (option (a)) was considered
+  and NOT ordered — the ruling keeps this seam documented, not rebuilt.
 
   The run is minted with a caller-generated `:mm/id` UUID; `:manifest/run` is
   the REBUILD-STABLE `[:mm/id …]` lookup-ref (not a volatile `:db/id` eid) and
@@ -551,9 +610,11 @@
   NB the mint is a live-DB write; the `project.export` handler DOUBLE-gates this
   recorder (a server-side config/env flag ANDed with the per-call opt, both
   default OFF — see `recording-enabled?`) so a bare MCP caller cannot mint live
-  `:mm/Run` rows until the E/F/G handshake ratifies the recorder.  This fn
-  itself is ungated (library-level; the deployment gate lives at the wiring
-  point) so the falsification battery + the eventual ratified path both use it."
+  `:mm/Run` rows.  RULED (W1 adopted defaults 2026-07-21): the recorder STAYS
+  double-locked OFF and the operator flip BUNDLES with the W1.F git-export
+  landing, not a standalone ratification.  This fn itself is ungated
+  (library-level; the deployment gate lives at the wiring point) so the
+  falsification battery + the eventual flipped path both use it."
   [db {:keys [project agent exclusions redactions authorship-flag corpus-sha]} export-thunk]
   (let [started (java.util.Date.)
         basis-t (d/basis-t db)
@@ -614,9 +675,11 @@
 
   The `project.export` handler ANDs this with the per-call `:provenance` opt, so
   minting a live `:mm/Run` requires BOTH a caller asking for it AND an operator
-  having turned the recorder on — a bare MCP caller cannot mint provenance rows
-  before Dan's E/F/G ratification flips the flag.  (Env/prop reads route through
-  the `sandbar.config` redefinable seams so a test can stub them.)"
+  having turned the recorder on — a bare MCP caller cannot mint provenance rows.
+  RULED (W1 adopted defaults 2026-07-21): the recorder stays double-locked OFF;
+  the operator flip BUNDLES with the W1.F git-export landing.  (Env/prop reads
+  route through the `sandbar.config` redefinable seams so a test can stub
+  them.)"
   []
   (letfn [(truthy? [v] (contains? #{"1" "true" "yes" "on"}
                                   (some-> v str str/lower-case)))]

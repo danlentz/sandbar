@@ -319,6 +319,116 @@
                   (:offending-rows (ex-data ex))))))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; CODEX-A make-up-exam MEDIUM (r4, 2026-07-21) — a carried :entity descriptor
+;; is an IDENTITY CLAIM proven against the DB, never a trusted routing input.
+;; The r3 shape routed the descriptor map itself, so a direct caller pairing a
+;; PRIVATE rel-path with a forged :public descriptor skipped the fail-closed
+;; set-lookup entirely (provenance.clj row-source-routes; the exam's falsifier).
+;; Post-fix: verification = the descriptor's :db/ident resolves to a LIVE
+;; entity whose OWN rel-path equals the row's; the LIVE entity routes.  An
+;; unverifiable claim (forged slots are inert — ident real or not) lands IN
+;; the collision-safe fallback, never skips it.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(deftest forged-carried-descriptor-cannot-skip-the-fail-closed-set-lookup
+  (seed-public-project!)
+  (seed-private-project!)
+  (seed-memory-at! :memory/sec-f :private :proj/secret "secret/f.md")
+  (seed-memory-at! :memory/pub-e :public  :proj/pub    "public/e.md")
+  (let [db     (db/db)
+        export (fn [row]
+                 (prov/manifest-for-export
+                   db {:run 1 :project :proj/pub          ; DERIVES :public
+                       :written [row] :basis-t (d/basis-t db)}))
+        refusal (fn [row]
+                  (try (export row) nil
+                       (catch clojure.lang.ExceptionInfo e (ex-data e))))]
+    (testing "THE EXAM FALSIFIER — forged ROUTING SLOTS on the private row's REAL
+              ident are INERT: the live DB routes the row :private and the
+              :public export REFUSES (r3 trusted the descriptor and ADMITTED)"
+      (let [data (refusal {:rel-path "secret/f.md" :written true
+                           :entity   {:dt/type                  :mm/Memory
+                                      :mm.memory/owning-project :proj/pub ; FORGED
+                                      :db/ident                 :memory/sec-f}})]
+        (is (some? data) "a forged :public claim must NOT widen a private row")
+        (is (= :public-manifest-contains-private-rows (:sandbar/error data)))
+        (is (some #(and (= "secret/f.md" (:rel-path %)) (= :private (:sensitivity %)))
+                  (:offending-rows data))
+            "the refusal names the private row the forgery tried to reroute")))
+    (testing "an UNRESOLVABLE identity claim (made-up ident + :public claims) falls
+              back to the collision-safe set-find over the rel-path ⇒ refused"
+      (let [data (refusal {:rel-path "secret/f.md" :written true
+                           :entity   {:dt/type                  :mm/Memory
+                                      :mm.memory/owning-project :proj/pub
+                                      :db/ident                 :memory/no-such}})]
+        (is (some? data))
+        (is (= :public-manifest-contains-private-rows (:sandbar/error data)))))
+    (testing "a REL-PATH-MISMATCHED claim (a REAL public entity from elsewhere,
+              paired with the private row's path) falls back ⇒ refused"
+      (let [data (refusal {:rel-path "secret/f.md" :written true
+                           :entity   {:dt/type                  :mm/Memory
+                                      :mm.memory/owning-project :proj/pub
+                                      :db/ident                 :memory/pub-e}})]
+        (is (some? data)
+            "naming an admissible entity that does NOT live at this rel-path must not admit the row")
+        (is (= :public-manifest-contains-private-rows (:sandbar/error data)))))
+    (testing "a ZERO-live-entity rel-path with a forged :public claim fail-closes
+              UNASSIGNED :private (the skipped-fallback leg, directly)"
+      (let [data (refusal {:rel-path "nowhere/ghost.md" :written true
+                           :entity   {:dt/type                  :mm/Memory
+                                      :mm.memory/owning-project :proj/pub
+                                      :db/ident                 :memory/no-such}})]
+        (is (some? data) "an unresolvable path must never be assumed public, descriptor or not")
+        (is (= :public-manifest-contains-private-rows (:sandbar/error data)))
+        (is (some #(= "nowhere/ghost.md" (:rel-path %)) (:offending-rows data)))))))
+
+(deftest forged-descriptor-cannot-smuggle-a-foreign-row-into-a-private-export
+  ;; The :private-target symmetry cell: a FOREIGN private row whose descriptor
+  ;; forges the TARGET's own scope must still refuse with the foreign marker.
+  (seed-private-project!)                                  ; :proj/secret — TARGET
+  (seed-other-private-project!)                            ; :proj/other  — FOREIGN
+  (seed-memory-at! :memory/oth-f :private :proj/other "other/f.md")
+  (let [db   (db/db)
+        ex   (try (prov/manifest-for-export
+                    db {:run 1 :project :proj/secret      ; DERIVES [:private :proj/secret]
+                        :written [{:rel-path "other/f.md" :written true
+                                   :entity   {:dt/type                  :mm/Memory
+                                              :mm.memory/owning-project :proj/secret ; FORGED
+                                              :db/ident                 :memory/oth-f}}]
+                        :basis-t (d/basis-t db)})
+                  nil
+                  (catch clojure.lang.ExceptionInfo e e))]
+    (testing "the live DB routes the row to its REAL foreign scope ⇒ refused"
+      (is (some? ex))
+      (is (= :private-manifest-contains-foreign-rows (:sandbar/error (ex-data ex))))
+      (is (some #(and (= "other/f.md" (:rel-path %))
+                      (= [:trust-scope/private :proj/other] (:trust-scope %)))
+                (:offending-rows (ex-data ex)))
+          "the refusal names the row's TRUE scope, not the forged one"))))
+
+(deftest carried-routing-slots-are-inert-in-both-directions
+  ;; The narrowing direction: a descriptor forging a PRIVATE claim onto a
+  ;; genuinely-:public row must NOT over-refuse — the verified LIVE entity
+  ;; routes :public and the row is admitted on DB truth.  (Together with the
+  ;; falsifier above: carried slots can neither widen nor narrow a route.)
+  (seed-public-project!)
+  (seed-private-project!)
+  (seed-memory-at! :memory/pub-t :public :proj/pub "public/t.md")
+  (let [db (db/db)
+        {:keys [committed]}
+        (prov/manifest-for-export
+          db {:run 1 :project :proj/pub
+              :written [{:rel-path "public/t.md" :written true
+                         :entity   {:dt/type                  :mm/Memory
+                                    :mm.memory/owning-project :proj/secret ; FORGED (narrowing)
+                                    :db/ident                 :memory/pub-t}}]
+              :basis-t (d/basis-t db)})]
+    (testing "a verified identity claim routes by LIVE truth — forged private
+              slots cause no over-refusal"
+      (is (= :public (:manifest/firewall-class committed)))
+      (is (= ["public/t.md"] (:manifest/file-set committed))))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; FAIL-CLOSE — the derived route defaults to :private (locks the handler
 ;; default + the unresolvable/nil legs the OPUS examiner verified only
 ;; empirically).

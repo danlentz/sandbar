@@ -687,8 +687,10 @@
         ;; live `:mm/Run` requires BOTH (a) the per-call `:provenance` opt AND
         ;; (b) a server-side operator flag (`prov/recording-enabled?` — env/prop/
         ;; config, absent by default).  So a bare MCP caller CANNOT mint live
-        ;; provenance rows before Dan's E/F/G ratification flips the operator
-        ;; flag; absent either lock the export stays a read-only projection.
+        ;; provenance rows; absent either lock the export stays a read-only
+        ;; projection.  RULED (W1 adopted defaults 2026-07-21): the recorder
+        ;; STAYS double-locked OFF — the operator flip BUNDLES with the W1.F
+        ;; git-export landing, not a standalone ratification.
         want-record? (boolean (or (get args "provenance") (get args :provenance)))
         record?     (and want-record? (prov/recording-enabled?))
         proj-raw    (or (get args "project") (get args :project) :project/UNASSIGNED)
@@ -730,18 +732,22 @@
         ;; :mm/Run per export + the committed manifest whose firewall-class is
         ;; DERIVED from the DB-resolved project (CODEX-1 forgery fix).  The
         ;; recorder also VERIFIES the whole written-set against that derived
-        ;; route — routing each row's carried `:entity` (the actual projected
-        ;; entity, so a rel-path collision cannot fail open) — and THROWS a
-        ;; marker-tagged `:sandbar/error` (refuse-not-filter) on a
-        ;; class-inconsistent export.  That refusal propagates as the tool error,
-        ;; aborting the (future W1.F) commit path loudly.
+        ;; route — each row's carried `:entity` is an identity CLAIM verified
+        ;; against the DB before the LIVE entity routes (r4 CODEX-A MEDIUM fix;
+        ;; an unverifiable/forged descriptor falls back to the fail-closed
+        ;; set-find, so a rel-path collision cannot fail open and a forged
+        ;; descriptor cannot skip the fallback) — and THROWS a marker-tagged
+        ;; `:sandbar/error` (refuse-not-filter) on a class-inconsistent export.
+        ;; That refusal propagates as the tool error, aborting the (future
+        ;; W1.F) commit path loudly.
         ;;
-        ;; SPILL SEAM (residual, W1.F unbuilt): the export-thunk has ALREADY
-        ;; written the file-set to `to` by the time the gate fires, so a refusal
-        ;; aborts the manifest + `:succeeded` run + future-commit path but leaves
-        ;; the refused files at `to`.  Nothing publishes `to` until W1.F, and the
-        ;; on-disk content filter / newer-DB restore guard are W1.H / W1.G — so
-        ;; the refused files are un-published local artifacts, not a leak.
+        ;; SPILL SEAM (residual; RULED — stays documented-option-(b),
+        ;; 2026-07-21): the export-thunk has ALREADY written the file-set to
+        ;; `to` by the time the gate fires, so a refusal aborts the manifest +
+        ;; `:succeeded` run + future-commit path but leaves the refused files at
+        ;; `to`.  Nothing publishes `to` until W1.F, and the on-disk content
+        ;; filter / newer-DB restore guard are W1.H / W1.G — so the refused
+        ;; files are un-published local artifacts, not a leak.
         (let [{:keys [written manifest]}
               (prov/with-export-provenance (db/db) {:project proj} export-thunk)]
           ;; NB `with-export-provenance` also returns an `:audit` record (the
