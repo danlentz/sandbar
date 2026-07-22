@@ -7,6 +7,7 @@
    Covers each of the 4 drift categories + a roundtrip-clean baseline via
    synthetic FS fixtures (tmpdir-rooted; no dependency on the live corpus)."
   (:require [clojure.java.io :as io]
+            [clojure.string :as str]
             [clojure.test :refer :all]
             [datomic.api :as d]
             [sandbar.audit.fs-substrate-drift :as fs-drift]
@@ -234,3 +235,234 @@
       (is (= "decisions/foo.md" (norm "memory/decisions/foo.md")))
       (is (= "decisions/foo.md" (norm "decisions/foo.md")))
       (is (nil? (norm nil))))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; η.5 hardening (a) — orphan-twin detection (the memory/memory/ junk tree).
+;;
+;; Pre-hardening the audit was STRUCTURALLY BLIND to the twin tree: a twin's
+;; parsed spec carries the same stored rel-path as the real file it aliases
+;; (walk-rel `memory/decisions/foo.md` → stored `decisions/foo.md`), so the
+;; `into {}` spec index silently collapsed the pair last-write-wins — zero
+;; signal, and the twin's stale content could mask (or fabricate) content
+;; divergence for the REAL file.  Measured 2026-07-21: 59 junk twins under
+;; /Users/dan/claude/memory/memory, all aliasing real files.
+
+(deftest audit-detects-orphan-twin-tree
+  (testing "A memory/ re-entry twin is reported under :twins, is EXCLUDED from the parse universe, and can no longer mask the real file's content divergence"
+    (let [tmp       (mk-tmpdir!)
+          root      (io/file tmp "memory")   ; basename `memory` → :memory-root mode
+          _         (.mkdirs root)
+          real-body "Real corpus body — canonical."
+          twin-body "STALE twin body — must never reach the comparison index."
+          _         (mk-file! (.getPath root) "decisions/twin_host_decision.md"
+                              (decision-md "Twin Host Decision" real-body))
+          _         (mk-file! (.getPath root) "memory/decisions/twin_host_decision.md"
+                              (decision-md "Twin Host Decision" twin-body))
+          ;; Substrate body = the TWIN's body.  If the twin's spec ever wins
+          ;; the by-path index slot again (the pre-hardening last-write-wins
+          ;; collapse), the comparison degenerates to twin-vs-twin and the
+          ;; REAL file's divergence is masked — this fixture makes that
+          ;; blindness a deterministic test failure.
+          _ent      (dt/make :mm/Memory
+                             {:mm.memory/rel-path "decisions/twin_host_decision.md"
+                              :mm.memory/name     "Twin Host Decision"
+                              :mm.memory/memory-type :decision
+                              :mm.memory/body-raw twin-body})
+          report    (fs-drift/audit-all {:from (.getPath root)})]
+      (is (= :memory-root (get-in report [:summary :root-mode])))
+      (is (= 1 (get-in report [:summary :twin-count])))
+      (let [twin (first (:twins report))]
+        (is (= "memory/decisions/twin_host_decision.md" (:walk-rel-path twin))
+            "twin reported by its walk-derived rel-path")
+        (is (= "decisions/twin_host_decision.md" (:stored-rel-path twin))
+            "twin reports the stored rel-path it would alias")
+        (is (true? (:shadows-existing-file? twin))
+            "twin flagged as shadowing an existing real file"))
+      (is (some #(= "decisions/twin_host_decision.md" (:rel-path %))
+                (:content-divergence report))
+          "REAL file (body ≠ substrate) surfaces as divergence — the twin cannot mask it")
+      (is (= 1 (get-in report [:summary :fs-file-count]))
+          "parse universe counts only the real file — twin excluded at enumeration")
+      (is (empty? (:missing-from-substrate report))
+          "twin is classified :twin, never :missing-from-substrate")
+      (is (pos? (get-in report [:summary :total-drift-count]))
+          "twins count toward total drift"))))
+
+(deftest audit-twin-without-real-counterpart
+  (testing "A twin with NO real counterpart still reports under :twins (shadows-existing-file? false) and is NOT misfiled as :missing-from-substrate"
+    (let [tmp    (mk-tmpdir!)
+          root   (io/file tmp "memory")
+          _      (.mkdirs (io/file root "plans"))
+          _      (mk-file! (.getPath root) "memory/plans/ghost_plan.md"
+                           (decision-md "Ghost Plan" "Twin-only body."))
+          report (fs-drift/audit-all {:from (.getPath root)})]
+      (is (= 1 (get-in report [:summary :twin-count])))
+      (let [twin (first (:twins report))]
+        (is (= "memory/plans/ghost_plan.md" (:walk-rel-path twin)))
+        (is (false? (:shadows-existing-file? twin))
+            "no real file at the aliased rel-path"))
+      (is (= 0 (get-in report [:summary :fs-file-count])))
+      (is (empty? (:missing-from-substrate report))
+          "a junk twin is not a missing memorial"))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; η.5 hardening (b) — nil/empty body-raw normalization.
+;;
+;; 46/55 live :content-divergence entries at the 2026-07-21 probe were
+;; `0 chars vs 0 chars` comparator noise: FS parse yields an EMPTY body
+;; string while the substrate slot is simply ABSENT (nil) — two encodings
+;; of the same 'no body content'.
+
+(deftest audit-empty-vs-nil-body-is-not-divergence
+  (testing "FS empty / whitespace-only body vs substrate absent body-raw → NOT content divergence"
+    (let [tmp    (mk-tmpdir!)
+          rel-a  "decisions/empty_body_nil_slot.md"
+          rel-b  "decisions/whitespace_body_nil_slot.md"
+          _      (mk-file! tmp rel-a (decision-md "Empty Body Nil Slot" ""))
+          _      (mk-file! tmp rel-b (decision-md "Whitespace Body Nil Slot" "   \n\n"))
+          _e1    (dt/make :mm/Memory
+                          {:mm.memory/rel-path rel-a
+                           :mm.memory/name     "Empty Body Nil Slot"
+                           :mm.memory/memory-type :decision}
+                          {:validate? false})
+          _e2    (dt/make :mm/Memory
+                          {:mm.memory/rel-path rel-b
+                           :mm.memory/name     "Whitespace Body Nil Slot"
+                           :mm.memory/memory-type :decision}
+                          {:validate? false})
+          report (fs-drift/audit-all {:from tmp})]
+      (is (empty? (filter #(contains? #{rel-a rel-b} (:rel-path %))
+                          (:content-divergence report)))
+          "nil-vs-empty / nil-vs-whitespace body encodings must not report divergence")
+      (is (empty? (:missing-from-substrate report))
+          "both files matched their substrate entities"))))
+
+(deftest normalize-body-helper
+  (testing "normalize-body collapses nil / empty / whitespace-only to \"\"; preserves trailing-newline trim for real bodies"
+    (let [norm #'fs-drift/normalize-body]
+      (is (= "" (norm nil)))
+      (is (= "" (norm "")))
+      (is (= "" (norm "   \n\n")))
+      (is (= "body" (norm "body\n")))
+      (is (= "  leading-space body" (norm "  leading-space body"))))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; η.5 hardening (c) — FS walk scoping + memorial-policy class-scoping.
+;;
+;; Pre-hardening a repo-root :from walked the WHOLE repo and flooded
+;; :missing-from-substrate with non-memorial trees (562 tracked
+;; audit-results/*.md at the 2026-07-21 probe); and :missing-from-fs
+;; reported entities whose class the projection policy NEVER emits.
+
+(deftest audit-repo-root-from-scopes-walk-to-memory-subtree
+  (testing "A repo-root :from walks ONLY <from>/memory — non-memorial trees cannot flood :missing-from-substrate"
+    (let [tmp    (mk-tmpdir!)
+          _      (mk-file! tmp "memory/decisions/scoped_real_decision.md"
+                           (decision-md "Scoped Real Decision" "Corpus body."))
+          _      (mk-file! tmp "audit-results/loop-fixture/REPORT.md"
+                           "# Not a memorial\n\nAudit artifact prose.\n")
+          _      (mk-file! tmp "doc/some_guide.md" "# Docs, not corpus\n")
+          report (fs-drift/audit-all {:from tmp})]
+      (is (= :corpus-root-scoped (get-in report [:summary :root-mode])))
+      (is (str/ends-with? (get-in report [:summary :walk-root]) "/memory")
+          "summary surfaces the effective walk root")
+      (is (= ["decisions/scoped_real_decision.md"] (:missing-from-substrate report))
+          "only the memory/ subtree file surfaces; audit-results/ + doc/ never walked")
+      (is (= 1 (get-in report [:summary :fs-file-count]))))))
+
+(deftest audit-memory-root-and-repo-root-from-are-equivalent
+  (testing "…/memory and its parent repo root resolve to the SAME walk universe (both :from forms are honest)"
+    (let [tmp         (mk-tmpdir!)
+          _           (mk-file! tmp "memory/decisions/equiv_probe_decision.md"
+                                (decision-md "Equiv Probe Decision" "Body."))
+          from-repo   (fs-drift/audit-all {:from tmp})
+          from-memory (fs-drift/audit-all {:from (str (io/file tmp "memory"))})]
+      (is (= :corpus-root-scoped (get-in from-repo [:summary :root-mode])))
+      (is (= :memory-root (get-in from-memory [:summary :root-mode])))
+      (is (= (:missing-from-substrate from-repo)
+             (:missing-from-substrate from-memory))
+          "identical FS drift picture from either :from form")
+      (is (= (get-in from-repo [:summary :fs-file-count])
+             (get-in from-memory [:summary :fs-file-count]))))))
+
+(deftest resolve-walk-root-helper
+  (testing "resolve-walk-root precedence: memory basename > memory/ subdir (guarded by MEMORY.md root-index) > as-given"
+    (let [resolve-root #'fs-drift/resolve-walk-root
+          tmp          (mk-tmpdir!)]
+      (is (= :as-given (:root-mode (resolve-root tmp)))
+          "no memory/ subdir → walk as given (tmpdir fixture shape)")
+      (.mkdirs (io/file tmp "memory"))
+      (let [{:keys [walk-root root-mode]} (resolve-root tmp)]
+        (is (= :corpus-root-scoped root-mode))
+        (is (str/ends-with? (str walk-root) "/memory")))
+      ;; MEMORY.md guard: a dir that carries the root-index IS a memory root
+      ;; even when a junk memory/ subtree exists — never re-anchor into junk.
+      (spit (io/file tmp "MEMORY.md") "# root index\n")
+      (is (= :as-given (:root-mode (resolve-root tmp))))
+      (is (= :memory-root (:root-mode (resolve-root (str (io/file tmp "memory")))))
+          "basename `memory` wins outright"))))
+
+(deftest audit-missing-from-fs-is-policy-scoped
+  (testing "Classes the projection policy never emits (:db-only :mm/Run; runtime-behavioral :mm/EventLog) are policy-excluded from :missing-from-fs; corpus-document classes still report"
+    (let [tmp     (mk-tmpdir!)
+          _       (.mkdirs (io/file tmp "decisions"))
+          _mem    (dt/make :mm/Memory
+                           {:db/ident :memory.decisions/proper_missing_memorial
+                            :mm.memory/rel-path "decisions/proper_missing_memorial.md"
+                            :mm.memory/name     "Proper Missing Memorial"
+                            :mm.memory/memory-type :decision
+                            :mm.memory/body-raw "corpus-document class — genuine drift"})
+          _run    (dt/make :mm/Run
+                           {:db/ident :memory.runs/db_only_run_fixture
+                            :mm.memory/rel-path "runs/db_only_run_fixture.md"}
+                           {:validate? false})
+          _evlog  (dt/make :mm/EventLog
+                           {:db/ident :memory.event-logs/runtime_eventlog_fixture
+                            :mm.memory/rel-path "event-logs/runtime_eventlog_fixture.md"}
+                           {:validate? false})
+          report  (fs-drift/audit-all {:from tmp})
+          missing (set (:missing-from-fs report))
+          excluded-idents (set (map :entity-ident (:missing-from-fs-policy-excluded report)))]
+      (is (contains? missing :memory.decisions/proper_missing_memorial)
+          "corpus-document-class entity without an FS file IS missing-from-fs drift")
+      (is (not (contains? missing :memory.runs/db_only_run_fixture))
+          ":db-only :mm/Run never projects — not drift")
+      (is (not (contains? missing :memory.event-logs/runtime_eventlog_fixture))
+          "runtime-behavioral :mm/EventLog never projects a corpus file — not drift")
+      (is (contains? excluded-idents :memory.runs/db_only_run_fixture)
+          "policy-excluded ledger surfaces the :mm/Run row")
+      (is (contains? excluded-idents :memory.event-logs/runtime_eventlog_fixture)
+          "policy-excluded ledger surfaces the :mm/EventLog row")
+      (is (<= 2 (get-in report [:summary :missing-from-fs-policy-excluded-count]))))))
+
+(deftest audit-surfaces-substrate-rel-path-collisions
+  (testing "Two substrate entities normalizing to ONE rel-path key surface as a collision (DB-side twin) instead of one silently vanishing last-write-wins; the IDENTFUL entity is the comparison representative"
+    (let [tmp    (mk-tmpdir!)
+          _      (.mkdirs (io/file tmp "decisions"))
+          _a     (dt/make :mm/Memory
+                          {:db/ident :memory.decisions/collision_probe_a
+                           :mm.memory/rel-path "decisions/collision_probe.md"
+                           :mm.memory/name "Collision Probe A"
+                           :mm.memory/memory-type :decision
+                           :mm.memory/body-raw "entity A"}
+                          {:validate? false})
+          ;; The live collision shape (probe 2026-07-22: 61/61 cases): an
+          ;; IDENT-LESS junk duplicate at the prefixed rel-path form.
+          _b     (dt/make :mm/Memory
+                          {:mm.memory/rel-path "memory/decisions/collision_probe.md"
+                           :mm.memory/name "Collision Probe B (identless junk twin)"
+                           :mm.memory/memory-type :decision
+                           :mm.memory/body-raw "entity B"}
+                          {:validate? false})
+          report (fs-drift/audit-all {:from tmp})
+          coll   (first (filter #(= "decisions/collision_probe.md" (:rel-path %))
+                                (:substrate-rel-path-collisions report)))]
+      (is (some? coll) "the collision is surfaced, not silently collapsed")
+      (is (= [nil :memory.decisions/collision_probe_a] (:entity-idents coll))
+          "both colliding entities are named (nil = identless junk), deterministically ordered")
+      (is (contains? (set (:missing-from-fs report))
+                     :memory.decisions/collision_probe_a)
+          "the IDENTFUL entity — not the identless junk — represents the path downstream")
+      (is (pos? (get-in report [:summary :substrate-rel-path-collision-count])))
+      (is (pos? (get-in report [:summary :total-drift-count]))
+          "collisions count toward total drift"))))
