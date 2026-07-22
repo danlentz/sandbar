@@ -1,7 +1,9 @@
 (ns sandbar.core-test
   "Tests for system lifecycle management"
-  (:require [clojure.test :refer :all]
+  (:require [clojure.java.io :as io]
+            [clojure.test :refer :all]
             [com.stuartsierra.component :as component]
+            [sandbar.config :as cfg]
             [sandbar.core :as core]
             [sandbar.sys :as sys]
             [sandbar.db.datomic :as db]
@@ -66,6 +68,62 @@
     (let [system (core/make-system :config)]
       (is (map? system)
           "System should be created with explicit :config designator"))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; make-system config routing — the boot path must resolve :config through
+;; the LAYERED loader (sandbar.config), not the raw config.edn resource.
+;;
+;; Pins the 2026-07-22 fresh-checkout residual: config/config.edn is
+;; gitignored, so a fresh checkout has NO config.edn resource; the old raw
+;; `edn/resource-value` path threw `Cannot open <nil> as a Reader` from
+;; make-system/init (4 ERRORs in this namespace, reproduced verbatim in a
+;; fresh worktree at fab9dc7), BYPASSING the config-example.edn fallback
+;; sandbar.config gained on 2026-07-21 (297f9fb).  Tests stub the
+;; `bundled-resource` seam + layer readers (never the host classpath /
+;; FS / env), so they pass identically on a dev checkout (config.edn
+;; present) and a fresh checkout / CI worktree (config.edn absent).
+;; Restore discipline per the W.0.4 note in sandbar.config-test: reload!
+;; in a `finally` OUTSIDE the with-redefs scope, so the memoized config
+;; re-resolves with the REAL layer readers for subsequent tests.
+
+(deftest make-system-fresh-checkout-fallback-test
+  (testing "make-system boots from the committed config-example.edn when config.edn is absent"
+    (try
+      (with-redefs [cfg/bundled-resource
+                    (fn [n] (when (= n cfg/example-resource-name)
+                              (io/resource cfg/example-resource-name)))
+                    ;; Pin layers 2+3 empty — the host's .sandbar/config.edn
+                    ;; + SANDBAR_* env vars must not leak into assertions.
+                    cfg/read-client-override (constantly {})
+                    cfg/read-env-overrides   (constantly {})]
+        (cfg/reload!)
+        (let [system (core/make-system)]
+          (is (map? system)
+              "System should construct on a fresh checkout")
+          (is (seq (get-in system [:config :required-schema]))
+              "Fallback config must carry a NON-EMPTY :required-schema")
+          (is (= "example" (get-in system [:config :db :sid]))
+              "Fallback serves the example's sentinel :db values")))
+      (finally
+        (cfg/reload!)))))
+
+(deftest make-system-uses-layered-config-test
+  (testing "make-system :config resolves the 3-layer merge (client override wins over bundled defaults)"
+    (try
+      (with-redefs [cfg/read-bundled-defaults (constantly {:nrepl  {:port 1111}
+                                                           :marker :defaults})
+                    cfg/read-client-override  (constantly {:nrepl {:port 4711}})
+                    cfg/read-env-overrides    (constantly {})]
+        (cfg/reload!)
+        (let [system (core/make-system)]
+          (is (= :defaults (get-in system [:config :marker]))
+              "Layer-1 values shine through where not overridden")
+          (is (= 4711 (get-in system [:config :nrepl :port]))
+              "Client override wins over bundled defaults in the system :config")
+          (is (= 4711 (:port (:nrepl system)))
+              "The layered value reaches the NRepl component, not just the :config slot")))
+      (finally
+        (cfg/reload!)))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; init Tests
