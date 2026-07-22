@@ -37,6 +37,7 @@
    Override per-process via env-var; future evolution could route
    through config/registry."
   (:require [clojure.java.io       :as io]
+            [clojure.string        :as str]
             [clojure.tools.logging :as log]
             [sandbar.codec         :as codec]
             [sandbar.db.datatype   :as dt]
@@ -127,6 +128,125 @@
 
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; NAME_MAX emit-path writability guard (create-time filename-length hardening)
+;;
+;; An entity whose rel-path carries a path segment longer than the filesystem's
+;; per-segment name limit can NEVER be projected: the sink's write fails with
+;; ENAMETOOLONG ("File name too long"), the per-entity catch warn+swallows it,
+;; and the entity is stranded as a permanent DB-only orphan — a silent FS↔DB
+;; bijection break on every subsequent drain.  The failure window is WIDER
+;; than NAME_MAX itself: `atomic-write!` first writes a `<target>.tmp`
+;; sibling, so a final segment of 252-255 bytes has a LEGAL target name whose
+;; tmp sibling is refused (probe-confirmed on APFS 2026-07-21) — exactly the
+;; shape that passes every other guard and then dies silently at the sink.
+;;
+;; The budget is measured in UTF-8 BYTES — the portable floor across the
+;; filesystems this git-tracked corpus must survive on: ext4/tmpfs enforce
+;; NAME_MAX as 255 BYTES while APFS/HFS+ enforce 255 UTF-16 units, and a
+;; name's UTF-16 unit count never exceeds its UTF-8 byte count, so the byte
+;; bound covers both (an over-long multibyte name APFS happily writes locally
+;; would still break `git checkout` of the corpus on ext4 — refuse at create).
+;;
+;; Enforced at CREATE time (`sandbar.store/assert-corpus-rel-path-safe!`
+;; guard 1 — the same shared-pre-transact shape as the G2 containment
+;; sanitizer above) so an unprojectable rel-path is refused loudly BEFORE it
+;; commits; the sink never sees the entity.  Defined HERE rather than in
+;; sandbar.store because (a) the limits are properties of THIS namespace's
+;; atomic-write protocol — the `.tmp` reservation must single-source from
+;; `atomic-write-tmp-suffix` or the budget drifts — and (b) store already
+;; requires sinks; the reverse would cycle, so a store-side home would
+;; forever bar sink-side (Stage-D) reuse.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(def atomic-write-tmp-suffix
+  "Suffix `atomic-write!` appends to the target path for its temp sibling.
+   SINGLE SOURCE for the emit-path filename budget: `filename-max-bytes` is
+   derived from this suffix's byte length, so the write protocol and the
+   create-time guard cannot drift."
+  ".tmp")
+
+(def name-max-bytes
+  "Portable per-segment filesystem name limit (POSIX NAME_MAX): 255, measured
+   in UTF-8 BYTES — the strictest of the limits across ext4/tmpfs (255 bytes)
+   and APFS/HFS+ (255 UTF-16 units; a name's unit count never exceeds its
+   UTF-8 byte count).  Applies to every DIRECTORY segment of a projection
+   rel-path; the FINAL segment gets the tighter `filename-max-bytes`."
+  255)
+
+(def filename-max-bytes
+  "Effective budget for a rel-path's FINAL segment (the filename):
+   `name-max-bytes` minus the `atomic-write-tmp-suffix` reservation (4 bytes)
+   — the tmp sibling `<filename>.tmp` must itself fit under NAME_MAX or the
+   atomic write fails ENAMETOOLONG even though the target name is legal
+   (the 252-255-byte silent-orphan window; probe-confirmed 2026-07-21)."
+  (- name-max-bytes
+     (alength (.getBytes ^String atomic-write-tmp-suffix
+                         java.nio.charset.StandardCharsets/UTF_8))))
+
+(defn- utf8-byte-count
+  "Byte length of `s` under UTF-8 — the portable NAME_MAX measure."
+  ^long [^String s]
+  (alength (.getBytes s java.nio.charset.StandardCharsets/UTF_8)))
+
+(defn assert-rel-path-name-max!
+  "Refuse — fail-closed — a projection `rel-path` any of whose segments
+   exceeds the per-segment filesystem name budget, so an entity that could
+   NEVER be written by the fs sink is rejected at the create boundary instead
+   of committing and then orphaning silently (an ENAMETOOLONG at the sink is
+   warn+swallowed per the Stage-B failure semantics — the silent FS↔DB
+   bijection break this guard closes).
+
+   Budgets (UTF-8 bytes; see the section comment for why bytes):
+   - directory segments: `name-max-bytes` (255)
+   - final segment (the filename): `filename-max-bytes` (251) — reserving
+     the 4-byte `atomic-write-tmp-suffix` the write protocol appends.
+
+   Pure + lexical: splits on `/`, the sole separator on the JVM/unix write
+   plane (backslash is a literal filename char per the G2 attack-class-4
+   receipts).  MUST run BEFORE `contained-target-path` at any caller that
+   composes both: OS canonicalization inside the containment guard itself
+   throws a RAW `java.io.IOException` (\"File name too long\") for a
+   ≥256-byte segment on macOS, which would preempt this structured refusal.
+
+   Returns `rel-path` on success; throws a `:rel-path-segment-too-long`
+   ex-info naming the limit otherwise."
+  ^String [^String rel-path]
+  (let [segments (str/split rel-path #"/")
+        last-i   (dec (count segments))]
+    (doseq [[i seg] (map-indexed vector segments)]
+      (let [final? (= i last-i)
+            limit  (if final? filename-max-bytes name-max-bytes)
+            bytes  (utf8-byte-count seg)]
+        (when (> bytes limit)
+          (throw (ex-info
+                  (str "rel-path refused: " (if final? "filename" "directory")
+                       " segment "
+                       (pr-str (if (> (count seg) 60)
+                                 (str (subs seg 0 60) "…")
+                                 seg))
+                       " is " bytes " UTF-8 bytes — over the " limit "-byte "
+                       (if final?
+                         (str "filename budget (filesystem NAME_MAX is "
+                              name-max-bytes " bytes per path segment; the"
+                              " atomic-write protocol appends \""
+                              atomic-write-tmp-suffix "\" to the filename,"
+                              " reserving 4)")
+                         (str "NAME_MAX per-segment limit"))
+                       ".  The projection write would fail ENAMETOOLONG and"
+                       " strand the entity as a DB-only orphan (FS<->DB"
+                       " bijection break).  Shorten the segment.")
+                  {:sandbar/error  :rel-path-segment-too-long
+                   :rel-path       rel-path
+                   :segment        seg
+                   :segment-bytes  bytes
+                   :limit-bytes    limit
+                   :final-segment? final?
+                   :name-max-bytes name-max-bytes
+                   :tmp-suffix     atomic-write-tmp-suffix})))))
+    rel-path))
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; FS-projection sink — codec.emit + atomic fs write
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
@@ -160,7 +280,10 @@
   [^String target-path ^String content]
   (let [target ^java.io.File (io/file target-path)
         parent (.getParentFile target)
-        tmp    ^java.io.File (io/file (str target-path ".tmp"))]
+        ;; The suffix is the single-sourced `atomic-write-tmp-suffix` — the
+        ;; create-time NAME_MAX guard's `filename-max-bytes` budget reserves
+        ;; exactly its byte length, so protocol and guard cannot drift.
+        tmp    ^java.io.File (io/file (str target-path atomic-write-tmp-suffix))]
     (when parent (.mkdirs parent))
     (pg/guard-registry-critical-write! target-path content)
     (spit tmp content)
@@ -168,7 +291,7 @@
       (throw (ex-info "atomic write failed: File.renameTo returned false"
                       {:sandbar/error :atomic-rename-failed
                        :target-path   target-path
-                       :tmp-path      (str target-path ".tmp")})))
+                       :tmp-path      (str target-path atomic-write-tmp-suffix)})))
     nil))
 
 (defn fs-projection-sink
@@ -191,7 +314,15 @@
 
    Failure semantics: per-entity try/catch.  A failed write doesn't
    propagate; the entity stays drained (will re-enqueue on next
-   mutation).  Stage D will refine retry semantics.
+   mutation).  Stage D will refine retry semantics.  (One orphan class
+   is now prevented UPSTREAM rather than handled here: a rel-path
+   segment over the per-segment name budget — which would fail
+   ENAMETOOLONG on every drain and be warn+swallowed below, stranding
+   the entity DB-only — is refused loudly at create time by
+   `sandbar.store/assert-corpus-rel-path-safe!` guard 1 via
+   `assert-rel-path-name-max!`, so this sink never sees a fresh
+   over-budget entity.  Pre-existing over-budget rows keep today's
+   warn+swallow.)
 
    ONE exception to the swallow: a registry-strip refusal from the
    pre-write guard (`:sandbar/error :registry-strip-refusal`) is

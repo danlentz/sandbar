@@ -224,9 +224,22 @@
 
 (defn assert-corpus-rel-path-safe!
   "Pre-transact rel-path hardening for a corpus `:mm/Memory` `rel-path` about to
-   be persisted under ident `the-id`.  Two guards, both loud (fail-closed):
+   be persisted under ident `the-id`.  Three guards, all loud (fail-closed):
 
-     1. CONTAINMENT + GRAMMAR — routes `rel-path` through the LANDED G2 sanitizer
+     1. NAME-LENGTH / EMITTABILITY — refuses (loud `:rel-path-segment-too-long`)
+        any rel-path segment over the per-segment filesystem name budget, via
+        `sandbar.reactive.sinks/assert-rel-path-name-max!` (255 UTF-8 bytes per
+        directory segment; 251 for the filename — the sink's atomic-write
+        protocol appends a 4-byte `.tmp` sibling that must itself fit under
+        NAME_MAX).  An over-budget rel-path COMMITS fine but can never be
+        projected: the sink's write dies ENAMETOOLONG and is warn+swallowed on
+        every drain — a permanent DB-only orphan / silent FS↔DB bijection break
+        (the emit-path filename-guard hardening, 2026-07-21).  Runs FIRST by
+        necessity: OS canonicalization inside the containment guard itself
+        raw-throws `java.io.IOException` for a ≥256-byte segment on macOS,
+        which would preempt this structured refusal.
+
+     2. CONTAINMENT + GRAMMAR — routes `rel-path` through the LANDED G2 sanitizer
         `sandbar.reactive.sinks/contained-target-path` (the SAME check the
         reactive fs sink runs, MOVED before `dt/make`).  Refuses an absolute /
         `..`-traversal / symlink-escape rel-path with a `:rel-path-traversal-
@@ -235,7 +248,7 @@
         held the FS backstop, but let a pathological rel-path STRING reach the
         store — codex #2/#3).
 
-     2. COLLISION / OWNERSHIP — when `the-id` is known, refuses (loud
+     3. COLLISION / OWNERSHIP — when `the-id` is known, refuses (loud
         `:rel-path-collision`) if a DIFFERENT existing entity already owns
         `rel-path`.  Two memorials sharing one rel-path would project to the same
         corpus file, one clobbering the other's FS↔DB bijection.  An existing
@@ -246,9 +259,13 @@
    Class-agnostic + reusable at the mutation boundary (create today; update /
    bulk-import fold in here next).  Returns `rel-path`."
   [class rel-path the-id]
-  ;; (1) containment + grammar via the landed G2 sanitizer (throws on escape).
+  ;; (1) per-segment NAME_MAX budget — MUST precede containment (see docstring:
+  ;; canonicalization raw-throws on ≥256-byte segments before a structured
+  ;; refusal could fire).
+  (sinks/assert-rel-path-name-max! rel-path)
+  ;; (2) containment + grammar via the landed G2 sanitizer (throws on escape).
   (sinks/contained-target-path rel-path)
-  ;; (2) collision / ownership — only meaningful once we know our own ident.
+  ;; (3) collision / ownership — only meaningful once we know our own ident.
   (when the-id
     (let [owners (try
                    (d/q '[:find [?e ...] :in $ ?rp
