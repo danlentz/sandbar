@@ -267,18 +267,22 @@ When you no longer want the updates:
 
 ## Long-running operations (Tasks)
 
-Some tools — `sandbar_validation_start`, `sandbar_workflow_start-process` — kick off long-running operations and return a *task envelope*:
+Some tools kick off workflow-backed processes and return a **process handle**, not a generic task envelope — the shapes differ per verb:
+
+- `sandbar_validation_start` returns `{"validation": <process-entity>}` — the process entity, with its eid in `:db/id`.
+- `sandbar_workflow_start-process` returns `{"process-id": "<eid>", "workflow": "<ident>", "state": "<current-state-ident>"}`.
 
 ```json
 {
   "result": {
-    "task-id": "12345",
-    "status": "pending"
+    "process-id": "12345",
+    "workflow": ":workflow/validation",
+    "state": ":validation/queued"
   }
 }
 ```
 
-Poll status:
+The `process-id` (equivalently the validation process's `:db/id`, as a string) is the id you poll `tasks/get` with.  **The parameter is `taskId` (camelCase)** — a `task-id` key is ignored and the call errors `tasks/get requires :taskId parameter`:
 
 ```bash
 curl -X POST http://localhost:8389/mcp \
@@ -287,36 +291,48 @@ curl -X POST http://localhost:8389/mcp \
     "jsonrpc": "2.0",
     "id": 8,
     "method": "tasks/get",
-    "params": {"task-id": "12345"}
+    "params": {"taskId": "12345"}
   }'
 ```
 
-Response:
+Response for a running process:
 
 ```json
 {
   "result": {
-    "task-id": "12345",
-    "status": "complete",
-    "kind": "success",
-    "result": {...}
+    "taskId": "12345",
+    "status": "running",
+    "state": ":validation/in-progress"
   }
 }
 ```
 
-`kind` is one of `"success"` / `"failure"` / `"cancel"` — the terminal classification.  See [`doc/concepts/workflow-substrate.md`](../concepts/workflow-substrate.md#terminal-kind-classification) for the design.
+A terminal process additionally carries a `content` array:
+
+```json
+{
+  "result": {
+    "taskId": "12345",
+    "status": "completed",
+    "state": ":validation/done",
+    "content": [{"type": "text", "text": "Task in state: :validation/done ..."}]
+  }
+}
+```
+
+`status` is one of `"running"` / `"completed"` / `"failed"` / `"cancelled"` (or `"missing"`) — projected from the current workflow state's `:workflow/terminal-kind` classification (`:success` → `"completed"`, `:failure` → `"failed"`, `:cancel` → `"cancelled"`); there is no separate `kind` field on the task response.  See [`doc/concepts/workflow-substrate.md`](../concepts/workflow-substrate.md#terminal-kind-classification) for the design.
 
 Or subscribe to status notifications via SSE:
 
 ```
-data: {"jsonrpc":"2.0","method":"notifications/tasks/status","params":{"task-id":"12345","status":"running"}}
-data: {"jsonrpc":"2.0","method":"notifications/tasks/status","params":{"task-id":"12345","status":"complete","kind":"success"}}
+data: {"jsonrpc":"2.0","method":"notifications/tasks/status","params":{"taskId":"12345","status":"running"}}
+data: {"jsonrpc":"2.0","method":"notifications/tasks/status","params":{"taskId":"12345","status":"completed"}}
 ```
 
 Cancel a running task:
 
 ```json
-{"jsonrpc":"2.0","id":9,"method":"tasks/cancel","params":{"task-id":"12345"}}
+{"jsonrpc":"2.0","id":9,"method":"tasks/cancel","params":{"taskId":"12345"}}
 ```
 
 The cancel is honored only if the workflow's current state allows it (see workflow design).  If not, the response is a JSON-RPC error with `:code -32602`.
@@ -365,13 +381,21 @@ class SandbarMCP:
         return self._id
 
     def call(self, method, params=None):
-        body = {"jsonrpc": "2.0", "id": self._next_id(), "method": method}
+        # JSON-RPC notifications (method under "notifications/") carry NO id;
+        # the server acknowledges them with 204 No Content and an empty body.
+        is_notification = method.startswith("notifications/")
+        body = {"jsonrpc": "2.0", "method": method}
+        if not is_notification:
+            body["id"] = self._next_id()
         if params is not None:
             body["params"] = params
         r = httpx.post(self.url,
                        headers={"Authorization": f"Bearer {self.token}"},
                        json=body)
         r.raise_for_status()
+        # A 204 (notification ack) has no body — nothing to parse.
+        if r.status_code == 204 or not r.content:
+            return None
         return r.json()
 
     def tool_call(self, name, **arguments):
@@ -416,8 +440,8 @@ print(mcp.tool_call("sandbar_entity_create",
 ### Claude Code, end to end
 
 The complete connect flow — server up, token minted, token exported in the
-*launching* shell, project-scoped `.mcp.json` with env-expansion.  Four steps,
-in this order:
+*launching* shell, project-scoped `.mcp.json` with env-expansion in place
+**before** the client launches.  Five steps, in this order:
 
 **1. Start the server.**
 
@@ -437,17 +461,18 @@ bin/sandbar rotate-token corpus my-key
 **3. Export the token in the shell that will launch Claude Code.**  This is
 the classic footgun: `.mcp.json` env-expansion resolves `${SANDBAR_TOKEN}`
 from the environment of the `claude` *process* — so the export must happen in
-the launching shell **before** you start Claude Code, and a token rotated
-mid-session is not picked up until you relaunch.
+the launching shell **before** you start Claude Code (step 5), and a token
+rotated mid-session is not picked up until you relaunch.
 
 ```bash
 export SANDBAR_TOKEN="$(cat ~/claude/.sandbar/token)"
-claude   # launch from the project directory, with the export in effect
 ```
 
 **4. Register the server in the project's `.mcp.json`** (committed to the
 repo, so every consumer of the project shares the registration; the token
-itself never enters version control — only the env reference does):
+itself never enters version control — only the env reference does).  The file
+must exist **before** you launch — the client reads it at startup, so there is
+nothing to discover if registration comes after:
 
 ```json
 {
@@ -465,6 +490,14 @@ itself never enters version control — only the env reference does):
 
 The `:-disabled` default keeps the registration inert (auth simply fails
 closed) when the env-var is absent, instead of breaking client startup.
+
+**5. Launch Claude Code** from the project directory, with the export from
+step 3 in effect:
+
+```bash
+claude
+```
+
 Claude Code discovers Sandbar's tools and resources on session start and
 surfaces them as `mcp__sandbar__*` capabilities — e.g. the
 `sandbar_search_bm25f` verb appears as `mcp__sandbar__sandbar_search_bm25f`.
