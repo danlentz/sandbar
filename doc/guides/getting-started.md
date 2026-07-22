@@ -158,7 +158,7 @@ curl -s -X POST http://localhost:8389/mcp \
 
 You should see the new memorial at the top of the results, with a snippet drawn from the body and a numeric BM25F score.  Try a query that's not in the memorial to confirm it ranks below others; try the exact title to see the title-weight dominate.  Per-class weights live in `schema/mm.edn` under `:dt/bm25f-weights` on `:mm/Memory`.
 
-The same call against REST (`GET /api/store/search/bm25f?class=mm/Memory&query=projection`) returns the same shape from the same code path — projections of the same model.
+BM25F search is exposed as an MCP verb only — there is no REST route for it.  The REST API (`/api/*`) surfaces the store *introspection* endpoints (`/api/store/schema`, `/api/store/classes`, `/api/store/properties`, `/api/store/entities`) plus the `/api/aggregate`, `/api/navigate`, and `/api/orient` query verbs; see [`writing-a-rest-client.md`](writing-a-rest-client.md) for that surface.
 
 ## First typed-edge walk
 
