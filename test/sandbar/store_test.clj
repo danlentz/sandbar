@@ -4,8 +4,11 @@
    codec-md/edn-safe-ident digit-dodge."
   (:require [clojure.test :refer :all]
             [clojure.edn :as edn]
+            [datomic.api :as d]
             [sandbar.codec.markdown :as codec-md]
             [sandbar.db.datatype :as dt]
+            [sandbar.db.datomic :as db]
+            [sandbar.reactive.sinks :as sinks]
             [sandbar.store :as store]
             [sandbar.test-util :as tu]))
 
@@ -276,3 +279,143 @@
                                       :mm.memory/memory-type :decision
                                       :mm.memory/body-raw    "a2"}))
         "idempotent re-create of the same entity must NOT be a collision")))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Emit-path filename-length guard (2026-07-21 hardening).
+;;
+;; The bug: a :mm/Memory whose rel-path carries a segment over the filesystem
+;; per-segment name budget COMMITTED fine, then the reactive fs sink's write
+;; failed ENAMETOOLONG on every drain and was warn+swallowed — a permanent
+;; DB-only orphan, silent FS↔DB bijection break.  The window is wider than
+;; NAME_MAX itself: atomic-write!'s `.tmp` sibling means a 252-255-byte
+;; filename has a LEGAL target name whose tmp write still fails.  Fix:
+;; create-time loud refusal — guard (1) of assert-corpus-rel-path-safe!, via
+;; sinks/assert-rel-path-name-max! — so the sink never sees the entity.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defn- ascii-name
+  "An `n`-character (= n-UTF-8-byte) ASCII segment stub."
+  [n]
+  (apply str (repeat n "a")))
+
+(defn- rel-path-owners
+  "Eids of entities owning `rel-path` — empty means nothing committed, i.e.
+   the reactive sink can never see the refused create (nothing to drain)."
+  [rel-path]
+  (d/q '[:find [?e ...] :in $ ?rp :where [?e :mm.memory/rel-path ?rp]]
+       (db/db) rel-path))
+
+(deftest emit-guard-rejects-overlong-filename-and-nothing-commits
+  (testing "a filename over the emit budget → loud :rel-path-segment-too-long
+            refusal PRE-transact, message naming the limit; NO DB row commits,
+            so the reactive sink never sees the entity"
+    (let [rel-path (str "decisions/" (ascii-name 260) ".md")   ;; 263-byte filename
+          ex (try (store/create-memory! :mm/Memory
+                                        {:mm.memory/rel-path    rel-path
+                                         :mm.memory/name        "emit guard overlong"
+                                         :mm.memory/memory-type :decision
+                                         :mm.memory/body-raw    "x"})
+                  nil
+                  (catch clojure.lang.ExceptionInfo e e))]
+      (is (some? ex) "overlong filename must refuse loudly at create")
+      (is (= :rel-path-segment-too-long (:sandbar/error (ex-data ex)))
+          "carries the actionable :sandbar/error tag")
+      (is (re-find #"251" (.getMessage ^Exception ex))
+          "message names the effective filename budget")
+      (is (re-find #"NAME_MAX" (.getMessage ^Exception ex))
+          "message names the filesystem limit it enforces")
+      (is (empty? (rel-path-owners rel-path))
+          "no entity committed — the sink can never see it"))))
+
+(deftest emit-guard-rejects-tmp-window-filename
+  (testing "a 252-byte filename — LEGAL as a target name, but whose
+            `<name>.tmp` atomic-write sibling exceeds NAME_MAX — is refused:
+            the exact silent-orphan window (passes containment, commits, then
+            the sink's tmp write dies ENAMETOOLONG and is swallowed)"
+    (let [rel-path (str "decisions/" (ascii-name 249) ".md")   ;; 252-byte filename
+          ex (try (store/create-memory! :mm/Memory
+                                        {:mm.memory/rel-path    rel-path
+                                         :mm.memory/name        "emit guard tmp window"
+                                         :mm.memory/memory-type :decision
+                                         :mm.memory/body-raw    "x"})
+                  nil
+                  (catch clojure.lang.ExceptionInfo e e))]
+      (is (some? ex) "the tmp-window filename must be refused")
+      (is (= :rel-path-segment-too-long (:sandbar/error (ex-data ex))))
+      (is (true? (:final-segment? (ex-data ex))) "flagged as the FILENAME budget")
+      (is (= 252 (:segment-bytes (ex-data ex))))
+      (is (= sinks/filename-max-bytes (:limit-bytes (ex-data ex)))
+          "refused against the tmp-reserving 251-byte budget, not raw NAME_MAX")
+      (is (empty? (rel-path-owners rel-path)) "nothing committed"))))
+
+(deftest emit-guard-boundary-251-byte-filename-creates
+  (testing "a filename at EXACTLY the 251-byte budget still creates (guard is
+            not over-broad): ident derived, :mm/id minted, rel-path stored"
+    (let [rel-path (str "decisions/" (ascii-name 248) ".md")   ;; 251-byte filename
+          e (store/create-memory! :mm/Memory
+                                  {:mm.memory/rel-path    rel-path
+                                   :mm.memory/name        "emit guard boundary ok"
+                                   :mm.memory/memory-type :decision
+                                   :mm.memory/body-raw    "x"})]
+      (is (some? (:db/ident e)) "ident derived as usual")
+      (is (uuid? (:mm/id e)) ":mm/id minted")
+      (is (= rel-path (:mm.memory/rel-path e)) "boundary rel-path stored"))))
+
+(deftest emit-guard-directory-segment-budget
+  (testing "DIRECTORY segments get the full 255-byte NAME_MAX (no tmp suffix
+            lands on them): 256 refused, 255 creates"
+    (let [bad (str (ascii-name 256) "/x.md")
+          ex  (try (store/create-memory! :mm/Memory
+                                         {:mm.memory/rel-path    bad
+                                          :mm.memory/name        "emit guard dir 256"
+                                          :mm.memory/memory-type :decision
+                                          :mm.memory/body-raw    "x"})
+                   nil
+                   (catch clojure.lang.ExceptionInfo e e))]
+      (is (some? ex) "a 256-byte directory segment must be refused")
+      (is (= :rel-path-segment-too-long (:sandbar/error (ex-data ex))))
+      (is (false? (:final-segment? (ex-data ex))) "flagged as a DIRECTORY segment")
+      (is (= sinks/name-max-bytes (:limit-bytes (ex-data ex)))
+          "directory budget is full NAME_MAX (255), not the filename 251"))
+    (let [ok (str (ascii-name 255) "/x.md")
+          e  (store/create-memory! :mm/Memory
+                                   {:mm.memory/rel-path    ok
+                                    :mm.memory/name        "emit guard dir 255"
+                                    :mm.memory/memory-type :decision
+                                    :mm.memory/body-raw    "x"}
+                                   {:validate? false})]
+      (is (= ok (:mm.memory/rel-path e)) "a 255-byte directory segment creates"))))
+
+(deftest emit-guard-measures-utf8-bytes-not-chars
+  (testing "the budget is UTF-8 BYTES (the ext4/git portable floor), not
+            characters: 90 three-byte CJK chars + `.md` = 273 bytes yet only
+            93 chars — APFS would write it locally, ext4 checkout would not"
+    (let [rel-path (str "decisions/" (apply str (repeat 90 "中")) ".md")
+          ex (try (store/create-memory! :mm/Memory
+                                        {:mm.memory/rel-path    rel-path
+                                         :mm.memory/name        "emit guard multibyte"
+                                         :mm.memory/memory-type :decision
+                                         :mm.memory/body-raw    "x"}
+                                        {:validate? false})
+                  nil
+                  (catch clojure.lang.ExceptionInfo e e))]
+      (is (some? ex) "an over-byte-budget multibyte filename must be refused")
+      (is (= :rel-path-segment-too-long (:sandbar/error (ex-data ex))))
+      (is (= 273 (:segment-bytes (ex-data ex))) "measured in UTF-8 bytes"))))
+
+(deftest emit-guard-covers-ident-derived-rel-path
+  (testing "the guard runs on the FINALIZED rel-path regardless of source: an
+            explicit :db/ident whose DERIVED rel-path filename busts the
+            budget refuses identically (the brief's '>255-byte derived name')"
+    (let [long-ident (keyword "memory.decisions" (ascii-name 270))
+          ex (try (store/create-memory! :mm/Memory
+                                        {:db/ident              long-ident
+                                         :mm.memory/name        "emit guard from ident"
+                                         :mm.memory/memory-type :decision
+                                         :mm.memory/body-raw    "x"})
+                  nil
+                  (catch clojure.lang.ExceptionInfo e e))]
+      (is (some? ex) "derived-from-ident overlong rel-path must be refused")
+      (is (= :rel-path-segment-too-long (:sandbar/error (ex-data ex))))
+      (is (empty? (rel-path-owners (str "decisions/" (ascii-name 270) ".md")))
+          "nothing committed via the ident-derivation path either"))))

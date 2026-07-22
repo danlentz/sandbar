@@ -155,6 +155,20 @@ provenance and a proprietary-isolation firewall.
   predicate exempts the `:mm/Spec`/`:mm/Activity`/`:mm/Event` runtime roots so
   `:mm/Schedule` creates keep working.  Live probe confirms the loud rejection.  Fixes
   `memory/bugs/entity_create_codec_path_mints_identless_relpathless_entities_..._2026_07_08.md`.
+- **Emit-path filename-length guard**.  A rel-path with a path segment over the
+  filesystem's per-segment name limit committed fine and could then NEVER be
+  projected: the sink's write fails ENAMETOOLONG and is warn+swallowed on every
+  drain, stranding the entity as a DB-only orphan (silent FS↔DB bijection break) —
+  and the window is wider than NAME_MAX itself, since `atomic-write!`'s `.tmp`
+  sibling makes 252-255-byte filenames fail despite a legal target name
+  (probe-confirmed on APFS).  Now guard (1) of the pre-transact rel-path hardening:
+  `sinks/assert-rel-path-name-max!` **rejects loudly** (`:rel-path-segment-too-long`,
+  message naming the limit) at create time — 255 UTF-8 bytes per directory segment,
+  251 for the filename (the `.tmp` reservation, single-sourced from the write
+  protocol) — bytes, not chars, as the ext4/APFS portable floor for the git-tracked
+  corpus.  Runs before containment (OS canonicalization raw-throws on ≥256-byte
+  segments).  New `sinks_name_max_test` receipts (incl. an OS premise canary) + 6
+  store-test regressions; the sink never sees a fresh over-budget entity.
 - **Foundational co-evolution + tag-modeling substrate** (rolled in from the retired
   `[Unreleased]` narrative).  `lein issue-mcp-token` service-account bootstrap
   (`2d90d04`); the `:mm/Tag` first-class enrichment + 7 supporting SKOS/DCAT classes +
