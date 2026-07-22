@@ -2,6 +2,27 @@
 ;; TEMPLATE.  Copy per host, edit the physical paths/URLs, DO NOT commit a
 ;; populated copy (it is per-machine, not corpus-canonical).
 ;;
+;; HOW A PROCESS FINDS ITS REGISTRY (the ruled read seam).  The bring-up
+;; resolves the SANDBAR_STORE_REGISTRY env var when set + non-blank (explicit
+;; per-machine ops override); else the PER-PROJECT file
+;; etc/sandbar-store-registry.edn under the directory the process started FROM
+;; — fork-5's operating model (start the tool from the project's own dir)
+;; makes that file THAT project's own registry, per-project + per-machine,
+;; never shared (DEP-6).  Copy this template to that location.
+;;
+;; SUPERVISION / BRING-UP (A4 ruling, 2026-07-20).  The supervisor is the
+;; IN-PROCESS component / bring-up script invoking
+;; sandbar.deploy.registry/bring-up-registry! at process start (resolve →
+;; load → validate-registry!; any gate violation ABORTS bring-up).  NO
+;; launchd-per-scope service, NO OS-level separation (no per-scope OS users,
+;; security domains, or storage ACLs) — separation is enforced in-process by
+;; the credential air-gap + the closure refuse-to-serve gates (A4's
+;; calibration: "enforce separation during normal use, not attack-paranoid").
+;; INTERIM POSTURE: a single sandbar JVM serves the public scope until the
+;; multi-store fork forks a private scope; the two-slot transactor topology
+;; below (public 4334 / private 4336) becomes live WHEN that fork lands, each
+;; per-scope process brought up under this same posture over its own registry.
+;;
 ;; WHAT THIS IS.  Location-only indirection: a LOGICAL trust-scope → THIS host's
 ;; PHYSICAL {transactor-endpoint, corpus-repo, local-disk-path, sid}.  It is NOT
 ;; the membership authority — membership is corpus-canonical

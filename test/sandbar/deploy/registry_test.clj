@@ -376,3 +376,110 @@
            (refusal-marker #(reg/parse-registry "{:unbalanced ")))))
   (testing "well-formed EDN parses to the map"
     (is (= clean-public-registry (reg/parse-registry (pr-str clean-public-registry))))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; nil-keyed :private entry — the pathological NO-KEY entry is FOREIGN under
+;;   EVERY owner (the explicit allowed-key SET partition in
+;;   foreign-private-entries — a public owner's allowed set is #{}, so nil is
+;;   not in it; a private owner's is #{k}, so nil is not in it either).
+;;   Dedicated pin for the 2026-07-10 make-up exam's named coverage gap:
+;;   correct-by-source, now test-locked.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(deftest nil-keyed-private-entry-is-foreign
+  (testing "under a PUBLIC owner: a nil-keyed private entry (endpoint-bearing)
+            is enumerated FOREIGN and REFUSED at every entry point.  FAILS
+            against a bare not=-on-owner-key partition that special-cases nil
+            instead of the allowed-SET containment"
+    (let [nil-keyed (assoc-in clean-public-registry [:private nil]
+                              {:transactor-endpoint private-endpoint
+                               :corpus-repo "git@example.com:org/mystery.git"
+                               :local-disk-path "/Users/you/src/mystery"})]
+      (is (= [nil] (mapv first (reg/foreign-private-entries nil-keyed)))
+          "foreign-private-entries names the nil key itself")
+      (is (= :credential-air-gap-violation
+             (refusal-marker #(reg/assert-credential-air-gap! nil-keyed))))
+      (is (= :credential-air-gap-violation
+             (refusal-marker #(reg/validate-registry! nil-keyed)))
+          "and the bring-up composite refuses it end-to-end")
+      (let [data (try (reg/assert-credential-air-gap! nil-keyed)
+                      (catch clojure.lang.ExceptionInfo e (ex-data e)))]
+        (is (= :public-owner-holds-private (:air-gap-direction data))
+            "the public leg is the direction that fired")
+        (is (= [nil] (:private-scope-keys data))
+            "ex-data surfaces the nil key, not a scrubbed/empty key list")
+        (is (= [nil] (:with-transactor-endpoint data))
+            "the sharpest (live-endpoint) sub-case surfaces the nil-keyed entry too"))
+      (is (not (contains? (reg/reachable-endpoints nil-keyed) private-endpoint))
+          "A-1 holds regardless: the nil-keyed private endpoint is never on the
+           public connection surface even before the loud refusal")))
+  (testing "under a PRIVATE owner (alpha): the SAME nil-keyed entry is foreign
+            (nil ∉ #{:proj/alpha}) — refused on the private↔private leg, and
+            ENTRY-LEVEL (a disk-only nil-keyed entry still refuses)"
+    (let [nil-keyed (assoc-in private-owner-registry [:private nil]
+                              {:local-disk-path "/Users/you/src/mystery"})]
+      (is (= [nil] (mapv first (reg/foreign-private-entries nil-keyed))))
+      (is (= :credential-air-gap-violation
+             (refusal-marker #(reg/assert-credential-air-gap! nil-keyed))))
+      (is (= :credential-air-gap-violation
+             (refusal-marker #(reg/validate-registry! nil-keyed))))
+      (let [data (try (reg/assert-credential-air-gap! nil-keyed)
+                      (catch clojure.lang.ExceptionInfo e (ex-data e)))]
+        (is (= :private-owner-holds-foreign-private (:air-gap-direction data)))
+        (is (= [nil] (:private-scope-keys data)))
+        (is (= [] (:with-transactor-endpoint data))
+            "disk-only ⇒ empty endpoint sub-case: the refusal is entry-level")))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; DISCOVERY (the ruled read seam) — SANDBAR_STORE_REGISTRY env override, else
+;;   the per-project file under the process's start directory (fork-5).
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(deftest registry-path-resolution-seam
+  (testing "the env seam OVERRIDES when set + non-blank (per-machine ops, R2)"
+    (is (= "/somewhere/custom-registry.edn"
+           (reg/registry-path "/somewhere/custom-registry.edn" "/Users/you/src/alpha"))))
+  (testing "unset / blank env falls back to the PER-PROJECT file under the
+            directory the process started from (fork-5: the project's OWN
+            registry — per-project, never shared)"
+    (doseq [absent [nil "" "   "]]
+      (is (= "/Users/you/src/alpha/etc/sandbar-store-registry.edn"
+             (reg/registry-path absent "/Users/you/src/alpha")))))
+  (testing "the 0-arity resolves against the live env + user.dir to SOME path
+            without throwing (shape-only: existence is load-registry's job —
+            resolution never invents a permissive default)"
+    (is (string? (reg/registry-path)))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; bring-up-registry! — the ONE call the A4-ruled in-process component /
+;;   bring-up script makes at process start: resolve → load → validate.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(deftest bring-up-composite-load-validate
+  (let [dir (doto (java.io.File. "target") .mkdirs)
+        tmp (java.io.File/createTempFile "store-registry-test" ".edn" dir)]
+    (try
+      (testing "bring-up over a CLEAN registry file returns the validated map
+                (validate-registry! invoked at start — the A4 posture's call)"
+        (spit tmp (pr-str clean-public-registry))
+        (is (= clean-public-registry (reg/bring-up-registry! (str tmp)))))
+      (testing "bring-up over a POISONED file ABORTS with the air-gap marker —
+                the component/script must let this abort the process, so a
+                misconfigured registry can never quietly serve"
+        (spit tmp (pr-str (assoc-in clean-public-registry [:private :proj/alpha]
+                                    {:transactor-endpoint private-endpoint})))
+        (is (= :credential-air-gap-violation
+               (refusal-marker #(reg/bring-up-registry! (str tmp))))))
+      (finally (.delete tmp))))
+  (testing "bring-up over a MISSING path refuses loudly (:registry-not-found —
+            fail-closed; a process with no registry file does not come up open)"
+    (is (= :registry-not-found
+           (refusal-marker #(reg/bring-up-registry! "/no/such/registry.edn")))))
+  (testing "docs==behavior: the SHIPPED public template passes every bring-up
+            gate as-committed (edn read takes the FIRST form — the public
+            registry map; the private companion is commented prose)"
+    (let [tpl (reg/bring-up-registry! "etc/sandbar-store-registry.example.edn")]
+      (is (= :trust-scope/public (reg/owner-scope tpl)))
+      (is (= {} (:private tpl)) "the public template carries NO private entry")
+      (is (= #{"datomic:dev://localhost:4334/"} (reg/reachable-endpoints tpl))
+          "and its connection surface is exactly the public 4334 endpoint"))))

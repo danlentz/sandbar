@@ -68,6 +68,38 @@
   registry that reaches the public corpus read-only BY REFERENCE
   (`public-corpus-reference`, R9) and never co-locates a public transactor.
 
+  ── DISCOVERY — how a process finds ITS registry (ruled read seam) ──────────
+  `registry-path` resolves the file, two sources in order (confirm-only C-8 of
+  the 2026-07-10 Dan docket, adopted as the standing default):
+    1. the `SANDBAR_STORE_REGISTRY` env var when set + non-blank — the
+       explicit per-machine ops override (R2);
+    2. else the PER-PROJECT file `etc/sandbar-store-registry.edn` under the
+       directory the process started FROM — fork-5's operating model (start
+       the tool from the project's own directory) makes that file the
+       project's OWN registry, per-project + per-machine, never shared
+       (DEP-6).
+  `bring-up-registry!` composes resolve → load → validate in the ONE call a
+  bring-up makes.  A missing / unreadable / gate-violating file REFUSES
+  loudly; resolution never invents a permissive default.
+
+  ── SUPERVISION / BRING-UP POSTURE (A4 ruling, 2026-07-20) ──────────────────
+  Ruled (docket C-6 → A4): process supervision is the IN-PROCESS component /
+  bring-up script that invokes `bring-up-registry!` (⇒ `validate-registry!`)
+  at process start — NO launchd-per-scope service, NO OS-level separation
+  (no per-scope OS users, security domains, or storage ACLs).  The
+  threat-model calibration is A4's \"enforce separation during normal use,
+  not attack-paranoid\": scope separation is enforced IN-PROCESS by this
+  registry's credential air-gap + the closure refuse-to-serve gates
+  (`sandbar.deploy.closure`), not by OS machinery.
+
+  INTERIM POSTURE (explicit): until the multi-store fork actually forks a
+  private scope, the substrate runs as a SINGLE sandbar JVM serving the
+  public scope only (one Datomic transactor slot, public 4334/4335).  DEP-1's
+  one-transactor-process-per-trust-scope topology (public 4334 + net-new
+  private 4336) becomes live WHEN that fork lands — and each per-scope
+  process is then STILL brought up by script/component under this same
+  posture, each validating its own registry at start.
+
   ── LOGICAL scope key shape (consumes `sandbar.project.route`) ──────────────
   The logical trust-scope this registry keys on is EXACTLY what
   `route/trust-scope-of` produces: `:trust-scope/public` or the vector
@@ -81,7 +113,8 @@
   (`decisions/datomic_multi_store_deployment_strategy_hybrid_*`, D.3 port
   policy) + `decisions/private_sandbar_stores_live_in_their_own_git_repos_*`."
   (:require [clojure.edn     :as edn]
-            [clojure.java.io :as io]))
+            [clojure.java.io :as io]
+            [clojure.string  :as str]))
 
 ;;; ===========================================================================
 ;;; LOGICAL trust-scope key shape (the `route/trust-scope-of` output vocabulary)
@@ -145,6 +178,47 @@
       (throw (ex-info "store-registry file not found; refusing"
                       {:sandbar/error :registry-not-found :path (str path)})))
     (parse-registry (slurp f))))
+
+;;; ===========================================================================
+;;; DISCOVERY — the per-project file + the SANDBAR_STORE_REGISTRY env seam
+;;; (the ruled read seam: docket C-8 confirm-only, adopted 2026-07-20)
+;;; ===========================================================================
+
+(def registry-env-var
+  "The environment variable naming an EXPLICIT store-registry file path — the
+  per-machine ops override (R2).  When set + non-blank it wins over the
+  per-project default; it is an override seam ONLY, never a requirement."
+  "SANDBAR_STORE_REGISTRY")
+
+(def default-registry-relpath
+  "The PER-PROJECT registry file location, relative to the directory the
+  process is started FROM.  Fork-5's operating model (start the tool from the
+  project's own directory) makes this THAT project's own registry — per-project
+  + per-machine, never shared across projects (DEP-6).  Mirrors the committed
+  template `etc/sandbar-store-registry.example.edn`."
+  "etc/sandbar-store-registry.edn")
+
+(defn registry-path
+  "Resolve the store-registry file path for THIS process — the ruled read seam:
+
+    1. `env-value` (the `SANDBAR_STORE_REGISTRY` env var) when set + non-blank
+       — the explicit per-machine ops override; else
+    2. `etc/sandbar-store-registry.edn` under `project-dir` — the PER-PROJECT
+       default (fork-5: the process starts in the project's own directory, so
+       this is that project's OWN registry).
+
+  PURE in the 2-arity (both sources injected, so tests exercise the precedence
+  without touching the process environment); the 0-arity reads the live env
+  var + `user.dir`.  Resolution NEVER invents a registry — the resolved path
+  may not exist, and `load-registry` then refuses loudly
+  (`:registry-not-found`), which is the fail-closed contract."
+  ([]
+   (registry-path (System/getenv registry-env-var)
+                  (System/getProperty "user.dir")))
+  ([env-value project-dir]
+   (if (and env-value (not (str/blank? env-value)))
+     env-value
+     (str (io/file project-dir default-registry-relpath)))))
 
 (defn owner-scope
   "The trust scope of the PROCESS that owns/loads `registry` — the `:owner-scope`
@@ -487,3 +561,25 @@
   (assert-credential-air-gap!    registry)
   (assert-private-repo-distinct! registry)
   registry)
+
+(defn bring-up-registry!
+  "The ONE call a process bring-up makes at start — resolve the registry file
+  (`registry-path`: the `SANDBAR_STORE_REGISTRY` env seam, else the
+  per-project `etc/sandbar-store-registry.edn`), load it, and run EVERY
+  refuse-to-serve gate (`validate-registry!`).  Returns the validated registry
+  map the process then resolves endpoints through (`resolve-endpoint`); throws
+  the first marker-tagged violation (`:registry-not-found` /
+  `:registry-parse-error` / `:registry-owner-unresolved` /
+  `:credential-air-gap-violation` / `:private-repo-collision`) — the caller
+  MUST let that abort bring-up, never swallow it.
+
+  This function realizes the A4 supervision ruling (2026-07-20; ns docstring
+  SUPERVISION section): the supervisor IS the in-process component /
+  bring-up script that calls this at process start — not a launchd-per-scope
+  service, not OS-level separation.  Under the INTERIM single-JVM posture the
+  one public-scope process calls it; when the multi-store fork forks a
+  private scope, each per-scope process calls it over its own registry, same
+  posture."
+  ([] (bring-up-registry! (registry-path)))
+  ([path]
+   (validate-registry! (load-registry path))))

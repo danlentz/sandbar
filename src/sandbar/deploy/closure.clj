@@ -38,13 +38,19 @@
 
   ── WIRING (this increment builds the CHECK; live-boot insertion is DEFERRED) ─
   `assert-serves!` is the wiring-point function a session-build / DatomicPeer
-  start WOULD call.  It is NOT yet inserted into the live boot path: the live
-  corpus is UNASSIGNED-heavy and its public closure is not yet fully stamped, so
-  wiring this into live boot today would (correctly, fail-closed) REFUSE to serve
-  the live store.  Live insertion composes with the W1.G scope-bounded
-  reconstruct + a fully-stamped public-bottom closure — an explicit `what
-  remains` item.  This round exercises the guard only against datomic:mem
-  fixtures.
+  start WOULD call.  Its caller is the IN-PROCESS bring-up — the component /
+  bring-up-script posture ruled A4 (2026-07-20), the same bring-up that runs
+  `registry/bring-up-registry!` at start — NEVER an OS-level supervision layer
+  (no launchd-per-scope, no per-scope OS users/domains/storage; A4's
+  calibration: \"enforce separation during normal use, not attack-paranoid\").
+  It is NOT yet inserted into the live boot path: the live corpus is
+  UNASSIGNED-heavy and its public closure is not yet fully stamped, so wiring
+  this into live boot today would (correctly, fail-closed) REFUSE to serve the
+  live store.  INTERIM POSTURE (explicit): a single sandbar JVM serves the
+  public scope until the multi-store fork forks a private scope.  Live
+  insertion composes with the W1.G scope-bounded reconstruct + a fully-stamped
+  public-bottom closure — an explicit `what remains` item.  This round
+  exercises the guard only against datomic:mem fixtures.
 
   Spec: W1.deploy-topology.md §3 (the invariant), §6 DEP-2 (fault-injection
   refuse-to-serve), §6.1 DEP-7 (closure label-compatibility), DEP-8 (closure
@@ -432,9 +438,17 @@
   ctx))`); throws the first marker-tagged violation otherwise.
 
   This is the function a session-build / DatomicPeer start WOULD call to enforce
-  refuse-to-serve.  It is NOT wired into the live boot path this round — see the
-  ns docstring's WIRING note: live insertion composes with W1.G's scope-bounded
-  reconstruct + a fully-stamped closure and is an explicit `what remains` item."
+  refuse-to-serve — called by the IN-PROCESS bring-up (component / script, the
+  A4-ruled supervision posture; never an OS supervision layer).  It is NOT
+  wired into the live boot path this round — see the ns docstring's WIRING
+  note: live insertion composes with W1.G's scope-bounded reconstruct + a
+  fully-stamped closure and is an explicit `what remains` item (single-JVM
+  interim posture until the multi-store fork).
+
+  Note the construction step is load-bearing for confidentiality: the closure
+  is BUILT here via `closure-of` (DEP-7 label-compatibility + DEP-8
+  reciprocity), so a poisoned/stale membership refuses at this wiring point
+  BEFORE the row sweep — closure MEMBERSHIP alone can never bless the build."
   [db scope-ctx-eid]
   (let [closure (closure-of db scope-ctx-eid)]
     (guard-session-db-closure! db closure)

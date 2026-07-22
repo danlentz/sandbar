@@ -335,3 +335,55 @@
     (enroll-visible! :ctx/pub :proj/pub :proj/sneaky)   ; :private-resolving, reciprocal ⇒ DEP-7 fires
     (is (= :closure-label-incompatible
            (refusal-marker #(closure/closure-of (db/db) (sup/eid-of :ctx/work)))))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; DEP-7 at the POST-BUILD WIRING POINT — closure MEMBERSHIP alone must never
+;;   bless a poisoned closure (W1.deploy §3's ∀-row check vs §6.1: membership
+;;   authority is NOT label-license).  The poisoned member's OWN row passes a
+;;   membership-only row sweep (owning-project ∈ declared visible-projects), so
+;;   the ONLY thing standing between that row and a served public build is the
+;;   label gate inside the closure constructor assert-serves! runs.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(deftest dep7-post-build-wiring-point-refuses-poisoned-membership
+  (sup/seed-context! :ctx/pub  :public-bottom)
+  (sup/seed-project! :proj/pub :public :ctx/pub :public-bottom)
+  (enroll-visible! :ctx/pub :proj/pub)
+  (sup/seed-memory! :mem/pub :public :proj/pub)
+  (let [pub-ctx (sup/eid-of :ctx/pub)]
+    (testing "POSITIVE CONTROL — the clean public build SERVES at the wiring point"
+      (is (some? (closure/assert-serves! (db/db) pub-ctx))))
+    ;; POISON — a :private-resolving DUAL-context project (reciprocates ctx/pub,
+    ;; so DEP-8 passes and DEP-7 is the firing gate) is enrolled in the PUBLIC
+    ;; context's visible-projects, AND a row it OWNS is present in the build.
+    ;; (:ctx/priv is seeded HERE, as part of the poison arm — a bare private
+    ;; context is itself (c)-inadmissible, which would mask the DEP-7 control.)
+    (sup/seed-context! :ctx/priv :project-isolated)
+    (sup/raw-transact! [{:db/ident :proj/sneaky
+                         :dt/type :mm/Project
+                         :mm.memory/name "sneaky"
+                         :mm.project/ident :proj/sneaky
+                         :mm.project/corpus-repo "test-repo"
+                         :mm.project/default-visibility :public
+                         :mm.project/firewall-class :public-bottom
+                         :mm.project/runs-in-context [(sup/eid-of :ctx/pub)
+                                                      (sup/eid-of :ctx/priv)]}])
+    (enroll-visible! :ctx/pub :proj/pub :proj/sneaky)
+    (sup/seed-memory! :mem/sneaky :private :proj/sneaky)
+    (testing "the trap is armed: the poisoned row's owning-project IS a declared
+              member, so a MEMBERSHIP-ONLY closure (raw visible-projects,
+              unchecked) BLESSES it — the row sweep over that naive closure
+              finds NOTHING wrong.  This is the exact hole DEP-7 closes"
+      (let [membership-only (route/visible-projects (db/db) (d/entity (db/db) pub-ctx))]
+        (is (contains? membership-only (sup/eid-of :proj/sneaky))
+            "the poisoned project is a declared member")
+        (is (empty? (closure/out-of-closure-rows (db/db) membership-only))
+            "membership alone blesses the private row — the ∀-row check cannot
+             refuse it, so the label gate must")))
+    (testing "assert-serves! — the post-build wiring point — REFUSES with the
+              DEP-7 marker at closure CONSTRUCTION, before the row sweep could
+              bless.  FAILS against an impl whose wiring point builds its
+              closure from membership alone (no per-member label re-check via
+              the shared core)"
+      (is (= :closure-label-incompatible
+             (refusal-marker #(closure/assert-serves! (db/db) pub-ctx)))))))
