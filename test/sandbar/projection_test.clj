@@ -105,7 +105,7 @@
       (is (= 1 (count result)))
       (is (= "decisions/foo.md" (:rel-path (first result))))
       (is (true? (:written (first result))))
-      (is (= {:dt/type :mm/Decision :db/ident :decisions/foo} (:entity (first result)))
+      (is (= {:dt/type :mm/Decision :db/ident :memory.decisions/foo} (:entity (first result)))
           "the written row carries the source entity's routing descriptor (dt/type + ident; no owning-project on this fixture)")
       (let [file (io/file dir "decisions/foo.md")]
         (is (.exists file))
