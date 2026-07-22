@@ -160,8 +160,14 @@ string rel-path carrier slots (`:mm.context/cites`,
 `:mm.context/related`, `:mm.memory/introduced-in`), and the two
 compartment-tie slots.  Structural, vocabulary, and actor edges
 (`parent`, `has-part`, `tags`, `themes`, `created-by`, the codec
-carriers, the metamodel edges) are exempt — a shared tag term is not an
-intellectual dependence.  An edge is checked in the direction *written*
+carriers, the metamodel edges, plus the project→repo
+`:mm.project/code-repo` leg) are exempt — a shared tag term is not an
+intellectual dependence.  `:mm.project/code-repo` is exempt by the **R9**
+rationale: every `:mm/Codebase` resolves `:private`/UNASSIGNED today, so
+governing this leg would brick the keystone tie's acceptance path; its
+single-entity exposure concern is carried instead by the repo-handle
+URL-safety Shape, while a memorial that *cites* a Codebase stays
+flow-checked as a governed `:mm.memory/cites` edge.  An edge is checked in the direction *written*
 regardless of the predicate's semantic arrow, because the edge on the
 source is the leak surface: writing `superseded-by` reveals the
 target's existence and identity on the source just as `cites` does.
@@ -200,9 +206,11 @@ catastrophic co-load fail-open — a private project listed by the public
 bottom would co-load private rows into every session — refused at
 author time.
 
-Enforcement is bound at three points, all consuming the same core and
-producing the same error shape (`:type :firewall-violation`, reason
-`:flow-forbidden` or `:tie-forbidden`):
+Enforcement is bound at **two points** — author time and traverse time
+(`src/sandbar/firewall/enforce.clj` names three enforcement *bodies* over the two:
+`check-entity-flow` and its batch fold `check-batch` at EP-1, `governed-edge-verdicts`
+at EP-3).  Both consume the same core and produce the same error shape
+(`:type :firewall-violation`, reason `:flow-forbidden` or `:tie-forbidden`):
 
 - **EP-1, author time** — `entity.create` / `entity.update` /
   batch ingest check every governed edge in the spec; a violation
@@ -212,10 +220,10 @@ producing the same error shape (`:type :firewall-violation`, reason
   forbidden hop as `{:blocked true}` (no target disclosed).  The
   path-grammar's endpoint-only Tier-2 operators use a coarser
   seed→endpoint label check until the per-hop evaluator covers them.
-- **Principal-independent throughout** — no caller, token, or identity
-  enters the decision; the same edge gets the same verdict for every
-  principal.  (Per-principal *delivery* filtering is the separate
-  clearance gate above.)
+
+Both points are **principal-independent** — no caller, token, or identity
+enters the decision; the same edge gets the same verdict for every principal.
+(Per-principal *delivery* filtering is the separate clearance gate above.)
 
 ## The public bottom
 
