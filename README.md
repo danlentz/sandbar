@@ -28,11 +28,36 @@ This README is a 5-minute elevator. For depth, follow the
 pointers into `doc/concepts/` (theoretical reference,
 citation-rich) and `doc/guides/` (hands-on how-to).
 
+## The offload thesis
+
+Sandbar exists to **offload from the LLM what LLMs do poorly**.  A
+language model is a probabilistic engine: superb at synthesis,
+unreliable at durable memory, deterministic structure, exhaustive
+retrieval, and enforcement.  Sandbar moves exactly those concerns
+into a local, deterministic substrate — ontological knowledge
+representation, Datalog/SHACL-style validation and entailment, a
+multi-axis retrieval surface, durable indexed storage — and hands
+the model a *tool boundary* (MCP) instead of a context window to
+lose things in.  The alignment is three-cornered: the LLM
+(probabilistic) does judgement and synthesis; MCP (the tool-use
+boundary) is the seam they meet at; the substrate (traditional
+KR / symbolic AI, deterministic) does memory, structure, and law.
+
+The 0.2.0 release extends the same offload to *trust*: with
+`:mm/Project` and the directional firewall, confidentiality is no
+longer a discipline the AI client is trusted to observe but a
+property of the data — deterministic label composition and
+refusal at the write and traversal boundaries, so one substrate
+can serve several projects (often private ones) without leaking
+across them.  See
+[`doc/firewall-and-projects.md`](doc/firewall-and-projects.md).
+
 ## Documentation map
 
 Documentation is layered. Every entry below is a link; pick the
 layer that matches your goal.
 
+- **[`doc/firewall-and-projects.md`](doc/firewall-and-projects.md)** — The 0.2.0 centerpiece: `:mm/Project`, contexts, the visibility lattice, and the directional proprietary-isolation firewall
 - **`doc/concepts/`** — Layer 2: theoretical reference (citation-rich)
   - [`metamodel.md`](doc/concepts/metamodel.md) — The `dt/*` primitives; RDFS / KL-ONE / CLOS-MOP lineage
   - [`memory-model.md`](doc/concepts/memory-model.md) — The `mm/*` user-domain layered atop `dt/*`; memorial-policy classification; PROV-O activity-lift
@@ -42,7 +67,7 @@ layer that matches your goal.
   - [`event-substrate.md`](doc/concepts/event-substrate.md) — Datomic `tx-report-queue` behind `sandbar.reactive.tx-source`; Manifold transport; class-hierarchical subscription
   - [`reactive-substrate.md`](doc/concepts/reactive-substrate.md) — Reactive sinks; memorial-projection handler; FS↔DB reactivity
   - [`logging-substrate.md`](doc/concepts/logging-substrate.md) — Telemere-backed `sandbar.logging` six-macro API; memorial-projection on flagged signals
-  - [`temporal-substrate.md`](doc/concepts/temporal-substrate.md) — OWL-Time + RFC 5545 RRULE + PROV-O alignment; `:mm/Schedule` + `:mm/Job` + `:mm/Run` (in-progress)
+  - [`temporal-substrate.md`](doc/concepts/temporal-substrate.md) — OWL-Time + RFC 5545 RRULE + PROV-O alignment; `:mm/Schedule` + `:mm/Job` + `:mm/Run` (γ scheduler live since 0.2.0)
   - [`codec-layer.md`](doc/concepts/codec-layer.md) — Boundary-layer abstraction; per-class `:dt/native-codec`
   - [`projection.md`](doc/concepts/projection.md) — Bidirectional FS↔DB projection (Anderson lineage)
   - [`fulltext-search.md`](doc/concepts/fulltext-search.md) — BM25F multi-field weighted scoring; analyzer
@@ -118,6 +143,25 @@ firings, scheduled runs) share a PROV-O-aligned vocabulary via
 layer is the substrate; both speak the same query language.
 
 → `doc/concepts/memory-model.md`
+
+### Multi-project memory behind a directional firewall (0.2.0 centerpiece)
+
+`:mm/Project` ties a codebase to the context(s) it runs in and the
+corpus repo its memories project to; `:mm/Context` is the
+compartment — the co-load boundary.  Confidentiality is a
+deterministic label composed *most-restrictive* across four axes
+(memory visibility, project default, project firewall-class, every
+context's firewall-class), and the directional firewall refuses
+forbidden flows on the edge, at author time and at traverse time:
+private may cite public; public may never depend on private;
+cross-compartment private stays apart.  Absent visibility inherits
+the owning project's posture; absent *project* fail-closes to a
+private sentinel.  The enforcement path is principal-independent
+and LLM-untrusted — no model judgement anywhere in the decision.
+The shared global corpus is stamped as the public *bottom* every
+project can cite without leaking into it.
+
+→ `doc/firewall-and-projects.md` · known gaps: `doc/known-gaps-0.2.0.md`
 
 ### RDFS entailment as a substrate concern
 
@@ -275,17 +319,19 @@ backend feature is a boundary violation and a refactor target.
 
 → `doc/concepts/multi-store-architecture.md`
 
-### Temporal substrate (in design)
+### Temporal substrate (γ scheduler live)
 
 Schedules, jobs, and runs as ontology-aligned memorial entities:
 `:mm/Schedule` carries RFC 5545 RRULE recurrence; `:mm/Job` is
 PROV-O `prov:Plan`-shaped; `:mm/Run` is `prov:Activity`-shaped
 with `prov:startedAtTime` / `prov:endedAtTime` /
 `prov:wasInformedBy`. Allen's 13 interval relations from OWL-Time
-become first-class typed-edge predicates. The arc is in design;
-the four ontology alignments (OWL-Time + RFC 5545 + PROV-O +
-Schema.org Schedule JSON-LD) are the load-bearing layer; the
-runtime dispatcher is replaceable.
+become first-class typed-edge predicates. The γ scheduler runs
+live as of 0.2.0 — RRULE recurrence boundary, native min-heap
+fire-thread, Run lifecycle, eight `sandbar_schedule_*` MCP verbs,
+and boot-time system jobs. The four ontology alignments (OWL-Time
++ RFC 5545 + PROV-O + Schema.org Schedule JSON-LD) are the
+load-bearing layer; the runtime dispatcher is replaceable.
 
 → `doc/concepts/temporal-substrate.md`
 
@@ -365,24 +411,24 @@ it back:
 export SANDBAR_TOKEN="<your-service-account-token>"
 
 # 1. Discover available tools (bootstrap-by-discovery)
-curl -X POST http://localhost:8080/mcp \
+curl -X POST http://localhost:8389/mcp \
   -H "Authorization: Bearer $SANDBAR_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
 
 # 2. Create an mm/Memory entity by passing markdown source —
 #    codec layer absorbs the parse + class-binding
-curl -X POST http://localhost:8080/mcp \
+curl -X POST http://localhost:8389/mcp \
   -H "Authorization: Bearer $SANDBAR_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":
-        {"name":"sandbar.entity.create",
+        {"name":"sandbar_entity_create",
          "arguments":{"class":"mm/Memory",
                        "format":"markdown",
                        "source":"---\nname: Foo\n---\n# Context\n..."}}}'
 
 # 3. Read it back as markdown (full section tree reconstructed)
-curl -X POST http://localhost:8080/mcp \
+curl -X POST http://localhost:8389/mcp \
   -H "Authorization: Bearer $SANDBAR_TOKEN" \
   -d '{"jsonrpc":"2.0","id":3,"method":"resources/read",
         "params":{"uri":"mcp://sandbar/mm/Memory/decisions/foo"}}'
@@ -419,10 +465,13 @@ composable axes in one short example:
               [:RESTRICT [:dt/type :mm.memory/decision]]]})
 ```
 
-Each axis is also a stable MCP verb (`sandbar.search.bm25f`,
-`sandbar.aggregate.rank-by`, `sandbar.navigate.path-via`) and a
-REST endpoint (`GET /api/aggregate/rank-by`,
-`GET /api/navigate/path`). Same model, three projections.
+Each axis is also a stable MCP verb (wire names
+`sandbar_search_bm25f`, `sandbar_aggregate_rank-by`,
+`sandbar_navigate_path-via` — dots project to underscores at the
+wire; the dotted forms remain accepted for one release as a
+deprecation alias) and a REST endpoint
+(`GET /api/aggregate/rank-by`, `GET /api/navigate/path`). Same
+model, three projections.
 
 → `doc/concepts/path-grammar.md` for the algebra · `doc/guides/navigating-with-paths.md` for worked patterns
 
@@ -435,11 +484,15 @@ lein deps && lein repl
 
 # In the REPL
 (require '[sandbar.core :refer [go]])
-(go)  ; HTTP on :8080; nREPL on :28888
+(go)  ; HTTP on :8389; nREPL on :28888
 
 # Sanity check (in another shell)
-curl http://localhost:8080/api/status
+curl http://localhost:8389/api/status
 ```
+
+`bin/sandbar start` is the supported lifecycle entrypoint (start /
+stop / status / token rotation / backup); the REPL path above is
+the development-loop equivalent.
 
 → `doc/guides/getting-started.md` for the full onboarding path
 → `doc/guides/quickstart.md` for the five-minute hands-on tour
@@ -529,9 +582,9 @@ and matches the corpus's reference implementation byte-for-byte.
 A: No. It's a typed-event in-process bus backed by Datomic's
 `tx-report-queue` and Manifold streams. Subscribers register by
 event CLASS (not topic), and class-hierarchical dispatch fans out
-through `dt/type-isa?`. The scheduler / job system (in design)
-uses the event substrate as its emission surface but isn't itself
-the event substrate.
+through `dt/type-isa?`. The scheduler / job system (the γ
+scheduler, live as of 0.2.0) uses the event substrate as its
+emission surface but isn't itself the event substrate.
 
 **Q: What's a memorial?**
 A: A first-class entity that participates in the corpus —
