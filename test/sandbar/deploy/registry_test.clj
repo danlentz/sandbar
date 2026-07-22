@@ -237,17 +237,129 @@
                                :corpus-repo public-repo})]
       (is (nil? (reg/assert-endpoint-port-doctrine! alpha+public)))
       (is (= alpha+public (reg/validate-registry! alpha+public)))))
-  (testing "endpoint-transactor-port parses the port, and a portless / storage
-            endpoint places NO port in the doctrine (⇒ nil ⇒ skipped, never a
-            spurious violation)"
+  (testing "endpoint-transactor-port parses the port for BOTH plain-host and
+            bracketed-IPv6 forms, and returns nil for a genuinely portless /
+            storage endpoint — the PARSER's contract (the GATE's fail-closed
+            handling of a nil-port SLOT is pinned in
+            port-doctrine-refuses-bracketed-ipv6-forgery below)"
     (is (= 4336 (reg/endpoint-transactor-port private-endpoint)))
     (is (= 4334 (reg/endpoint-transactor-port public-endpoint)))
+    (is (= 4336 (reg/endpoint-transactor-port "datomic:dev://[::1]:4336/"))
+        "bracketed IPv6 loopback: the port is read AFTER the ], not truncated at
+         the first inner colon (FAILS against the ://[^/:]+:(\\d+) parser)")
+    (is (= 4334 (reg/endpoint-transactor-port "datomic:dev://[2001:db8::1]:4334/"))
+        "bracketed IPv6 global form parses too")
     (is (nil? (reg/endpoint-transactor-port "datomic:mem://scratch")))
     (is (nil? (reg/endpoint-transactor-port "datomic:dev://localhost/nodb")))
-    (is (nil? (reg/endpoint-transactor-port nil)))
-    (is (nil? (reg/assert-endpoint-port-doctrine!
-                (assoc clean-public-registry :public
-                       {:transactor-endpoint "datomic:mem://scratch"}))))))
+    (is (nil? (reg/endpoint-transactor-port "datomic:dev://[::1]/nodb"))
+        "a bracketed IPv6 WITHOUT a :PORT suffix carries no port")
+    (is (nil? (reg/endpoint-transactor-port nil)))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; PORT DOCTRINE — bracketed-IPv6 A-1 re-opening (the round-4 hole).  The round-2
+;;   fix closed the STRING-host forgery (localhost:4336 in :public), but the port
+;;   parser's host class [^/:]+ STOPS at the first colon — so a bracketed-IPv6
+;;   endpoint datomic:dev://[::1]:4336/ read a nil port, and the gate SKIPPED
+;;   nil-port slots (fail-OPEN), so the private-port forgery slipped straight
+;;   back in via the IPv6 bracket form (in BOTH slot directions).  The fix parses
+;;   the bracketed-IPv6 port correctly AND fail-CLOSES on any unparseable port.
+;;   Verified over the FULL chain (validate-registry! → reachable-endpoints →
+;;   resolve-endpoint), both loopback [::1] and global [2001:db8::1] forms, both
+;;   directions, plus positive controls so the fix is not over-broad.  FAILS
+;;   against the round-2 impl (nil-port bracket parse + nil-port skip).
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(deftest port-doctrine-refuses-bracketed-ipv6-forgery
+  (let [ipv6-loopback "datomic:dev://[::1]:4336/"           ; PRIVATE port, loopback
+        ipv6-global   "datomic:dev://[2001:db8::1]:4336/"]  ; PRIVATE port, global form
+    (testing "FORWARD leg — a PRIVATE-port (4336) bracketed-IPv6 endpoint in the
+              :PUBLIC slot is REFUSED across the FULL chain, both the loopback
+              [::1] and global [2001:db8::1] forms.  FAILS against the round-2
+              impl whose parser returned nil for the bracket form and whose gate
+              skipped the nil-port slot"
+      (doseq [ep [ipv6-loopback ipv6-global]]
+        (let [forged (assoc clean-public-registry :public {:transactor-endpoint ep})]
+          ;; the parser now reads the ruled-private port straight out of the
+          ;; bracketed IPv6 host (the crux the round-2 [^/:]+ class missed)
+          (is (= 4336 (reg/endpoint-transactor-port ep)) ep)
+          (is (= :endpoint-port-doctrine-violation
+                 (refusal-marker #(reg/validate-registry! forged)))
+              (str "validate-registry! must refuse " ep " in the :public slot"))
+          (is (= :endpoint-port-doctrine-violation
+                 (refusal-marker #(reg/assert-endpoint-port-doctrine! forged))))
+          (let [data (try (reg/assert-endpoint-port-doctrine! forged)
+                          (catch clojure.lang.ExceptionInfo e (ex-data e)))]
+            (is (= [:public] (mapv :slot (:violations data)))
+                "the :public slot is named the offender")
+            (is (= [4336] (mapv :port (:violations data)))
+                "the PARSED private port 4336 is surfaced, not nil")
+            (is (= [:scope-class-mismatch] (mapv :reason (:violations data)))
+                "a parsed-but-wrong-class port is a scope-class-mismatch"))
+          ;; the UNVALIDATED forged map still surfaces it (public→public by
+          ;; SCOPE) — exactly why validate-registry! must run + refuse first
+          (is (contains? (reg/reachable-endpoints forged) ep)
+              "the forged IPv6 private-port URL is on the UNVALIDATED public surface")
+          (is (= ep (reg/resolve-endpoint forged :trust-scope/public))
+              "and resolve-endpoint would hand the public process the private port"))))
+    (testing "REVERSE leg — a PUBLIC-port (4334) bracketed-IPv6 endpoint in a
+              :PRIVATE slot is REFUSED too (the same nil-port skip exempted it
+              before): a private scope co-located on the public transactor (DEP-1)"
+      (doseq [ep ["datomic:dev://[::1]:4334/" "datomic:dev://[2001:db8::1]:4334/"]]
+        (let [co-located (assoc-in private-owner-registry
+                                   [:private :proj/alpha :transactor-endpoint] ep)]
+          (is (= 4334 (reg/endpoint-transactor-port ep)) ep)
+          (is (= :endpoint-port-doctrine-violation
+                 (refusal-marker #(reg/validate-registry! co-located)))
+              (str "validate-registry! must refuse " ep " in the :private slot"))
+          (let [data (try (reg/assert-endpoint-port-doctrine! co-located)
+                          (catch clojure.lang.ExceptionInfo e (ex-data e)))]
+            (is (= [:private] (mapv :slot (:violations data))))
+            (is (= [4334] (mapv :port (:violations data))))
+            (is (= [:scope-class-mismatch] (mapv :reason (:violations data))))))))
+    (testing "POSITIVE controls — the fix is NOT over-broad: a legitimate IPv6
+              PUBLIC endpoint on 4334 in the :public slot AND a legitimate IPv6
+              PRIVATE endpoint on 4336 in the :private slot BOTH still VALIDATE
+              (return self) and resolve to their own scope"
+      (let [pub-ipv6 (assoc clean-public-registry :public
+                            {:transactor-endpoint "datomic:dev://[::1]:4334/"
+                             :sid "global" :corpus-repo public-repo
+                             :local-disk-path "/Users/you/claude"})]
+        (is (nil? (reg/assert-endpoint-port-doctrine! pub-ipv6)))
+        (is (= pub-ipv6 (reg/validate-registry! pub-ipv6)))
+        (is (= "datomic:dev://[::1]:4334/"
+               (reg/resolve-endpoint pub-ipv6 :trust-scope/public))))
+      (let [priv-ipv6 (assoc-in private-owner-registry
+                                [:private :proj/alpha :transactor-endpoint]
+                                "datomic:dev://[2001:db8::1]:4336/")]
+        (is (nil? (reg/assert-endpoint-port-doctrine! priv-ipv6)))
+        (is (= priv-ipv6 (reg/validate-registry! priv-ipv6)))
+        (is (= "datomic:dev://[2001:db8::1]:4336/"
+               (reg/resolve-endpoint priv-ipv6 [:trust-scope/private :proj/alpha])))))
+    (testing "FAIL-CLOSED — a PRESENT endpoint whose port cannot be parsed at all
+              (portless / bracketed-IPv6-without-port / not-even-a-URL) in a slot
+              is REFUSED with :unparseable-port, never SKIPPED — the safe default
+              that stops any endpoint form the parser cannot place from slipping
+              the gate.  FAILS against the (some? port) fail-OPEN skip"
+      (doseq [bad ["datomic:mem://scratch"                  ; genuinely portless
+                   "datomic:dev://localhost/nodb"           ; dev, no port
+                   "datomic:dev://[::1]/nodb"               ; bracketed IPv6, no :PORT
+                   "not-even-a-uri"]]
+        (let [reg (assoc clean-public-registry :public {:transactor-endpoint bad})]
+          (is (= :endpoint-port-doctrine-violation
+                 (refusal-marker #(reg/validate-registry! reg)))
+              (str "a present-but-unparseable slot endpoint must fail CLOSED: " bad))
+          (let [data (try (reg/assert-endpoint-port-doctrine! reg)
+                          (catch clojure.lang.ExceptionInfo e (ex-data e)))]
+            (is (= [:unparseable-port] (mapv :reason (:violations data)))
+                (str "the violation reason is :unparseable-port for " bad))
+            (is (= [nil] (mapv :port (:violations data)))
+                "the surfaced port is nil (nothing could be parsed)")))))
+    (testing "a slot with NO :transactor-endpoint at all stays EXEMPT from the
+              port gate (that is resolve-endpoint's :no-such-scope concern) — the
+              fail-closed rule fires ONLY on a PRESENT-but-unparseable endpoint"
+      (let [no-ep (assoc clean-public-registry :public {:sid "global"})]
+        (is (nil? (reg/assert-endpoint-port-doctrine! no-ep))
+            "an endpoint-less :public slot places no port in the doctrine")))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; assert-credential-air-gap! — the LOUD refusal (A-1 / DEP-3).  A public-owner

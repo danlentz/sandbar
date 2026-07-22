@@ -79,6 +79,17 @@
   contain a private endpoint\" — holds for a VALIDATED registry across EVERY
   slot, not only `:private` (D.3 port policy).
 
+  The gate is BLIND TO ENDPOINT FORM and FAIL-CLOSED on an unreadable one.  The
+  port is parsed from BOTH a plain host (`localhost:4336`) AND a bracketed IPv6
+  literal (`[::1]:4336`, `[2001:db8::1]:4336`) — an earlier parser stopped at the
+  first colon of an IPv6 literal, read a nil port, and the gate SKIPPED nil-port
+  slots, so a private-port endpoint smuggled in as bracketed IPv6 slipped BOTH
+  slots' checks (the round-4 A-1 re-opening).  Now a PRESENT endpoint whose port
+  cannot be parsed at all is itself a violation (`:unparseable-port`) — the slot
+  is REFUSED, not skipped — so no endpoint form the parser cannot place can evade
+  the doctrine.  (Only a slot with NO endpoint is exempt; that is
+  `resolve-endpoint`'s `:no-such-scope` concern.)
+
   The strongest posture on the sandboxed work machine is a PRIVATE-only owner
   registry that reaches the public corpus read-only BY REFERENCE
   (`public-corpus-reference`, R9) and never co-locates a public transactor.
@@ -411,14 +422,29 @@
   4336)
 
 (defn endpoint-transactor-port
-  "The integer TCP port in a `datomic:<proto>://host:PORT/…` transactor endpoint
-  URL, or nil when `endpoint` is not a string or carries no parseable
-  `://host:PORT` segment (a portless / non-string endpoint places no port in the
-  doctrine — a MISSING endpoint is `resolve-endpoint`'s concern, not this
-  gate's).  PURE."
+  "The integer TCP port in a `datomic:<proto>://HOST:PORT/…` transactor endpoint
+  URL — where HOST is EITHER a plain host (`localhost`, `db.example.com`) OR a
+  bracketed IPv6 literal (`[::1]`, `[2001:db8::1]`) — or nil when `endpoint` is
+  not a string or carries no parseable `://HOST:PORT` segment.
+
+  The host alternation `(?:\\[[^]]+\\]|[^/:]+)` is load-bearing: the bracketed
+  branch is tried FIRST so a `datomic:dev://[::1]:4336/` endpoint's port is read
+  from AFTER the closing `]`, not truncated at the first inner `:` of the IPv6
+  literal.  The earlier `://[^/:]+:(\\d+)` form had ONLY the plain-host class,
+  which stops at the first colon — so `[::1]:4336` matched no port and returned
+  nil, and a private-PORT endpoint smuggled in as bracketed IPv6 slipped the
+  port-doctrine gate (the round-4 A-1 hole).
+
+  Returning nil means \"no port could be parsed\" — genuinely portless
+  (`datomic:mem://scratch`), portless-dev (`datomic:dev://localhost/nodb`), a
+  bracketed-IPv6 with no `:PORT` suffix, or an otherwise-unreadable string.  The
+  DOCTRINE GATE treats a nil port on a PRESENT endpoint as fail-CLOSED
+  (`slot-port-doctrine-violations`) — a slot whose port cannot be placed is
+  refused, never skipped.  (A slot with NO endpoint at all is
+  `resolve-endpoint`'s `:no-such-scope` concern, not this parser's.)  PURE."
   [endpoint]
   (when (string? endpoint)
-    (some-> (re-find #"://[^/:]+:(\d+)" endpoint) second parse-long)))
+    (some-> (re-find #"://(?:\[[^]]+\]|[^/:]+):(\d+)" endpoint) second parse-long)))
 
 (defn private-port?
   "Is `port` in the RESERVED PRIVATE transactor range — an integer at or above
@@ -429,38 +455,54 @@
   (and (integer? port) (>= port private-transactor-port-floor)))
 
 (defn slot-port-doctrine-violations
-  "The seq of `{:slot :scope :endpoint :port :expected}` findings naming every
-  slot in `registry` whose transactor endpoint PORT contradicts its slot's scope
-  class.  `scope-entry-pairs` sweeps EVERY slot, so the check covers the
-  `:public` slot AND each `:private` entry — the property the judge required to
-  hold for ALL slots, not just `:private`:
+  "The seq of `{:slot :scope :endpoint :port :reason :expected}` findings naming
+  every slot in `registry` whose transactor endpoint PORT contradicts its slot's
+  scope class OR cannot be parsed at all.  `scope-entry-pairs` sweeps EVERY slot,
+  so the check covers the `:public` slot AND each `:private` entry — the property
+  the judge required to hold for ALL slots, not just `:private`.
 
-    • a `:public` slot endpoint on a RESERVED PRIVATE port (>= 4336) — the
-      FORGEABLE A-1 hole: `reachable?`/`reachable-endpoints` filter by SCOPE not
-      port, so a private-port endpoint mislabeled into the public slot is
-      reachable by a public owner and `resolve-endpoint` would hand it out; and
-    • a `:private` slot endpoint on a PUBLIC port (< 4336, i.e. 4334/4335) — a
-      private scope co-located on the public transactor, collapsing the
-      one-transactor-per-scope topology (DEP-1).
+  Each PRESENT endpoint is classified (`:reason`):
+    • `:scope-class-mismatch` — the port parsed but sits in the wrong class:
+        · a `:public` slot endpoint on a RESERVED PRIVATE port (>= 4336) — the
+          FORGEABLE A-1 hole: `reachable?`/`reachable-endpoints` filter by SCOPE
+          not port, so a private-port endpoint mislabeled into the public slot is
+          reachable by a public owner and `resolve-endpoint` would hand it out; or
+        · a `:private` slot endpoint on a PUBLIC port (< 4336, i.e. 4334/4335) —
+          a private scope co-located on the public transactor, collapsing the
+          one-transactor-per-scope topology (DEP-1).
+    • `:unparseable-port` — the endpoint is PRESENT but no port can be parsed
+      from it (a portless / bracketed-IPv6-without-port / otherwise-unreadable
+      URL).  This fails CLOSED: a slot whose port cannot be PLACED is REFUSED,
+      never skipped — the safe default that stops a form the parser cannot read
+      (the round-4 bracketed-IPv6 bypass shape) from slipping the gate.
 
-  Slots whose endpoint has no parseable port are skipped (nothing to place).
-  PURE — the raw finding list `assert-endpoint-port-doctrine!` refuses on."
+  A slot with NO `:transactor-endpoint` at all is the ONLY skip — a MISSING
+  endpoint places no port in the doctrine and is `resolve-endpoint`'s
+  `:no-such-scope` concern, not this gate's.  PURE — the raw finding list
+  `assert-endpoint-port-doctrine!` refuses on."
   [registry]
   (for [[scope entry] (scope-entry-pairs registry)
-        :let  [port      (endpoint-transactor-port (:transactor-endpoint entry))
+        :let  [endpoint  (:transactor-endpoint entry)
                pub-slot? (public-scope? scope)]
-        :when (and (some? port)
-                   (if pub-slot? (private-port? port) (not (private-port? port))))]
+        :when (some? endpoint)                    ; a MISSING endpoint ⇒ resolve-endpoint's concern
+        :let  [port   (endpoint-transactor-port endpoint)
+               reason (cond
+                        (nil? port)                                    :unparseable-port
+                        (if pub-slot? (private-port? port)
+                                      (not (private-port? port)))      :scope-class-mismatch)]
+        :when reason]                             ; a coherent, parseable port ⇒ no finding
     {:slot     (if pub-slot? :public :private)
      :scope    scope
-     :endpoint (:transactor-endpoint entry)
+     :endpoint endpoint
      :port     port
-     :expected (if pub-slot?
-                 (str "a PUBLIC-bottom transactor port below the private floor "
-                      private-transactor-port-floor " (canonically "
-                      public-transactor-port ")")
-                 (str "a RESERVED PRIVATE transactor port >= "
-                      private-transactor-port-floor))}))
+     :reason   reason
+     :expected (str "a PARSEABLE "
+                    (if pub-slot?
+                      (str "PUBLIC-bottom transactor port below the private floor "
+                           private-transactor-port-floor " (canonically "
+                           public-transactor-port ")")
+                      (str "RESERVED PRIVATE transactor port >= "
+                           private-transactor-port-floor)))}))
 
 (defn assert-endpoint-port-doctrine!
   "The LOUD refuse-to-serve realizing the PORT DOCTRINE — the physical lock that
@@ -472,17 +514,25 @@
   (4336).  This gate is where that is caught.
 
   It checks SLOT/PORT COHERENCE across EVERY slot
-  (`slot-port-doctrine-violations`):
+  (`slot-port-doctrine-violations`), for BOTH plain-host and bracketed-IPv6
+  endpoint forms (`endpoint-transactor-port` parses `[::1]:4336` correctly):
     • no `:public` slot endpoint on a RESERVED PRIVATE port (>= 4336) — refused
       REGARDLESS of owner, so neither a public owner (the forgery) nor a private
       owner can smuggle a private-port endpoint into the shared `:public` slot;
-      and
     • no `:private` slot endpoint on a PUBLIC port (4334/4335) — the reverse
-      co-location (a private scope pointed at the public transactor, DEP-1).
+      co-location (a private scope pointed at the public transactor, DEP-1); and
+    • FAIL-CLOSED: no slot whose endpoint is PRESENT but carries no parseable
+      port (`:unparseable-port`) — a port that cannot be placed is refused, never
+      skipped, so a form the parser cannot read (the round-4 bracketed-IPv6
+      bypass, or any malformed/portless URL hand-edited into a slot) can never
+      slip the gate.  (A slot with NO endpoint at all is `resolve-endpoint`'s
+      `:no-such-scope` concern, and is NOT refused here.)
 
   On any violation THROW `:sandbar/error :endpoint-port-doctrine-violation`
   (ex-data `:violations` naming each offending `{:slot :scope :endpoint :port
-  :expected}`); returns nil when every slot's port matches its scope class.
+  :reason :expected}`, `:reason` ∈ `#{:scope-class-mismatch :unparseable-port}`);
+  returns nil when every PRESENT slot endpoint carries a parseable port matching
+  its scope class.
 
   This STRENGTHENS physical exclusion (two-lock collapse rule): wired into
   `validate-registry!`, it refuses the forged registry at bring-up, so a
@@ -709,7 +759,9 @@
     3. `assert-endpoint-port-doctrine!` — no slot carries a transactor port that
        contradicts its scope class: no RESERVED PRIVATE port (>= 4336) in the
        `:public` slot (the forgeable A-1 hole the scope-only air-gap misses), and
-       no PUBLIC port in a `:private` slot (:endpoint-port-doctrine-violation);
+       no PUBLIC port in a `:private` slot; and — FAIL-CLOSED — no slot whose
+       endpoint is present but carries no parseable port (parsed for plain-host
+       AND bracketed-IPv6 forms; :endpoint-port-doctrine-violation);
     4. `assert-private-repo-distinct!`  — no private corpus routes to a public
        repo handle (:private-repo-collision, DEP-4).
   Intended to run at process bring-up, BEFORE any transactor connection opens."
