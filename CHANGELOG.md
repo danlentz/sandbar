@@ -4,22 +4,25 @@ All notable changes to Sandbar are documented in this file.  Format informed by 
 
 ## [0.2.0] — unreleased (tag Dan-gated)
 
-> **Version-narrative note (pending Dan's confirmation).**  The prior `[Unreleased]`
-> section of this file narrated a **0.1.1** cut to Clojars — the "Memory-Model
-> Co-Evolution arc" opened 2026-05-20 (`12a2a5c`) as `0.1.1-SNAPSHOT`, with the
-> plan to bump `0.1.1-SNAPSHOT → 0.1.1` and deploy at arc close.  **That 0.1.1
-> Clojars cut never happened.**  The arc instead grew well past a point release:
-> a read-plane security firewall, a provenance/isolation centerpiece (`:mm/Project`
-> schema + directional firewall), a reactive DB↔FS projection, the scheduler
-> substrate, the workflow/session lifecycle, and an MCP hardening pass.  Per the
-> 0.2.0 co-release plan of record (`memory/plans/sandbar_0_2_0_co_release_plan_of_record_2026_07_08.md`)
-> the release is **renumbered 0.2.0**.  The only version bump landed so far is the
-> **wire-visible** one — MCP `server-info.version` and the project-export catalog
-> both read `0.2.0` (`bb4b5d6`) — while `project.clj` still carries
-> `0.1.1-SNAPSHOT`.  The `project.clj` coordinate bump and the git tag are **both
-> Dan-gated** (`memory/authorizations/dan_v0_2_0_tag_is_hard_dan_gated_do_not_tag_without_explicit_approval_other_tasks_precede_2026_07_08.md`)
-> and are intentionally NOT part of this changelog change.  This heading and the
-> "0.1.1 → 0.2.0" renumbering await Dan's version-narrative confirmation.
+> **Version-narrative note (renumbering CONFIRMED by Dan, 2026-07-10; tag still
+> hard-gated).**  The prior `[Unreleased]` section of this file narrated a **0.1.1**
+> cut to Clojars — the "Memory-Model Co-Evolution arc" opened 2026-05-20 (`12a2a5c`)
+> as `0.1.1-SNAPSHOT`, with the plan to bump `0.1.1-SNAPSHOT → 0.1.1` and deploy at
+> arc close.  **That 0.1.1 Clojars cut never happened.**  The arc instead grew well
+> past a point release: a read-plane security firewall, a provenance/isolation
+> centerpiece (`:mm/Project` schema + directional firewall), a reactive DB↔FS
+> projection, the scheduler substrate, the workflow/session lifecycle, and an MCP
+> hardening pass.  Per the 0.2.0 co-release plan of record
+> (`memory/plans/sandbar_0_2_0_co_release_plan_of_record_2026_07_08.md`) the release
+> is **renumbered 0.2.0** — Dan confirmed the 0.1.1-skip narrative on 2026-07-10
+> (ruling D1, `memory/decisions/dan_rulings_v0_2_0_decision_packet_2026_07_10.md`).
+> The only version bump landed so far is the **wire-visible** one — MCP
+> `server-info.version` and the project-export catalog both read `0.2.0`
+> (`bb4b5d6`) — while `project.clj` still carries `0.1.1-SNAPSHOT`.  The
+> `project.clj` coordinate bump, the git tag, and all tag/PR/merge mechanics remain
+> **hard-gated on Dan declaring 0.2.0 acceptable** (same D1 ruling;
+> `memory/authorizations/dan_v0_2_0_tag_is_hard_dan_gated_do_not_tag_without_explicit_approval_other_tasks_precede_2026_07_08.md`)
+> and are intentionally NOT part of this changelog change.
 
 Everything in this section is traceable to the git history since `v0.1.0`
 (`877c9e1..3ab31a8`, 233 commits) or to a dated landing record under
@@ -29,7 +32,12 @@ Everything in this section is traceable to the git history since `v0.1.0`
 
 The 0.2.0 headline: the memory model becomes usable for real, often **private**
 projects — each with its own corpus projected to its own git repo, with
-provenance and a proprietary-isolation firewall.
+provenance and a proprietary-isolation firewall.  The build is deliberately
+full-depth on the enforcement spine and thin on breadth (the G3 completeness
+boundary): two stores, binary `:public`/`:private` labels, one hand-provisioned
+private repo, config-driven (not yet verb-driven) routing — see
+`doc/known-gaps-0.2.0.md` §14 for what that defers and
+`doc/firewall-and-projects.md` for the full concept treatment.
 
 - **`:mm/Project` schema mint (S6)** — new `:mm/Project` class (parent `:mm/Artifact`,
   inheriting `name` / `description` / `scope` / `:mm/id`; 10 `:mm.project/*` slots),
@@ -40,8 +48,13 @@ provenance and a proprietary-isolation firewall.
   restart), MCP-verified.  Per `memory/decisions/ceremony_8_COMPLETE_directional_firewall_live_project_schema_minted_public_bottom_stamped_2026_07_08.md`.
 - **Directional read/write firewall (S7)** — deny-by-default cross-boundary flow
   control; a write that would move a public entity's reference toward a
-  `:private`/unassigned target is refused (`flow-forbidden`).  Built + twice-hardened
-  at `204c3f6`, remediated over a codex+opus+fable review round at `b72fd99`.
+  `:private`/unassigned target is refused (`flow-forbidden`) — with **one known,
+  ruled exception**: the CA-6 same-batch co-batch window (a single `make-all*`
+  batch minting a project together with its members can commit a forbidden edge
+  because the source label resolves against the pre-batch DB), a confirmed
+  fail-open deferred to a hard S9-entry gate with an armed tripwire test; see
+  `doc/known-gaps-0.2.0.md` §6.  Built + twice-hardened at `204c3f6`, remediated
+  over a codex+opus+fable review round at `b72fd99`.
 - **Public-bottom baseline** — the global corpus context
   (`memory.contexts/unsandboxed-home-laptop`) is stamped
   `:mm.context/firewall-class :public-bottom`, establishing the public co-load ROOT.
@@ -135,7 +148,8 @@ provenance and a proprietary-isolation firewall.
 - **F6 — single-source verb catalog + CI drift gate** (`93a9b7f` → merged `7ddaf55`).
   One pure DB-free `catalog-model` is the single source; affordance-map + edges
   generators retarget onto it; a `catalog-check` gate fails CI on catalog↔code drift.
-  82 verbs / 22 axes, wire parity green.  Gates every consolidation move
+  82 verbs / 22 axes (grown from the 43-verb catalog 0.1.0 shipped — both counts are
+  correct for their release), wire parity green.  Gates every consolidation move
   (drift-gate-before-collapse).  Per
   `memory/decisions/f6_verb_catalog_drift_gate_LANDED_live_7ddaf55_..._2026_07_08.md`.
 - **MCP tool-name wire rename — dots → underscores + one-release dotted alias**
@@ -204,9 +218,17 @@ provenance and a proprietary-isolation firewall.
 See `doc/known-gaps-0.2.0.md` for the full riding-gaps ledger (each with what / why it
 rides / authorizing record / planned close): the read-plane structure-only oracles
 (`resources/list` `:auth/*` metadata enumeration, `entity.update` RPAF dispatch gap,
-aggregate/registry structure oracles); the OPEN public-bottom-edit firewall bug; the 14
-pinned baseline codec test vars (posture pending Dan); the dotted-alias retirement
-prerequisites (621 in-card refs); and physical auth-store separation (post-0.2.0).
+aggregate/registry structure oracles); the public-bottom-edit firewall bug (rides per
+Dan's B2 ruling, condition verified); the CA-6 same-batch co-batch fail-open (hard
+S9-entry gate); the sanitizer TOCTOU (single-writer model); two silent-data-loss
+substrate bugs; the R3-disciplinary + F7-reserved confinement caveats (no mechanized
+promotion path); the quarantined legacy setup tool (OPS-F-1/F-2, proof-before-
+automation); bare `read-string` interior sites; the fidelity residuals (orphan-twin
+tree, DB-only stock, frozen stamped context); the hook-log cross-boundary flow; the
+W1/G3 completeness boundary; the carrier-degradation fidelity floor; the dotted-alias
+retirement prerequisites (621 in-card refs); and physical auth-store separation
+(post-0.2.0).  (The 14 pinned baseline codec test vars closed 2026-07-10 with receipts —
+full suite green.)
 
 ## [0.1.0] — 2026-05-15 — first public release
 
