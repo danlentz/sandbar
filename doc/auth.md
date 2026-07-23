@@ -409,7 +409,37 @@ Note that `bearer-interceptor` is composable with `session-interceptor` and `api
 
 #### Issuing tokens for MCP clients
 
-Use the standard `auth/ServiceAccount` flow to issue an MCP client a token:
+The fastest path for bootstrapping a service-account + emitting its Bearer-token value is the `lein issue-mcp-token` script:
+
+```sh
+$ lein issue-mcp-token corpus
+;; ... logs ...
+
+=== MCP Bearer Token Issued ===
+
+Service:   corpus
+Token:     corpus:Xk_p4z9V-2nA8m3LWtRq6F1cYbHs0jKvEdT5oIuPMyN
+
+Set in your shell to enable the MCP client to authenticate:
+
+  export SANDBAR_TOKEN="corpus:Xk_p4z9V-2nA8m3LWtRq6F1cYbHs0jKvEdT5oIuPMyN"
+
+Then any MCP client (e.g., the corpus-side bb mcp-client at
+~/claude/etc/lib/mcp_client.clj) will use this token when
+calling http://localhost:8080/mcp.
+```
+
+Flags:
+
+| Argument | Behavior |
+|----------|----------|
+| `<service-name>` | required positional; keyword-shape (e.g. `corpus`, `claude`) |
+| `<api-key>` | optional positional; auto-generated (32-byte URL-safe base64) if omitted |
+| `--rotate` | required when the service account already exists; replaces the API key hash |
+
+Manual flow (the script automates this):
+
+
 
 ```clojure
 (require '[sandbar.db.datatype :as dt])

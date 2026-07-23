@@ -21,6 +21,7 @@
    - C.3 Notifications channel (sandbar.mcp.notifications)
    - C.4 Resources + Prompts + Tasks support"
   (:require [clojure.tools.logging :as log]
+            [sandbar.mcp.authz     :as authz]
             [sandbar.mcp.envelope  :as envelope]
             [sandbar.mcp.prompts   :as prompts]
             [sandbar.mcp.resources :as resources]
@@ -34,10 +35,14 @@
 
 (def server-info
   "Identity returned to clients in the `initialize` response.
-   Version aligns with Sandbar's project version (project.clj)."
+   `:version` tracks the sandbar 0.2.0 co-release and is held in agreement
+   with the project-export catalog projection (`:dump/sandbar-version` in
+   `sandbar.project.dump`, already \"0.2.0\") — the two client-visible version
+   surfaces must not drift.  Bumped 0.1.0 → 0.2.0 for the 0.2.0 co-release
+   per S11/Rec-2 (MCP-surface quick win)."
   {:name    "sandbar"
    :title   "Sandbar"
-   :version "0.1.0"})
+   :version "0.2.0"})
 
 (def protocol-version
   "MCP protocol version this server speaks.
@@ -58,6 +63,22 @@
                :listChanged true}
    :prompts   {:listChanged true}
    :logging   {}})
+
+(def server-instructions
+  "Free-text orientation returned in the `initialize` result's `instructions`
+   field (MCP spec InitializeResult.instructions) — the one natural-language
+   surface a connecting client's model sees, so it is kept deliberately terse
+   (token-bounded, ~1 short paragraph) to never dominate the client's context
+   budget.  Points at the workhorse retrieval verbs + the discover-then-describe
+   pattern for the long tail rather than enumerating the catalog.  Per S11/Rec-2
+   (MCP-surface quick win); the one surface Codex-family clients observe."
+  (str "Sandbar is a typed-edge knowledge substrate (Datomic-backed) served over "
+       "MCP.  Prefer its typed verbs over raw text scanning: sandbar.search.bm25f "
+       "for content-relevance retrieval; sandbar.entity.find / sandbar.class.instances "
+       "for known entities and classes; sandbar.navigate.* for typed-edge traversal; "
+       "sandbar.aggregate.* for counts, group-by, and rankings.  Use "
+       "sandbar.tools.search + sandbar.tools.describe to discover and inspect any "
+       "verb before calling it."))
 
 ;; JSON-RPC 2.0 envelope shapes live in `sandbar.mcp.envelope` — extracted
 ;; to a leaf namespace to break the protocol → notifications cycle per the
@@ -90,7 +111,8 @@
      id
      {:protocolVersion protocol-version
       :capabilities    server-capabilities
-      :serverInfo      server-info})))
+      :serverInfo      server-info
+      :instructions    server-instructions})))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Method dispatch table
@@ -103,46 +125,81 @@
 (def method-handlers
   "Method dispatch table. Stages C.1+C.4 added initialize + tools/*;
    Stage C.5 adds resources/*; subsequent stages add prompts/* +
-   tasks/*."
-  {"initialize"                  handle-initialize
-   "notifications/initialized"   (fn [_ _] nil) ;; client confirms ready; no response
-   "tools/list"                  (fn [id params] (tools/handle-list id params))
-   "tools/call"                  (fn [id params] (tools/handle-call id params))
-   "resources/list"              (fn [id params] (resources/handle-list id params))
-   "resources/read"              (fn [id params] (resources/handle-read id params))
-   "resources/subscribe"         (fn [id params] (resources/handle-subscribe id params))
-   "resources/unsubscribe"       (fn [id params] (resources/handle-unsubscribe id params))
-   "prompts/list"                (fn [id params] (prompts/handle-list id params))
-   "prompts/get"                 (fn [id params] (prompts/handle-get id params))
-   "tasks/list"                  (fn [id params] (tasks/handle-list id params))
-   "tasks/get"                   (fn [id params] (tasks/handle-get id params))
-   "tasks/cancel"                (fn [id params] (tasks/handle-cancel id params))})
+   tasks/*.
+
+   Every handler is `(fn [id params principal] -> response)`.  The dispatch
+   gate (`authz/method-scope-decision`, run in `dispatch` before the handler)
+   covers the principal-SCOPE axis for every method uniformly, so most rows
+   accept and ignore the principal (`_`).  The rows that ALSO need the
+   principal INSIDE the handler consume it explicitly: `tools/call` (the
+   read-only verb-class gate, Shape A′) and — per S5 charter item 3 — the
+   compartment-aware `resources/read` + `resources/subscribe` handlers, which
+   thread the principal to their EP-N3/EP-N1 compartment checks (inert until S6
+   mints the visibility/clearance slots)."
+  {"initialize"                  (fn [id params _] (handle-initialize id params))
+   "notifications/initialized"   (fn [_ _ _] nil) ;; client confirms ready; no response
+   "tools/list"                  (fn [id params _] (tools/handle-list id params))
+   "tools/call"                  (fn [id params principal] (tools/handle-call id params principal))
+   "resources/list"              (fn [id params _] (resources/handle-list id params))
+   "resources/read"              (fn [id params principal] (resources/handle-read id params principal))
+   "resources/subscribe"         (fn [id params principal] (resources/handle-subscribe id params principal))
+   "resources/unsubscribe"       (fn [id params _] (resources/handle-unsubscribe id params))
+   "prompts/list"                (fn [id params _] (prompts/handle-list id params))
+   "prompts/get"                 (fn [id params _] (prompts/handle-get id params))
+   "tasks/list"                  (fn [id params _] (tasks/handle-list id params))
+   "tasks/get"                   (fn [id params _] (tasks/handle-get id params))
+   "tasks/cancel"                (fn [id params _] (tasks/handle-cancel id params))})
 
 (defn dispatch
   "Dispatch a single JSON-RPC message. Returns a response map (or nil for
    pure-notification messages with no response expected).
 
+   `principal` is the authenticated MCP principal (or nil on the
+   legacy/local path); it is threaded to the method handler so `tools/call`
+   can authorize the verb under the read-only token gate.  The 1-arity
+   overload dispatches with no principal (full access), preserving the
+   pre-gate call contract.
+
+   S5 dispatch-layer gate (principal-check-at-dispatch, S5-PLAN §2.2 item 4 /
+   §1.4 Shape A′): for every dispatchable method we compute the principal's
+   scope descriptor and run the pure `authz/method-scope-decision` BEFORE the
+   handler is invoked.  On a deny we return the JSON-RPC deny envelope (or nil
+   for a notification, which expects no response); on allow we proceed to the
+   handler unchanged.  The gate is ADDITIVE — it does NOT duplicate the
+   `tools/call` read-only verb-class check, which stays byte-identical inside
+   `tools/handle-call` (Shape A′).  This is the axis that did not exist before:
+   fail-closed unscoped-deny (AP-2) + family policy for the non-tools methods.
+
    Error handling per JSON-RPC spec (codes via `sandbar.util.jsonrpc-status`):
    - Unknown method → `method-not-found`
+   - Denied by scope → `invalid-params` deny envelope (via authz; AP-2 + family)
    - Invalid params → `invalid-params` (handler may raise; we catch + map)
    - Handler exception → `internal-error`"
-  [msg]
-  (let [{:keys [id method params]} msg]
-    (cond
-      (not (envelope/valid-envelope? msg))
-      (envelope/jsonrpc-error nil jsonrpc-status/invalid-request "Invalid Request" {:received msg})
+  ([msg] (dispatch msg nil))
+  ([msg principal]
+   (let [{:keys [id method params]} msg]
+     (cond
+       (not (envelope/valid-envelope? msg))
+       (envelope/jsonrpc-error nil jsonrpc-status/invalid-request "Invalid Request" {:received msg})
 
-      (nil? method)
-      (envelope/jsonrpc-error id jsonrpc-status/invalid-request "Invalid Request — method missing")
+       (nil? method)
+       (envelope/jsonrpc-error id jsonrpc-status/invalid-request "Invalid Request — method missing")
 
-      :else
-      (if-let [handler (get method-handlers method)]
-        (try
-          (handler id params)
-          (catch Exception e
-            (log/error e :MCP/dispatch-error
-                       {:method method :id id})
-            (envelope/jsonrpc-error id jsonrpc-status/internal-error "Internal error"
-                                    {:exception-message (.getMessage e)})))
-        (envelope/jsonrpc-error id jsonrpc-status/method-not-found
-                                (str "Method not found: " method))))))
+       :else
+       (if-let [handler (get method-handlers method)]
+         ;; S5 dispatch gate — run the pure scope decision before the handler.
+         ;; On deny, short-circuit with the deny envelope (nil for a
+         ;; notification); on allow, invoke the handler as before.
+         (let [scope    (authz/principal->scope principal)
+               decision (authz/method-scope-decision method scope)]
+           (if (authz/deny? decision)
+             (authz/deny->jsonrpc-error id method decision scope)
+             (try
+               (handler id params principal)
+               (catch Exception e
+                 (log/error e :MCP/dispatch-error
+                            {:method method :id id})
+                 (envelope/jsonrpc-error id jsonrpc-status/internal-error "Internal error"
+                                         {:exception-message (.getMessage e)})))))
+         (envelope/jsonrpc-error id jsonrpc-status/method-not-found
+                                 (str "Method not found: " method)))))))

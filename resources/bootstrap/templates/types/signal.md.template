@@ -1,0 +1,59 @@
+## What a `signal` memory is
+
+**Signal is an abstract supertype** — the category of memorials that capture state about the world rather than prescribing action or producing durable artifacts.  Concrete subtypes capture what was observed (`observation`), known-as-unknown (`question`), proposed (`idea`), or encountered as a defect (`bug`).  They are the *"here is what we noticed"* category.
+
+Contrast with the sibling abstract supertypes:
+
+- **`artifact`** — produces durable output (decision / plan / library study / reference)
+- **`guidance`** — prescribes action ("when X happens, do / don't do Y")
+- **`meta`** — schema / structural ("about the map, not the territory")
+
+## When `extends: signal` helps
+
+Category-level rules become expressible across the family:
+
+- *"Every guidance must cite at least one signal that motivated it"* — normative rules need empirical grounding
+- *"Every plan should cite at least one signal in §0 Motivation"* — plans are driven by observed need
+- *"All signals with `confidence: tentative` older than 6 months should be re-examined"* — age-out discipline across the subtype family
+- *"A signal's relevance grows with system scale"* — scale-dependent observations get re-surfaced at threshold crossings
+
+Without supertype membership, each rule enumerates the concrete subtypes manually.  With it, `is-a? signal` becomes the predicate, and the rule survives the addition of new subtypes.
+
+## Not instantiated directly
+
+Don't write a memorial with `type: signal` — write one of the concrete subtypes (e.g., `type: observation`, `type: question`, `type: idea`, `type: bug`), each of which declares this class as its parent via `:dt/subclass-of`.  The `abstract?: true` schema flag marks this class as non-instantiable.
+
+## Substrate identity
+
+- **Class ident**: `{{class-ident}}`
+- **Parent class(es)**: {{parent-classes}}
+- **Ancestor chain**: {{ancestor-chain}}
+- **Native codec**: `{{native-codec}}`
+- **Codec type-keyword(s)**: {{codec-type-keywords}}
+
+## Slot vocabulary ({{slot-count}} slots inherited or declared)
+
+Signal memorials inherit the full `:mm/Memory` slot vocabulary plus class-specific extensions for state-capture metadata.  Concrete subtypes layer their own slots:
+
+- **`observation`** adds `:mm.observation/confidence` (`:tentative` / `:provisional` / `:confirmed`) and `:mm.observation/scale-dependent` (does relevance grow with scale?)
+- **`question`** is a known-unknown awaiting answer; deliberately tentative
+- **`idea`** is a proposed future action, not yet pursued
+- **`bug`** adds defect-tracking fields (`severity`, `affected-component`, `status`)
+
+{{slot-table}}
+
+## Promotion path
+
+Signals often start informal (inbox / casual capture) and graduate to formal entries with grounding citations.  A common evolution:
+
+1. *Inbox capture* — mid-work noticing via `/memory-notice`
+2. *Promotion to typed signal* — during review, the inbox entry becomes a typed observation / question / idea / bug with proper `tags:` and `related:`
+3. *Cited by guidance* — once enough signal accumulates around a pattern, a guidance memorial cites the signals as motivation
+
+## See also
+
+- [`types/artifact.md`](artifact.md) — sibling abstract supertype for durable-output memorials
+- [`types/guidance.md`](guidance.md) — sibling abstract supertype for normative memorials
+- [`types/meta.md`](meta.md) — sibling abstract supertype for schema / structural memorials
+- [`types/memory.md`](memory.md) — the common ancestor (foundational memorial class)
+- Sandbar substrate: `sandbar/schema/mm-signal.edn`

@@ -1,0 +1,54 @@
+## What this predicate means
+
+**A `documents` B** — A's content describes / explains B; A serves as documentation for B.  The documentation-of-something relation.
+
+Common shapes:
+- A reference memorial documents a library
+- A protocol memorial documents a workflow
+- A briefing documents a session-arc
+- A README documents a project
+
+## Substrate identity
+
+- **Slot ident**: `{{predicate-ident}}`
+- **Domain**: `{{domain}}`
+- **Range**: `{{range}}`
+- **Cardinality**: `{{cardinality}}`
+- **Inverse of**: `:mm.memory/documented-by`
+
+## Formal signature
+
+`{{predicate-name}} : {{domain}} × {{range}} → Bool`
+
+## When to use
+
+Use `documents:` when:
+- A is intentionally a documentation artifact for B
+- A's content describes B's interface / behavior / shape / usage
+- A is a reference for B's consumers
+
+Distinguish from:
+- `about:` — A is ABOUT B but not necessarily its documentation
+- `cites:` — A merely points at B
+- `describes:` — informal alternative (sandbar uses `documents:` as the typed form)
+
+## Formal ontology mappings
+
+Aligned predicates from established formal vocabularies:
+
+- **DC Terms** `dcterms:description` — close analogue (literal-valued in DC; sandbar's `documents:` is reified entity-to-entity)
+- **FOAF** `foaf:topic` — distant analogue (closer to sandbar's `about:`)
+- **OWL** — no direct equivalent (uses `rdfs:isDefinedBy` for documentation-of-ontology-terms, narrower scope)
+- **RDFS** `rdfs:isDefinedBy` — close analogue when target is an ontology term
+- **PROV-O** — no direct equivalent
+- **CiTO** — no direct equivalent
+- **SKOS** `skos:scopeNote` — distant analogue (literal-valued documentation in concept-scheme context)
+
+Grounding references in the corpus:
+- [`references/rdfs_reference.md`](../references/rdfs_reference.md) — RDFS / DC Terms substrate
+
+## See also
+
+- [`predicates/documented-by.md`](documented-by.md) — inverse partner
+- [`predicates/about.md`](about.md) — broader (primary-subject without documentation claim)
+- [`predicates/cites.md`](cites.md) — weaker (source-pointer only)

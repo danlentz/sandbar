@@ -1,0 +1,52 @@
+## What this predicate means
+
+**A `motivates` B** — A's existence is the reason B exists; A is the motivator that brought B into being.  Causal-but-not-generative: A doesn't physically generate B (that's PROV's `prov:wasGeneratedBy`), but A's existence provided the JUSTIFICATION for B.
+
+Common shapes:
+- A bug-report motivates a fix-plan
+- A pattern motivates a refactor decision
+- An observation motivates a follow-up plan
+- A feedback memorial motivates an interaction rule
+
+## Substrate identity
+
+- **Slot ident**: `{{predicate-ident}}`
+- **Domain**: `{{domain}}`
+- **Range**: `{{range}}`
+- **Cardinality**: `{{cardinality}}`
+- **Inverse of**: `:mm.memory/motivated-by`
+
+## Formal signature
+
+`{{predicate-name}} : {{domain}} × {{range}} → Bool`
+
+## When to use motivates vs informs vs triggered-by
+
+These three form a chain of decreasing causal-strength:
+
+| Predicate | Strength | Meaning |
+|---|---|---|
+| `triggered-by` | strongest | B's existence is DIRECTLY CAUSED by A |
+| `motivated-by` | medium | B exists BECAUSE OF A, but A didn't directly cause it |
+| `informed-by` | lightest | A SHAPED B's design without being the cause |
+
+`motivates:` is the inverse of `motivated-by:`.
+
+## Formal ontology mappings
+
+Aligned predicates from established formal vocabularies:
+
+- **PROV-O** — no direct flat predicate (PROV-O encodes motivation via qualified `prov:Influence` patterns rather than a top-level forward predicate)
+- **OWL** `owl:inverseOf` — sandbar declares `:mm.memory/motivates` as `inverse-of :mm.memory/motivated-by`
+- **DC Terms** — no direct equivalent
+- **CiTO** — no direct equivalent
+- **SKOS** — no direct equivalent
+
+Grounding references in the corpus:
+- [`references/rdfs_reference.md`](../references/rdfs_reference.md) — RDF/RDFS + OWL substrate
+
+## See also
+
+- [`predicates/motivated-by.md`](motivated-by.md) — inverse partner
+- [`predicates/informs.md`](informs.md) — weaker (shaping, not motivating)
+- [`predicates/triggered-by.md`](triggered-by.md) — stronger (direct causal trigger)

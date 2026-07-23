@@ -1,0 +1,31 @@
+## What a `type: linkset` instance is
+
+A first-class representation of INTER-DATASET TYPED CROSS-LINK METADATA — analog of `void:Linkset` from the VoID vocabulary.  A linkset declares: "FROM this dataset, USING this predicate, TO that target dataset — N typed-edges of this shape exist."  Linksets are the substrate's mechanism for federating typed-edge graphs across dataset boundaries while keeping cross-dataset reference metadata first-class + queryable.
+
+## When to materialize a linkset
+
+- Cross-dataset typed-edges exist (e.g., memorial in dataset A cites memorial in dataset B)
+- Federation discovery needs to enumerate available cross-references
+- Audit invariants need to track cross-dataset reference health (broken-link detection at federation scale)
+
+## Substrate identity
+
+- **Class ident**: `{{class-ident}}`
+- **Parent class(es)**: {{parent-classes}}
+
+## Slot vocabulary
+
+The class declares **{{slot-count}}** slots:
+
+{{slot-table}}
+
+## Composition with other classes
+
+- **`:mm/Dataset`** — linksets reference source + target datasets
+- **`:mm/Vocabulary`** — linksets reference the vocabulary providing the linking predicate
+
+## See also
+
+- [`types/dataset.md`](dataset.md) — datasets at both ends of a linkset
+- [`types/vocabulary.md`](vocabulary.md) — vocabulary providing the predicates
+- [`types/predicate.md`](predicate.md) — the linking predicates themselves

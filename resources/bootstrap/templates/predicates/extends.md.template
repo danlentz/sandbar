@@ -1,0 +1,55 @@
+## What this predicate means
+
+**A `extends` B** — A is a subtype / subclass of B; A INHERITS B's properties (slots, characteristics) and may ADD its own.  Class-level extension.
+
+Common shapes:
+- `:mm/Decision extends :mm/Memory` (memorial-type extension)
+- `:mm/Pattern extends :mm/Memory`
+- A consumer-specific type extends a sandbar-canonical type (per-client override scenario)
+- `:dt/Property extends :dt/AttributeSpec` (metamodel-level)
+
+## Substrate identity
+
+- **Slot ident**: `{{predicate-ident}}`
+- **Domain**: `{{domain}}` (typically `:dt/Class`)
+- **Range**: `{{range}}` (typically `:dt/Class`)
+- **Cardinality**: `{{cardinality}}` (typically `:many` — multiple inheritance possible)
+- **Sub-property of**: `:dt/structural-derivation`
+
+## Formal signature
+
+`{{predicate-name}} : {{domain}} × {{range}} → Bool`
+
+## Characteristics
+
+- **Asymmetric** — A extends B does not imply B extends A
+- **Irreflexive** — a class doesn't extend itself
+- **Transitive** — A extends B, B extends C entails A extends C
+
+## Audit invariants
+
+- "type hierarchy extends graph is acyclic" — the extends-graph must be a DAG
+- "type memories declare tier (stable-core / expansion / experimental)" — types must declare their tier
+
+Cross-check via `/memory-audit`.
+
+## Formal ontology mappings
+
+Aligned predicates from established formal vocabularies:
+
+- **RDFS** `rdfs:subClassOf` — exact semantic match (the canonical class-extension predicate in RDF Schema)
+- **OWL** `owl:subClassOf` — exact semantic match (OWL inherits RDFS subClassOf semantics with stronger reasoning support)
+- **SKOS** `skos:broader` — distant analogue (concept-level, not class-level — different abstraction layer)
+- **DC Terms** — no direct equivalent
+- **PROV-O** — no direct equivalent
+- **CiTO** — no direct equivalent
+
+Grounding references in the corpus:
+- [`references/rdfs_reference.md`](../references/rdfs_reference.md) — RDFS `rdfs:subClassOf` semantics + entailment rule rdfs9
+- [`references/denotational_semantics_reference.md`](../references/denotational_semantics_reference.md) — semantic-anchor lineage
+
+## See also
+
+- [`predicates/inherits-from.md`](inherits-from.md) — adjacent (slot/property inheritance, not class-extension)
+- [`predicates/specializes.md`](specializes.md) — property-level (rdfs:subPropertyOf), not class-level
+- [`predicates/instance-of.md`](instance-of.md) — adjacent (instance-class relation, not class-class)

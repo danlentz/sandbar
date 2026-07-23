@@ -9,7 +9,7 @@
 ;;
 ;;   workflow/State       - A named state in a workflow
 ;;   workflow/Transition  - A valid state change with optional guard
-;;   workflow/Definition  - The complete workflow specification
+;;   mm/Workflow          - The complete workflow specification (renamed from :workflow/Definition 2026-05-23)
 ;;   workflow/Process     - A running instance of a workflow
 ;;
 ;; Example: Order Fulfillment
@@ -35,14 +35,24 @@
   {:db/ident :workflow/Transition
    :db/doc "A valid state change"}
 
-  {:db/ident :workflow/Definition
+  {:db/ident :mm/Workflow
    :db/doc "A complete workflow specification"}
 
   {:db/ident :workflow/Process
    :db/doc "A running workflow instance"}
 
   {:db/ident :workflow/History
-   :db/doc "A record of a state transition"}]
+   :db/doc "A record of a state transition"}
+
+  ;; Forward decl for cross-file ref: :mm/Workflow declares
+  ;; :dt/subclass-of :mm/Meta (Stage C of first-class-memorialization
+  ;; arc 2026-05-23).  :mm/Meta's full body lands later in :mm-meta.edn
+  ;; (which itself back-references :workflow/Process via
+  ;; :mm.session/workflow-process — load order is :workflow → :mm → :mm-meta,
+  ;; so each side's forward-decl resolves the other side's body-time
+  ;; reference).  Per `decisions/option_b_plus_c_ratified_spec_vs_state_criterion_pivot_to_first_class_memorialization_2026_05_23.md`.
+  {:db/ident :mm/Meta
+   :db/doc "Forward declaration; full definition in :mm-meta schema."}]
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; State Properties
@@ -160,7 +170,7 @@
 
  [{:db/ident :workflow/definition-name
    :dt/type :dt/Property
-   :dt/domain :workflow/Definition
+   :dt/domain :mm/Workflow
    :dt/range :db.type/keyword
    :db/valueType :db.type/keyword
    :db/cardinality :db.cardinality/one
@@ -169,7 +179,7 @@
 
   {:db/ident :workflow/states
    :dt/type :dt/Property
-   :dt/domain :workflow/Definition
+   :dt/domain :mm/Workflow
    :dt/range :workflow/State
    :db/valueType :db.type/ref
    :db/cardinality :db.cardinality/many
@@ -177,7 +187,7 @@
 
   {:db/ident :workflow/transitions
    :dt/type :dt/Property
-   :dt/domain :workflow/Definition
+   :dt/domain :mm/Workflow
    :dt/range :workflow/Transition
    :db/valueType :db.type/ref
    :db/cardinality :db.cardinality/many
@@ -185,7 +195,7 @@
 
   {:db/ident :workflow/version
    :dt/type :dt/Property
-   :dt/domain :workflow/Definition
+   :dt/domain :mm/Workflow
    :dt/range :db.type/long
    :db/valueType :db.type/long
    :db/cardinality :db.cardinality/one
@@ -198,7 +208,7 @@
  [{:db/ident :workflow/definition
    :dt/type :dt/Property
    :dt/domain :workflow/Process
-   :dt/range :workflow/Definition
+   :dt/range :mm/Workflow
    :db/valueType :db.type/ref
    :db/cardinality :db.cardinality/one
    :db/doc "The workflow definition this process follows"}
@@ -249,7 +259,38 @@
    :dt/range :db.type/string
    :db/valueType :db.type/string
    :db/cardinality :db.cardinality/one
-   :db/doc "Process-specific data (EDN string)"}]
+   :db/doc "Process-specific data (EDN string)"}
+
+  ;; ι.2 substrate extension (2026-05-25) per
+  ;; :memory.decisions/iota_eta_q_checkpoint_wave_one_ratification_session_workflow_substrate_design_fs_audit_scope_finalized_2026_05_25
+  ;; Q.ι.6 + κ P6/P8.  Session-workflow-specific slots on :workflow/Process —
+  ;; namespace-tagged :mm.session-process/* by convention; domain remains
+  ;; :workflow/Process (avoids subclass proliferation per the plan's Q.ι.2.A.4
+  ;; recommendation).
+
+  {:db/ident :mm.session-process/paused-from-state
+   :dt/type :dt/Property
+   :dt/domain :workflow/Process
+   :dt/range :db.type/keyword
+   :db/valueType :db.type/keyword
+   :db/cardinality :db.cardinality/one
+   :db/doc "Set by :session/pause-maintenance effect (sandbar.workflow.session/on-pause-maintenance): records the pre-pause :workflow/state-name so :session/resume-maintenance can restore intent. Retracted by :session/resume-maintenance effect. Per κ P6 maintenance-mode + Q.ι.6 ratification."}
+
+  {:db/ident :mm.session-process/failure-reason
+   :dt/type :dt/Property
+   :dt/domain :workflow/Process
+   :dt/range :db.type/string
+   :db/valueType :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/doc "Set by :session/fail / :session/fail-from-paused effects (sandbar.workflow.session/on-fail): free-text rationale captured at fail-time. Per κ P8 hard-fail + Q.ι.6 ratification + the :workflow/requires-reason? gate on the fail transitions."}
+
+  {:db/ident :mm.session-process/failure-instant
+   :dt/type :dt/Property
+   :dt/domain :workflow/Process
+   :dt/range :db.type/instant
+   :db/valueType :db.type/instant
+   :db/cardinality :db.cardinality/one
+   :db/doc "Set by :session/fail / :session/fail-from-paused effects: wall-clock instant of the failure transition. Companion to :mm.session-process/failure-reason."}]
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; History Properties
@@ -335,12 +376,13 @@
               :workflow/on-transition
               :workflow/requires-reason?]}
 
-  {:db/ident :workflow/Definition
+  {:db/ident :mm/Workflow
    :dt/type :dt/Class
-   :dt/subclass-of :dt/Ref
+   :dt/subclass-of :mm/Meta             ;; Stage C of first-class-memorialization arc: changed from :dt/Ref to :mm/Meta (mirrors :mm/Session precedent) — inherits :mm/Memory slot family for fs projection
    :dt/context "workflow"
    :dt/label "Definition"
-   :db/doc "A complete workflow specification with states and transitions."
+   :dt/memorial-policy :first-class       ;; user-visible behavioral spec — projects to memory/workflows/<name>.md per first-class-memorialization arc Stage E migration
+   :db/doc "A complete workflow specification with states and transitions.  Per Stage C of `plans/sandbar_first_class_memorialization_arc_workflows_schedules_contexts_dt_memorial_policy_2026_05_23.md` — class now inherits from `:mm/Meta` (a `:mm/Memory` descendant) so workflow definitions are first-class memorialized like sessions / decisions / plans.  Codec emit (states + transitions sections) lands in Stage D; until then projection sink skips workflows with `:no-native-codec` reason."
    :dt/slots [:workflow/definition-name
               :workflow/states
               :workflow/transitions
@@ -351,6 +393,7 @@
    :dt/subclass-of :dt/Ref
    :dt/context "workflow"
    :dt/label "Process"
+   :dt/memorial-policy :db-only           ;; runtime state — covered by DB-dump arc for disaster recovery + audit
    :db/doc "A running instance of a workflow attached to a subject entity."
    :dt/slots [:workflow/definition
               :workflow/current-state

@@ -25,8 +25,11 @@
   this commit."
   (:require [cheshire.core      :as json]
             [clojure.test       :refer :all]
+            [datomic.api        :as d]
+            [sandbar.db.datatype :as dt]
             [sandbar.db.datomic :as db]
             [sandbar.mcp.tools  :as tools]
+            [sandbar.store      :as store]
             [sandbar.test-util  :as tu]))
 
 (use-fixtures :each (tu/make-test-db-fixture {:test-name "mcp-tools-db-test"
@@ -298,6 +301,66 @@
                         "slots" {}})]
     (is (user-error? response))))
 
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; S7 entity.validate firewall ADVISORY arm (CA-1.3 / R19) — the read-only
+;; verb must surface the SAME firewall verdict the commit floor throws, so a
+;; caller cannot get a clean bill here and then have entity.create refuse the
+;; identical spec.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defn- seed-fw-world! []
+  ;; RAW transact (bypassing EP-1) so the fixtures — incl. a private target —
+  ;; exist without tripping the guard we are about to exercise via validate.
+  ;; Ordered txns: a :db/ident ref only resolves against the COMMITTED db, so
+  ;; contexts must land before the projects that reference them, etc.
+  @(d/transact (db/conn)
+     [{:db/ident :ctx/home :dt/type :mm/Context :mm.memory/name "home"
+       :mm.context/firewall-class :public-bottom}
+      {:db/ident :ctx/work :dt/type :mm/Context :mm.memory/name "work"
+       :mm.context/firewall-class :project-isolated}])
+  @(d/transact (db/conn)
+     [{:db/ident :proj/pub :dt/type :mm/Project :mm.memory/name "pub"
+       :mm.project/ident :proj/pub :mm.project/corpus-repo "r"
+       :mm.project/default-visibility :public
+       :mm.project/firewall-class :public-bottom
+       :mm.project/runs-in-context :ctx/home}
+      {:db/ident :proj/priv :dt/type :mm/Project :mm.memory/name "priv"
+       :mm.project/ident :proj/priv :mm.project/corpus-repo "r"
+       :mm.project/default-visibility :private
+       :mm.project/runs-in-context :ctx/work}])
+  @(d/transact (db/conn)
+     [{:db/ident :mem/priv-target :dt/type :mm/Memory :mm.memory/name "pt"
+       :mm.memory/visibility :private :mm.memory/owning-project :proj/priv}]))
+
+(deftest entity-validate-surfaces-firewall-violation
+  (seed-fw-world!)
+  (let [priv-eid (:db/id (d/entity (db/db) :mem/priv-target))]
+    (testing "a public→private spec that entity.create would REFUSE reports
+              :valid? false with a :firewall-violation error (no advisory
+              divergence from the commit floor)"
+      (let [response (call "sandbar.entity.validate"
+                           {"class" ":mm/Memory"
+                            "slots" {"mm.memory/name"           "leaker"
+                                     "mm.memory/visibility"     ":public"
+                                     "mm.memory/owning-project" ":proj/pub"
+                                     "mm.memory/cites"          priv-eid}})
+            body     (json/parse-string (error-text response) true)]
+        (is (false? (:valid? body)))
+        (is (some #(= "firewall-violation" (:type %))
+                  (get-in body [:errors :errors]))
+            (str "entity.validate must surface the firewall verdict; got "
+                 (pr-str body)))))
+    (testing "a permitted private→public spec reports :valid? true"
+      (let [pub-mem (:db/id (d/entity (db/db) :mem/priv-target)) ; reuse world
+            response (call "sandbar.entity.validate"
+                           {"class" ":mm/Memory"
+                            "slots" {"mm.memory/name"           "clean"
+                                     "mm.memory/visibility"     ":private"
+                                     "mm.memory/owning-project" ":proj/priv"}})
+            body     (json/parse-string (error-text response) true)]
+        (is (true? (:valid? body))
+            (str "a non-leaking spec must validate clean; got " (pr-str body)))))))
+
 (deftest entity-find-bogus-ident-returns-missing-not-error
   (testing "entity-find has FIND-OR-MISSING semantic — does NOT raise on
             not-found; returns structured {:missing? true} via
@@ -333,11 +396,75 @@
                         "slots"  {}})]
     (is (user-error? response))))
 
+(defn- mk-mem!
+  "Create an identful :mm/Memory via the canonical store path (derives a
+   :db/ident from rel-path).  Returns {:eid :ident} read back from the DB."
+  [nm rel & [slots]]
+  (let [eid (:db/id (store/create-memory! :mm/Memory
+                                          (merge {:mm.memory/name nm :mm.memory/rel-path rel} slots)
+                                          {:validate? false}))]
+    {:eid eid :ident (:db/ident (db/entity eid))}))
+
+(deftest entity-update-card-many-replaces-by-default
+  ;; W0.found 2026-06-30 — the sandbar.entity.update verb REPLACES a
+  ;; cardinality-many slot's set by default; `additive true` keeps the
+  ;; legacy UNION.  Per decisions/entity_update_card_many_replace_by_
+  ;; default_opt_in_additive_2026_06_30.  Targets are identful (store path)
+  ;; so they can be addressed by ident through the MCP wire; assert by :db/id.
+  ;; db/entity renders identful ref targets as their :db/ident keyword (or a
+  ;; map carrying :db/ident) — normalize either shape to the ident for comparison.
+  (letfn [(cites-of [src-eid]
+            (set (map #(if (associative? %) (:db/ident %) %)
+                      (:mm.memory/cites (db/entity src-eid)))))]
+    (testing "default REPLACE retracts omitted card-many members"
+      (let [t1  (mk-mem! "t1" "test/mcp-cm-t1")
+            t2  (mk-mem! "t2" "test/mcp-cm-t2")
+            t3  (mk-mem! "t3" "test/mcp-cm-t3")
+            src (mk-mem! "src" "test/mcp-cm-src"
+                         {:mm.memory/cites [(:eid t1) (:eid t2)]})]
+        (is (= #{(:ident t1) (:ident t2)} (cites-of (:eid src))) "precondition")
+        (let [resp (call "sandbar.entity.update"
+                         {"entity" (str (:ident src))
+                          "slots"  {":mm.memory/cites" [(str (:ident t1)) (str (:ident t3))]}})]
+          (is (not (user-error? resp))
+              (str "expected success, got: " (error-text resp))))
+        (is (= #{(:ident t1) (:ident t3)} (cites-of (:eid src)))
+            "t2 retracted, t3 added, t1 retained via the MCP verb")))
+
+    (testing "`additive true` preserves the UNION via the MCP verb"
+      (let [t1  (mk-mem! "u1" "test/mcp-add-t1")
+            t2  (mk-mem! "u2" "test/mcp-add-t2")
+            t3  (mk-mem! "u3" "test/mcp-add-t3")
+            src (mk-mem! "src" "test/mcp-add-src"
+                         {:mm.memory/cites [(:eid t1) (:eid t2)]})]
+        (call "sandbar.entity.update"
+              {"entity"   (str (:ident src))
+               "slots"    {":mm.memory/cites" [(str (:ident t3))]}
+               "additive" true})
+        (is (= #{(:ident t1) (:ident t2) (:ident t3)} (cites-of (:eid src)))
+            "t3 appended; t1 + t2 retained under additive")))))
+
 (deftest entity-validate-bogus-class-projects-user-error
   (let [response (call "sandbar.entity.validate"
                        {"class" "not-a-thing"
                         "slots" {}})]
     (is (user-error? response))))
+
+(deftest coerce-slot-map-resolves-colon-prefixed-keys
+  ;; Regression for the 2026-06-29 silent-drop bug: a colon-prefixed JSON
+  ;; slot key is mangled by cheshire's :key-fn keyword into a keyword whose
+  ;; NAMESPACE carries the colon, which used to match no declared slot and
+  ;; was silently dropped (producing identless / shape-nonconformant
+  ;; entities).  Derive the real string slot via the known-good bare-name
+  ;; path, then prove its mangled colon-prefixed form resolves to the SAME
+  ;; slot — ns-agnostic so it doesn't hard-code the slot's namespace.
+  (let [bare (#'tools/coerce-slot-map :mm/Tag {"definition" "x"})
+        slot (first (keys bare))]
+    (is (some? slot) "sanity: bare local name 'definition' resolves on :mm/Tag")
+    (let [mangled (keyword (str ":" (namespace slot)) (name slot))
+          colon   (#'tools/coerce-slot-map :mm/Tag {mangled "x"})]
+      (is (contains? colon slot)
+          "colon-prefixed (cheshire-mangled) key must resolve to the slot, not be dropped"))))
 
 (deftest aggregate-group-by-bogus-group-by-projects-user-error
   (let [response (call "sandbar.aggregate.group-by"
@@ -370,3 +497,323 @@
     (is (jsonrpc-error? response))
     (is (= -32602 (-> response :error :code))
         "unknown tool should produce invalid-params")))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Stage 7.D tag-vocabulary verbs — behavior tests
+;;
+;; Per decisions/tag_as_first_class_introspectable_type_in_metamodel_2026_05_20.md
+;; §2.5 — sandbar.ground + sandbar.tag.{lookup, define, audit, consolidate,
+;; split, rename, align, harmonize} verb surface.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defn- result-content-edn
+  "Extract the result text from a successful MCP response and parse it as
+   JSON with keyword keys.  Per tools.clj:1728 — content is emitted as
+   `(json/generate-string data {:pretty true})`.  Helper-name kept as
+   `-edn` for historical reasons + parallel with existing helpers; the
+   actual format is JSON."
+  [response]
+  (let [text (-> response :result :content first :text)]
+    (json/parse-string text true)))
+
+;; ---------- sandbar.tag.define ----------
+
+(deftest tag-define-creates-canonical-tag
+  (let [response (call "sandbar.tag.define"
+                       {"name"  "audit"
+                        "slots" {"definition" "A discipline-checking pass over the corpus."
+                                 "scope-note" "Applies when verifying capture-discipline gaps."}})]
+    (is (success? response) "define should succeed")
+    (let [payload (result-content-edn response)]
+      (is (true? (:created payload)))
+      (is (= "audit" (-> payload :tag :value))))))
+
+(deftest tag-define-rejects-duplicate-canonical
+  (call "sandbar.tag.define" {"name" "audit" "slots" {"definition" "First."}})
+  (let [response (call "sandbar.tag.define" {"name" "audit" "slots" {"definition" "Duplicate."}})]
+    (is (user-error? response)
+        "second define with same :name should be user-error")
+    (is (re-find #"already exists" (error-text response)))))
+
+(deftest tag-define-requires-name
+  (let [response (call "sandbar.tag.define" {"slots" {"definition" "Missing name."}})]
+    (is (user-error? response))
+    (is (re-find #"name" (error-text response)))))
+
+(deftest tag-define-upgrade-persists-slots
+  ;; Regression for bugs/tag_define_upgrade_silently_drops_slots_payload_2026_07_03.md:
+  ;; "calling tag.define with upgrade:true and a :slots map (definition/
+  ;; scope-note for an existing shell :mm/Tag) succeeds on the wire but the
+  ;; :slots payload is silently discarded — the entity is unchanged."  The
+  ;; wire call returns success either way; the defect is only visible on
+  ;; RE-READ, so this test round-trips through a fresh tag.lookup to observe
+  ;; what actually landed in the substrate (not the handler's own echo).
+  ;;
+  ;; The literal memorial scenario (declared canonical slots) already lands
+  ;; at HEAD — this half is a forward-regression guard.  The honest-contract
+  ;; half below (undeclared key) is the red→green: pre-fix the handler echoed
+  ;; success while dropping the key; post-fix it refuses loudly.
+  (call "sandbar.tag.define" {"name" "shell-tag-to-upgrade"})   ; bare shell — no slots
+  (let [upgrade (call "sandbar.tag.define"
+                      {"name"    "shell-tag-to-upgrade"
+                       "upgrade" true
+                       "slots"   {"definition" "Canonical definition added on upgrade."
+                                  "scope-note" "When-to-use boundary added on upgrade."}})]
+    (is (success? upgrade) "upgrade should succeed on the wire")
+    (let [payload (result-content-edn upgrade)]
+      (is (true? (:upgraded payload)) "response flags the upgrade branch")
+      ;; The handler's own echo must reflect the persisted slots ...
+      (is (= "Canonical definition added on upgrade." (-> payload :tag :definition))
+          "handler echo carries the upgraded definition")
+      (is (= "When-to-use boundary added on upgrade." (-> payload :tag :scope-note))
+          "handler echo carries the upgraded scope-note")))
+  ;; ... AND an independent re-read must see them (the memorial's exact
+  ;; failure mode is validates-then-silently-drops: success is reported but
+  ;; the substrate is unchanged, so the drop only shows on re-read).
+  (let [reread  (call "sandbar.tag.lookup" {"concept" "shell-tag-to-upgrade"})
+        payload (result-content-edn reread)
+        match   (first (filter #(= "shell-tag-to-upgrade" (:value %))
+                               (:matches payload)))]
+    (is (some? match) "upgraded tag is re-findable by value")
+    (is (= "Canonical definition added on upgrade." (:definition match))
+        "re-read shows the definition slot populated (NOT silently dropped)")
+    (is (= "When-to-use boundary added on upgrade." (:scope-note match))
+        "re-read shows the scope-note slot populated (NOT silently dropped)")))
+
+(deftest tag-define-upgrade-refuses-silent-slot-drop
+  ;; RED→GREEN honest-contract guard for the memorial's `validates-then-
+  ;; silently-drops` family.  A supplied slot key that matches NO declared
+  ;; :mm/Tag slot is discarded by coerce-slot-map with only a server-side
+  ;; log — pre-fix the wire call still returned SUCCESS with the key lost.
+  ;; The fix refuses loudly (ex-info → isError envelope) so no payload key
+  ;; can vanish behind a reported success.
+  (call "sandbar.tag.define" {"name" "shell-honest"})
+  (let [resp (call "sandbar.tag.define"
+                   {"name"    "shell-honest"
+                    "upgrade" true
+                    "slots"   {"definition"      "This one is a real declared slot."
+                               "not-a-real-slot" "This key would silently vanish."}})]
+    (is (user-error? resp)
+        "an undeclared slot key must be a loud user-error, NOT a silent-drop success")
+    (is (re-find #"silently dropped|match no declared" (error-text resp))
+        "the error names the drop it prevented"))
+  ;; And the refusal is pre-transaction — the good declared slot must NOT
+  ;; have partially landed (the whole call is rejected atomically).
+  (let [reread  (call "sandbar.tag.lookup" {"concept" "shell-honest"})
+        payload (result-content-edn reread)
+        match   (first (filter #(= "shell-honest" (:value %)) (:matches payload)))]
+    (is (nil? (:definition match))
+        "refused upgrade left the entity unchanged — no partial write")))
+
+;; ---------- sandbar.tag.lookup ----------
+
+(deftest tag-lookup-finds-by-value-exact-match
+  (call "sandbar.tag.define" {"name"  "datomic"
+                              "slots" {"definition" "Datomic database."}})
+  (let [response (call "sandbar.tag.lookup" {"concept" "datomic"})]
+    (is (success? response))
+    (let [payload (result-content-edn response)]
+      (is (false? (:gap? payload)))
+      (is (pos? (count (:matches payload))))
+      (is (= "datomic" (-> payload :matches first :value))))))
+
+(deftest tag-lookup-reports-gap-when-no-match
+  (let [response (call "sandbar.tag.lookup" {"concept" "totally-unknown-concept-xyz"})]
+    (is (success? response))
+    (let [payload (result-content-edn response)]
+      (is (true? (:gap? payload)))
+      (is (zero? (count (:matches payload))))
+      (is (re-find #"sandbar.tag.define" (str (:gap-hint payload)))))))
+
+(deftest tag-lookup-finds-via-scope-note
+  (call "sandbar.tag.define"
+        {"name"  "discipline"
+         "slots" {"definition" "Verifying capture pattern."
+                  "scope-note" "Used during audit work on the corpus."}})
+  (let [response (call "sandbar.tag.lookup" {"concept" "corpus"})]
+    (is (success? response))
+    (let [payload (result-content-edn response)
+          values  (set (map :value (:matches payload)))]
+      (is (contains? values "discipline")
+          "scope-note containing 'corpus' should match via the lookup scorer"))))
+
+;; ---------- sandbar.tag.audit ----------
+
+(deftest tag-audit-returns-seven-invariant-report
+  ;; Define a couple of tags so the audit has shape; doesn't matter which.
+  (call "sandbar.tag.define" {"name" "well-defined-tag" "slots" {"definition" "Has defn."}})
+  (call "sandbar.tag.define" {"name" "2026-05-12"})  ; date-pattern
+  (let [response (call "sandbar.tag.audit" {})]
+    (is (success? response))
+    (let [payload (result-content-edn response)]
+      (is (= 7 (count (:invariants payload))))
+      (is (re-find #"violations" (:summary payload))))))
+
+;; ---------- sandbar.tag.consolidate ----------
+
+(deftest tag-consolidate-merges-into-canonical
+  (call "sandbar.tag.define" {"name" "tags" "slots" {"definition" "plural form"}})
+  (call "sandbar.tag.define" {"name" "tag"  "slots" {"definition" "singular form (canonical)"}})
+  (let [response (call "sandbar.tag.consolidate" {"from" "tags" "into" "tag"})]
+    (is (success? response))
+    (let [payload (result-content-edn response)]
+      (is (= "tags" (:from payload)))
+      (is (= "tag"  (:into payload)))
+      (is (= "tags" (:alt-label-added payload)))
+      ;; JSON serialization stringifies keywords; payload sees "superseded" string.
+      (is (= "superseded" (:lifecycle-status payload))))))
+
+(deftest tag-consolidate-rejects-missing-from
+  (call "sandbar.tag.define" {"name" "tag"  "slots" {"definition" "exists"}})
+  (let [response (call "sandbar.tag.consolidate" {"from" "nonexistent" "into" "tag"})]
+    (is (user-error? response))
+    (is (re-find #"not found" (error-text response)))))
+
+;; ---------- sandbar.tag.rename ----------
+
+(deftest tag-rename-changes-value-preserves-old-as-hidden-label
+  (call "sandbar.tag.define" {"name" "old-canonical" "slots" {"definition" "to be renamed"}})
+  (let [response (call "sandbar.tag.rename" {"old" "old-canonical" "new" "new-canonical"})]
+    (is (success? response))
+    (let [payload (result-content-edn response)]
+      (is (= "old-canonical" (:old payload)))
+      (is (= "new-canonical" (:new payload)))
+      (is (= "old-canonical" (:hidden-label-preserved payload))))))
+
+(deftest tag-rename-rejects-when-new-name-taken
+  (call "sandbar.tag.define" {"name" "alpha" "slots" {"definition" "first"}})
+  (call "sandbar.tag.define" {"name" "beta"  "slots" {"definition" "second"}})
+  (let [response (call "sandbar.tag.rename" {"old" "alpha" "new" "beta"})]
+    (is (user-error? response))
+    (is (re-find #"already exists" (error-text response)))))
+
+;; ---------- sandbar.tag.split ----------
+
+(deftest tag-split-creates-narrower-tags-with-broader-generic-ref
+  (call "sandbar.tag.define" {"name" "parent-tag" "slots" {"definition" "to be split"}})
+  (let [response (call "sandbar.tag.split"
+                       {"tag" "parent-tag"
+                        "into-tags" [{"value" "child-a" "scope-note" "First child"}
+                                     {"value" "child-b" "scope-note" "Second child"}]})]
+    (is (success? response))
+    (let [payload (result-content-edn response)]
+      (is (= "parent-tag" (:parent payload)))
+      (is (= 2 (count (:into-tags payload))))
+      (is (re-find #"NOT auto-rerouted" (:note payload))))))
+
+(deftest tag-split-requires-2-or-more-into-tags
+  (call "sandbar.tag.define" {"name" "parent" "slots" {"definition" "exists"}})
+  (let [response (call "sandbar.tag.split"
+                       {"tag" "parent"
+                        "into-tags" [{"value" "single-child"}]})]
+    (is (user-error? response))))
+
+;; ---------- sandbar.tag.align ----------
+
+(deftest tag-align-creates-exact-match-mapping
+  (call "sandbar.tag.define" {"name" "datomic"
+                              "slots" {"definition" "Datomic database"}})
+  (let [response (call "sandbar.tag.align"
+                       {"tag"          "datomic"
+                        "external-iri" "http://www.wikidata.org/entity/Q5273260"
+                        "mapping-type" "exact-match"})]
+    (is (success? response))
+    (let [payload (result-content-edn response)]
+      (is (= "datomic" (:tag payload)))
+      (is (= "exact-match" (:mapping-type payload)))
+      (is (re-find #"exact-match" (:slot payload))))))
+
+(deftest tag-align-rejects-invalid-mapping-type
+  (call "sandbar.tag.define" {"name" "datomic" "slots" {"definition" "x"}})
+  (let [response (call "sandbar.tag.align"
+                       {"tag" "datomic" "external-iri" "http://example.org/x"
+                        "mapping-type" "bogus-relation"})]
+    (is (user-error? response))
+    (is (re-find #"Invalid mapping-type" (error-text response)))))
+
+;; ---------- sandbar.tag.harmonize ----------
+
+(deftest tag-harmonize-returns-dry-run-report
+  (call "sandbar.tag.define" {"name" "tag"})
+  (call "sandbar.tag.define" {"name" "tags"})
+  (let [response (call "sandbar.tag.harmonize" {})]
+    (is (success? response))
+    (let [payload (result-content-edn response)]
+      (is (contains? payload :audit-report))
+      (is (contains? payload :drift-clusters))
+      (is (re-find #"DRY-RUN" (:note payload))))))
+
+;; ---------- sandbar.ground ----------
+
+(deftest ground-returns-multi-step-grounding-output
+  (call "sandbar.tag.define" {"name"  "audit"
+                              "slots" {"definition" "Discipline-checking pass."}})
+  (let [response (call "sandbar.ground" {"concept" "audit"})]
+    (is (success? response))
+    (let [payload (result-content-edn response)]
+      (is (= "audit" (:concept payload)))
+      (is (contains? payload :step-1-tag-lookup))
+      (is (contains? payload :step-2-meta-vocab))
+      (is (contains? payload :step-3-suggested-next))
+      (is (false? (-> payload :step-1-tag-lookup :gap?)))
+      (is (pos? (count (-> payload :step-1-tag-lookup :matches)))))))
+
+(deftest ground-requires-concept
+  (let [response (call "sandbar.ground" {})]
+    (is (user-error? response))
+    (is (re-find #"concept" (error-text response)))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; ---------- sandbar.workflow.orchestrate (ι.3 W4.1 Increment C) ----------
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defn- start-orchestrate-test-process!
+  "Bootstrap a :workflow/session process for orchestrate handler tests.
+   Returns the numeric process eid."
+  []
+  (require '[sandbar.util.workflow :as wf])
+  (require '[sandbar.test-util :as tu])
+  (let [subject (tu/create-test-user! {:username (str "orch-mcp-" (System/nanoTime))
+                                       :email    (str "orch-mcp-" (System/nanoTime) "@sandbar.test")})
+        process ((resolve 'sandbar.util.workflow/start-process!) :workflow/session subject)]
+    (:db/id process)))
+
+(deftest orchestrate-handler-dispatches-phase-activate
+  (testing ":phase/activate via MCP verb returns success envelope with expected shape"
+    (let [pid      (start-orchestrate-test-process!)
+          response (call "sandbar.workflow.orchestrate"
+                         {"workflow"   ":workflow/session"
+                          "process-id" pid
+                          "phase"      ":phase/activate"})]
+      (is (success? response))
+      (let [payload (result-content-edn response)]
+        (is (= ":phase/activate" (:phase-completed payload)))
+        (is (= ":phase/imprint" (:next-phase payload)))
+        (is (= [":session/start"] (:transition-applied payload)))
+        (is (= 1 (count (:events-emitted payload)))
+            ":events-emitted carries the :mm.event/WorkflowSessionOpened eid")
+        (is (false? (:degraded? payload)))))))
+
+(deftest orchestrate-handler-validates-missing-args
+  (testing "Missing :phase produces a structured user-error envelope"
+    (let [pid      (start-orchestrate-test-process!)
+          response (call "sandbar.workflow.orchestrate"
+                         {"workflow"   ":workflow/session"
+                          "process-id" pid})]
+      (is (user-error? response))
+      (is (re-find #"(?i)phase" (error-text response))))))
+
+(deftest orchestrate-handler-degraded-path
+  (testing "κ P18 fallback engaged when transition unreachable from current state"
+    (let [pid      (start-orchestrate-test-process!)  ;; in :session/opening
+          ;; :phase/finalize tries :session/close — not reachable from :opening
+          response (call "sandbar.workflow.orchestrate"
+                         {"workflow"   ":workflow/session"
+                          "process-id" pid
+                          "phase"      ":phase/finalize"})]
+      (is (success? response)
+          "Degraded path returns SUCCESS envelope — :degraded? signals the condition, NOT user-error")
+      (let [payload (result-content-edn response)]
+        (is (true? (:degraded? payload)))
+        (is (= [] (:transition-applied payload))
+            "No transitions successfully applied (all degraded)")))))

@@ -1,0 +1,53 @@
+## What this predicate means
+
+**A `supersedes` B** — A REPLACES B in B's role.  B is no longer authoritative; A is the current truth.  The lifecycle-terminal predicate in the evolution chain.
+
+When `supersedes:` is declared:
+- B's status should transition to `superseded` (lifecycle invariant)
+- Future references should point to A, not B
+- B remains in the corpus as historical record (NOT deleted) — supersession is editorial, not destructive
+
+## Substrate identity
+
+- **Slot ident**: `{{predicate-ident}}`
+- **Domain**: `{{domain}}`
+- **Range**: `{{range}}`
+- **Cardinality**: `{{cardinality}}`
+- **Inverse of**: `:mm.memory/superseded-by`
+- **Sub-property of**: `:mm.memory/refines`
+
+## Formal signature
+
+`{{predicate-name}} : {{domain}} × {{range}} → Bool`
+
+## When to use supersedes
+
+Use `supersedes:` (and not `refines:`) when:
+- A reverses, retracts, or moots B's conclusion
+- A's framing replaces B's framing
+- The author wants downstream consumers to follow A, not B
+
+Use `supersedes:` (and not `contradicts:`) when there IS a lifecycle relation — A is the SUCCESSOR of B, not an external dissent.
+
+## Audit invariants
+
+The "predicate: dagger-pair lifecycle consistent" audit verifies that B's lifecycle-status transitions to `superseded` when A `supersedes:` B is asserted.  Cross-check via `/memory-audit`.
+
+## Formal ontology mappings
+
+Aligned predicates from established formal vocabularies:
+
+- **DC Terms** `dcterms:replaces` — exact semantic match (replacement-finality)
+- **PAV** `pav:supersedes` — exact match (where defined in PAV profiles)
+- **PROV-O** `prov:wasRevisionOf` — close analogue (revision, but PROV-O is broader; supersession is a STRONGER claim than revision)
+- **OWL** `owl:deprecated` — distant analogue (different abstraction layer; `owl:deprecated` applies to class / property deprecation)
+- **SKOS** — no direct equivalent (SKOS uses `skos:changeNote` for lifecycle annotations rather than a typed predicate)
+
+Grounding references in the corpus:
+- [`references/pav_cito_bibo_reference.md`](../references/pav_cito_bibo_reference.md) — PAV versioning + supersession semantics
+
+## See also
+
+- [`predicates/superseded-by.md`](superseded-by.md) — inverse partner
+- [`predicates/refines.md`](refines.md) — weaker (companion, not replacement)
+- [`predicates/contradicts.md`](contradicts.md) — disagreement without lifecycle

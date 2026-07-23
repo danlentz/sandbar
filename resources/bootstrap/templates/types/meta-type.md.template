@@ -1,0 +1,63 @@
+## What a `type: meta-type` instance is
+
+**A meta-type is the substrate / access-protocol classification of a type** — a memorial of `type: type` whose role is naming a distinct way that instances of types-using-this-meta-type are stored and accessed.
+
+Instances of a meta-type are themselves type memorials.  Each type memorial carries a `has-meta-type:` typed-edge declaring which meta-type's instance-protocol it follows.
+
+Direct lift of the Common Lisp MOP **metaclass** concept, named `meta-type` to align with the corpus's existing type vocabulary rather than `class`.
+
+Meta-Type is **abstract** — direct instances are not authored.  Concrete subtypes (`markdown-meta-type`, `code-meta-type`, future database-meta-type) define the actual substrate protocols.
+
+Meta-Type is a subtype of [`meta`](meta.md) — memorials about the memory system itself.
+
+## The two-axis classification
+
+The corpus classifies memorials along two orthogonal axes:
+
+| Axis | Question it answers | Example values |
+|---|---|---|
+| `type:` | What KIND of content does this memorial hold? | `decision`, `plan`, `library`, `predicate`, `bug` |
+| `has-meta-type:` (via the type) | How is this memorial stored / accessed? | `markdown-meta-type` (default), `code-meta-type`, future `database-meta-type` |
+
+A memorial's full classification: `(type: library, has-meta-type: markdown-meta-type)` (today, implicit) or future `(type: namespace, has-meta-type: code-meta-type)`.
+
+## Concrete meta-types
+
+- **[`markdown-meta-type`](markdown-meta-type.md)** — the default; instances are markdown files with YAML frontmatter, accessed via standard search / show / tree tooling
+- **[`code-meta-type`](code-meta-type.md)** — source-code repositories; instances are reified at single granularity (one repo) with detail in a per-repo xref index
+
+## Substrate identity
+
+- **Class ident**: `{{class-ident}}`
+- **Parent class(es)**: {{parent-classes}}
+- **Ancestor chain**: {{ancestor-chain}}
+- **Native codec**: `{{native-codec}}`
+- **Codec type-keyword(s)**: {{codec-type-keywords}}
+
+## Slot vocabulary ({{slot-count}} slots inherited or declared)
+
+Meta-Type is abstract; concrete subtypes layer their own substrate-specific slots.
+
+{{slot-table}}
+
+## When `extends: meta-type` helps
+
+Author a new concrete meta-type memorial when introducing a new substrate / access protocol that future types will use.  Each concrete meta-type:
+
+- Documents the substrate (where instances live)
+- Documents the access surface (which tools / queries operate on instances)
+- Documents the discoverability protocol (how an agent finds instances of types using this meta-type)
+- Names any opt-in flags consumers use to include this meta-type in queries
+
+## Not instantiated directly
+
+Don't write a memorial with `type: meta-type` — write one of the concrete subtypes.  The `abstract?: true` schema flag marks this class as non-instantiable.
+
+## See also
+
+- [`types/meta.md`](meta.md) — parent abstract supertype
+- [`types/markdown-meta-type.md`](markdown-meta-type.md) — default concrete subtype
+- [`types/code-meta-type.md`](code-meta-type.md) — code-substrate concrete subtype
+- [`types/type.md`](type.md) — meta-type instances ARE type memorials
+- [`predicates/has-meta-type.md`](../predicates/has-meta-type.md) — typed-edge linking type to meta-type
+- Sandbar substrate: `sandbar/schema/mm-meta.edn`

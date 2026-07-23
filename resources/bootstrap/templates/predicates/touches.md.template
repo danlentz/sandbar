@@ -1,0 +1,46 @@
+## What this predicate means
+
+**A `touches` B** — A engages with B's topic without depending on B as a source.  Lighter than `cites` (which is a pointer to authoritative content); heavier than `mentions` (which is just textual reference).  The middle weight in the topical-engagement chain.
+
+Per the sub-property hierarchy:
+- `evidences` ⊆ `cites` ⊆ `touches` ⊆ `mentions`
+- Each entailment propagates upward (RDFS rule rdfs7)
+
+## Substrate identity
+
+- **Slot ident**: `{{predicate-ident}}`
+- **Domain**: `{{domain}}`
+- **Range**: `{{range}}`
+- **Cardinality**: `{{cardinality}}`
+- **Sub-property of**: {{super-property}}
+
+## Formal signature
+
+`{{predicate-name}} : {{domain}} × {{range}} → Bool`
+
+## When to use touches
+
+A `touches` edge declares: "this memorial's content engages with the target's topic, but doesn't lean on the target for facts/claims/source."
+
+Examples:
+- A pattern memorial discusses concurrency primitives → touches `references/concurrency_primitives.md`
+- A decision considers an alternative ecosystem tool → touches the tool's library memorial
+
+## Formal ontology mappings
+
+Sandbar-local invention — `touches` carves out a middle-weight engagement predicate between `mentions` (passing) and `cites` (source-pointer) that established vocabularies don't reify:
+
+- **CiTO** — no direct equivalent (CiTO has `cito:mentions` and `cito:cites` but nothing between)
+- **DC Terms** — no direct equivalent
+- **PROV-O** `prov:wasInformedBy` — distant analogue (covers informational engagement without source-dependence)
+- **PAV** — no direct equivalent
+- **RDFS / OWL** — no direct equivalent
+
+Grounding references in the corpus:
+- [`references/pav_cito_bibo_reference.md`](../references/pav_cito_bibo_reference.md) — citation-typing prior art (illustrates the gap `touches:` fills)
+- [`references/rdfs_reference.md`](../references/rdfs_reference.md) — sub-property hierarchy (RDFS rule rdfs7 entailment)
+
+## See also
+
+- [`predicates/cites.md`](cites.md) — stronger (with source dependence)
+- [`predicates/mentions.md`](mentions.md) — lighter (passing reference)

@@ -245,7 +245,7 @@
                                  :states (count states)
                                  :transitions (count transitions)
                                  :version version})
-    (dt/make :workflow/Definition
+    (dt/make :mm/Workflow
       {:workflow/definition-name definition-name
        :workflow/states (mapv :db/id (vals state-entities))
        :workflow/transitions (mapv :db/id transition-entities)
@@ -263,12 +263,21 @@
 
 (defn- resolve-ref
   "Resolve an entity reference to a full entity using the current database.
-   Handles: numbers, {:db/id N} maps, and datomic.Entity refs.
-   Always returns a fresh entity from the current database snapshot."
+   Handles: numbers, keywords (`:db/ident` refs), {:db/id N} maps, and datomic.Entity refs.
+   Always returns a fresh entity from the current database snapshot.
+
+   Per Q.ι.3.11 follow-on fix 2026-05-26 — also handles keyword inputs (the dt/ wrapper
+   layer returns ref-slot values as the target's `:db/ident` keyword when available; prior
+   to this fix, those keyword values fell through `:else` and returned as-is, causing
+   downstream `(:workflow/state-name current-state)` to return nil because keywords don't
+   carry slot data. Symptom: workflow.transition reported `current-state: null` despite
+   workflow.process-state returning the correct state-ident.)"
   [ref]
   (cond
     (nil? ref) nil
     (number? ref) (d/entity (db/db) ref)
+    ;; NEW (Q.ι.3.11 follow-on): keyword refs are :db/ident lookups
+    (keyword? ref) (d/entity (db/db) ref)
     ;; Check for :db/id key - works for both maps AND datomic entities
     ;; (datomic entities implement ILookup, so (:db/id entity) works)
     (:db/id ref) (d/entity (db/db) (:db/id ref))
@@ -276,11 +285,19 @@
 
 (defn- get-entity-id
   "Extract entity ID from various reference types.
-   Handles: numbers, {:db/id N} maps, and datomic.Entity refs."
+   Handles: numbers, keywords (`:db/ident` refs), {:db/id N} maps, and datomic.Entity refs.
+
+   Per Q.ι.3.11 follow-on fix 2026-05-26 — also handles keyword inputs (the dt/ wrapper
+   layer returns ref-slot values as the target's `:db/ident` keyword when available;
+   prior to this fix, keyword inputs fell through `:else` and were returned as-is,
+   causing the `get-transitions-from-state` filter to compare a keyword against an eid
+   `(= :session.state/opening 17592186093092)` → false → no transitions returned)."
   [ref]
   (cond
     (nil? ref) nil
     (number? ref) ref
+    ;; NEW (Q.ι.3.11 follow-on): keyword refs are :db/ident lookups
+    (keyword? ref) (:db/id (d/entity (db/db) ref))
     ;; Check for :db/id key (works for both maps and Datomic entities)
     (:db/id ref) (:db/id ref)
     :else ref))
@@ -554,24 +571,57 @@
   (let [current-state (get-current-state process)
         workflow (get-process-workflow process)
         transitions (get-transitions-from-state workflow current-state)
-        transition (first (filter #(= transition-name (:workflow/transition-name %)) transitions))]
+        ;; Q.ι.3.11 ratified 2026-05-26 — match transition-name against BOTH
+        ;; :workflow/transition-name (legacy string form) AND :db/ident (post-κ-additions
+        ;; keyword form).  MCP boundary normalizes input to keyword via tools.clj/->ident,
+        ;; but stored :workflow/transition-name is a string — the type mismatch caused
+        ;; the 4-phase substrate-gap reproduction documented in
+        ;; observations/workflow_transition_verb_identless_unreachable_2026_05_26.md.
+        ;; Fallback chain: try :db/ident (canonical post-κ-additions) → :workflow/transition-name
+        ;; (legacy string) with proper string-coercion of the input keyword.
+        tname-str  (cond
+                     (string? transition-name) transition-name
+                     (keyword? transition-name) (if (namespace transition-name)
+                                                  (str (namespace transition-name) "/" (name transition-name))
+                                                  (name transition-name))
+                     :else (str transition-name))
+        tname-kw   (cond
+                     (keyword? transition-name) transition-name
+                     (string? transition-name) (if (str/starts-with? transition-name ":")
+                                                 (keyword (subs transition-name 1))
+                                                 (keyword transition-name))
+                     :else nil)
+        transition (first (filter #(or (= transition-name (:workflow/transition-name %))
+                                       (and tname-kw (= tname-kw (:db/ident %)))
+                                       (and tname-kw (= tname-kw (:workflow/transition-name %)))
+                                       (= tname-str (:workflow/transition-name %)))
+                                  transitions))]
     (cond
       (nil? transition)
       (do
         (log/warn :WORKFLOW/TRANSITION-NOT-FOUND {:transition transition-name
                                                     :current-state (:workflow/state-name current-state)
                                                     :process-id (:db/id process)})
+        ;; :reason :transition-not-found added 2026-05-26 for ι.3 orchestrator
+        ;; κ P18 bootstrap-robustness fallback — orchestrator distinguishes this
+        ;; (recoverable; compiled-cache-stale shape) from non-recoverable failures
+        ;; (:guard-not-met, :requires-reason).  Per the ι.3 design ratification
+        ;; ADR + the empirical reproduction at
+        ;; observations/workflow_transition_verb_identless_unreachable_2026_05_26.md.
         (throw (ex-info "Transition not found from current state"
-                        {:transition transition-name
+                        {:reason        :transition-not-found
+                         :transition    transition-name
                          :current-state (:workflow/state-name current-state)})))
 
       (and (:workflow/requires-reason? transition) (not reason))
       (throw (ex-info "Transition requires a reason"
-                      {:transition transition-name}))
+                      {:reason     :requires-reason
+                       :transition transition-name}))
 
       (not (check-guard transition process (or context {})))
       (throw (ex-info "Guard condition not met"
-                      {:transition transition-name}))
+                      {:reason     :guard-not-met
+                       :transition transition-name}))
 
       :else
       (let [to-state (resolve-ref (:workflow/to-state transition))
@@ -582,12 +632,26 @@
             tx-data (cond-> [[:db/add (:db/id process) :workflow/current-state (:db/id to-state)]
                              [:db/add (:db/id process) :workflow/history (:db/id history)]]
                       is-terminal?
-                      (conj [:db/add (:db/id process) :workflow/completed-at now]))]
-        ;; Run on-transition hook
-        (run-on-transition transition process (merge context {:actor actor :reason reason}))
-
-        ;; Apply state change
-        @(d/transact (db/conn) tx-data)
+                      (conj [:db/add (:db/id process) :workflow/completed-at now]))
+            ;; Run on-transition hook + CAPTURE its returned tx-data.  Effects
+            ;; (e.g. sandbar.workflow.session/on-fail) return a tx-data vector to
+            ;; be applied ALONGSIDE the state CAS; the prior code discarded the
+            ;; return, so those effects (e.g. :mm.session-process/failure-reason
+            ;; / failure-instant, :paused-from-state) were silent no-ops.  Fixed
+            ;; 2026-05-29 (session-lifecycle-hardening arc): merge the effect's
+            ;; tx-data into the SAME transaction as the CAS so state-change +
+            ;; effect commit atomically.  Guarded — only a vector of tx-forms is
+            ;; merged; a scalar / nil / non-tx return is ignored (back-compat for
+            ;; effects that only log).
+            effect-tx (run-on-transition transition process
+                                         (merge context {:actor actor :reason reason}))
+            all-tx    (cond-> tx-data
+                        (and (sequential? effect-tx)
+                             (seq effect-tx)
+                             (every? sequential? effect-tx))
+                        (into effect-tx))]
+        ;; Apply state change + on-transition effect tx-data atomically
+        @(d/transact (db/conn) all-tx)
 
         (log/info :WORKFLOW/TRANSITION {:process-id (:db/id process)
                                          :action transition-name
@@ -602,6 +666,62 @@
                                              (:workflow/state-name current-state) " -> "
                                              (:workflow/state-name to-state))})
         (db/entity (:db/id process))))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Leaked-session reconciliation (Bug-1 defense-in-depth)
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(def ^:private leaked-close-path
+  "Transition path that drives a non-terminal :workflow/session process to the
+   :session/closed terminal, keyed by current state-name.  Used by
+   `close-leaked-sessions!`."
+  {:session/opening [:session/start :session/close :session/finalize]
+   :session/active  [:session/close :session/finalize]
+   :session/closing [:session/finalize]
+   :session/paused  [:session/resume-maintenance :session/close :session/finalize]})
+
+(defn close-leaked-sessions!
+  "Reconcile LEAKED session-processes — any active (non-terminal) workflow
+   process whose subject :mm/Session has :mm.session/ended-at set.  Such a
+   process is a Bug-1 orphan: the handoff marked the session ended but the
+   process was never finalized (per
+   bugs/… + the 2026-05-29 session-lifecycle-hardening arc).  Each leak is
+   driven to :session/closed via the reachable path for its current state
+   (`leaked-close-path`).
+
+   Idempotent — re-running after all leaks are closed is a no-op (no active
+   process then has an ended subject).  Genuinely-live sessions (subject has
+   NO :mm.session/ended-at) are SKIPPED, so the current session is never closed
+   out from under itself.
+
+   The orchestrator's Bug-1 fix couples ended-at to a terminal finalize, which
+   PREVENTS new leaks via the ceremony; this sweep cleans up pre-existing
+   orphans + guards against any non-orchestrator close path.
+
+   Returns {:scanned <active-count> :leaks <n> :closed [eid…] :skipped [{…}…]}."
+  []
+  (let [actives (list-active-processes)
+        leaked? (fn [p] (some? (:mm.session/ended-at (get-process-subject p))))
+        leaks   (filterv leaked? actives)]
+    (reduce
+      (fn [acc p]
+        (let [pid      (:db/id p)
+              state-kw (:workflow/state-name (get-current-state p))
+              path     (get leaked-close-path state-kw)]
+          (try
+            (when-not (seq path)
+              (throw (ex-info "No close-path registered for current state"
+                              {:state state-kw :process-id pid})))
+            (doseq [t path]
+              ;; re-fetch each step — the process state advances between transitions
+              (transition! (find-process pid) t
+                           :reason "reconcile: close leaked ended-but-open session (Bug-1)"))
+            (update acc :closed conj pid)
+            (catch Exception e
+              (update acc :skipped conj {:process-id pid :state state-kw
+                                         :error (.getMessage e)})))))
+      {:scanned (count actives) :leaks (count leaks) :closed [] :skipped []}
+      leaks)))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; History
@@ -851,7 +971,7 @@
             prefix (str dir "/")]
         (with-open [_ jar]
           (->> (enumeration-seq (.entries jar))
-               (map #(.getName %))
+               (map #(.getName ^java.util.jar.JarEntry %))
                (filter #(str/starts-with? % prefix))
                (remove #(str/ends-with? % "/"))
                (map #(subs % (count prefix)))

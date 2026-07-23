@@ -158,7 +158,7 @@ Operations on paths:
 - **`extend-path`** / **`concat-paths`** / **`reverse`** — composition (reverse is involutive)
 - **`predicates`** / **`directions`** — projection helpers
 
-Path-data surfacing through path expressions (`:include #{:paths}`) is currently flagged `:path-data-deferred true` — recursive-path reconstruction requires post-hoc Clojure-side walks (analogous to `sandbar.navigate.walk`'s BFS pattern).  The abstraction is ready; the surfacing lands at a follow-on.
+Path-data surfacing through path expressions (`:include #{:paths}`) follows the one-representative-path-per-endpoint policy (Cypher `shortestPath`-style): for each reached endpoint, the substrate reconstructs one concrete edge-sequence rather than enumerating every distinct path (which can explode combinatorially on cyclic graphs).  See `decisions/sandbar_path_data_reconstruction_option_d_policy_a_2026_05_14.md` for the policy ratification.  Consumers needing exhaustive enumeration fall back to `sandbar.navigate.walk` with `:include [:paths]` over a bounded-hop frontier.
 
 ## What path-grammar is NOT for
 

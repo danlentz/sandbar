@@ -1,0 +1,35 @@
+## What a `type: shape` instance is
+
+A first-class SHACL-style validation shape — a declarative description of what makes a memorial / tag / class instance VALID.  Per the tag-modeling ADR §2.2, shapes are inspired by the W3C SHACL standard (Shapes Constraint Language): they declare required slots, value patterns, cardinality constraints, and reference integrity checks for instances of a target class.
+
+## Why shape-driven validation matters
+
+The substrate's audit invariants (per `sandbar.audit.tag` and similar) currently encode validation in CODE.  Promoting validation to FIRST-CLASS SHAPE DECLARATIONS enables:
+
+- **Validation as data** — shapes are queryable, versionable, federable
+- **Per-instance shape compliance reports** — "show me the shape-validation status of this memorial"
+- **Federation of constraints** — a vocabulary publisher can ship shapes alongside its concept-schemes
+- **Code-free constraint authoring** — domain experts declare shapes without writing Clojure
+
+## Substrate identity
+
+- **Class ident**: `{{class-ident}}`
+- **Parent class(es)**: {{parent-classes}}
+
+## Slot vocabulary
+
+The class declares **{{slot-count}}** slots:
+
+{{slot-table}}
+
+## Composition with other classes
+
+- Shapes apply to instances of target classes (`:mm/Memory`, `:mm/Tag`, etc.)
+- Shapes can be members of named datasets (vocabulary publisher ships shapes + concept-schemes together)
+- Shape violations could surface as audit findings parallel to the existing `sandbar.audit.*` invariants
+
+## See also
+
+- [`types/dataset.md`](dataset.md) — datasets carrying shapes
+- [`types/predicate.md`](predicate.md) — predicates that shapes constrain
+- W3C SHACL standard — formal grounding (external)

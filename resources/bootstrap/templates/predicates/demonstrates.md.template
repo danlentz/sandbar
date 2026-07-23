@@ -1,0 +1,57 @@
+## What this predicate means
+
+**A `demonstrates` B** — A serves as an example / illustration of B; A makes B concrete.  The exemplification relation.
+
+Common shapes:
+- An example memorial demonstrates a pattern
+- A worked code memorial demonstrates a library's usage
+- A test case demonstrates an interface contract
+- A use-case memorial demonstrates a value proposition
+
+## Substrate identity
+
+- **Slot ident**: `{{predicate-ident}}`
+- **Domain**: `{{domain}}`
+- **Range**: `{{range}}`
+- **Cardinality**: `{{cardinality}}`
+- **Inverse of**: `:mm.memory/demonstrated-by`
+
+## Formal signature
+
+`{{predicate-name}} : {{domain}} × {{range}} → Bool`
+
+## When to use demonstrates
+
+Use `demonstrates:` when:
+- A is intentionally an example / illustration of B
+- A's reader takes away an understanding of B by reading A
+- A serves a pedagogical or illustrative purpose
+
+Distinguish from:
+- `implements:` — A IS a working instance (stronger commitment)
+- `cites:` — A points at B (weaker; no illustrative claim)
+- `evidences:` — A SUPPORTS B's claim (different relation; support not illustration)
+
+## Audit invariants
+
+The "example names the concept it demonstrates" audit verifies that every memorial of type `:mm/Example` declares `demonstrates:` against the concept it illustrates.  Cross-check via `/memory-audit`.
+
+## Formal ontology mappings
+
+Aligned predicates from established formal vocabularies:
+
+- **IAO** `iao:exemplifies` — close analogue (the canonical exemplification relation in the Information Artifact Ontology)
+- **DC Terms** — no direct equivalent
+- **OWL** — no direct equivalent
+- **PROV-O** — no direct equivalent
+- **CiTO** — no direct equivalent
+- **SKOS** `skos:example` — close analogue (literal-valued in SKOS; sandbar's `demonstrates:` is reified entity-to-entity)
+
+Grounding references in the corpus:
+- [`references/rdfs_reference.md`](../references/rdfs_reference.md) — IAO / SKOS substrate
+
+## See also
+
+- [`predicates/demonstrated-by.md`](demonstrated-by.md) — inverse partner
+- [`predicates/implements.md`](implements.md) — stronger (working realization)
+- [`predicates/cites.md`](cites.md) — weaker (source-pointer)

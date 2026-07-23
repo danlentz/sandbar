@@ -1,0 +1,56 @@
+## What this predicate means
+
+**A `actor` B** — typed-edge predicate declaring WHICH ACTOR memorial A (typically a rule, but also any artifact) is scoped to.  Used by `type: rule` memories (and similar) to reference `actors/<slug>.md` first-class actor memories.  Supports BOTH path-shaped values (typed-edge to specific actor) AND the `:any` keyword (universal scope).  Substrate-design discipline per `patterns/architectural/metamodel/rules_as_typed_edge_graph_citizens.md` + `patterns/architectural/metamodel/progressive_substrate_reification.md`.
+
+## Substrate identity
+
+- **Slot ident**: `{{predicate-ident}}`
+- **Domain**: `{{domain}}`
+- **Range**: `{{range}}`
+- **Cardinality**: `{{cardinality}}`
+- **`:dt/type`**: `:dt/DirectedBinaryRelationProperty` (asymmetric + irreflexive)
+
+## Formal signature
+
+`{{predicate-name}} : {{domain}} × {{range}} → Bool`
+
+## Characteristics
+
+- **Asymmetric** — A actor B doesn't imply B actor A (OWL 2 RL `prp-asyp`)
+- **Irreflexive** — a memorial doesn't reference itself as actor (OWL 2 RL `prp-irp`)
+- **NOT transitive**
+
+## When to use actor
+
+Use `actor:` on rule memorials (or similar scoped artifacts) to declare WHO the rule applies to:
+
+- A discipline-enforcement rule applies to a specific AI actor (`actor: actors/claude-opus-4-7-1m.md`)
+- A human-only rule scopes via `actor: actors/dan-lentz.md`
+- A universal rule uses `actor: :any` (keyword, not typed-edge — see substrate-design note)
+
+The substrate's rule-engine reads `actor:` at rule-firing time and short-circuits if the firing actor doesn't match the rule's scope.
+
+## Adjacent predicates
+
+| Aspect | Predicate |
+|---|---|
+| Actor scope | **`actor`** — which actor the rule applies to |
+| Context scope | `context` — runtime context the rule applies in |
+| Engine binding | `uses-engine` — what engine evaluates the rule body |
+| Exemption | `bypasses` — actor-side rule exemption |
+
+## Formal ontology mappings
+
+- **PROV-O** `prov:wasAssociatedWith` — close analogue (association axis)
+- **FOAF** `foaf:Agent`-typing — alignment of the range type
+- **OPA / Rego** policy `subject` — adjacent operational shape (rule-firing scope)
+
+Grounding references in the corpus:
+- [`decisions/actor_as_first_class_type_2026_05_11.md`](../decisions/actor_as_first_class_type_2026_05_11.md) — actor as first-class metamodel class
+- [`decisions/rules_as_first_class_type_2026_05_11.md`](../decisions/rules_as_first_class_type_2026_05_11.md) — rule-engine actor-scoping discipline
+
+## See also
+
+- [`predicates/runs-in-context.md`](runs-in-context.md) — actor's operating context
+- [`predicates/bypasses.md`](bypasses.md) — actor-side exemption
+- [`predicates/applies-in.md`](applies-in.md) — context-side scoping

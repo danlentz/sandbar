@@ -1,0 +1,45 @@
+## What this predicate means
+
+**A `implemented-by` B** — B is a concrete realization of A (inverse of `implements`).  The author-side advertisement: "this specification has known implementations."
+
+Specification memorials (interfaces, protocols, patterns) use `implemented-by:` to point at their working instances — useful for downstream consumers seeking concrete examples of the abstract contract.
+
+## Substrate identity
+
+- **Slot ident**: `{{predicate-ident}}`
+- **Domain**: `{{domain}}`
+- **Range**: `{{range}}`
+- **Cardinality**: `{{cardinality}}`
+- **Inverse of**: `:mm.memory/implements`
+
+## Formal signature
+
+`{{predicate-name}} : {{domain}} × {{range}} → Bool`
+
+## When to use
+
+Use `implemented-by:` on A when:
+- A is a specification, interface, protocol, pattern, or contract
+- B is a known concrete realization of A
+- The author wants to enumerate canonical implementations
+
+For exhaustive enumeration, the substrate's reverse-attribute lookup (`:_mm.memory/implements`) is usually cheaper than explicit assertion — declare `implemented-by:` selectively for the implementations worth highlighting.
+
+## Formal ontology mappings
+
+Aligned predicates from established formal vocabularies:
+
+- **IAO** `iao:realized_in` — close analogue (the spec-has-realization relation in the Information Artifact Ontology)
+- **OWL** `owl:inverseOf` — provides the META-relation; sandbar declares `:mm.memory/implemented-by` as `inverse-of :mm.memory/implements`
+- **PROV-O** — no direct inverse (PROV uses qualified-pattern reification for inverses)
+- **DC Terms** — no direct equivalent
+- **CiTO / SKOS** — no direct equivalent
+
+The pattern: backlink predicates are usually NOT first-class in formal vocabularies; sandbar reifies for substrate-introspection convenience.
+
+Grounding references in the corpus:
+- [`references/rdfs_reference.md`](../references/rdfs_reference.md) — OWL `owl:inverseOf` semantics
+
+## See also
+
+- [`predicates/implements.md`](implements.md) — forward direction

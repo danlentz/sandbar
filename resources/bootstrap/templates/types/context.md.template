@@ -1,0 +1,93 @@
+## What a `type: context` instance is
+
+**A context memorial describes a runtime environment** that is sufficient to distinguish authorization-relevant actor instances.  Two actor instances of the same underlying entity become distinct when their contexts are authorization-distinct (e.g., a human collaborator working in two different shells with different firewall regimes).
+
+Contexts are the WHERE axis of the (actor, context, event) dispatch tuple — they distinguish what an actor is authorized to do in different runtime environments.
+
+Context is a subtype of [`meta`](meta.md) — memorials about the memory system itself.
+
+## Initial seed contexts
+
+Typical instances:
+
+- **`contexts/unsandboxed-home-laptop.md`** — primary authoring context; no firewall; full corpus access
+- **`contexts/sandboxed-claude-code.md`** — sandboxed cloud execution; proprietary-token firewall applies
+- **`contexts/codex-companion-broker.md`** — alternate-runner runtime context
+
+## Substrate identity
+
+- **Class ident**: `{{class-ident}}`
+- **Parent class(es)**: {{parent-classes}}
+- **Ancestor chain**: {{ancestor-chain}}
+- **Native codec**: `{{native-codec}}`
+- **Codec type-keyword(s)**: {{codec-type-keywords}}
+
+## Slot vocabulary ({{slot-count}} slots inherited or declared)
+
+Context memorials inherit `:mm/Memory` plus type-specific slots:
+
+- **`sandboxed`** (required) — boolean.  Most-important authorization predicate.  Sandboxed contexts have stricter firewall and reduced corpus access
+- **`host`** — named host identifier.  Distinct from `sandboxed?` — a single host can run both sandboxed and unsandboxed contexts
+- **`firewall-class`** — categorical regime: `none` / `proprietary-tokens` / `private-project` / ...
+- **`authorization-scope`** — natural-language description of what an actor in this context is authorized to read, write, modify
+
+{{slot-table}}
+
+## Firewall-class vocabulary
+
+- **`none`** — no firewall (current default for unsandboxed authoring contexts)
+- **`proprietary-tokens`** — proprietary-token filtering applies (catches accidental leaks of engagement-specific identifiers)
+- **`private-project`** — full sandboxed private-project enforcement; both proprietary tokens AND path restrictions
+
+## Canonical body structure
+
+```markdown
+## What runtime this context names
+
+<Concrete description of the environment: hardware, sandboxing,
+network access, filesystem reach.>
+
+## Authorization scope
+
+<Natural-language description of what's permitted here.  Cite
+relevant authorization memorials.>
+
+## Firewall regime
+
+<What filters apply; what tokens / paths are blocked; what
+sanitization fires.>
+
+## Actor instances operating in this context
+
+<Cross-references to actor memorials that runs-in-context here.>
+
+## See also
+
+<Adjacent contexts, governing authorizations, applicable rules.>
+```
+
+## Identity-and-context orthogonality
+
+A single actor identity may operate in multiple contexts; the substrate distinguishes via the multi-arity `runs-in-context:` edge rather than per-context actor instances.  This is the ContextL-style `:in-layer` dispatch pattern — orthogonal identity and context axes that compose at rule-firing time.
+
+## Pitfalls
+
+- **Per-context actor proliferation** — one actor + multi-arity `runs-in-context:` is correct; separate per-context actor instances are an anti-pattern
+- **Missing `sandboxed`** — the single most load-bearing field; never omit
+- **Vague `authorization-scope`** — should be concrete enough that audit can consult it; *"do appropriate things"* is not useful
+
+## Composition with adjacent classes
+
+- **`actor`** — actors reference contexts via `runs-in-context:` (multi-arity)
+- **`rule`** — rules dispatch on context as part of the (actor, context, event) tuple
+- **`event`** — events may carry context-specific applicability constraints
+- **`authorization`** — authorizations may scope to specific contexts
+
+## See also
+
+- [`types/meta.md`](meta.md) — parent abstract supertype
+- [`types/actor.md`](actor.md) — actors operate in contexts
+- [`types/rule.md`](rule.md) — rules dispatch on context
+- [`types/authorization.md`](authorization.md) — authorizations scope to contexts
+- [`predicates/runs-in-context.md`](../predicates/runs-in-context.md) — the typed-edge linking actors to contexts
+- Sandbar substrate: `sandbar/schema/mm-meta.edn`

@@ -109,8 +109,9 @@ The `sandbar.aggregate` namespace composes these primitives into opts-shaped ver
 Aggregation is one axis of four (search / aggregate / navigate / orient).  Composition patterns:
 
 - **Aggregate ∩ Search** — `:facet-by` opt on `search-bm25f` emits per-slot value counts over the BM25F match set (search-then-aggregate).
-- **Aggregate ∩ Filter** — `:where` Datalog clauses on `count-by` / `group-by` constrain the candidate set before aggregation.
-- **Aggregate ∩ Navigate** — (deferred to Stage 29 cross-axis composition) `:from` + `:via` will accept path-grammar to restrict the candidate set to a graph-walk neighborhood.
+- **Aggregate ∩ Filter** — `:where` Datalog clauses on `count-by` / `group-by` / `rank-by` constrain the candidate set before aggregation.
+- **Aggregate ∩ Navigate** — `:from` + `:via` accept a seed entity + path-grammar expression as a PRE-FILTER restricting the candidate set to a graph-walk neighborhood.
+- **Aggregate ∩ Tags** — `aggregate.tag-histogram` is a tag-specific specialization that computes the per-tag distribution over a class (or filter); the substrate routes through the tag-vocabulary projection so harmonized tags fold in correctly.
 
 ## What aggregation is NOT for
 

@@ -223,7 +223,7 @@ curl -X POST http://localhost:8080/mcp \
 
 ## Cross-axis composition
 
-Path-grammar composes with the rest of the retrieval surface via the four-axis composition contract.  Stage 29 wires `:from` + `:via` onto search + aggregate; the corpus's `/memory-search --from --via` migration adapter is the consumer-side proof.
+Path-grammar composes with the rest of the retrieval surface via the four-axis composition contract.  Stage 29 wires `:from` + `:via` onto the search axis — live in `sandbar.search.bm25f` (both the Clojure fn and the MCP verb); the aggregate-axis composition is not yet wired.
 
 Today (Stage P-6 landed):
 
@@ -237,7 +237,7 @@ Today (Stage P-6 landed):
   ...)
 ```
 
-Future (Stage 29):
+Stage 29 composition (live):
 
 ```clojure
 (sandbar.search/search-bm25f

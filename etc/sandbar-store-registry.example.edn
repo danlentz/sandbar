@@ -1,0 +1,121 @@
+;; etc/sandbar-store-registry.example.edn — W1.deploy per-machine store-registry
+;; TEMPLATE.  Copy per host, edit the physical paths/URLs, DO NOT commit a
+;; populated copy (it is per-machine, not corpus-canonical).
+;;
+;; HOW A PROCESS FINDS ITS REGISTRY (the ruled read seam).  The bring-up
+;; resolves the SANDBAR_STORE_REGISTRY env var when set + non-blank (explicit
+;; per-machine ops override); else the PER-PROJECT file
+;; etc/sandbar-store-registry.edn under the directory the process started FROM
+;; — fork-5's operating model (start the tool from the project's own dir)
+;; makes that file THAT project's own registry, per-project + per-machine,
+;; never shared (DEP-6).  Copy this template to that location.
+;;
+;; SUPERVISION / BRING-UP (A4 ruling, 2026-07-20).  The supervisor is the
+;; IN-PROCESS component / bring-up script invoking
+;; sandbar.deploy.registry/bring-up-registry! at process start (resolve →
+;; load → validate-registry!; any gate violation ABORTS bring-up).  NO
+;; launchd-per-scope service, NO OS-level separation (no per-scope OS users,
+;; security domains, or storage ACLs) — separation is enforced in-process by
+;; the credential air-gap + the closure refuse-to-serve gates (A4's
+;; calibration: "enforce separation during normal use, not attack-paranoid").
+;; INTERIM POSTURE: a single sandbar JVM serves the public scope until the
+;; multi-store fork forks a private scope; the two-slot transactor topology
+;; below (public 4334 / private 4336) becomes live WHEN that fork lands, each
+;; per-scope process brought up under this same posture over its own registry.
+;;
+;; WHAT THIS IS.  Location-only indirection: a LOGICAL trust-scope → THIS host's
+;; PHYSICAL {transactor-endpoint, corpus-repo, local-disk-path, sid}.  It is NOT
+;; the membership authority — membership is corpus-canonical
+;; (:mm.context/visible-projects, resolved by sandbar.project.route).  A project
+;; present only here but absent from visible-projects is NOT a member.
+;; Consumed by sandbar.deploy.registry (parse/resolve/air-gap).
+;;
+;; THE CREDENTIAL AIR-GAP (the load-bearing security property; W1.deploy §5).
+;; `:owner-scope` names the trust scope of the PROCESS that loads this file, and
+;; MUST be well-formed — exactly :trust-scope/public or [:trust-scope/private
+;; <key>] (a registry that cannot name its own scope is REFUSED loudly at
+;; bring-up, :registry-owner-unresolved).  A :trust-scope/public owner registry
+;; MUST carry NO :private ENTRY AT ALL (assert-credential-air-gap! refuses one)
+;; — not merely no transactor endpoint: a public process has no legitimate use
+;; for a private scope's :local-disk-path or :corpus-repo handle either.  So a
+;; public→private connection is IMPOSSIBLE, not merely disallowed.  This air-gap
+;; is the standing physical lock the CA-6 write-side deferral rests on (two-lock
+;; collapse rule): it must only ever STRENGTHEN physical exclusion.
+;;
+;; PORT ALLOCATION (reconciled with the 2026-05-12 hybrid ADR D.3 amendment).
+;; The dev/free protocol opens a 2-PORT SLOT per scope (transactor port +
+;; h2-port); the transactor port increments by 2 ACROSS scopes.  So the public
+;; scope owns 4334 (transactor) + 4335 (h2), and the NET-NEW private scope owns
+;; 4336 (transactor) + 4337 (h2).  NB: the W1.deploy brief §2's illustrative
+;; "localhost:4335" for the private transactor is a slip — 4335 is the public
+;; scope's h2-port; co-locating a private transactor there would COLLIDE with
+;; public storage and defeat "one transactor per scope".  4336 keeps the two
+;; processes genuinely distinct (distinct ports/PIDs — DEP-1), STRENGTHENING
+;; physical exclusion.  Per decisions/datomic_multi_store_deployment_strategy_-
+;; hybrid_s1_within_scope_s2_across_scopes_2026_05_12.md (D.3, amended).
+;;
+;; ────────────────────────────────────────────────────────────────────────────
+;; THIS FILE = the PUBLIC-scope process's registry (the "existing process" of
+;; the G3-thin two-scope topology).  Public-only: no private endpoint (air-gap).
+;; ────────────────────────────────────────────────────────────────────────────
+
+{:schema-version 1
+
+ ;; The scope of the process that loads THIS registry.  Public here ⇒ the
+ ;; air-gap assertion refuses ANY :private entry below (endpoint or not).
+ :owner-scope :trust-scope/public
+
+ ;; The shared public bottom — the existing running public-scope transactor.
+ :public
+ {:transactor-endpoint "datomic:dev://localhost:4334/"
+  :sid                  "global"
+  :corpus-repo          "git@example.com:org/public-corpus.git"   ; the PUBLIC corpus repo
+  :local-disk-path      "/Users/you/claude"}                      ; this host's public checkout
+
+ ;; A public-owner registry carries NO :private entry of any kind (credential
+ ;; air-gap — not just no endpoint, no disk-path/repo handle either).  The
+ ;; private scope lives ONLY in the private process's own registry (the
+ ;; companion template below) — never here.  An empty map is fine; a populated
+ ;; :private under this :owner-scope is REFUSED (:credential-air-gap-violation).
+ :private {}}
+
+;; ────────────────────────────────────────────────────────────────────────────
+;; COMPANION TEMPLATE — the PRIVATE-scope process's registry (the "one net-new"
+;; scope).  Loaded by a session started FROM the private project's own directory
+;; (fork-5 operating model).  On the sandboxed WORK machine this is the ONLY
+;; registry (R9 private-only posture): it reaches the public corpus read-only BY
+;; REFERENCE via :public-corpus-ref (a git handle for clone/restore) and NEVER
+;; co-locates a public transactor.  DEP-4: the private :corpus-repo is the
+;; project's OWN repo, never the public corpus repo.
+;;
+;; THE AIR-GAP, PRIVATE DIRECTION.  A private-owner registry carries EXACTLY its
+;; OWN scope's :private entry (the :proj/example-private key below) — and no
+;; other.  A :private entry keyed to a DIFFERENT scope (a FOREIGN private
+;; project) is REFUSED at bring-up (assert-credential-air-gap! —
+;; :credential-air-gap-violation, :air-gap-direction
+;; :private-owner-holds-foreign-private), whether that foreign entry bears a
+;; :transactor-endpoint or only a :local-disk-path / :corpus-repo handle.  This
+;; is the private↔private separation (W1.deploy §1): this process names only its
+;; own location, never a sibling private project's.
+;;
+;; ONE INTENDED ASYMMETRY.  A private-owner registry MAY hold a :public
+;; transactor ENTRY without refusal (it is permitted-but-unreachable — public
+;; location handles are the shared-bottom, not secrets, and a live private→public
+;; connect is already refused at resolve-endpoint).  R9 recommends omitting it
+;; and using :public-corpus-ref instead; this template follows R9.
+;;
+;; {:schema-version 1
+;;  :owner-scope [:trust-scope/private :proj/example-private]
+;;
+;;  ;; Public reachable read-only BY REFERENCE only — a repo handle, NO
+;;  ;; transactor endpoint (the by-reference half of the air-gap, R9).
+;;  :public-corpus-ref "git@example.com:org/public-corpus.git"
+;;
+;;  ;; EXACTLY this owner's own scope — a foreign private key here is REFUSED.
+;;  :private
+;;  {:proj/example-private
+;;   {:transactor-endpoint "datomic:dev://localhost:4336/"          ; NET-NEW, +2 slot
+;;    :sid                  "example-private"
+;;    :corpus-repo          "git@example.com:org/example-private.git" ; the project's OWN repo (≠ public)
+;;    :local-disk-path      "/Users/you/src/example-private"}}}
+;; ────────────────────────────────────────────────────────────────────────────

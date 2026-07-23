@@ -1,0 +1,35 @@
+## What this predicate means
+
+**A `is-mentioned-by` B** — B makes a passing reference to A (inverse of `mentions`).  The backlink direction: a memorial enumerating which other memorials reference it incidentally.
+
+Less commonly declared than the forward direction; most reverse-mention queries are computed via the substrate's reverse-attribute lookup (`:_mm.memory/mentions`).
+
+## Substrate identity
+
+- **Slot ident**: `{{predicate-ident}}`
+- **Domain**: `{{domain}}`
+- **Range**: `{{range}}`
+- **Cardinality**: `{{cardinality}}`
+- **Inverse of**: `:mm.memory/mentions`
+
+## Formal signature
+
+`{{predicate-name}} : {{domain}} × {{range}} → Bool`
+
+## Formal ontology mappings
+
+Aligned predicates from established formal vocabularies:
+
+- **CiTO** — no canonical inverse-predicate name (CiTO doesn't reify the inverse of `cito:mentions`; reverse-attribute lookup via SPARQL is the standard mechanism)
+- **PROV-O** — no direct equivalent (PROV-O uses qualified-pattern reification for inverses)
+- **OWL** `owl:inverseOf` — provides the META-relation; sandbar declares `:mm.memory/is-mentioned-by` as `inverse-of :mm.memory/mentions`
+
+The pattern: backlink predicates are usually NOT first-class in formal vocabularies because reverse-attribute traversal (RDF graph patterns) provides them computationally.  Sandbar reifies them for substrate-introspection convenience (cheaper to ask "what mentions me?" without a graph-walk).
+
+Grounding references in the corpus:
+- [`references/pav_cito_bibo_reference.md`](../references/pav_cito_bibo_reference.md) — citation-typing semantics (forward direction)
+- [`references/rdfs_reference.md`](../references/rdfs_reference.md) — OWL `owl:inverseOf` semantics
+
+## See also
+
+- [`predicates/mentions.md`](mentions.md) — forward direction

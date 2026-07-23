@@ -1,0 +1,92 @@
+## What a `type: organization` instance is
+
+**An organization memorial describes a grouping of actors.**  Typical instances:
+
+- **Companies that produce AI actors** (e.g., AI provider organizations)
+- **Communities** — open-source, research, professional
+- **Projects / collaborations** that the corpus author engages with — typically these are CITED by the corpus but don't exist as primary actors
+
+Organization is a subtype of [`meta`](meta.md) — memorials about the memory system itself.
+
+## Multi-arity membership
+
+A single actor may belong to multiple organizations.  Examples:
+
+- A human collaborator → `belongs-to: [open-source-projects, employer, ...]`
+- An AI model → `belongs-to: [provider-company]`
+- A system process → `belongs-to: [the-corpus]` (or whichever project owns it)
+
+The graph captures actor-organization as a many-to-many relationship via the `belongs-to:` predicate (asserted on actor side; inverse `members:` aggregated on organization side).
+
+## Why organization is its own type (not subtype of actor)
+
+Considered making `organization` extend `actor` since both are entities.  Rejected because:
+
+- **Actors take ACTIONS** in the corpus (perform observations, decisions, etc. — `performed-by:` edges)
+- **Organizations are SUBJECTS** of authoritative pronouncements but don't typically perform corpus-actions themselves (a provider company doesn't author memorials; its AI model does, and the AI `belongs-to:` the company)
+
+The distinction matters for typed-edge semantics: `performed-by:` accepts `actor`s; organizations grant authority via different relations (license, employment, governance).
+
+## Substrate identity
+
+- **Class ident**: `{{class-ident}}`
+- **Parent class(es)**: {{parent-classes}}
+- **Ancestor chain**: {{ancestor-chain}}
+- **Native codec**: `{{native-codec}}`
+- **Codec type-keyword(s)**: {{codec-type-keywords}}
+
+## Slot vocabulary ({{slot-count}} slots inherited or declared)
+
+Organization memorials inherit `:mm/Memory` plus type-specific slots:
+
+- **`org-class`** (required) — `company` / `community` / `project` / `research-partnership`
+- **`members`** — list of actor rel-paths (inverse of `belongs-to:`)
+- **`founded`** — date or descriptive
+- **`url`** — primary external URL
+
+{{slot-table}}
+
+## Org-class vocabulary
+
+- **`company`** — for-profit entity (employer, AI provider, consulting client)
+- **`community`** — open-source community, research community, professional society
+- **`project`** — bounded collaboration with defined scope and lifetime
+- **`research-partnership`** — formal cross-organization research collaboration
+
+## Canonical body structure
+
+```markdown
+## What this organization is
+
+<Type of organization, founding context, primary purpose.>
+
+## Notable members
+
+<Actor cross-references; humans + AI models the organization
+includes.>
+
+## Relationship to the corpus
+
+<How the corpus author engages with this organization;
+authoritative pronouncements that bind the corpus; references
+the corpus cites.>
+
+## See also
+
+<Adjacent organizations, member actors, relevant references.>
+```
+
+## Composition with adjacent classes
+
+- **`actor`** — actors `belongs-to` organizations (many-to-many)
+- **`authorization`** — authorizations may originate from organizational authority (e.g., license grants)
+- **`reference`** — official documentation from an organization is typically a reference; the organization is cited as `created-by:`
+
+## See also
+
+- [`types/meta.md`](meta.md) — parent abstract supertype
+- [`types/actor.md`](actor.md) — actors belong to organizations
+- [`types/ai-actor.md`](ai-actor.md) — AI actors belong to provider organizations
+- [`types/human-actor.md`](human-actor.md) — humans belong to employers / projects
+- [`predicates/belongs-to.md`](../predicates/belongs-to.md) — the typed-edge linking actors to organizations
+- Sandbar substrate: `sandbar/schema/mm-meta.edn`

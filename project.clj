@@ -1,4 +1,4 @@
-(defproject com.github.danlentz/sandbar "0.1.0"
+(defproject com.github.danlentz/sandbar "0.1.1-SNAPSHOT"
   :description "Metacircular metamodel platform on Datomic — RDFS-style classes + properties + inheritance, equipped with a four-axis retrieval surface (BM25F fulltext search, structural + temporal aggregation, Wilbur-lineage path-grammar navigation, library-card orientation), exposed simultaneously through HTTP REST and Model Context Protocol (MCP) for AI clients"
   :author "Dan Lentz"
   :url "https://github.com/danlentz/sandbar"
@@ -28,7 +28,19 @@
                  [cheshire "6.1.0"]
                  [clj-commons/clj-yaml "1.0.29"]
                  [com.cognitect/transit-clj "1.0.333"]
-                 [danlentz/clj-uuid "0.2.0"]
+                 [danlentz/clj-uuid "0.2.5"]
+                 ;; com.dean/ordered-collections deferred — conflicts with
+                 ;; flatland/ordered (transitive via clj-yaml) on the
+                 ;; `#ordered/set` data-reader tag.  Coordination concern
+                 ;; (Stage F.1 of substrate-stabilization arc): either
+                 ;; (a) namespace com.dean readers under `com.dean.ordered/*`,
+                 ;; (b) migrate clj-yaml off flatland/ordered to com.dean,
+                 ;; (c) data-reader conflict-resolution at JVM startup.
+                 ;; See plans/sandbar_mcp_end_to_end_correctness_pass_substrate_stabilization_arc_2026_05_22.md
+                 ;; [com.dean/ordered-collections "0.2.1"]
+                 [com.github.danlentz/clj-format "0.1.2"]
+                 [com.github.danlentz/clj-figlet "0.1.4"]
+                 [com.github.danlentz/clj-xref "0.1.1"]
                  [rm-hull/table "0.7.1"]
 
                  [com.stuartsierra/component "1.2.0"]
@@ -39,14 +51,39 @@
 
                  [buddy/buddy-hashers "2.0.167"]
 
-                 [com.taoensso/sente "1.21.0"]
-;                 [com.taoensso/telemere "1.2.1"]
+                 ;; Encore pinned EXPLICITLY — Telemere v1.2.1 + Tufte v3.0.2
+                 ;; need encore >= 3.159.0; Sente 1.21.0 transitively pins
+                 ;; encore 3.157.0 which trips Telemere's load-time
+                 ;; `enc/assert-min-encore-version` check.  Per Telemere
+                 ;; library memorial §14 (Encore version conflict).
+                 [com.taoensso/encore   "3.159.0"]
+                 [com.taoensso/sente    "1.21.0"
+                  :exclusions [com.taoensso/encore]]
+                 [com.taoensso/telemere "1.2.1"]
+                 [com.taoensso/slf4j-telemere "1.0.0-beta21"]
+                 [com.taoensso/tufte    "3.0.2"]
 
+                 ;; Manifold — in-process transport for event-substrate
+                 ;; Phase 1 (sandbar.reactive.tx-source wraps Datomic
+                 ;; d/tx-report-queue and publishes typed events onto a
+                 ;; Manifold stream; Phase 2 sandbar.event/subscribe
+                 ;; consumes via class-hierarchical dispatch).  Per
+                 ;; memory/decisions/sandbar_event_substrate_architecture_*_2026_05_23.md
+                 [manifold "0.4.4"]
+
+                 ;; lib-recur — RFC 5545 RRULE iterator.  Apache 2.0;
+                 ;; small focused Java library (~100KB closure incl.
+                 ;; org.dmfs/{jems2, rfc5545-datetime} transitives;
+                 ;; orders-of-magnitude smaller than Quartz's ~6MB tree).
+                 ;; Consumed BEHIND sandbar.schedule.recurrence per the
+                 ;; ontology-alignment ADR R.2(a) layered-discipline.
+                 ;; Per γ.1 ADR §2.3
+                 ;; (memory/decisions/gamma_1_scheduler_path_a_native_min_heap_dispatcher_q_gamma_1_through_6_resolved_2026_05_27.md).
+                 [org.dmfs/lib-recur "0.17.1"]
 
 ;;                 [datomic-schematode "0.1.0-RC3"]
 
-                 [ch.qos.logback/logback-classic "1.5.25" :exclusions [org.slf4j/slf4j-api]]
-                 [org.slf4j/slf4j-api    "2.0.17"]
+                 [org.slf4j/slf4j-api   "2.0.17"]
 
                  ]
 
@@ -59,7 +96,8 @@
   :resource-paths ["config", "resources", "schema"]
 
   :profiles {:dev {:aliases {"run-dev" ["trampoline" "run" "-m" "sandbar.core/go"]}
-                   :dependencies [[io.pedestal/pedestal.service-tools "0.7.2"]]}
+                   :dependencies [[io.pedestal/pedestal.service-tools "0.7.2"
+                                   :exclusions [ch.qos.logback/logback-classic]]]}
              ;; F-DF-1 Phase 1+2 (Phase R Stage R-6) — bench scaffolding.
              ;; `lein bench` runs the structural-rank + path-grammar
              ;; harnesses at the 10 / 100 / 1k / 10k size ladder and
@@ -69,7 +107,31 @@
              :uberjar {:aot [sandbar.core] }}
 
   :aliases {"bench" ["with-profile" "+bench"
-                     "run" "-m" "sandbar.bench.run"]}
+                     "run" "-m" "sandbar.bench.run"]
+            "issue-mcp-token"     ["run" "-m" "sandbar.scripts.issue-mcp-token"]
+            "reset-db"            ["run" "-m" "sandbar.scripts.reset-db"]
+            "reproject-bootstrap" ["run" "-m" "sandbar.scripts.reproject-bootstrap"]
+            "migrate-workflow-definition" ["run" "-m" "sandbar.scripts.migrate-workflow-definition"]
+            "migrate-mm-event-to-hook-event" ["run" "-m" "sandbar.scripts.migrate-mm-event-to-hook-event"]
+            "backup-db"           ["run" "-m" "sandbar.scripts.backup-db"]
+            "restore-db-from"     ["run" "-m" "sandbar.scripts.restore-db"]
+            "verify-backup"       ["run" "-m" "sandbar.scripts.verify-backup"]
+            "verify-restore"      ["run" "-m" "sandbar.scripts.verify-restore"]
+            "list-backups"        ["run" "-m" "sandbar.scripts.list-backups"]
+            "prune-backups"       ["run" "-m" "sandbar.scripts.prune-backups"]
+            "config-show"         ["run" "-m" "sandbar.scripts.config-show"]
+            "list-dbs"            ["run" "-m" "sandbar.scripts.list-dbs"]
+            "seed-verb-catalog"   ["run" "-m" "sandbar.scripts.seed-verb-catalog"]
+            "affordance-map"      ["run" "-m" "sandbar.scripts.affordance-map"]
+            "verb-edges-map"      ["run" "-m" "sandbar.scripts.verb-edges-map"]
+            "memory-open-affordance" ["run" "-m" "sandbar.scripts.memory-open-affordance"]
+            "mcp-verbs-doc"       ["run" "-m" "sandbar.scripts.mcp-verbs-doc"]
+            "catalog-check"       ["run" "-m" "sandbar.scripts.catalog-check"]
+            "catalog-regen"       ["do" ["affordance-map"] ["verb-edges-map"] ["memory-open-affordance"]]
+            ;; W1.J standing composed release gate (G1 precondition): CHECK 1
+            ;; round-trip §D.5 8-query contract AND CHECK 2 firewall scoreboard.
+            ;; Exit 0 iff GREEN — wire this exit into CI as the release gate.
+            "w1-release-gate"     ["run" "-m" "sandbar.scripts.w1-release-gate"]}
 
 
   :asciidoc {:sources ["doc/*.adoc"]

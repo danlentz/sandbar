@@ -1,0 +1,169 @@
+## What a `type: authorization` instance is
+
+**A first-class record of a principal collaborator's delegation of decision authority to the AI collaborator.**  Each one formalizes a standing permission — *"you may do X without asking"* — with explicit scope, governing filter, risks, and re-evaluation triggers.
+
+Authorization memorials are **major architectural decisions** about the nature of the collaboration itself — they shift the default balance between per-instance gatekeeping and autonomous action.  Burying authorizations in `feedback` memorials would treat them as style preferences, which underplays what they actually are.
+
+Authorization is a subtype of [`guidance`](guidance.md) — memorials that prescribe action.
+
+## Why authorizations are first-class
+
+They are major architectural decisions about:
+
+1. **The nature of the collaboration** — each authorization shifts the default balance between per-instance gatekeeping and autonomous action
+2. **The self-organization surface** — authorizations compound: they allow the AI to extend schema, restructure, optimize, capture observations without round-trips
+3. **The project's rate of evolution** — more authorization = faster compound evolution but greater risk of drift from intent
+4. **The tool's usefulness** — a tool that requires approval for every schema addition doesn't scale; a tool that approves itself without discipline degrades
+
+## Scope boundary — CRITICAL
+
+Authorization scope is **the memory-system / substrate project itself** — NOT end-product projects that consume the memory system.  Substrate-level authorizations grant privileges to grow the memory system; they do not propagate to downstream private projects, which retain their prior discipline (stop at architectural decisions, commit only with explicit per-change approval, defer schema judgments).
+
+A future refinement may introduce a sharper scope value (`scope: memory-system`) to make this explicit; for now the `authorizations/` directory location signals the boundary.
+
+## When to create an authorization memorial
+
+- A principal grants a **standing permission** (*"you are perpetually authorized to X"*)
+- A principal loosens an existing constraint in a way that generalizes beyond the current instance
+- A pattern of *"principal keeps saying yes to this class of request"* suggests a standing permission (propose it; principal confirms)
+- An existing feedback memorial describes a pre-authorization and should be promoted
+
+## When NOT to create one
+
+- One-off approval of a specific instance — that's a conversation, not a standing directive
+- Style preferences — that's `feedback`
+- Architectural choices about code, not about the collaboration — that's `decision`
+- Observations about how authorization is actually exercised vs. nominal scope — that's `observation`
+
+## Substrate identity
+
+- **Class ident**: `{{class-ident}}`
+- **Parent class(es)**: {{parent-classes}}
+- **Ancestor chain**: {{ancestor-chain}}
+- **Native codec**: `{{native-codec}}`
+- **Codec type-keyword(s)**: {{codec-type-keywords}}
+
+## Slot vocabulary ({{slot-count}} slots inherited or declared)
+
+Authorization memorials carry rich type-specific frontmatter:
+
+- **`status`** — `active` / `suspended` / `rescinded`
+- **`granted-on`** — ISO date the authorization was granted
+- **`granted-by`** — who granted (typically the principal collaborator)
+- **`motivation`** — one-paragraph why this authorization exists
+- **`verbatim-directive`** — the principal's exact words granting it (epistemic anchor)
+- **`authorized`** — what IS pre-authorized (concrete list)
+- **`not-authorized`** — what is NOT pre-authorized (explicit carve-outs)
+- **`filter`** — the quality gate that substitutes for per-instance approval
+- **`risks`** — failure modes this authorization enables
+- **`re-evaluation-triggers`** — conditions under which to re-review
+- **`history`** — timeline of status changes
+- **`applies-in-session-from`** — session boundary where this takes effect
+
+{{slot-table}}
+
+## Canonical body structure
+
+```markdown
+## The rule
+
+<One-paragraph statement of what IS authorized.>
+
+## Verbatim directive
+
+<The principal's exact words when granting, with session context.>
+
+## Motivation
+
+<Why this authorization exists.  Usually because friction costs
+outweighed quality-gate benefits for this class of action.>
+
+## What this authorizes
+
+<Concrete enumerated list — specific actions that are pre-approved.>
+
+## What this does NOT authorize
+
+<Explicit carve-outs — the boundary between this authorization and
+per-instance approval.>
+
+## The filter
+
+<The quality gate that substitutes for per-instance approval.  Usually:
+existing protocols + self-code-review + tests.>
+
+## How to apply — decision procedure
+
+<Step-by-step: when facing an action that might qualify, what to
+check + in what order.>
+
+## Risks
+
+<Failure modes this authorization enables.  What should the principal
+watch for?  What signals suggest the authorization should be tightened
+or rescinded?>
+
+## When to still ask
+
+<Specific conditions that override the authorization and return to
+per-instance approval.>
+
+## Re-evaluation triggers
+
+<When to proactively re-review the authorization.>
+
+## History
+
+<Timeline:
+- YYYY-MM-DD: granted (session context; verbatim)
+- YYYY-MM-DD: scope adjustment
+- YYYY-MM-DD: status change
+>
+
+## See also
+
+<Adjacent authorizations, governing protocols, governing preferences.>
+```
+
+## Lifecycle
+
+Authorization memorials are **long-lived, status-tracked**:
+
+- Created on `granted-on` date with status: active
+- May transition to `suspended` (reversible; history entry required)
+- May transition to `rescinded` (history entry; authorization effectively frozen; still kept as forensic record)
+- Amended via in-place edits for scope clarifications (history entry required)
+- **Never deleted** — the forensic trail of what was authorized when compounds across the project
+
+## State-change-detection (captureability)
+
+This class is mid-conversation-captureable.  Inject-triggers:
+- *"you can stop asking"*
+- *"I authorize..."*
+
+When these signals fire, capture-first with verbatim directive.
+
+## Pitfalls
+
+- **Pre-authorizing yourself** — authorization memorials are created when the principal grants, not when the AI proposes.  If self-authorizing, stop and ask first
+- **Broad scope** — narrow is better.  *"Authorized to refactor anything"* is too broad; *"authorized to improve algorithmic complexity when tooling is noticeably slow, preserving behavior and tests"* is scoped
+- **Missing risks section** — an authorization without explicit failure modes is a blank check.  Always name what can go wrong
+- **Paraphrasing the verbatim directive** — capture exact words.  Paraphrase elsewhere; verbatim is the epistemic anchor
+- **Status drift** — if an authorization is no longer being exercised for months, consider whether it's still needed; mark suspended if so
+- **Treating per-commit authorization as categorical** — per-commit authorization is load-bearing and should NEVER fold into a standing authorization
+
+## Composition with adjacent classes
+
+- **`feedback`** — where authorizations lived previously; promotions are common
+- **`decision`** — adjacent type; decisions are code/architecture choices, authorizations are meta-decisions about collaboration
+- **`log`** — every authorization grant or status change is logged; the log captures the session, the authorization captures the standing rule
+- **`event`** — authorization grants are events; the timeline of grants forms the collaboration's history
+
+## See also
+
+- [`types/guidance.md`](guidance.md) — parent abstract supertype
+- [`types/feedback.md`](feedback.md) — where authorizations lived previously
+- [`types/decision.md`](decision.md) — code/architecture choices
+- [`types/log.md`](log.md) — authorization grants are logged
+- [`types/event.md`](event.md) — the timeline of grants
+- Sandbar substrate: `sandbar/schema/mm-guidance.edn`

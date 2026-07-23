@@ -24,6 +24,7 @@
   (:require [clojure.edn :as edn]
             [clojure.string :as str]
             [sandbar.aggregate :as aggregate]
+            [sandbar.api.projection :as projection]
             [sandbar.service.endpoint :as endpoint :refer [defhandler return]]
             [sandbar.service.params :as params :refer [defvalidator]]
             [sandbar.util.http-status :as http-status]))
@@ -78,29 +79,13 @@
 ;; round-trip through pr-str (EDN reader can't parse #object[...] forms).
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-(defn- entity-projection
-  "Project a Datomic entity-map to a plain map for EDN serialization.
-
-  Note: Datomic entity-iteration does NOT include `:db/id` in the
-  key-seq (it's accessed via a special method).  We explicitly add
-  `:db/id` to the projection."
-  [entity]
-  (when entity
-    (let [base (into {}
-                     (filter (fn [[k _v]]
-                               (or (= :db/ident k)
-                                   (and (keyword? k) (some? (namespace k))))))
-                     entity)]
-      (cond-> base
-        (:db/id entity) (assoc :db/id (:db/id entity))))))
-
 (defn- project-rank-hits
   "Project each hit's `:entity` to a plain map so the response body
    serializes cleanly as EDN/JSON."
   [result]
   (update result :hits
           (fn [hits]
-            (mapv (fn [hit] (update hit :entity entity-projection))
+            (mapv (fn [hit] (update hit :entity projection/full-projection))
                   hits))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;

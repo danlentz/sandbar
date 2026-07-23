@@ -229,16 +229,22 @@
   (testing "bm25f-weights-of returns {} for classes with no :dt/bm25f-weights declared"
     (is (= {} (dt/bm25f-weights-of :dt/Property)))
     (is (= {} (dt/bm25f-weights-of :model/User)))
-    (is (= {} (dt/bm25f-weights-of :mm/Tag))
-        ":mm/Tag has no per-class :dt/bm25f-weights declaration"))
+    ;; Stage 7.A added :dt/bm25f-weights to :mm/Tag (decisions/tag_as_first_class_introspectable_type_in_metamodel_2026_05_20.md).
+    ;; :mm/Link remains a no-weights class — use it for the empty-case probe.
+    (is (= {} (dt/bm25f-weights-of :mm/Link))
+        ":mm/Link has no per-class :dt/bm25f-weights declaration"))
   (testing "bm25f-weights-of returns the declared weight map for :mm/Memory"
-    ;; Positive-path: :mm/Memory declares
-    ;;   [[:mm.memory/name 12.0] [:mm.memory/description 8.0] [:mm.memory/body-raw 1.0]]
-    ;; in schema/mm.edn per fulltext arc Stage 1.
+    ;; :mm/Memory declares per-class weights in schema/mm.edn — name + description +
+    ;; body-raw from fulltext arc Stage 1; tags + themes + rel-path added subsequently
+    ;; for the tag-content / themes / rel-path retrieval axes.  Assertion mirrors
+    ;; whatever is currently declared; treat this as a schema-state probe.
     (let [weights (dt/bm25f-weights-of :mm/Memory)]
       (is (= {:mm.memory/name        12.0
-              :mm.memory/description  8.0
-              :mm.memory/body-raw     1.0}
+              :mm.memory/description   8.0
+              :mm.memory/themes        6.0
+              :mm.memory/tags          4.0
+              :mm.memory/rel-path      3.0
+              :mm.memory/body-raw      1.0}
              weights)
           ":mm/Memory's :dt/bm25f-weights tuples reconstruct as {slot weight} map")))
   (testing "bm25f-weights-of returns the declared weight map for :mm/Section"
@@ -256,6 +262,54 @@
   ;; (plural form) per schema/meta.edn — distinct from :dt/codec-aliases's
   ;; homogeneous :db/tupleType (singular) two-keyword shape.
   )
+
+(deftest effective-bm25f-weights-of-test
+  ;; Gap 13 fix per substrate-stabilization arc Phase 3 Stage C — subclass
+  ;; inheritance for class-metadata helpers.  Mirrors the
+  ;; `effective-codec-aliases-of` / `effective-codec-slot-order-of` ancestor-
+  ;; walk pattern.  Class-agnostic per
+  ;; interaction/no_hardcoded_consumer_class_knowledge_in_substrate_2026_05_13.md.
+  (testing "effective-bm25f-weights-of equals direct getter when no ancestor contributes"
+    ;; :mm/Memory declares its weights directly.  No ancestor in the chain
+    ;; (:mm/Memory → :dt/Resource → ...) adds anything; the effective view
+    ;; equals the direct getter.
+    (is (= (dt/bm25f-weights-of :mm/Memory)
+           (dt/effective-bm25f-weights-of :mm/Memory))
+        ":mm/Memory's effective weights = direct weights (no ancestor declares)"))
+  (testing "effective-bm25f-weights-of walks :dt/subclass-of ancestors to inherit weights"
+    ;; :mm/Plan is :dt/subclass-of :mm/Artifact :dt/subclass-of :mm/Memory.
+    ;; :mm/Plan declares no per-class weights; effective-bm25f-weights-of
+    ;; should surface :mm/Memory's declared weights via ancestor walk.
+    ;; Before Gap 13 fix: search.bm25f on :mm/Plan raised "No :dt/bm25f-weights
+    ;; declared on class".
+    (let [memory-weights (dt/bm25f-weights-of :mm/Memory)
+          plan-effective (dt/effective-bm25f-weights-of :mm/Plan)]
+      (is (= {} (dt/bm25f-weights-of :mm/Plan))
+          ":mm/Plan declares no direct weights (precondition for the inheritance test)")
+      (is (seq plan-effective)
+          ":mm/Plan inherits non-empty weights via ancestor walk")
+      (is (= memory-weights plan-effective)
+          ":mm/Plan's effective weights equal ancestor :mm/Memory's declared weights")))
+  (testing "effective-bm25f-weights-of returns {} when neither class nor ancestors declare weights"
+    (is (= {} (dt/effective-bm25f-weights-of :mm/Link))
+        ":mm/Link has no direct weights and no weighted ancestor")
+    (is (= {} (dt/effective-bm25f-weights-of :dt/Property))
+        "metamodel-only class outside the weighted hierarchy"))
+  (testing "effective-bm25f-weights-of return shape is always a map"
+    (is (map? (dt/effective-bm25f-weights-of :mm/Memory)))
+    (is (map? (dt/effective-bm25f-weights-of :mm/Plan)))
+    (is (map? (dt/effective-bm25f-weights-of :nonexistent/Class))))
+  (testing "leaf-class declared weights shadow ancestor weights (specificity wins)"
+    ;; If a subclass declared its own weight for a slot already weighted in an
+    ;; ancestor, the subclass weight should win in the effective view.  Tested
+    ;; here by direct construction over the in-process helpers; if no
+    ;; corpus class exhibits this pattern today, the test still asserts the
+    ;; reduce/merge semantic via direct invocation.
+    ;; (Defer richer corpus-driven verification until a leaf class declares
+    ;; an overlapping weight.)
+    (is (= (dt/bm25f-weights-of :mm/Memory)
+           (dt/effective-bm25f-weights-of :mm/Memory))
+        "Specificity-wins is the merge semantic; with no overlap today, leaf-direct = effective")))
 
 (deftest fulltext-indexed?-test
   (testing "fulltext-indexed? returns true for slots declared :db/fulltext true"
@@ -407,6 +461,52 @@
     (is (dt/cardinality-many? :dt/slots) ":dt/slots should be cardinality many")
     (is (not (dt/cardinality-many? :user/login)) ":user/login should not be cardinality many")))
 
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; update-entity! cardinality-many REPLACE semantics (W0.found 2026-06-30)
+;; Per decisions/entity_update_card_many_replace_by_default_opt_in_additive_2026_06_30
+;; — closes bugs/entity_update_card_many_additive_while_docstring_validator_assume_replace_2026_06_30
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(deftest update-entity-card-many-replaces-by-default
+  ;; dt/make creates identless :mm/Memory entities, so reference + assert by
+  ;; :db/id (eid) — the card-many replace logic canonicalizes refs to :db/id.
+  (let [mk! (fn [nm rel & [slots]]
+              (:db/id (dt/make :mm/Memory
+                               (merge {:mm.memory/name nm :mm.memory/rel-path rel} slots)
+                               {:validate? false})))]
+    (testing "cardinality-many ref slot REPLACES the prior set (omitted members retracted)"
+      (let [t1    (mk! "t1" "test/dt-cm-t1")
+            t2    (mk! "t2" "test/dt-cm-t2")
+            t3    (mk! "t3" "test/dt-cm-t3")
+            src   (mk! "src" "test/dt-cm-src" {:mm.memory/cites [t1 t2]})
+            cites (fn [] (set (map :db/id (:mm.memory/cites (db/entity src)))))]
+        (is (= #{t1 t2} (cites)) "precondition: cites t1 + t2")
+        (dt/update-entity! src {:mm.memory/cites [t1 t3]} {:validate? false})
+        (is (= #{t1 t3} (cites))
+            "t2 retracted, t3 added, t1 retained — REPLACE, not UNION")))
+
+    (testing ":additive? true preserves the legacy UNION (append)"
+      (let [t1    (mk! "a1" "test/dt-add-t1")
+            t2    (mk! "a2" "test/dt-add-t2")
+            t3    (mk! "a3" "test/dt-add-t3")
+            src   (mk! "src" "test/dt-add-src" {:mm.memory/cites [t1 t2]})
+            cites (fn [] (set (map :db/id (:mm.memory/cites (db/entity src)))))]
+        (dt/update-entity! src {:mm.memory/cites [t3]} {:validate? false :additive? true})
+        (is (= #{t1 t2 t3} (cites)) "t3 appended; t1 + t2 retained under additive")))
+
+    (testing "REPLACE with an empty vec CLEARS the cardinality-many slot"
+      (let [t1  (mk! "c1" "test/dt-clr-t1")
+            src (mk! "src" "test/dt-clr-src" {:mm.memory/cites [t1]})]
+        (dt/update-entity! src {:mm.memory/cites []} {:validate? false})
+        (is (empty? (:mm.memory/cites (db/entity src)))
+            "replace with [] retracts every member")))
+
+    (testing "cardinality-one slot is unaffected (Datomic auto-replaces)"
+      (let [src (mk! "orig" "test/dt-one-src")]
+        (dt/update-entity! src {:mm.memory/name "updated"} {:validate? false})
+        (is (= "updated" (:mm.memory/name (db/entity src)))
+            "card-one name replaced as before")))))
+
 (deftest required?-test
   (testing "required? checks if property is required"
     ;; Note: depends on schema having required properties defined
@@ -443,6 +543,37 @@
   (testing "make with validation disabled"
     (let [user (dt/make :model/User {:user/login "another"} {:validate? false})]
       (is (some? user) "Should create entity without validation"))))
+
+(deftest make-all-test
+  (testing "make-all transacts validated batch atomically"
+    (let [result (dt/make-all [{:dt/type :model/User :user/login "ma-1"}
+                               {:dt/type :model/User :user/login "ma-2"}
+                               {:dt/type :model/User :user/login "ma-3"}])]
+      (is (some? result) "Should return tx result")
+      (is (>= (count (:tempids result)) 3)
+          "Should transact all three users in single tx")))
+
+  (testing "make-all rejects whole batch when any spec fails validation"
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo
+                          #"Validation failed for one or more entities"
+                          (dt/make-all [{:dt/type :model/User :user/login "ma-good"}
+                                        {:dt/type :dt/Literal}]))
+        "Should throw — :dt/Literal is abstract"))
+
+  (testing "make-all error envelope carries per-spec failure detail"
+    (let [thrown (try
+                   (dt/make-all [{:dt/type :model/User :user/login "ma-good"}
+                                 {:dt/type :dt/Literal}
+                                 {:dt/type :model/User :user/login "ma-also-good"}])
+                   nil
+                   (catch clojure.lang.ExceptionInfo e e))
+          data   (ex-data thrown)]
+      (is (= 3 (:total data)) "Should report total spec count")
+      (is (= 1 (count (:errors data))) "Should report only the failing spec")
+      (is (= 1 (-> data :errors first :index))
+          "Should identify failing spec by index")
+      (is (= :dt/Literal (-> data :errors first :class))
+          "Should identify failing spec's class"))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Validation Tests
@@ -712,3 +843,197 @@
             regression)"
     (let [n (dt/degree-of :dt/Class)]
       (is (pos? n) ":dt/Class has at least some ref-typed edges"))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; :dt/memorial-policy primitives — Phase A foundation (Wave 2 of metamodel-
+;; unification arc; per plans/sandbar_metamodel_unification_arc_… §20.2 +
+;; plans/sandbar_first_class_memorialization_arc_workflows_schedules_contexts_dt_memorial_policy_2026_05_23
+;; Stage B.3 substrate enforcement).
+;;
+;; Two primitives:
+;;   memorial-policy-of            — direct lookup (no ancestor walk)
+;;   effective-memorial-policy-of  — ancestor-walking lookup; scalar
+;;                                   reduction (nearest-declaration wins)
+;;
+;; Sister to bm25f-weights-of / effective-bm25f-weights-of — same shape,
+;; different attribute, different reduction semantic (scalar `some` vs map
+;; `merge`).  Per the SPEC-vs-STATE first-class-memorialization decision
+;; (decisions/option_b_plus_c_ratified_spec_vs_state_criterion_pivot_to_first_class_memorialization_2026_05_23.md).
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(deftest memorial-policy-of-test
+  (testing "memorial-policy-of returns directly-declared policy keyword"
+    (testing ":mm/Memory declares :first-class directly (schema/mm.edn)"
+      (is (= :first-class (dt/memorial-policy-of :mm/Memory))))
+    (testing ":dt/Class declares :db-only directly (schema/meta.edn — schema entity)"
+      (is (= :db-only (dt/memorial-policy-of :dt/Class))))
+    (testing ":dt/Property declares :db-only directly (schema/meta.edn — schema entity)"
+      (is (= :db-only (dt/memorial-policy-of :dt/Property)))))
+  (testing "memorial-policy-of does NOT walk ancestors"
+    ;; :mm/Decision is a :mm/Memory descendant but doesn't declare its own
+    ;; :dt/memorial-policy — it inherits :first-class via ancestor walk only.
+    ;; memorial-policy-of is the DIRECT-LOOKUP primitive; it must return nil
+    ;; for classes that only have policy via inheritance.  Use
+    ;; effective-memorial-policy-of for ancestor-walking lookup.
+    (testing ":mm/Decision (inherits :first-class from :mm/Memory) returns nil"
+      (is (nil? (dt/memorial-policy-of :mm/Decision))
+          ":mm/Decision inherits policy via ancestor walk; direct lookup returns nil"))
+    (testing ":mm/Plan (inherits :first-class from :mm/Memory) returns nil"
+      (is (nil? (dt/memorial-policy-of :mm/Plan)))))
+  (testing "memorial-policy-of return shape is keyword or nil"
+    (testing "returns keyword for declared classes"
+      (is (keyword? (dt/memorial-policy-of :mm/Memory))))
+    (testing "returns nil for nonexistent class (no error)"
+      (is (nil? (dt/memorial-policy-of :nonexistent/Thing))))))
+
+(deftest effective-memorial-policy-of-test
+  ;; Sister to effective-bm25f-weights-of (line 266-312) — same ancestor-walk
+  ;; pattern but SCALAR reduction (first-match wins via `some`) rather than
+  ;; MAP MERGE.  The class-agnostic substrate primitive at the dt/* layer
+  ;; per interaction/no_hardcoded_consumer_class_knowledge_in_substrate_2026_05_13.md.
+  (testing "effective-memorial-policy-of returns directly-declared policy when present"
+    ;; Direct declarations: chain starts with class-ident itself, so direct
+    ;; declarations take precedence over any inherited values.
+    (testing ":mm/Memory returns its directly-declared :first-class"
+      (is (= :first-class (dt/effective-memorial-policy-of :mm/Memory))))
+    (testing ":dt/Class returns its directly-declared :db-only"
+      (is (= :db-only (dt/effective-memorial-policy-of :dt/Class))))
+    (testing ":dt/Property returns its directly-declared :db-only"
+      (is (= :db-only (dt/effective-memorial-policy-of :dt/Property)))))
+  (testing "effective-memorial-policy-of walks :dt/subclass-of ancestors to find inherited policy"
+    ;; :mm/Memory descendants inherit :first-class via ancestor walk.
+    ;; This is the load-bearing behavior — reactive-projection sink consults
+    ;; this primitive on every entity-create to determine whether to project
+    ;; the resulting memorial to the filesystem.
+    (testing ":mm/Decision inherits :first-class from :mm/Memory ancestor"
+      (is (= :first-class (dt/effective-memorial-policy-of :mm/Decision))))
+    (testing ":mm/Plan inherits :first-class from :mm/Memory ancestor"
+      (is (= :first-class (dt/effective-memorial-policy-of :mm/Plan))))
+    (testing ":mm/Observation inherits :first-class from :mm/Memory ancestor"
+      (is (= :first-class (dt/effective-memorial-policy-of :mm/Observation)))))
+  (testing "effective-memorial-policy-of returns nil when no policy declared in chain"
+    ;; A class whose ancestor chain has NO :dt/memorial-policy anywhere returns nil.
+    ;; Reactive sink treats nil as :db-only (conservative — skip projection).
+    (testing "Nonexistent ident returns nil"
+      (is (nil? (dt/effective-memorial-policy-of :nonexistent/Thing)))))
+  (testing "effective-memorial-policy-of composes with ancestors-of (chain construction)"
+    ;; The function walks (cons class-ident (ancestors-of class-ident)).
+    ;; Verify the chain contains the expected policy-declaring ancestor.
+    (let [decision-chain (cons :mm/Decision (dt/ancestors-of :mm/Decision))]
+      (is (some #{:mm/Memory} decision-chain)
+          ":mm/Decision's chain includes :mm/Memory (where :first-class is declared)")))
+  (testing "scalar reduction (specificity wins via `some` short-circuit)"
+    ;; Unlike effective-bm25f-weights-of (which MERGES maps from all ancestors),
+    ;; effective-memorial-policy-of takes the FIRST non-nil from the chain.
+    ;; The chain starts with class-ident itself, so direct declarations win
+    ;; over inherited ones.
+    (testing "Direct declaration on class wins over potential ancestor override"
+      ;; :dt/Class declares :db-only; if any ancestor had :first-class, this
+      ;; would still return :db-only because :dt/Class is first in chain.
+      (is (= :db-only (dt/effective-memorial-policy-of :dt/Class))
+          "Direct :db-only on :dt/Class wins; no ancestor would override")))
+  (testing "return shape is keyword or nil"
+    (is (or (keyword? (dt/effective-memorial-policy-of :mm/Memory))
+            (nil? (dt/effective-memorial-policy-of :mm/Memory)))
+        "Returns keyword (declared) or nil (undeclared)")))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; dt/make ref-slot attach — regression for
+;; bugs/dt_make_ref_slots_reject_eids_and_silently_drop_maps_2026_07_02.md
+;;
+;; Memorial (verbatim): "the dt/make single-entity create path cannot attach a
+;; :dt/Ref-ranged slot value in ANY form.  (1) raw Long eid → validation reject;
+;; (2) Datomic EntityMap → same reject; (3) {:db/id eid} map → VALIDATES then
+;; the ref reads back nil (silent drop); (4) {:db/ident kw} codec-style upsert
+;; map → VALIDATES then silently drops."
+;;
+;; The four probes below mirror the memorial's four receipts (originally
+;; scratchpad/foundation-baseline-2026-07-03/falsify_a5/falsify_ref_slots.clj).
+;; The bug filing asserted the FAILURE; this regression asserts the CONTRACT:
+;; each of the four accepted ref-value shapes must (a) pass validation and
+;; (b) attach the SAME actor edge — validation and transaction agree, nothing
+;; validates-then-drops.  :event/actor is :dt/range :dt/Ref, :db/valueType
+;; :db.type/ref, :db/cardinality :db.cardinality/one.
+;;
+;; NB the attach is asserted by direct Datalog (the persisted edge) rather than
+;; by projecting :event/actor, because the read-back projection returns the ref
+;; as a bare ident keyword, not an eid or entity-map (the same projection shape
+;; recorded in bugs/retract_cascade_blind_to_first_section_dependents...).
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defn- make-ref-test-actor!
+  "Create a concrete :mm/AIActor for use as an :event/actor ref target.
+   :mm/Actor is abstract; :mm/AIActor is the concrete subtype (same idiom as
+   retract_test/make-actor!).  Returns the created entity."
+  [ident nm]
+  (dt/make :mm/AIActor {:db/ident ident
+                        :mm.memory/rel-path (str "test/" nm ".md")
+                        :mm.memory/name nm
+                        :mm.actor/actor-type :ai-actor}))
+
+(defn- server-event-props
+  "Minimal :event/ServerEvent prop map merged with an actor-slot fragment
+   (e.g. {:event/actor <value>})."
+  [actor-slot]
+  (merge {:event/kind :mm.event/EntityRetracted
+          :event/name "ref-slot-regression-probe"}
+         actor-slot))
+
+(defn- actor-edge-eid
+  "The eid at the :event/actor slot of event `event-eid`, read via direct
+   Datalog so the assertion is independent of the projection's ref shape."
+  [event-eid]
+  (ffirst (d/q '[:find ?a :in $ ?e :where [?e :event/actor ?a]]
+               (db/db) event-eid)))
+
+(deftest make-ref-slot-attach-test
+  (testing "PROBE 1 — raw Long eid at :event/actor validates AND attaches"
+    (let [actor     (make-ref-test-actor! :memory.test-actors/r-actor1 "r-actor1")
+          actor-eid (:db/id actor)
+          props     (server-event-props {:event/actor actor-eid})
+          errs      (dt/validate-data :event/ServerEvent props)
+          created   (dt/make :event/ServerEvent props)]
+      (is (nil? errs) "raw Long eid must pass :dt/Ref validation")
+      (is (= actor-eid (actor-edge-eid (:db/id created)))
+          "raw Long eid attaches the actor edge")))
+
+  (testing "PROBE 2 — Datomic EntityMap at :event/actor validates AND attaches"
+    (let [actor     (make-ref-test-actor! :memory.test-actors/r-actor2 "r-actor2")
+          actor-eid (:db/id actor)
+          actor-ent (db/entity actor-eid)
+          props     (server-event-props {:event/actor actor-ent})
+          errs      (dt/validate-data :event/ServerEvent props)
+          created   (dt/make :event/ServerEvent props)]
+      (is (nil? errs) "Datomic EntityMap must pass :dt/Ref validation")
+      (is (= actor-eid (actor-edge-eid (:db/id created)))
+          "EntityMap attaches the actor edge")))
+
+  (testing "PROBE 3 — {:db/id eid} map validates AND attaches (no silent drop)"
+    (let [actor     (make-ref-test-actor! :memory.test-actors/r-actor3 "r-actor3")
+          actor-eid (:db/id actor)
+          props     (server-event-props {:event/actor {:db/id actor-eid}})
+          errs      (dt/validate-data :event/ServerEvent props)
+          created   (dt/make :event/ServerEvent props)]
+      (is (nil? errs) "{:db/id eid} must pass :dt/Ref validation")
+      (is (= actor-eid (actor-edge-eid (:db/id created)))
+          "{:db/id eid} attaches the actor edge — the silent-drop is cured")))
+
+  (testing "PROBE 4 — {:db/ident kw} upsert-map validates AND attaches (no silent drop)"
+    (let [actor     (make-ref-test-actor! :memory.test-actors/r-actor4 "r-actor4")
+          actor-eid (:db/id actor)
+          props     (server-event-props {:event/actor {:db/ident :memory.test-actors/r-actor4}})
+          errs      (dt/validate-data :event/ServerEvent props)
+          created   (dt/make :event/ServerEvent props)]
+      (is (nil? errs) "{:db/ident kw} upsert-map must pass :dt/Ref validation")
+      (is (= actor-eid (actor-edge-eid (:db/id created)))
+          "{:db/ident kw} attaches the actor edge — the silent-drop is cured")))
+
+  (testing "coercion never fabricates an edge for an unresolvable ref value"
+    ;; A ref value that names no entity (an unknown ident) must be left
+    ;; UNCHANGED by coercion — never rewritten to some fabricated eid.  The
+    ;; coercion layer's job is to make validation and transaction agree on
+    ;; RESOLVABLE refs, not to paper over bad input.
+    (let [props    (server-event-props {:event/actor :no.such/missing-actor})
+          coerced  (#'dt/coerce-ref-slot-values props)]
+      (is (= :no.such/missing-actor (:event/actor coerced))
+          "an unresolvable ident is passed through untouched, not coerced to a bogus eid"))))

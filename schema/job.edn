@@ -137,7 +137,7 @@
    :db/doc "When the job was created"}
 
   {:db/ident :job/created-by
-   :dt/type :dt/Property
+   :dt/type :dt/DirectedBinaryRelationProperty
    :dt/domain :job/Task
    :dt/range :dt/Ref
    :db/valueType :db.type/ref

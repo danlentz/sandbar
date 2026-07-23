@@ -1,0 +1,159 @@
+[
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; mm-namespace.edn — ζ Scope B Stable-Identifier Substrate Primitive
+;;
+;; Implementation of the 3-slot substrate-primitive model + per-namespace
+;; commitment-statement class per the ζ Scope B design contract:
+;;   memory/decisions/zeta_scope_b_stable_identifier_substrate_primitive_three_slot_model_plus_namespace_commitment_plus_authority_uuid_plus_clj_uuid_extensions_plus_two_mcp_verbs_design_contract_2026_05_26.md
+;;
+;; Composes with the ζ Scope A 3-tier identifier value hierarchy ADR:
+;;   memory/decisions/three_tier_identifier_value_hierarchy_brittle_functionally_worthless_opaque_effectively_worthless_to_humans_semantic_valuable_to_human_llm_and_sandbar_backend_dan_directive_2026_05_25.md
+;;
+;; The 3-tier identifier value hierarchy:
+;;   :db/id          → BRITTLE tier   (Datomic eid; ephemeral; never persisted)
+;;   :db/ident       → SEMANTIC tier  (substrate-canonical kw :memory.<class>/<slug>;
+;;                                     primary user-facing surface; existing)
+;;   :mm/id          → OPAQUE tier    (v5 UUID; federation-anchor; NEW)
+;;   :mm/pref-label  → DISPLAY tier   (mutable string; SKOS prefLabel; NEW)
+;;   :mm/alt-label   → DISPLAY tier   (cardinality-many; SKOS altLabel; NEW)
+;;
+;; THREE NEW SLOTS on :mm/Memory (inherited by ALL memorial-type subclasses):
+;;   :mm/id          — clj-uuid v5; :db.unique/identity; federation-anchor
+;;   :mm/pref-label  — preferred display string; freely mutable
+;;   :mm/alt-label   — alternative labels (cardinality-many); synonyms / rename history
+;;
+;; ONE NEW CLASS + FIVE NEW SLOTS for per-namespace commitment statement:
+;;   :mm.namespace/CommitmentStatement (subclass of :mm/Memory)
+;;     :mm.namespace/identity-stability   :never-reassign | :reassign-with-redirect | :may-reassign
+;;     :mm.namespace/content-stability    :append-only | :may-revise | :may-delete
+;;     :mm.namespace/service-stability    :permanent | :long-term-N-years | :archive-only
+;;     :mm.namespace/authority-uuid       per-deployment frozen UUID
+;;     :mm.namespace/first-issued         when the namespace became active (ARK pattern)
+;;
+;; The per-deployment authority-UUID is computed at sandbar init via:
+;;   (clj-uuid/v5 clj-uuid/+namespace-url+ "tag:danlentz.github.io,2026:claude-memory")
+;; (or operator-supplied deployment-slug; see ζ Scope B ADR §3.1)
+;;
+;; Per-entity UUID derivation (computed at β.2.3 migration-time per the piggyback strategy):
+;;   (clj-uuid/v5 (namespace-uuid <ns>) <slug>)
+;;
+;; Surfaced via URN wire form `urn:uuid:<v5>` for cross-deployment federation
+;; references (RFC 9562 §6.5).  Future `urn:sandbar:` NID if IANA-registered.
+;;
+;; Migration strategy: β.2.3 per-family migration tx-fns piggyback the
+;; :mm/id + :mm/pref-label backfill on their per-entity touch (single corpus-
+;; touch instead of two; per ζ Scope B ADR §7.1 + strategic 5-wave plan
+;; Q.STRAT.2 RATIFIED 2026-05-26).
+;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Forward Declarations
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident :mm.namespace/CommitmentStatement
+   :db/doc "Forward declaration; full definition later — per-namespace policy commitment statement (ARK-inspired).  Declares identity-stability + content-stability + service-stability covenants for entities minted under the namespace, plus the per-deployment authority-UUID + first-issued date.  One CommitmentStatement per active namespace.  Per ζ Scope B ADR 2026-05-26 §2."}]
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; :mm/* — Identity-Substrate 3-Slot Model (on :mm/Memory; inherited)
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;
+;; Operationalizes the 3-tier identifier value hierarchy ADR's OPAQUE +
+;; DISPLAY tiers.  These 3 slots are added to :mm/Memory (declared in
+;; schema/mm.edn) and inherited by every :mm/Memory subclass.
+
+ [{:db/ident       :mm/id
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Memory
+   :dt/range       :db.type/uuid
+   :db/valueType   :db.type/uuid
+   :db/cardinality :db.cardinality/one
+   :db/unique      :db.unique/identity
+   :db/doc "Opaque-stable v5 UUID for federation-anchor identity.  Computed deterministically from (authority-UUID, namespace-slug, entity-slug) via clj-uuid v5.  NEVER changes once assigned.  Surfaced in URN wire form as urn:uuid:<v5> for cross-deployment references (RFC 9562 §6.5).  The OPAQUE tier of the 3-tier identifier value hierarchy per ζ Scope B ADR 2026-05-26 §1.1 + ζ Scope A 3-tier ADR 2026-05-25.  :db.unique/identity provides constant-time lookup-by-UUID without secondary indexing."}
+
+  {:db/ident       :mm/pref-label
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Memory
+   :dt/range       :db.type/string
+   :db/valueType   :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/fulltext    true
+   :db/doc "Preferred display label for the memorial; SKOS-aligned prefLabel.  Freely mutable; UI / human-output / narrative-prose renders this.  Decoupled from identity entirely — display strings can evolve without affecting :mm/id.  The DISPLAY tier of the 3-tier identifier value hierarchy per ζ Scope B ADR 2026-05-26 §1.2.  Fulltext-indexed for BM25F search recall on display strings.  Default-source at β.2.3 migration time: existing :mm.memory/name value (per Q.ζ.B.6)."}
+
+  {:db/ident       :mm/alt-label
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Memory
+   :dt/range       :db.type/string
+   :db/valueType   :db.type/string
+   :db/cardinality :db.cardinality/many
+   :db/fulltext    true
+   :db/doc "Alternative labels for the memorial — synonyms, variants, historical / renamed forms.  SKOS-aligned altLabel.  Cardinality-many.  Used by sandbar.tag.consolidate to preserve renamed canonical values for search-recall + by memorial-rename operations to retain prior :mm/pref-label values.  Fulltext-indexed for BM25F search recall on non-canonical / historical forms.  Per ζ Scope B ADR 2026-05-26 §1.3."}]
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; :mm.namespace/* — Per-Namespace Commitment-Statement Slots
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;
+;; ARK-inspired persistence-policy primitives.  Each active corpus
+;; namespace has ONE :mm.namespace/CommitmentStatement entity declaring its
+;; covenants + authority-UUID + first-issued instant.
+
+ [{:db/ident       :mm.namespace/identity-stability
+   :dt/type        :dt/Property
+   :dt/domain      :mm.namespace/CommitmentStatement
+   :dt/range       :db.type/keyword
+   :db/valueType   :db.type/keyword
+   :db/cardinality :db.cardinality/one
+   :db/doc "Identity-stability covenant: :never-reassign (identifiers never assigned to a different entity once minted) | :reassign-with-redirect (reassignment permitted but redirect from old → new is preserved) | :may-reassign (no stability guarantee; deployment-fluid).  Declares whether identifiers minted under this namespace can be reassigned to different entities.  Per ζ Scope B ADR 2026-05-26 §2.2."}
+
+  {:db/ident       :mm.namespace/content-stability
+   :dt/type        :dt/Property
+   :dt/domain      :mm.namespace/CommitmentStatement
+   :dt/range       :db.type/keyword
+   :db/valueType   :db.type/keyword
+   :db/cardinality :db.cardinality/one
+   :db/doc "Content-stability covenant: :append-only (entities' content may only grow; revisions appended; never modified or deleted) | :may-revise (entities' content may be revised in-place; revision history retained via Datomic) | :may-delete (entities may be retracted entirely).  Declares whether content under this namespace can be revised or removed.  Per ζ Scope B ADR 2026-05-26 §2.2."}
+
+  {:db/ident       :mm.namespace/service-stability
+   :dt/type        :dt/Property
+   :dt/domain      :mm.namespace/CommitmentStatement
+   :dt/range       :db.type/keyword
+   :db/valueType   :db.type/keyword
+   :db/cardinality :db.cardinality/one
+   :db/doc "Service-stability covenant: :permanent (operator commits to indefinite resolution service for identifiers in this namespace) | :long-term-N-years (resolution service committed for N years from first-issued) | :archive-only (no live resolution; archived data only).  Declares the operator's commitment to keeping the namespace's resolution service alive.  Per ζ Scope B ADR 2026-05-26 §2.2."}
+
+  {:db/ident       :mm.namespace/authority-uuid
+   :dt/type        :dt/Property
+   :dt/domain      :mm.namespace/CommitmentStatement
+   :dt/range       :db.type/uuid
+   :db/valueType   :db.type/uuid
+   :db/cardinality :db.cardinality/one
+   :db/doc "Authority-UUID that mints identifiers under this namespace.  Per-deployment frozen at sandbar init via (clj-uuid/v5 +namespace-url+ <deployment-slug>).  NEVER regenerated; treated as tombstone identity.  Per ζ Scope B ADR 2026-05-26 §3.1.  For the existing claude-corpus deployment: (clj-uuid/v5 +namespace-url+ \"tag:danlentz.github.io,2026:claude-memory\")."}
+
+  {:db/ident       :mm.namespace/first-issued
+   :dt/type        :dt/Property
+   :dt/domain      :mm.namespace/CommitmentStatement
+   :dt/range       :db.type/instant
+   :db/valueType   :db.type/instant
+   :db/cardinality :db.cardinality/one
+   :db/doc "First-issued instant (ARK pattern); when the namespace became active.  Per ζ Scope B ADR 2026-05-26 §2.2.  Anchors the service-stability covenant's N-year horizon for :long-term-N-years declarations."}]
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; :mm.namespace/CommitmentStatement — Full Class Declaration
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident       :mm.namespace/CommitmentStatement
+   :dt/type        :dt/Class
+   :dt/subclass-of :mm/Memory
+   :dt/abstract?   false
+   :dt/slots       [:mm.namespace/identity-stability
+                    :mm.namespace/content-stability
+                    :mm.namespace/service-stability
+                    :mm.namespace/authority-uuid
+                    :mm.namespace/first-issued]
+   :db/doc "Per-namespace policy commitment statement (ARK-inspired).  Declares identity-stability + content-stability + service-stability covenants for entities minted under the namespace, plus the per-deployment authority-UUID + first-issued date.  One CommitmentStatement per active namespace.  Subclass of :mm/Memory so commitment statements ARE memorialized + searchable + persistent like other corpus content.  Per ζ Scope B ADR 2026-05-26 §2.1 + Q.ζ.B.2 ratification (RATIFIED 2026-05-26)."}]
+
+]

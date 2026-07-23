@@ -1,0 +1,386 @@
+(ns sandbar.store
+  "Unified :mm/Memory creation entry point — the single path that gives every
+   memorial its full ζ three-slot identity at birth.
+
+   BEFORE delegating to `dt/make`, `create-memory!`:
+     1. derives a stable, EDN-safe `:db/ident` from `:mm.memory/rel-path`
+        (via the codec convention + `codec-md/edn-safe-ident` digit-dodge), and
+     2. mints the opaque-stable `:mm/id` (clj-uuid v5, the federation anchor)
+        from that ident — using the SAME `sandbar.identifier/ident-uuid` the ζ
+        backfill uses, so a create-time mint and a later sweep agree.
+
+   This replaces the divergent per-call identity logic that previously lived in
+   two places and disagreed:
+     - `sandbar.mcp.tools/entity-create-handler` derived `:db/ident` but NOT
+       `:mm/id`; and
+     - `sandbar.workflow.orchestrate` (session/log creation) used a raw
+       `dt/make` that derived NEITHER — the identless-session bug.
+
+   Routing both through here closes the identless-entity gap corpus-wide and
+   makes every future memorial federation-ready at birth.  Per the 2026-05-29
+   session-lifecycle-hardening arc + decisions/three_tier_identifier_value_-
+   hierarchy + libraries/synthesis/stable_identifier_substrate_clj_uuid_-
+   extension_three_slot_model_for_sandbar_zeta_2026_05_25.
+
+   Lives in its own ns (not `sandbar.db.datatype`) because identity derivation
+   needs `sandbar.codec.markdown`, and the codec already depends on datatype —
+   so putting it in datatype would be a cycle."
+  (:require [clj-uuid :as uuid]
+            [clojure.string :as str]
+            [datomic.api :as d]
+            [sandbar.codec.markdown :as codec-md]
+            [sandbar.db.datatype :as dt]
+            ;; sandbar.db.datomic is the LOWEST layer (datatype→datomic), so it is
+            ;; safe to require here (store→datatype→datomic; no cycle).  We reuse
+            ;; its `schedule-content-key-string` as the SINGLE source of the
+            ;; content-key string so the create-path key and the prune-path key
+            ;; can never drift byte-for-byte (W3.B REVISE must-fix #1).
+            [sandbar.db.datomic :as db]
+            ;; sandbar.reactive.sinks is the write-side projection layer; it does
+            ;; NOT require store (only names it in a comment), so store→sinks is
+            ;; acyclic.  Reused for its LANDED G2 containment sanitizer
+            ;; `contained-target-path` — the SAME check the fs sink runs, applied
+            ;; pre-transact (it7 FF-2) so a traversal/absolute rel-path is refused
+            ;; before it commits to the DB, not only at the sink.
+            [sandbar.reactive.sinks :as sinks]
+            [sandbar.identifier :as ident]))
+
+(defn derive-memory-ident
+  "Derive a stable, EDN-safe `:db/ident` for a `:mm/Memory` (or subclass) from
+   its corpus `rel-path` (via the codec convention), digit-dodged so it
+   round-trips through the EDN reader.  Returns nil when `rel-path` is blank,
+   `class` is not a :mm/Memory, or the rel-path is unparseable."
+  [class rel-path]
+  (when (and rel-path (dt/type-isa? :mm/Memory class))
+    (some-> (codec-md/rel-path->memory-ident rel-path)
+            codec-md/edn-safe-ident)))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; :mm/Schedule create-time stable ident (proliferation fix, W3.B)
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;
+;; :mm/Schedule is a :mm/Spec, NOT a :mm/Memory, so `create-memory!` used to be a
+;; pure pass-through to `dt/make` for it — deriving NO :db/ident.  `dt/make ->
+;; make*` then resolves an unnamed `"main"` string tempid to a BRAND-NEW eid on
+;; every call, so each `entity.create :class :mm/Schedule` (and each `dt/make
+;; :mm/Schedule` in tests / dev-loops) APPENDS a fresh row — the runtime
+;; proliferation this arc fixes (target-less :mm/Schedule population; W3.B
+;; diagnosis).  The 2 system schedules escaped because seed-system-jobs!
+;; hardcodes stable :db/idents (upsert via :db.unique/identity).
+;;
+;; Fix: derive a deterministic :db/ident from the schedule's STABLE LOGICAL
+;; IDENTITY so re-creating a logically identical schedule UPSERTS onto the same
+;; eid instead of appending.  clj-uuid v5 over the content-key gives a
+;; collision-free deterministic name; the same :mm/id-anchoring
+;; `ident/+authority+` namespaces it so two deployments with the same authority
+;; agree.
+;;
+;; W3.B REVISE (DATA-LOSS fix): the original key spanned ONLY (target,
+;; recurrence, timezone) — it EXCLUDED six first-class, dispatcher-read slots
+;; (:until, :count, :exdates, :rdates, :misfire-policy, :concurrency).  Two
+;; schedules differing only on one of those (e.g. :until 2027 vs 2099) then
+;; collapsed onto one eid — silently deleting a legitimately-distinct schedule
+;; and overwriting terminator/policy slots.  The key now spans the FULL
+;; semantically-distinguishing slot set; the canonical content-key STRING is
+;; built by the shared `sandbar.db.datomic/schedule-content-key-string` so the
+;; create-path key and the prune-path key are byte-identical (they cannot drift
+;; because there is one builder).  Keyed slots (enumerated):
+;;   target · recurrence (RRULE — the complete FREQ/INTERVAL/BY-* form) ·
+;;   timezone · until · count · exdates · rdates · misfire-policy · concurrency.
+;; The policy slots (:misfire-policy, :concurrency) are FOLDED IN per the LEAD
+;; RULING (safest option): two schedules firing the same recurrence with
+;; different concurrency/misfire behavior are OPERATIONALLY distinct rows.
+;;
+;; :mm.schedule/dtstart is DELIBERATELY EXCLUDED (the ONLY exclusion among the
+;; recurrence-defining slots): callers re-anchor dtstart at (now) on every create
+;; (that is the proliferation mechanism itself), so folding it in would defeat
+;; upsert for logically-identical schedules.  ACCEPTED TRADEOFF: an idempotent
+;; re-create upserts onto the survivor and thus OVERWRITES its dtstart — a phase
+;; shift of the recurrence anchor — but never changes which distinct schedules
+;; exist.  Two schedules identical on every keyed slot ARE the same logical
+;; schedule; any differing keyed slot keeps them distinct.
+;;
+;; Absent-only + non-destructive: an explicit caller-supplied :db/ident always
+;; wins, and a schedule with neither a target nor a recurrence (no stable
+;; content) is left identless (unchanged pass-through) rather than colliding
+;; every content-free schedule onto one eid.
+;;
+;; Per the W3.B schedule-idempotency arc + the XorConstraint seed-idempotency
+;; precedent (commit 1bc426b) + interaction/foundational_substrate_concerns_-
+;; are_never_follow_up_sub_arcs_2026_05_21.
+
+(def ^{:doc "clj-uuid v5 namespace anchor for :mm/Schedule content-key idents,
+            derived once from the deployment authority-UUID so the derivation is
+            deterministic + federation-consistent (same authority → same ident)."}
+  +schedule-ns+
+  (uuid/v5 ident/+authority+ "mm.schedule/content-key"))
+
+(defn- ref-value->key-token
+  "Normalize a :db.type/ref slot VALUE, as it appears in a PRE-transact entity-
+   spec map, to the CANONICAL target token — the SAME value the prune-path
+   derives from a post-transact EntityMap (must-fix #2), so an idented target
+   passed as its raw eid vs its :db/ident keyword keys identically.  Accepts a
+   keyword ident, a numeric eid, a `{:db/ident k}` / `{:db/id e}` upsert map, or
+   a Datomic EntityMap; prefers the :db/ident (stable across DBs) over the eid
+   (DB-local).  nil → nil (the shared key-builder renders it as the empty token,
+   matching the prune-side nil handling).  Returns the RAW keyword/eid — the
+   shared `schedule-content-key-string` stringifies it, so both sides feed the
+   builder the same primitive."
+  [v]
+  (cond
+    (nil? v)     nil
+    (keyword? v) v
+    (map? v)     (or (:db/ident v) (:db/id v))
+    :else        v))
+
+(defn canonicalize-schedule-target
+  "Resolve a :mm/Schedule's `:mm.schedule/target` to its CANONICAL token so the
+   create-path key matches the prune-path key when the SAME idented target is
+   passed as its raw numeric eid vs its :db/ident keyword (W3.B REVISE must-fix
+   #2).  The prune path reads the target back off a post-transact EntityMap,
+   where Datomic renders an ident-bearing ref AS its :db/ident keyword — so an
+   eid-passed create would otherwise key on the eid string and diverge.
+
+   When the target is a raw eid (or `{:db/id e}`) whose entity HAS a :db/ident,
+   returns `props` with :mm.schedule/target rewritten to that keyword; otherwise
+   returns `props` unchanged (a keyword target, an identless eid, or a nil target
+   all already canonicalize correctly).  DB-aware: uses `db/entity` against the
+   live conn — hence applied here at the transact boundary, not inside the pure
+   key builder.  Only touches :mm/Schedule props."
+  [class props]
+  (let [target (:mm.schedule/target props)]
+    (if (and (dt/type-isa? :mm/Schedule class)
+             (some? target)
+             (not (keyword? target)))
+      (let [ent (db/entity (if (map? target) (or (:db/ident target) (:db/id target))
+                               target))
+            id  (:db/ident ent)]
+        (if id (assoc props :mm.schedule/target id) props))
+      props)))
+
+(defn derive-schedule-ident
+  "Derive a stable, deterministic, EDN-safe `:db/ident` for a `:mm/Schedule`
+   from its FULL logical identity via clj-uuid v5.  Returns nil for
+   non-:mm/Schedule classes, or when the schedule carries NEITHER a target NOR a
+   recurrence (no stable content to key on — leave it identless rather than
+   collapse all content-free schedules onto one eid).
+
+   Keyed slot set (W3.B REVISE — the FULL semantically-distinguishing identity;
+   see sandbar.db.datomic/schedule-content-key-string, THE shared canonical key
+   builder both this create-path and the prune-path delegate to so they cannot
+   drift byte-for-byte):
+     target · recurrence · timezone · until · count · exdates · rdates ·
+     misfire-policy · concurrency
+   DELIBERATELY EXCLUDED: :mm.schedule/dtstart (the re-anchored recurrence
+   anchor — the proliferation driver; see the comment block above).
+
+   The returned keyword's name is `s-<uuid>`; the `s-` prefix guarantees it
+   never leads with a digit, so it always round-trips through the Clojure/EDN
+   reader (the same hazard `codec-md/edn-safe-ident` dodges for memory idents).
+
+   Public for testability + reuse by the prune migration's content-keying."
+  [class props]
+  (when (dt/type-isa? :mm/Schedule class)
+    (let [target     (:mm.schedule/target props)
+          recurrence (:mm.schedule/recurrence props)]
+      (when (or (some? target) (some? recurrence))
+        (let [content-key
+              (db/schedule-content-key-string
+               {:target-token   (ref-value->key-token target)
+                :recurrence     recurrence
+                :timezone       (:mm.schedule/timezone props)
+                :until          (:mm.schedule/until props)
+                :count          (:mm.schedule/count props)
+                :exdates        (db/date-set-token (:mm.schedule/exdates props))
+                :rdates         (db/date-set-token (:mm.schedule/rdates props))
+                :misfire-policy (:mm.schedule/misfire-policy props)
+                :concurrency    (:mm.schedule/concurrency props)})]
+          (keyword "sandbar.schedule"
+                   (str "s-" (uuid/v5 +schedule-ns+ content-key))))))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Pre-transact corpus rel-path hardening (it7 FF-2; it6 BOARD-MINUTE Lane-B
+;; fast-follow #2).  Normalization + containment/grammar + collision/ownership,
+;; MOVED before dt/make so an unprojectable or colliding rel-path is refused at
+;; the create boundary rather than committing a malformed DB row.  Centralized +
+;; class-agnostic so update / bulk-import can share it (the single-point-of-
+;; enforcement shape F5 established for the read plane).
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defn normalize-corpus-rel-path
+  "Canonicalize a corpus rel-path to the STORED form: relative to the `memory/`
+   subtree, no leading `./` or `memory/` segment, trimmed.  Idempotent.  Does
+   NOT strip a leading `/` — an absolute path stays absolute so the containment
+   guard still refuses it.  The codec's `rel-path->memory-ident` already strips a
+   leading `memory/` when deriving the ident; normalizing the STORED slot to
+   match keeps the ident, the stored rel-path, and the sink's write target
+   mutually consistent (a `memory/decisions/foo.md` input otherwise yields ident
+   :memory.decisions/foo but a `<root>/memory/memory/decisions/foo.md` target)."
+  [rel-path]
+  (-> rel-path
+      str/trim
+      (str/replace #"^\./" "")
+      (str/replace #"^memory/" "")))
+
+(defn assert-corpus-rel-path-safe!
+  "Pre-transact rel-path hardening for a corpus `:mm/Memory` `rel-path` about to
+   be persisted under ident `the-id`.  Three guards, all loud (fail-closed):
+
+     1. NAME-LENGTH / EMITTABILITY — refuses (loud `:rel-path-segment-too-long`)
+        any rel-path segment over the per-segment filesystem name budget, via
+        `sandbar.reactive.sinks/assert-rel-path-name-max!` (255 UTF-8 bytes per
+        directory segment; 251 for the filename — the sink's atomic-write
+        protocol appends a 4-byte `.tmp` sibling that must itself fit under
+        NAME_MAX).  An over-budget rel-path COMMITS fine but can never be
+        projected: the sink's write dies ENAMETOOLONG and is warn+swallowed on
+        every drain — a permanent DB-only orphan / silent FS↔DB bijection break
+        (the emit-path filename-guard hardening, 2026-07-21).  Runs FIRST by
+        necessity: OS canonicalization inside the containment guard itself
+        raw-throws `java.io.IOException` for a ≥256-byte segment on macOS,
+        which would preempt this structured refusal.
+
+     2. CONTAINMENT + GRAMMAR — routes `rel-path` through the LANDED G2 sanitizer
+        `sandbar.reactive.sinks/contained-target-path` (the SAME check the
+        reactive fs sink runs, MOVED before `dt/make`).  Refuses an absolute /
+        `..`-traversal / symlink-escape rel-path with a `:rel-path-traversal-
+        refusal` ex-info at create time, so an unprojectable rel-path never
+        commits to the DB on a 'successful' create (the it6 sink-only containment
+        held the FS backstop, but let a pathological rel-path STRING reach the
+        store — codex #2/#3).
+
+     3. COLLISION / OWNERSHIP — when `the-id` is known, refuses (loud
+        `:rel-path-collision`) if a DIFFERENT existing entity already owns
+        `rel-path`.  Two memorials sharing one rel-path would project to the same
+        corpus file, one clobbering the other's FS↔DB bijection.  An existing
+        entity with the SAME ident is an idempotent upsert (allowed).  The query
+        is best-effort (an unbound DB / query failure is swallowed — no worse
+        than base, which had NO check); a DETECTED collision is a hard error.
+
+   Class-agnostic + reusable at the mutation boundary (create today; update /
+   bulk-import fold in here next).  Returns `rel-path`."
+  [class rel-path the-id]
+  ;; (1) per-segment NAME_MAX budget — MUST precede containment (see docstring:
+  ;; canonicalization raw-throws on ≥256-byte segments before a structured
+  ;; refusal could fire).
+  (sinks/assert-rel-path-name-max! rel-path)
+  ;; (2) containment + grammar via the landed G2 sanitizer (throws on escape).
+  (sinks/contained-target-path rel-path)
+  ;; (3) collision / ownership — only meaningful once we know our own ident.
+  (when the-id
+    (let [owners (try
+                   (d/q '[:find [?e ...] :in $ ?rp
+                          :where [?e :mm.memory/rel-path ?rp]]
+                        (db/db) rel-path)
+                   (catch Throwable _ nil))
+          others (when (seq owners)
+                   (->> owners
+                        (map db/entity)
+                        (remove #(= (:db/ident %) the-id))
+                        (seq)))]
+      (when others
+        (throw (ex-info
+                (str "Cannot create " class " at :mm.memory/rel-path \"" rel-path
+                     "\": that corpus path is already owned by a DIFFERENT entity "
+                     (pr-str (mapv #(or (:db/ident %) (:db/id %)) others))
+                     ".  Two memorials cannot project to the same corpus file "
+                     "(one would clobber the other's FS<->DB bijection).  Pick a "
+                     "distinct rel-path, or update the existing entity via "
+                     "entity.update.")
+                {:class          class
+                 :sandbar/error  :rel-path-collision
+                 :rel-path       rel-path
+                 :creating-ident the-id
+                 :colliding      (mapv #(or (:db/ident %) (:db/id %)) others)})))))
+  rel-path)
+
+(defn create-memory!
+  "Create a `class` entity with full ζ identity, then transact via `dt/make`.
+
+   For :mm/Memory classes: when `props` carries `:mm.memory/rel-path` and no
+   explicit `:db/ident`, derives an EDN-safe `:db/ident` from it; then mints
+   `:mm/id` (clj-uuid v5) from the resulting ident.
+
+   For :mm/Schedule (a :mm/Spec, not a :mm/Memory): when no explicit `:db/ident`
+   is supplied, derives a stable content-key `:db/ident` (see
+   `derive-schedule-ident`) so re-creating a logically identical schedule
+   UPSERTS instead of appending a fresh target-less row — the W3.B proliferation
+   fix.  No :mm/id mint (that slot is :mm/Memory-scoped federation identity).
+
+   All derivations are absent-only — an explicitly-supplied `:db/ident` / `:mm/id`
+   always wins.  For every OTHER non-:mm/Memory class this is a thin pass-through
+   to `dt/make` (no ident/:mm/id logic).
+
+   `opts` is the `dt/make` opts map (e.g. `{:validate? false}` or
+   `{:format :markdown :source <md>}`).  Returns the created entity-map.
+
+   This is the canonical create path — prefer it over a bare `dt/make` whenever
+   authoring a memorial, so the entity is never identless."
+  ([class props] (create-memory! class props {}))
+  ([class props opts]
+   (let [memory?        (dt/type-isa? :mm/Memory class)
+         explicit-ident (:db/ident props)
+         rel-path       (or (:mm.memory/rel-path props)
+                            (get props "mm.memory/rel-path"))
+         ;; CREATE-PATH FIX (it6, bugs/entity_create_codec_path_mints_identless_-
+         ;; relpathless_entities_fs_projection_silently_skipped_2026_07_08):
+         ;; when a :mm/Memory is created with an explicit :db/ident but NO
+         ;; rel-path, DERIVE the rel-path from the ident via the single shared
+         ;; inverse `codec-md/memory-ident->rel-path`, so the reactive fs sink
+         ;; can still project a file instead of silently skipping.  Absent-only,
+         ;; :mm/Memory-only; nil for non-`memory.*` idents (nothing to derive).
+         derived-rel-path (when (and memory? (not rel-path) explicit-ident)
+                            (codec-md/memory-ident->rel-path explicit-ident))
+         ;; NORMALIZE (it7 FF-2): canonicalize the finalized rel-path (explicit or
+         ;; ident-derived) to the stored form — strips a leading `memory/`/`./` so
+         ;; the ident, the stored slot, and the sink write target stay consistent.
+         ;; Idempotent + preserves absolute paths (so containment still refuses).
+         rel-path       (some-> (or rel-path derived-rel-path) normalize-corpus-rel-path)
+         ;; LOUD-FAIL (it6): a CORPUS-DOCUMENT memorial with NEITHER a rel-path
+         ;; NOR an ident from which one is derivable cannot be given a corpus
+         ;; path, so the sink would skip it and mint a DB-only orphan — the FS↔DB
+         ;; bijection break this bug fixes, on the PRIMARY capture path.  Reject
+         ;; at the create boundary rather than orphan silently.  Gated on the
+         ;; SAME shared `dt/corpus-document-class?` predicate the sink's WARN
+         ;; uses, so the runtime-behavioral branches that are :first-class only
+         ;; by inheritance yet legitimately rel-path-less (Spec → Schedule /
+         ;; Workflow; Activity → Run / EventLog; Event) pass through untouched.
+         _ (when (and memory? (not rel-path) (dt/corpus-document-class? class))
+             (throw (ex-info
+                     (str "Cannot create first-class memorial " class
+                          " without :mm.memory/rel-path: no corpus path can be"
+                          " composed, so it would be a DB-only orphan (FS↔DB"
+                          " bijection break on the capture path). Supply"
+                          " :mm.memory/rel-path (e.g. \"decisions/foo.md\") — or"
+                          " an explicit memory :db/ident it can be derived from.")
+                     {:class class
+                      :sandbar/error :create-path-missing-rel-path
+                      :supplied-slots (vec (keys props))})))
+         derived  (when (and memory? rel-path (not explicit-ident))
+                    (derive-memory-ident class rel-path))
+         ;; Canonicalize an idented :mm/Schedule target passed as a raw eid to its
+         ;; :db/ident keyword BEFORE keying, so the create-key matches the prune-
+         ;; key regardless of the target's passed form (W3.B REVISE must-fix #2).
+         props    (canonicalize-schedule-target class props)
+         ;; :mm/Schedule content-key ident (W3.B proliferation fix) — absent-only,
+         ;; and only when the memory-ident derivation did not already supply one.
+         sched-id (when-not (or derived explicit-ident)
+                    (derive-schedule-ident class props))
+         props    (cond-> props
+                    ;; Persist the NORMALIZED rel-path (explicit OR ident-derived)
+                    ;; so the entity carries the canonical slot the sink routes on
+                    ;; (and re-ingest round-trips); drop any redundant string key.
+                    (and memory? rel-path) (-> (dissoc "mm.memory/rel-path")
+                                               (assoc :mm.memory/rel-path rel-path))
+                    derived          (assoc :db/ident derived)
+                    sched-id         (assoc :db/ident sched-id))
+         the-id   (:db/ident props)
+         ;; PRE-TRANSACT GUARD (it7 FF-2): containment/grammar (via the landed G2
+         ;; sanitizer) + collision/ownership, BEFORE dt/make — so a traversal /
+         ;; absolute / colliding rel-path is refused at the create boundary rather
+         ;; than committing a malformed or clobbering DB row.
+         _ (when (and memory? rel-path)
+             (assert-corpus-rel-path-safe! class rel-path the-id))
+         props    (cond-> props
+                    (and memory? the-id (not (:mm/id props)))
+                    (assoc :mm/id (ident/ident-uuid the-id)))]
+     (dt/make class props opts))))

@@ -1,0 +1,48 @@
+## What this predicate means
+
+**A `reply-of` B** — A is a reply to B (inverse of `has-reply`).  The upward direction in a conversation tree.
+
+Common shapes:
+- An answer memorial is reply-of the question
+- A diagnosis memorial is reply-of the bug report
+- A response is reply-of the message it replies to
+
+## Substrate identity
+
+- **Slot ident**: `{{predicate-ident}}`
+- **Domain**: `{{domain}}`
+- **Range**: `{{range}}`
+- **Cardinality**: `{{cardinality}}` (typically `:one` — a reply has at most one parent in a tree-shaped thread)
+- **Inverse of**: `:mm.memory/has-reply`
+
+## Formal signature
+
+`{{predicate-name}} : {{domain}} × {{range}} → Bool`
+
+## When to use
+
+Declare `reply-of:` on A when:
+- A is a direct response to B
+- The conversation-tree position is editorially meaningful
+- A's interpretation depends on B (the context A replies to)
+
+For a non-tree (DAG) structure where a reply addresses multiple parents, declare multiple `reply-of:` edges (cardinality `:many`).
+
+## Formal ontology mappings
+
+Aligned predicates from established formal vocabularies:
+
+- **SIOC** `sioc:reply_of` — exact semantic match (SIOC's canonical inverse-of-has-reply)
+- **CiTO** `cito:repliesTo` — close analogue (CiTO's bibliographic reply relation)
+- **OWL** `owl:inverseOf` — sandbar declares `:mm.memory/reply-of` as `inverse-of :mm.memory/has-reply`
+- **DC Terms** — no direct equivalent
+- **PROV-O** — no direct equivalent
+- **SKOS** — no direct equivalent
+
+Grounding references in the corpus:
+- [`references/rdfs_reference.md`](../references/rdfs_reference.md) — SIOC `sioc:reply_of` semantics
+
+## See also
+
+- [`predicates/has-reply.md`](has-reply.md) — forward direction
+- [`predicates/parent.md`](parent.md) — adjacent (conversation-tree parent)

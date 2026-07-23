@@ -21,24 +21,8 @@
   Substrate-quality discipline preserved per
   interaction/target_sandbar_introspection_api_layer_not_raw_datomic_2026_05_12.md:
   routes through `dt/siblings-of`, never raw `datomic.api`."
-  (:require [sandbar.db.datatype :as dt]))
-
-(defn- entity-projection
-  "Project a Datomic entity-map to a plain map for JSON / EDN
-   serialization across protocol boundaries.
-
-   Note: Datomic entity-iteration does NOT include `:db/id` in the
-   key-seq (it's accessed via a special method).  We explicitly add
-   `:db/id` to the projection."
-  [entity]
-  (when entity
-    (let [base (into {}
-                     (filter (fn [[k _v]]
-                               (or (= :db/ident k)
-                                   (and (keyword? k) (some? (namespace k))))))
-                     entity)]
-      (cond-> base
-        (:db/id entity) (assoc :db/id (:db/id entity))))))
+  (:require [sandbar.api.projection :as projection]
+            [sandbar.db.datatype    :as dt]))
 
 (defn siblings-of
   "Return same-directory peers of `:entity` via `:path-slot`.
@@ -72,7 +56,7 @@
   (let [raw      (dt/siblings-of entity path-slot)
         total    (count raw)
         limited  (if (zero? limit) raw (take limit raw))
-        projected (mapv entity-projection limited)]
+        projected (mapv projection/full-projection limited)]
     {:siblings projected
      :total    total
      :returned (count projected)}))

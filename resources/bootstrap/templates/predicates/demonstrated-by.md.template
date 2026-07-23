@@ -1,0 +1,46 @@
+## What this predicate means
+
+**A `demonstrated-by` B** — B demonstrates A (inverse of `demonstrates`).  The author-side advertisement: "this concept / pattern / contract has known illustrations at B."
+
+Common shapes:
+- A pattern demonstrated-by an example memorial
+- A library demonstrated-by a code-walkthrough
+- A protocol demonstrated-by a session-log of running it
+
+## Substrate identity
+
+- **Slot ident**: `{{predicate-ident}}`
+- **Domain**: `{{domain}}`
+- **Range**: `{{range}}`
+- **Cardinality**: `{{cardinality}}`
+- **Inverse of**: `:mm.memory/demonstrates`
+
+## Formal signature
+
+`{{predicate-name}} : {{domain}} × {{range}} → Bool`
+
+## When to use
+
+Declare `demonstrated-by:` on A when:
+- The canonical worked-example of A lives at B
+- The author wants to surface illustrations of A's claims
+
+For exhaustive enumeration, reverse-attribute lookup (`:_mm.memory/demonstrates`) is usually cheaper.
+
+## Formal ontology mappings
+
+Aligned predicates from established formal vocabularies:
+
+- **IAO** — no direct flat inverse (uses reverse-attribute traversal of `iao:exemplifies`)
+- **OWL** `owl:inverseOf` — sandbar declares `:mm.memory/demonstrated-by` as `inverse-of :mm.memory/demonstrates`
+- **DC Terms** — no direct equivalent
+- **PROV-O** — no direct equivalent
+- **SKOS** — no direct equivalent
+- **CiTO** — no direct equivalent
+
+Grounding references in the corpus:
+- [`references/rdfs_reference.md`](../references/rdfs_reference.md) — OWL `owl:inverseOf` semantics
+
+## See also
+
+- [`predicates/demonstrates.md`](demonstrates.md) — forward direction

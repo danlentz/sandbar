@@ -82,6 +82,276 @@
    :db.install/_attribute :db.part/db}
   ]
 
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; First-class :dt/Fn slot vocabulary (Stage C ADR 2026-05-23)
+;;
+;; Mirrors SHACL Advanced Features sh:SPARQLFunction schema, supplemented with
+;; Cyc-style purpose-tagging and Datomic-style purity-discipline.  Per
+;; decisions/dt_fn_slot_vocabulary_mirror_shacl_af_sh_sparql_function_2026_05_23.md.
+;;
+;; These slots layer on top of the legacy :fn/domain + :fn/range signature axis
+;; (preserved for backwards compatibility per Stage D ADR §D4).
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ ;; Batch (i) — Sub-entity class forward decls FIRST (separate transaction) so
+ ;; subsequent slot declarations that reference them via :dt/range resolve cleanly.
+ ;; Single-batch ordering failed at substrate restart 2026-05-23 with
+ ;; :db.error/not-an-entity (Datomic can't resolve a forward-declared ident
+ ;; when used as :dt/range value within the same tx batch).
+ [{:db/ident :dt.fn/Parameter
+   :db/doc "Forward decl: a single parameter of a :dt/Fn (full def later)."}
+
+  {:db/ident :dt.fn/Implementation
+   :db/doc "Forward decl: a single language-tagged implementation of a :dt/Fn (full def later)."}]
+
+ ;; Batch (ii) — Slot declarations + full sub-entity class declarations.
+ ;; The forward-declared idents from batch (i) are now resolvable.
+ [
+  ;; --- Required slot vocabulary (per Stage C ADR §D1) ---
+
+  {:db/ident :dt.fn/parameters
+   :dt/type :dt/Property
+   :dt/domain :dt/Fn
+   :dt/range :dt.fn/Parameter
+   :db/valueType :db.type/ref
+   :db/cardinality :db.cardinality/many
+   :db/doc "Ordered list of parameters for a :dt/Fn instance.  Each value is a
+            :dt.fn/Parameter entity carrying :dt.fn.parameter/path +
+            :dt.fn.parameter/datatype + :dt.fn.parameter/order + (optional)
+            :dt.fn.parameter/optional? + :dt.fn.parameter/description.  Per
+            SHACL-AF sh:parameter pattern."}
+
+  {:db/ident :dt.fn/return-type
+   :dt/type :dt/Property
+   :dt/domain :dt/Fn
+   :dt/range :dt/Class
+   :db/valueType :db.type/ref
+   :db/cardinality :db.cardinality/one
+   :db/doc ":dt/Class or :dt/Datatype reference for the fn's return type.  Per
+            SHACL-AF sh:returnType.  Default for :db-fn-installed transaction
+            functions: :dt/TxData (the vector-of-ops return shape)."}
+
+  {:db/ident :dt.fn/body
+   :dt/type :dt/Property
+   :dt/domain :dt/Fn
+   :dt/range :db.type/string
+   :db/valueType :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/doc "The fn body as a language-typed expression serialized as string.
+            Parseable per :dt.fn/lang.  For :dt.fn/lang :clojure, this is the
+            pr-str of a Clojure form (typically a `(do ...)` or `(let ...)`).
+            For :datalog / :sparql, a query string."}
+
+  {:db/ident :dt.fn/lang
+   :dt/type :dt/Property
+   :dt/domain :dt/Fn
+   :dt/range :db.type/keyword
+   :db/valueType :db.type/keyword
+   :db/cardinality :db.cardinality/one
+   :db/doc "Body language enum: :clojure / :datalog / :sparql / :js / :sql /
+            :native-substrate.  Determines how :dt.fn/body is parsed + dispatched."}
+
+  {:db/ident :dt.fn/description
+   :dt/type :dt/Property
+   :dt/domain :dt/Fn
+   :dt/range :db.type/string
+   :db/valueType :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/doc "RDFS-comment-like human-readable description of the fn's purpose +
+            behavior.  Per SHACL-AF sh:description.  Surfaced in fn-introspection
+            + library-card orientation."}
+
+  ;; --- Optional canonical-axis slots (per Stage C ADR §D1) ---
+
+  {:db/ident :dt.fn/purpose
+   :dt/type :dt/Property
+   :dt/domain :dt/Fn
+   :dt/range :db.type/keyword
+   :db/valueType :db.type/keyword
+   :db/cardinality :db.cardinality/one
+   :db/doc "Purpose enum: :derive / :assert / :retract / :transform / :validate /
+            :infer.  Captures the cross-system invariant axis identified in the
+            foundational synthesis (frame-systems daemon-trinity if-needed/if-
+            added/if-removed + SHACL validation/inference split).  Substrate
+            uses this for dispatch routing."}
+
+  {:db/ident :dt.fn/purity
+   :dt/type :dt/Property
+   :dt/domain :dt/Fn
+   :dt/range :db.type/keyword
+   :db/valueType :db.type/keyword
+   :db/cardinality :db.cardinality/one
+   :db/doc "Purity classification: :pure-total / :pure-partial / :side-effecting.
+            Informs retry/replay safety.  Datomic db/fns MUST be :pure-total or
+            :pure-partial; :side-effecting fns are out-of-transactor only.
+            Per Datomic/Cyc divide in the foundational synthesis."}
+
+  {:db/ident :dt.fn/status
+   :dt/type :dt/Property
+   :dt/domain :dt/Fn
+   :dt/range :db.type/keyword
+   :db/valueType :db.type/keyword
+   :db/cardinality :db.cardinality/one
+   :db/doc "Lifecycle status enum: :draft / :validated / :installed / :retired.
+            Per TigerGraph CREATE/INSTALL/RUN lifecycle pattern.  Substrate
+            consults this to gate invocation (only :installed fns are dispatched)."}
+
+  {:db/ident :dt.fn/cost-class
+   :dt/type :dt/Property
+   :dt/domain :dt/Fn
+   :dt/range :db.type/keyword
+   :db/valueType :db.type/keyword
+   :db/cardinality :db.cardinality/one
+   :db/doc "Cost classification: :cheap / :moderate / :expensive.  Informs the
+            scheduler's in-tx-vs-out-of-tx routing decision.  Per datofu
+            datalog-tx anti-pattern: expensive fns serialize the transactor;
+            route them out-of-tx where possible."}
+
+  {:db/ident :dt.fn/decidable?
+   :dt/type :dt/Property
+   :dt/domain :dt/Fn
+   :dt/range :db.type/boolean
+   :db/valueType :db.type/boolean
+   :db/cardinality :db.cardinality/one
+   :db/doc "Boolean: does the fn terminate in bounded time?  Per SWRL/RIF
+            discipline.  Substrate-level meta-reasoning over fn sets requires
+            decidability classification."}
+
+  ;; --- Source-of-truth slots (gen-fn pattern; per Stage C + D ADRs) ---
+
+  {:db/ident :dt.fn/source-ns
+   :dt/type :dt/Property
+   :dt/domain :dt/Fn
+   :dt/range :db.type/string
+   :db/valueType :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/doc "Source-of-truth namespace symbol (as string) where the fn body is
+            authored.  Per gen-fn pattern (libraries/clojure/gen_fn_2026_05_23):
+            the Clojure namespace is canonical; the schema entity + memorial are
+            projections.  Captured at macro-expansion time by sandbar.db.fn/defdbfn."}
+
+  {:db/ident :dt.fn/source-var
+   :dt/type :dt/Property
+   :dt/domain :dt/Fn
+   :dt/range :db.type/string
+   :db/valueType :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/doc "Source-of-truth var symbol (as string) within :dt.fn/source-ns.
+            Per gen-fn pattern.  Pair with :dt.fn/source-ns to resolve to the
+            authoritative Clojure var."}
+
+  ;; --- Version-axis slots (XTDB-pattern explicit graph versioning) ---
+
+  {:db/ident :dt.fn/version
+   :dt/type :dt/Property
+   :dt/domain :dt/Fn
+   :dt/range :db.type/string
+   :db/valueType :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/doc "Semver-like version string.  Explicit graph-structure version
+            (complements Datomic's implicit history-as-of-t).  Per XTDB
+            bitemporal precedent + community Datomic anti-pattern catalog §I.F."}
+
+  {:db/ident :dt.fn/superseded-by
+   :dt/type :dt/StrictPartialOrderProperty
+   :dt/domain :dt/Fn
+   :dt/range :dt/Fn
+   :db/valueType :db.type/ref
+   :db/cardinality :db.cardinality/one
+   :db/doc "Forward-link to the next-version :dt/Fn that replaces this one.
+            Substrate-level navigable version chain."}
+
+  ;; --- Install-surface slot ---
+
+  {:db/ident :dt.fn/installed-as
+   :dt/type :dt/Property
+   :dt/domain :dt/Fn
+   :dt/range :db.type/keyword
+   :db/valueType :db.type/keyword
+   :db/cardinality :db.cardinality/one
+   :db/doc "Install-surface enum: :db-fn / :classpath-fn / :ion / :entity-pred /
+            :attr-pred.  Disambiguates which Datomic surface hosts the actual
+            implementation.  Defaults to :db-fn (transactor-stored).  :entity-pred
+            and :attr-pred route to Datomic's modern entity/attribute predicate
+            surfaces per day-of-datomic guidance for validation slice."}
+
+  ;; --- Multi-implementation set-cardinality (Stage C Fork 5) ---
+
+  {:db/ident :dt.fn/implementation
+   :dt/type :dt/Property
+   :dt/domain :dt/Fn
+   :dt/range :dt.fn/Implementation
+   :db/valueType :db.type/ref
+   :db/cardinality :db.cardinality/many
+   :db/doc "Multi-language implementation set.  Each value is a
+            :dt.fn/Implementation entity (own :lang + :body + optional
+            :requires + :imports).  Substrate selects best implementation at
+            invocation time based on execution context.  Per SHACL-AF
+            sh:SPARQLFunction + sh:JSFunction multi-implementation pattern.
+            For single-implementation fns, the top-level :dt.fn/body +
+            :dt.fn/lang IS the implementation; no separate entity needed."}
+
+  ;; --- :dt.fn/Parameter sub-entity slots ---
+
+  {:db/ident :dt.fn.parameter/path
+   :dt/type :dt/Property
+   :dt/domain :dt.fn/Parameter
+   :dt/range :db.type/keyword
+   :db/valueType :db.type/keyword
+   :db/cardinality :db.cardinality/one
+   :db/doc "Parameter name (keyword form).  Per SHACL-AF sh:path."}
+
+  {:db/ident :dt.fn.parameter/datatype
+   :dt/type :dt/Property
+   :dt/domain :dt.fn/Parameter
+   :dt/range :dt/Class
+   :db/valueType :db.type/ref
+   :db/cardinality :db.cardinality/one
+   :db/doc "Parameter type — :dt/Class or :dt/Datatype reference."}
+
+  {:db/ident :dt.fn.parameter/optional?
+   :dt/type :dt/Property
+   :dt/domain :dt.fn/Parameter
+   :dt/range :db.type/boolean
+   :db/valueType :db.type/boolean
+   :db/cardinality :db.cardinality/one
+   :db/doc "Boolean: is this parameter optional?  Per SHACL-AF sh:optional."}
+
+  {:db/ident :dt.fn.parameter/order
+   :dt/type :dt/Property
+   :dt/domain :dt.fn/Parameter
+   :dt/range :db.type/long
+   :db/valueType :db.type/long
+   :db/cardinality :db.cardinality/one
+   :db/doc "Positional order (0-indexed).  Per SHACL-AF sh:order."}
+
+  {:db/ident :dt.fn.parameter/description
+   :dt/type :dt/Property
+   :dt/domain :dt.fn/Parameter
+   :dt/range :db.type/string
+   :db/valueType :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/doc "Human-readable parameter description."}
+
+  ;; --- :dt.fn/Implementation sub-entity slots ---
+
+  {:db/ident :dt.fn.implementation/lang
+   :dt/type :dt/Property
+   :dt/domain :dt.fn/Implementation
+   :dt/range :db.type/keyword
+   :db/valueType :db.type/keyword
+   :db/cardinality :db.cardinality/one
+   :db/doc "Language enum for this implementation: :clojure / :datalog / :sparql / :js / :sql / :native-substrate."}
+
+  {:db/ident :dt.fn.implementation/body
+   :dt/type :dt/Property
+   :dt/domain :dt.fn/Implementation
+   :dt/range :db.type/string
+   :db/valueType :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/doc "Body as language-typed expression serialized as string."}
+  ]
+
 ;;;
 ;;;  Fn Datatype
 ;;;
@@ -90,11 +360,68 @@
   {;:db/id #db/id[:db.part/user -1]
    :db/ident :dt/Fn
    :dt/type :dt/Class
-   :dt/subclass-of :dt/Ref
-   :dt/context "system"
+   :dt/subclass-of :dt/Resource   ;; was :dt/Ref; per Stage B ADR 2026-05-23 — sibling of :dt/Class/:dt/Property/:dt/Ref
+   :dt/context "meta"             ;; was "system"; aligns with other metamodel classes
    :dt/label "Fn"
-   :db/doc "A :fn datatype represents a mapping from instances of type referenced by its :fn/domain attribute to instances of type referenced by its :fn/range attribute"
-   :dt/slots [:fn/domain :fn/range]}
+   :db/doc "First-class function type at the metamodel level.  Per Stage B ADR 2026-05-23 re-parented from :dt/Ref to :dt/Resource (sibling of :dt/Class / :dt/Property / :dt/Ref).  Carries rich Stage C slot vocabulary (:dt.fn/parameters / :dt.fn/return-type / :dt.fn/body / :dt.fn/lang / :dt.fn/purpose / :dt.fn/purity / etc.) layered on top of the legacy :fn/domain + :fn/range signature axis.  Memorial-level companion :mm/Fn (per Stage B.5 ADR) carries instances as queryable + FS-projected + hook-retrievable citizens."
+   :dt/slots [;; legacy signature axis (preserved):
+              :fn/domain
+              :fn/range
+              :db/code
+              ;; Stage C required vocabulary:
+              :dt.fn/parameters
+              :dt.fn/return-type
+              :dt.fn/body
+              :dt.fn/lang
+              :dt.fn/description
+              ;; Stage C optional canonical-axis:
+              :dt.fn/purpose
+              :dt.fn/purity
+              :dt.fn/status
+              :dt.fn/cost-class
+              :dt.fn/decidable?
+              ;; Stage C source-of-truth (gen-fn bridge):
+              :dt.fn/source-ns
+              :dt.fn/source-var
+              ;; Stage C version-axis:
+              :dt.fn/version
+              :dt.fn/superseded-by
+              ;; Stage C install-surface:
+              :dt.fn/installed-as
+              ;; Stage C multi-implementation (Fork 5):
+              :dt.fn/implementation]}
+
+  ;; :dt/Rule — subtype-of :dt/Fn with constrained signature (Stage B Fork 6 resolution)
+  {:db/ident :dt/Rule
+   :dt/type :dt/Class
+   :dt/subclass-of :dt/Fn
+   :dt/context "meta"
+   :dt/label "Rule"
+   :db/doc "A :dt/Fn whose body is constrained to return inference data (derived facts) rather than arbitrary transaction data.  Per SHACL sh:Rule + SPIN spin:Rule semantics; per Datomic recursive-tx-fn lineage.  Memorial-level instances live as :mm/Rule (sibling :mm/Fn subtype) per 2026-05-11 rules-as-first-class ADR + Stage B.5 reconciliation."
+   :dt/slots []}
+
+  ;; :dt.fn/Parameter — full class declaration
+  {:db/ident :dt.fn/Parameter
+   :dt/type :dt/Class
+   :dt/subclass-of :dt/Resource
+   :dt/context "meta"
+   :dt/label "Fn Parameter"
+   :db/doc "A single parameter of a :dt/Fn.  Per SHACL-AF sh:parameter.  Ordered by :dt.fn.parameter/order; optional via :dt.fn.parameter/optional?; typed via :dt.fn.parameter/datatype."
+   :dt/slots [:dt.fn.parameter/path
+              :dt.fn.parameter/datatype
+              :dt.fn.parameter/optional?
+              :dt.fn.parameter/order
+              :dt.fn.parameter/description]}
+
+  ;; :dt.fn/Implementation — full class declaration
+  {:db/ident :dt.fn/Implementation
+   :dt/type :dt/Class
+   :dt/subclass-of :dt/Resource
+   :dt/context "meta"
+   :dt/label "Fn Implementation"
+   :db/doc "A single language-tagged implementation of a :dt/Fn.  Multi-implementation per :dt/Fn via :dt.fn/implementation set-cardinality slot (Stage C Fork 5).  Substrate selects best implementation at invocation time based on execution context."
+   :dt/slots [:dt.fn.implementation/lang
+              :dt.fn.implementation/body]}
   ]
 
 ;;;

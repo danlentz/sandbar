@@ -1,0 +1,43 @@
+## What this predicate means
+
+**A `is-about-of` B** — A is the primary subject of B (inverse of `about`).  The backlink direction of the strongest topical predicate: a memorial enumerating the memorials whose central concern it IS.
+
+A useful read-side view: "what memorials declare this entity as their primary subject?"  Forms the indegree of the `about:` graph.
+
+## Substrate identity
+
+- **Slot ident**: `{{predicate-ident}}`
+- **Domain**: `{{domain}}`
+- **Range**: `{{range}}`
+- **Cardinality**: `{{cardinality}}`
+- **Inverse of**: `:mm.memory/about`
+
+## Formal signature
+
+`{{predicate-name}} : {{domain}} × {{range}} → Bool`
+
+## When to use
+
+Most authors declare `about:` on the forward side; `is-about-of` is the introspectable backlink — usually computed via the substrate's reverse-attribute lookup rather than asserted directly.  Assert explicitly only when:
+- A subject memorial wants to advertise which child memorials adopt it as their primary concern
+- An aggregator memorial (index, scheme) enumerates its members
+
+## Formal ontology mappings
+
+Aligned predicates from established formal vocabularies:
+
+- **IAO** `iao:has_information_carrier` — distant analogue (the subject-has-memorial relation in the Information Artifact Ontology)
+- **DC Terms** — no direct equivalent (the inverse of `dcterms:subject` is typically computed via reverse-attribute traversal)
+- **FOAF** — no direct equivalent (the inverse of `foaf:topic` similarly computed)
+- **CiTO** — no direct equivalent
+- **OWL** `owl:inverseOf` — provides the META-relation; sandbar declares `:mm.memory/is-about-of` as `inverse-of :mm.memory/about`
+
+The pattern: backlink predicates are usually NOT first-class in formal vocabularies.  Sandbar reifies them for substrate-introspection convenience.
+
+Grounding references in the corpus:
+- [`references/pav_cito_bibo_reference.md`](../references/pav_cito_bibo_reference.md) — about-relation semantics (forward direction)
+- [`references/rdfs_reference.md`](../references/rdfs_reference.md) — OWL `owl:inverseOf` semantics
+
+## See also
+
+- [`predicates/about.md`](about.md) — forward direction (primary-subject claim)

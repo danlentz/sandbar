@@ -1,0 +1,109 @@
+## What a `type: resource` instance is
+
+A **lightweight pointer to an external URL plus minimal metadata** — a paper, blog post, official documentation page, dataset, Wikipedia article, RFC / spec, license text, talk recording, or any other external content worth referring to from inside the corpus.
+
+Resources are **lighter than references**:
+
+| Tier | What | When |
+|---|---|---|
+| `reference` | Narrative write-up of an external facility | Authoring *about* the resource — survey, ontology breakdown, library study, explained paper |
+| `resource` | URL + metadata pointer | Just *citing* the resource — typed-edge target, no narrative warrant |
+
+A `resource` memorial is typically **frontmatter-only** — the body is empty or a single paragraph.  When the body grows, the resource is a candidate for **promotion** to a full `reference`.
+
+Resource is a sub-subtype: a subtype of [`reference`](reference.md), which is itself a subtype of [`artifact`](artifact.md).
+
+## Why resources are reified (not embedded URLs)
+
+External URLs become first-class memorials rather than strings inside predicate ranges or duplicated entries inside a structured frontmatter field, because:
+
+1. **Metacircularity preserved** — every URL becomes a queryable, traversable, audit-walkable corpus citizen.  The metamodel stays uniform — every node is a memorial.
+2. **Audit infrastructure unchanged** — predicate ranges stay typed; no significant rework of audit invariants needed.
+3. **Compounding** — once `resources/<slug>.md` exists, the next citation costs zero metadata.  Fifty citations of the same paper accrue backlinks (a first-class signal) instead of duplicated copies of `{kind, title, url, accessed, notes}` drifting toward incoherence.
+
+## When to create a resource memorial
+
+Reify when **at least one** of:
+
+1. The URL will likely be cited more than once
+2. The URL needs metadata beyond URL + title (archive location for link-rot defense, content-type for retrieval filtering, version for reproducibility)
+3. The URL grounds a structural claim — the source of an idea, the canonical doc for a tool, the academic paper behind a methodology
+
+## When NOT to create one
+
+Stay with **inline markdown body link** when:
+
+1. The URL is a one-off casual reference (a tweet, a Stack Overflow answer used once for context)
+2. The URL is ephemeral or volatile (current news, weather, stock prices)
+3. The link is illustrative rather than evidential
+
+Promote to **`reference`** when:
+
+1. Body content grows beyond 1–2 paragraphs
+2. Writing about the resource itself rather than just citing it
+3. Multiple structural claims hang on the resource
+
+## Substrate identity
+
+- **Class ident**: `{{class-ident}}`
+- **Parent class(es)**: {{parent-classes}}
+- **Ancestor chain**: {{ancestor-chain}}
+- **Native codec**: `{{native-codec}}`
+- **Codec type-keyword(s)**: {{codec-type-keywords}}
+
+## Slot vocabulary ({{slot-count}} slots inherited or declared)
+
+Resource memorials inherit `:mm/Memory` (and `reference`) plus type-specific extensions:
+
+- **`url`** (required) — canonical URL (`^https?://`)
+- **`accessed`** — ISO date when first cited (used by link-rot warnings)
+- **`content-type`** — MIME type OR human-meaningful kind (paper / talk / spec / dataset)
+- **`archive-url`** — archived snapshot URL for link-rot defense
+- **`abstract`** — 1–3 sentence content summary
+- **`license`** — license string (CC-BY-4.0 / MIT / proprietary)
+- **`version`** — version string where versioning matters
+
+{{slot-table}}
+
+## Audit invariants
+
+- **`resource-has-url`** (error) — every resource must declare `url:` matching `^https?://`
+- **`resource-stub-promotion-candidate`** (warning, future) — stubs with ≥ N citers AND non-trivial body content are promotion candidates
+- **`resource-accessed-field-stale`** (info, future) — stubs whose `accessed:` is > 1 year old
+
+## Canonical body structure
+
+Most resources have **no body**.  When body content exists:
+
+```markdown
+## What this resource is
+
+<One paragraph naming the resource and its content (when
+frontmatter `description:` isn't enough).>
+
+## Why we cite it
+
+<What claim or design choice this resource grounds.>
+
+## Notes
+
+<Research notes, quotes, or links to related corpus memorials.>
+```
+
+## Indexing at scale
+
+The `resources/` subtree may be excluded from primary corpus indices by default — the primary index stays focused on substantive memorials.  BM25F retrieval may de-prioritize `resources/` entries; authors searching for content don't get drowned by resource pointers.
+
+## Pitfalls
+
+- **Re-implementing the source** — a resource that duplicates external content rots; keep thin, link out
+- **Cargo-culting metadata** — only declare metadata that actually matters for the citation
+- **Over-reification** — casual one-off body links shouldn't reify into resources
+- **Stale `accessed:` dates** — bump when re-validating
+
+## See also
+
+- [`types/reference.md`](reference.md) — parent type (narrative-tier counterpart)
+- [`types/content-type.md`](content-type.md) — sibling sub-subtype for format / purpose axis
+- [`types/artifact.md`](artifact.md) — grandparent abstract supertype
+- Sandbar substrate: `sandbar/schema/mm-artifact.edn`

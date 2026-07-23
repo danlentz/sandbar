@@ -1,5 +1,23 @@
+;; sandbar/config/config-example.edn — the COMMITTED example of the
+;; Tier-1 bundled-defaults config (config/config.edn, which is
+;; GITIGNORED and therefore absent on a fresh checkout).
+;;
+;; TWO roles:
+;;   1. Example — copy to config/config.edn and edit :db for your
+;;      deployment.
+;;   2. Fresh-checkout FALLBACK — when config.edn is absent from the
+;;      classpath, `sandbar.config/read-bundled-defaults` serves THIS
+;;      file (with a loud stderr notice) so `:required-schema` resolves
+;;      and a fresh checkout's test/acceptance run works out of the box
+;;      instead of silently loading no schema.  Keep `:required-schema`
+;;      here in lockstep with config.edn — `sandbar.config-test/
+;;      example-required-schema-matches-primary` guards the drift.
 {:db      {:url "datomic:dev://localhost:4334/"
            :sid "example"}
+
+ ;; Sandbar HTTP port — 8389 (in the unused 8380-8399 range; off the
+ ;; universal-dev-default 8080).  Per the deployment-strategy ADR D.E.
+ :port 8389
 
  ;; Schema files loaded at startup, in order.  Each maps to
  ;; schema/<name>.edn under the project resources.  Order matters —
@@ -16,10 +34,36 @@
  ;; :twit      - example domain (Twitter user model)
  ;; :auth      - bearer-token auth schema
  ;; :audit     - audit-log primitive types
- ;; :workflow  - state-machine workflow primitives
- ;; :job       - background-job tracking
- ;; :mm        - memory-model substrate (mm/Memory, mm/Section, etc.)
- :required-schema [:meta :ref :literal :fn :any :context :event :user :twit :auth :audit :workflow :job :mm]
+ ;; :workflow         - state-machine workflow primitives (meta-schema)
+ ;; :job              - background-job tracking
+ ;; :mm               - memory-model substrate (mm/Memory, mm/Section, etc.)
+ ;; :workflow-session - :workflow/session lifecycle definition (ι.2 substrate;
+ ;;                     loads AFTER :workflow + :mm-meta — depends on
+ ;;                     :workflow/State + :workflow/Transition + :mm/Workflow
+ ;;                     classes from :workflow, and :mm.memory/* slots from :mm
+ ;;                     family.  Per ι.2 substrate execution 2026-05-25.)
+ :required-schema [:meta :ref :literal :fn :any :context :event :user :twit :auth :audit :workflow :job :mm :mm-artifact :mm-signal :mm-guidance :mm-meta :mm-verb :mm-temporal :mm-namespace :workflow-session]
+
+ ;; γ scheduler config.  Per Dan-directive 2026-05-28 the two system jobs
+ ;; are scheduled by default (amends the original Q.γ.5 :enabled? false
+ ;; opt-in-safety default for the system-jobs case).
+ ;;
+ ;; :enabled?     — when true, sandbar.core/start invokes
+ ;;                 sandbar.schedule/enable! + start! (handler-pool +
+ ;;                 fire-thread + :mm.event/Scheduled subscriber).
+ ;; :system-jobs? — when true, boot seeds + schedules 2 system jobs
+ ;;                 (idempotent :db/ident upsert; dtstart anchored at boot):
+ ;;                   db-stats              FREQ=MINUTELY;INTERVAL=15 → :mm/EventLog substrate counts
+ ;;                   reactive-queue-health FREQ=MINUTELY;INTERVAL=10 → :mm/EventLog queue health
+ ;;                 Both emit :db-only operational telemetry (→
+ ;;                 :event/SystemEvent, NOT corpus :mm/EventLog).
+ ;; :jobs         — enumeration slot for additional Schedule idents to
+ ;;                 autostart at boot (future use).
+ ;;
+ ;; Opt out by flipping :enabled? and/or :system-jobs? to false.
+ :scheduler {:enabled?     true
+             :system-jobs? true
+             :jobs         []}
 
  :nrepl   {:port 28888}
  :auth {:twitter

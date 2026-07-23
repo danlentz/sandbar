@@ -101,8 +101,9 @@ Search is one axis of four (search / aggregate / navigate / orient).  The compos
 
 - **Search ∩ Aggregate** — `:facet-by` slot list on `search-bm25f` emits per-slot value counts over the match set.
 - **Search ∩ Filter** — `:where` Datalog clauses constrain the candidate set BEFORE BM25F scoring.
-- **Search ∩ Navigate** — (deferred to Stage 29 cross-axis composition) `:from` + `:via` will accept path-grammar to restrict the candidate set to a graph-walk neighborhood.
-- **Search ∩ Structural rank** — re-rank by `degree` / `backlink-density` / `recency` / `freshness` over the BM25F-scored set.
+- **Search ∩ Navigate** — `:from` + `:via` accept a seed entity + path-grammar expression as a PRE-FILTER restricting the candidate set to a graph-walk neighborhood (same path-grammar dialect as `navigate.path-via`; EDN-string form `"[:REP+ :cites]"`).  Composes with `:where` by intersection.
+- **Search ∩ Structural rank** — re-rank by `:degree` / `:backlink-density` / `:recency` / `:freshness` over the BM25F-scored set via `:rank-by` (with `:temporal-slot` required for `:recency` / `:freshness`).
+- **Search ∩ Tag tokenization** — ref-typed slots whose `:dt/range` is `:mm/Tag` automatically resolve to the target tag's weighted text content during scoring (value + alt-label + definition + scope-note + hidden-label + example).  Tagged memorials are findable through the tag's vocabulary without explicit indirection at the query layer.
 
 ## What fulltext search is NOT for
 

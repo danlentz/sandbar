@@ -47,7 +47,7 @@ Once at the REPL prompt:
 
 You should see startup logs.  The system is now serving:
 
-- **HTTP** on `:8080` (REST + MCP endpoints)
+- **HTTP** on `:8389` (REST + MCP endpoints)
 - **nREPL** on `:28888` (connect from your editor)
 
 ## Sanity check
@@ -55,7 +55,7 @@ You should see startup logs.  The system is now serving:
 In another shell:
 
 ```bash
-curl http://localhost:8080/api/status
+curl http://localhost:8389/api/status
 ```
 
 ```json
@@ -69,7 +69,7 @@ curl http://localhost:8080/api/status
 
 ;; All classes registered in the running metamodel
 (dt/all-classes)
-;; => (:dt/Class :dt/Property :dt/Resource :mm/Memory :mm/Section ...)
+;; => (:dt/Class :dt/Property :dt/Resource :mm/Memory :mm/Section :mm/Workflow ...)
 
 ;; Class ancestry — :model/User → :dt/Ref → :dt/Resource
 (dt/ancestors-of :model/User)
@@ -109,7 +109,7 @@ curl http://localhost:8080/api/status
 Sandbar serves MCP on the same port at `/mcp`.  Get a service-account token (see [auth.md](../auth.md)) and:
 
 ```bash
-curl -X POST http://localhost:8080/mcp \
+curl -X POST http://localhost:8389/mcp \
   -H "Authorization: Bearer $SANDBAR_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
@@ -121,10 +121,10 @@ You should see the verb catalog — `sandbar.entity.create`, `sandbar.schema.cla
 
 ```bash
 # List all classes
-curl http://localhost:8080/api/store/classes
+curl http://localhost:8389/api/store/classes
 
 # One class's details
-curl http://localhost:8080/api/store/classes/model/User
+curl http://localhost:8389/api/store/classes/model/User
 ```
 
 Both projections — MCP and REST — surface the same metamodel; the protocol differs.  See [`mcp-protocol.md`](../concepts/mcp-protocol.md) for the discipline.
@@ -150,6 +150,14 @@ Both projections — MCP and REST — surface the same metamodel; the protocol d
 
 **Cannot connect to Datomic.**  Confirm the transactor is up (`nc -zv localhost 4334`).  If your transactor is on a different host or port, override `:datomic-uri` in `config/config.edn`.
 
-**Port 8080 already in use.**  Change `:http-port` in `config/config.edn`.
+**Port 8389 already in use.**  Change `:http-port` in `config/config.edn`.
 
 **Schema not loaded.**  Verify `:required-schema` in `config/config.edn` lists every schema file you need (`:meta :literal :ref :fn :any :workflow :mm :user :twit`).
+
+## What's new in 0.2.0
+
+The 0.2.0 release adds three substrate surfaces worth knowing about at orientation time:
+
+- **`sandbar.logging`** — the six-macro observability API (`info` / `warn` / `error` / `debug` / `trace` / `profile`).  See [`using-logging.md`](using-logging.md).
+- **`sandbar.shape`** — SHACL-style shape validation; shapes are first-class `:mm/Shape` memorials and the walker is a family of `:mm/Fn` instances.  See [`authoring-shapes.md`](authoring-shapes.md).
+- **`sandbar.event`** (partially landed) — a substrate-native event surface: `subscribe!` / `unsubscribe!` / `fire!` with class-hierarchical dispatch (Phase 2, built), plus the `sandbar.reactive.tx-source` wrapper over Datomic's `tx-report-queue` (Phase 1, built; not yet boot-wired).  The γ scheduler is its first production consumer.  See [`subscribing-to-events.md`](subscribing-to-events.md) for the landed surface and what remains design-only.

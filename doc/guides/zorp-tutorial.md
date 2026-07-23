@@ -452,5 +452,5 @@ Zorp's Galactic Footwear Emporium is now the most well-organized shop on Pluto. 
 - [`defining-new-classes.md`](defining-new-classes.md) — generalizes the pattern Zorp used
 - [`writing-a-rest-client.md`](writing-a-rest-client.md) — full REST surface reference
 - [`writing-an-mcp-client.md`](writing-an-mcp-client.md) — same metamodel projected as MCP
+- [`authoring-shapes.md`](authoring-shapes.md) — add `:mm/Shape` invariants to the Zorp ontology (e.g., sentient flip-flops must have a `:flipflop/mood`)
 - [`doc/api/dt-star.md`](../api/dt-star.md) — every `dt/*` function signature
-* [Development Guide](development.md) - How to define your own schemas

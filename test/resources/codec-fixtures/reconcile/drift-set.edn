@@ -1,0 +1,76 @@
+;; DEFINITIVE post-C8 FS-to-DB reconciliation file-set — 2026-07-02
+;; Source: git -C /Users/dan/claude status --porcelain -uall -- memory/  (59 files)
+;; :action ∈ #{:needs-import :in-sync :special}
+;; Flag vocabulary:
+;;   :modified / :untracked        — git state
+;;   :at-startup :one-line :related — frontmatter keys present on FS (at-startup/one-line are
+;;                                    NOT projected into DB slots; :related IS (mm.memory/related))
+;;   :block-scalar                 — frontmatter block scalar (stage: |-)
+;;   :db-canonical                 — present in DB under canonical :memory.<dir>/<name> ident
+;;   :db-absent                    — no DB entity under canonical OR bare ident (FS-only)
+;;   :db-bare-ident                — DB entity exists ONLY under bare <dir>/<name> ident (project.import bug)
+;;   :db-stub                      — DB entity is db/id+db/ident only (no dt/type, no body)
+;;   :db-stale-confirmed           — full-projection spot-check proved DB body is pre-C8
+;;   :db-sync-confirmed            — full-projection spot-check proved DB == FS
+;;   :db-sync-unverified           — canonical DB entity exists; body equality not individually checked
+;;                                    (DB-first authored via entity.create workaround + FS-emitted same session)
+;;   :bare-dup-cleanup-owed        — bare-ident duplicate (db/id 17592186139581 + 6 :mm/Section subs) needs retraction
+[{:rel-path "memory/MEMORY.md" :action :special :flags #{:modified :no-frontmatter :db-stub :registry-index}}
+ {:rel-path "memory/git/no_commit_signing.md" :action :needs-import :flags #{:modified :at-startup :one-line :db-canonical}}
+ {:rel-path "memory/interaction/compound_value_proactively.md" :action :needs-import :flags #{:modified :at-startup :one-line :related :db-canonical}}
+ {:rel-path "memory/interaction/consult_typed_edge_vocabulary_before_reaching_for_related.md" :action :needs-import :flags #{:modified :at-startup :one-line :related :db-canonical}}
+ {:rel-path "memory/interaction/disciplines_must_be_visible_at_session_startup.md" :action :needs-import :flags #{:modified :at-startup :one-line :related :db-canonical}}
+ {:rel-path "memory/interaction/foundational_substrate_concerns_are_never_follow_up_sub_arcs_2026_05_21.md" :action :needs-import :flags #{:modified :at-startup :one-line :related :db-canonical}}
+ {:rel-path "memory/interaction/ground_new_concepts_at_introduction_boundaries.md" :action :needs-import :flags #{:modified :at-startup :one-line :related :db-canonical :db-stale-confirmed}}
+ {:rel-path "memory/interaction/lean_into_hook_surfaced_discipline.md" :action :needs-import :flags #{:modified :at-startup :one-line :related :db-canonical}}
+ {:rel-path "memory/interaction/never_ask_to_do_research_just_do_informed_strategic_reflective_response_2026_05_21.md" :action :needs-import :flags #{:modified :at-startup :one-line :related :db-canonical}}
+ {:rel-path "memory/interaction/no_race_highest_quality.md" :action :needs-import :flags #{:modified :at-startup :one-line :related :db-canonical}}
+ {:rel-path "memory/interaction/plans_default_to_comprehensive_not_minimal.md" :action :needs-import :flags #{:modified :at-startup :one-line :related :db-canonical}}
+ {:rel-path "memory/interaction/preserve_dan_directives_verbatim_with_quote.md" :action :needs-import :flags #{:modified :at-startup :one-line :related :db-canonical}}
+ {:rel-path "memory/interaction/scope_searches_to_project_root.md" :action :needs-import :flags #{:modified :at-startup :one-line :related :db-canonical}}
+ {:rel-path "memory/interaction/scope_vs_global_retrieval_discipline.md" :action :needs-import :flags #{:modified :at-startup :one-line :related :db-canonical}}
+ {:rel-path "memory/interaction/search_canonical_surface_before_design_choices.md" :action :needs-import :flags #{:modified :at-startup :one-line :related :db-canonical}}
+ {:rel-path "memory/interaction/use_mem_not_bb_for_canonical_cli.md" :action :needs-import :flags #{:modified :at-startup :one-line :related :db-canonical}}
+ {:rel-path "memory/interaction/use_mem_search_as_primary_orientation_tool.md" :action :needs-import :flags #{:modified :at-startup :one-line :related :db-canonical}}
+ {:rel-path "memory/interaction/use_project_tooling_language_not_convenience_languages.md" :action :needs-import :flags #{:modified :at-startup :one-line :related :db-canonical}}
+ {:rel-path "memory/interaction/use_slash_commands_when_available.md" :action :needs-import :flags #{:modified :at-startup :one-line :related :db-canonical}}
+ {:rel-path "memory/patterns/architectural/ai_collaboration/authoritative_over_approximate.md" :action :needs-import :flags #{:modified :at-startup :one-line :related :db-canonical}}
+ {:rel-path "memory/patterns/architectural/ai_collaboration/hook_based_discipline_enforcement.md" :action :needs-import :flags #{:modified :at-startup :one-line :related :db-canonical :db-stale-confirmed}}
+ {:rel-path "memory/patterns/process/plan_doc_shape.md" :action :needs-import :flags #{:modified :related :db-canonical}}
+ {:rel-path "memory/protocol/pre_action_memory_protocol.md" :action :needs-import :flags #{:modified :at-startup :one-line :related :db-canonical :db-stale-confirmed}}
+ {:rel-path "memory/protocol/research_synthesize_plan_build.md" :action :needs-import :flags #{:modified :at-startup :one-line :related :db-canonical}}
+ {:rel-path "memory/protocol/self_audit_cadence.md" :action :needs-import :flags #{:modified :at-startup :one-line :related :db-canonical}}
+ {:rel-path "memory/protocol/session_orientation_protocol.md" :action :needs-import :flags #{:modified :at-startup :one-line :related :db-canonical}}
+ {:rel-path "memory/protocol/state_change_detection.md" :action :needs-import :flags #{:modified :at-startup :one-line :related :db-canonical}}
+ {:rel-path "memory/actors/claude-fable-5.md" :action :in-sync :flags #{:untracked :db-canonical :db-sync-unverified}}
+ {:rel-path "memory/bugs/mem_regen_crashes_on_block_scalar_frontmatter_stale_startup_guidance_2026_07_01.md" :action :in-sync :flags #{:untracked :db-canonical :db-sync-unverified}}
+ {:rel-path "memory/bugs/project_import_drops_memory_namespace_prefix_bare_ident_2026_07_01.md" :action :in-sync :flags #{:untracked :db-canonical :db-sync-unverified}}
+ {:rel-path "memory/decisions/defer_p6_mm_id_and_ident_renames_until_federation_defines_identity_2026_07_01.md" :action :in-sync :flags #{:untracked :db-canonical :db-sync-unverified}}
+ {:rel-path "memory/decisions/reconcile_fs_db_before_continuing_c8_then_mcp_primary_dogfooding_dan_directive_2026_07_02.md" :action :in-sync :flags #{:untracked :db-canonical :db-sync-unverified}}
+ {:rel-path "memory/interaction/decompose_plans_into_verifiable_checkpoints_not_open_ended_phases_dan_directive_2026_07_01.md" :action :in-sync :flags #{:untracked :db-canonical :db-sync-unverified}}
+ {:rel-path "memory/interaction/dont_be_dismissive_about_full_regrounding_it_precedes_blunders_reground_per_protocol_dan_correction_2026_07_01.md" :action :needs-import :flags #{:untracked :db-bare-ident :bare-dup-cleanup-owed}}
+ {:rel-path "memory/interaction/look_at_existing_infrastructure_before_asking_how_ask_only_about_extending_dan_correction_2026_07_01.md" :action :in-sync :flags #{:untracked :db-canonical :db-sync-unverified}}
+ {:rel-path "memory/interaction/research_depth_read_full_decisions_and_use_mcp_search_axes_dan_correction_2026_07_01.md" :action :in-sync :flags #{:untracked :db-canonical :db-sync-unverified}}
+ {:rel-path "memory/interaction/simplest_design_that_meets_the_actual_requirement_not_the_blunt_one_dan_correction_2026_07_01.md" :action :in-sync :flags #{:untracked :db-canonical :db-sync-unverified}}
+ {:rel-path "memory/interaction/track_gated_constraints_and_deliver_verified_fixes_not_artifacts_dan_correction_2026_07_01.md" :action :in-sync :flags #{:untracked :db-canonical :db-sync-unverified}}
+ {:rel-path "memory/logs/2026-07-01T1830_discipline_enforcement_arc_pivot.md" :action :in-sync :flags #{:untracked :db-canonical :db-sync-unverified}}
+ {:rel-path "memory/logs/2026-07-02T0613_discipline_arc_action_a_regen_fix_fs_gate.md" :action :in-sync :flags #{:untracked :db-canonical :db-sync-unverified}}
+ {:rel-path "memory/observations/c8_coherence_pass_executed_154_verified_patches_25_disciplines_plus_registries_2026_07_02.md" :action :in-sync :flags #{:untracked :db-canonical :db-sync-unverified}}
+ {:rel-path "memory/observations/memory_open_idempotent_start_does_not_reload_committed_code_restart_required_2026_07_01.md" :action :needs-import :flags #{:untracked :db-absent :fs-only}}
+ {:rel-path "memory/observations/schema_seeded_ref_subentities_without_db_ident_proliferate_on_reload.md" :action :needs-import :flags #{:untracked :db-absent :fs-only :related}}
+ {:rel-path "memory/patterns/architectural/ai_collaboration/adversarial_critique_as_standard_final_step_in_research_and_design_2026_07_01.md" :action :in-sync :flags #{:untracked :db-canonical :db-sync-unverified}}
+ {:rel-path "memory/plans/comprehensive_pre_release_review_gate_arc_2026_07_01.md" :action :in-sync :flags #{:untracked :db-canonical :db-sync-unverified}}
+ {:rel-path "memory/plans/corpus_integrity_remediation_arc_2026_07_01.md" :action :in-sync :flags #{:untracked :db-canonical :db-sync-unverified}}
+ {:rel-path "memory/plans/federation_architecture_for_multi_project_memory_arc_2026_07_01.md" :action :in-sync :flags #{:untracked :db-canonical :db-sync-unverified}}
+ {:rel-path "memory/plans/research_depth_and_substrate_fluency_discipline_arc_2026_07_01.md" :action :special :flags #{:untracked :block-scalar :db-canonical :db-sync-confirmed}}
+ {:rel-path "memory/plans/sandbar_0_2_0_co_release_comprehensive_regrounded_plan_2026_07_01.md" :action :in-sync :flags #{:untracked :db-canonical :db-sync-unverified}}
+ {:rel-path "memory/preferences/annotate_steps_semantically_not_opaque_codes_2026_07_01.md" :action :in-sync :flags #{:untracked :db-canonical :db-sync-unverified}}
+ {:rel-path "memory/protocol/fully_reground_on_project_protocol_2026_07_01.md" :action :in-sync :flags #{:untracked :db-canonical :db-sync-unverified}}
+ {:rel-path "memory/questions/mm_id_design_reeval_problem_solved_reasons_and_current_planned_approach_2026_07_01.md" :action :in-sync :flags #{:untracked :db-canonical :db-sync-unverified}}
+ {:rel-path "memory/sessions/2026-07-01T0906_p6_migration_execution.md" :action :in-sync :flags #{:untracked :db-canonical :db-sync-unverified}}
+ {:rel-path "memory/sessions/2026-07-01T0917_p6_migration_clean_server.md" :action :in-sync :flags #{:untracked :db-canonical :db-sync-unverified}}
+ {:rel-path "memory/sessions/2026-07-01T1526_discipline_enforcement_arc.md" :action :in-sync :flags #{:untracked :db-canonical :db-sync-unverified}}
+ {:rel-path "memory/sessions/2026-07-02T0623_discipline_arc_c8_coherence_pass.md" :action :in-sync :flags #{:untracked :db-canonical :db-sync-unverified}}
+ {:rel-path "memory/syntheses/deep_reground_strategic_map_sandbar_client_0_2_0_2026_07_01.md" :action :in-sync :flags #{:untracked :db-canonical :db-sync-unverified}}
+ {:rel-path "memory/syntheses/papering_over_noncompliance_resolution_research_hard_gates_over_soft_attention_2026_07_01.md" :action :in-sync :flags #{:untracked :db-canonical :db-sync-unverified}}
+ {:rel-path "memory/syntheses/reground_delta_sandbar_client_2026_07_02.md" :action :in-sync :flags #{:untracked :db-canonical :db-sync-unverified}}]

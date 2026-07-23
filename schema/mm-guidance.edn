@@ -1,0 +1,226 @@
+[
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; :mm/Guidance — Abstract Supertype for Normative / Prescriptive Memorials
+;;
+;; Per:
+;;   - memory/types/guidance.md (corpus self-description)
+;;   - decisions/sandbar_memorial_type_substrate_layering_2026_05_21.md (D2)
+;;   - decisions/sandbar_memorial_type_ontology_corrections_round_c_2026_05_21.md (R5)
+;;
+;; CONCRETE SUBTYPES (declared in this file):
+;;   - :mm/Pattern (positive convention; libraries/* canonical-example warning)
+;;   - :mm/AntiPattern (negative convention; patterns/* positive-alternative ERROR if missing)
+;;   - :mm/Protocol (meta-rule governing the memory system)
+;;   - :mm/Preference (collaborator aesthetic / style filter)
+;;   - :mm/Feedback (correction or rule given; subtree "interaction/")
+;;   - :mm/Authorization (standing delegated decision authority; richest slot set)
+;;
+;; INHERITANCE: :mm/Guidance :dt/subclass-of :mm/Memory.
+;; ABSTRACT: :dt/abstract? true — not instantiated directly.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ ;; Forward Declarations — enables slot :dt/domain references before the full class definitions.
+ ;; Matches the convention from schema/mm.edn lines 41-60.
+
+ [{:db/ident :mm/Pattern        :db/doc "Forward declaration; full class definition later in this file."}
+  {:db/ident :mm/AntiPattern    :db/doc "Forward declaration; full class definition later in this file."}
+  {:db/ident :mm/Feedback       :db/doc "Forward declaration; full class definition later in this file."}
+  {:db/ident :mm/Authorization  :db/doc "Forward declaration; full class definition later in this file."}
+  {:db/ident :mm/Protocol       :db/doc "Forward declaration; full class definition later in this file."}
+  {:db/ident :mm/Preference     :db/doc "Forward declaration; full class definition later in this file."}]
+
+ [{:db/ident         :mm/Guidance
+   :dt/type          :dt/Class
+   :dt/subclass-of   :mm/Memory
+   :dt/context       "mm"
+   :dt/label         "Guidance"
+   :dt/abstract?     true
+   :db/doc "Abstract supertype for memorial types that tell future sessions HOW TO BEHAVE — normative prescriptive memorials.  Per memory/types/guidance.md.  Concrete subtypes: :mm/Pattern (do-this-because positive convention), :mm/AntiPattern (don't-do-this-because negative convention; must cite at least one :mm/Pattern as positive alternative), :mm/Protocol (meta-rule governing the memory system), :mm/Preference (aesthetic / style filter), :mm/Feedback (correction or rule a collaborator has given; subtree 'interaction/'), :mm/Authorization (standing delegated decision authority).  Category-level invariants: every :mm/Guidance must carry claim-shaped name (title-as-API); every :mm/Guidance should cite at least one :mm/Signal that motivated it; every :mm/AntiPattern must contradict at least one :mm/Guidance.  Per decisions/sandbar_memorial_type_substrate_layering_2026_05_21.md D2 + decisions/sandbar_memorial_type_ontology_corrections_round_c_2026_05_21.md R5.  Not instantiated directly."}]
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; :mm.authorization/* Properties
+;;
+;; The slot-densest Guidance subtype (8 required + 11 recommended per the inventory).
+;; Per memory/types/authorization.md + decisions/sandbar_memorial_type_substrate_layering_2026_05_21.md D2.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident       :mm.authorization/status
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Authorization
+   :dt/range       :db.type/keyword
+   :db/valueType   :db.type/keyword
+   :db/cardinality :db.cardinality/one
+   :db/doc "Authorization lifecycle state: :active (currently exercised) | :suspended (paused, reversible) | :rescinded (withdrawn entirely; effectively frozen but kept as forensic record).  Per memory/types/authorization.md."}
+
+  {:db/ident       :mm.authorization/granted-on
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Authorization
+   :dt/range       :db.type/instant
+   :db/valueType   :db.type/instant
+   :db/cardinality :db.cardinality/one
+   :db/doc "ISO date when the authorization was granted (or when it takes effect, if different from session boundary; in that case see :mm.authorization/applies-in-session-from).  Per memory/types/authorization.md."}
+
+  {:db/ident       :mm.authorization/granted-by
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Authorization
+   :dt/range       :db.type/string
+   :db/valueType   :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/doc "Who granted the authorization (typically 'Dan' or actor rel-path).  Per memory/types/authorization.md.  When :mm/Actor instances are fully populated, this should become a ref to :mm/Actor."}
+
+  {:db/ident       :mm.authorization/motivation
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Authorization
+   :dt/range       :db.type/string
+   :db/valueType   :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/doc "One-paragraph why this authorization exists.  Usually because friction costs outweighed quality-gate benefits for this class of action.  Per memory/types/authorization.md."}
+
+  {:db/ident       :mm.authorization/verbatim-directive
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Authorization
+   :dt/range       :db.type/string
+   :db/valueType   :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/doc "Dan's exact words when granting the authorization — the epistemic anchor; paraphrasing drifts.  Per memory/types/authorization.md + interaction/preserve_dan_directives_verbatim_with_quote.md."}
+
+  {:db/ident       :mm.authorization/authorized
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Authorization
+   :dt/range       :db.type/string
+   :db/valueType   :db.type/string
+   :db/cardinality :db.cardinality/many
+   :db/doc "Concrete enumerated list — specific actions that are pre-approved.  Multi-valued.  Per memory/types/authorization.md."}
+
+  {:db/ident       :mm.authorization/not-authorized
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Authorization
+   :dt/range       :db.type/string
+   :db/valueType   :db.type/string
+   :db/cardinality :db.cardinality/many
+   :db/doc "Explicit carve-outs — the boundary between this authorization and per-instance approval.  Multi-valued.  Per memory/types/authorization.md."}
+
+  {:db/ident       :mm.authorization/filter
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Authorization
+   :dt/range       :db.type/string
+   :db/valueType   :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/doc "The governing quality gate (existing protocols, self-code-review, tests, etc.) that substitutes for per-instance approval.  Per memory/types/authorization.md."}
+
+  {:db/ident       :mm.authorization/risks
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Authorization
+   :dt/range       :db.type/string
+   :db/valueType   :db.type/string
+   :db/cardinality :db.cardinality/many
+   :db/doc "Failure modes the authorization enables — what Dan should watch for; what signals suggest the authorization should be tightened or rescinded.  Multi-valued.  Per memory/types/authorization.md."}
+
+  {:db/ident       :mm.authorization/re-evaluation-triggers
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Authorization
+   :dt/range       :db.type/string
+   :db/valueType   :db.type/string
+   :db/cardinality :db.cardinality/many
+   :db/doc "Conditions under which the authorization should be proactively re-reviewed.  Multi-valued.  Per memory/types/authorization.md."}
+
+  {:db/ident       :mm.authorization/history
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Authorization
+   :dt/range       :db.type/string
+   :db/valueType   :db.type/string
+   :db/cardinality :db.cardinality/many
+   :db/doc "Chronological log of status changes (granted / suspended / rescinded / scope adjustments).  Each entry is a string of the form 'YYYY-MM-DD: <event description>'.  Multi-valued.  Future structured form may reify each entry as :mm/HistoryEntry.  Per memory/types/authorization.md."}
+
+  {:db/ident       :mm.authorization/applies-in-session-from
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Authorization
+   :dt/range       :db.type/instant
+   :db/valueType   :db.type/instant
+   :db/cardinality :db.cardinality/one
+   :db/doc "Optional ISO date noting when the authorization takes effect, if different from :mm.authorization/granted-on (e.g., granted today but takes effect at next session boundary).  Per memory/types/authorization.md."}]
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Class Definitions — concrete Guidance subtypes
+;;
+;; Pattern, AntiPattern, Protocol, Preference, Feedback carry no type-specific
+;; substrate slots (their body sections + audit invariants are the schema).
+;; Authorization carries the slot set declared above.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident             :mm/Pattern
+   :dt/type              :dt/Class
+   :dt/subclass-of       :mm/Guidance
+   :dt/context           "mm"
+   :dt/label             "Pattern"
+   :dt/native-codec      :markdown
+   :dt/abstract?         false
+   :db/doc "Named, reusable architectural or process convention — a rule + rationale + canonical example.  Answers: 'When you face X, do Y because Z.'  Per memory/types/pattern.md.  Audit invariant: 'pattern cites at least one libraries/* canonical example' (warning).  Captureable: mid-conversation-captureable: true; inject-trigger: 'same shape as', 'this keeps happening'; inject-class: 'Cross-cutting pattern'; audit-class: 'cross-cutting-pattern'.  Tier: stable-core."}
+
+  {:db/ident             :mm/AntiPattern
+   :dt/type              :dt/Class
+   :dt/subclass-of       :mm/Guidance
+   :dt/context           "mm"
+   :dt/label             "AntiPattern"
+   :dt/native-codec      :markdown
+   :dt/abstract?         false
+   :db/doc "Named, reusable NEGATIVE convention — the wrong move in a class of situations, why it's attractive despite being wrong, and what to do instead.  Per memory/types/anti-pattern.md.  Every anti-pattern MUST cite at least one positive :mm/Pattern as the alternative (audit ERROR if missing — `related:` must include at least one patterns/* path).  Body sections: The anti-pattern / Why it's tempting / Why it's wrong / The alternative / Canonical example / See also.  Tier: stable-core."}
+
+  {:db/ident             :mm/Feedback
+   :dt/type              :dt/Class
+   :dt/subclass-of       :mm/Guidance
+   :dt/context           "mm"
+   :dt/label             "Feedback"
+   :dt/native-codec      :markdown
+   :dt/abstract?         false
+   :db/doc "A correction or rule a collaborator has given — typically the negative class ('don't do X') or the procedural class ('always do Y in situation Z').  Per memory/types/feedback.md.  Distinct from :mm/AntiPattern by specificity: anti-patterns describe general failure modes across projects; feedback memorials typically capture a specific collaborator's preferences and the specific guidance they give.  Subtree: 'interaction/' (with alias 'feedback/').  Captureable: mid-conversation-captureable: true; inject-trigger: 'don't do X', 'yes that's right', 'learn behavior:'; inject-class: 'Feedback'; audit-class: 'feedback'.  Tier: expanding-periphery."}
+
+  {:db/ident             :mm/Authorization
+   :dt/type              :dt/Class
+   :dt/subclass-of       :mm/Guidance
+   :dt/context           "mm"
+   :dt/label             "Authorization"
+   :dt/native-codec      :markdown
+   :dt/slots             [:mm.authorization/status
+                          :mm.authorization/granted-on
+                          :mm.authorization/granted-by
+                          :mm.authorization/motivation
+                          :mm.authorization/verbatim-directive
+                          :mm.authorization/authorized
+                          :mm.authorization/not-authorized
+                          :mm.authorization/filter
+                          :mm.authorization/risks
+                          :mm.authorization/re-evaluation-triggers
+                          :mm.authorization/history
+                          :mm.authorization/applies-in-session-from]
+   :dt/abstract?         false
+   :db/doc "First-class record of standing delegated decision authority — a collaborator's pre-approval for a class of actions.  Per memory/types/authorization.md.  Each authorization is a major architectural decision about self-organization, friction reduction, and the nature of the collaboration itself.  Required slots: status (:active|:suspended|:rescinded) + granted-on + granted-by + motivation.  Recommended slots: verbatim-directive + authorized (many) + not-authorized (many) + filter + risks (many) + re-evaluation-triggers (many) + history (many) + applies-in-session-from.  Captureable: mid-conversation-captureable: true; inject-trigger: 'you can stop asking', 'I authorize'; inject-class: 'Authorization'; audit-class: 'authorization-change'.  Subtree: 'authorizations/'.  Tier: stable-core.  Introduced-in: 0.5.0.  Future audit invariants (deferred): required-fields-present, status-vocab-conformance, history-entries-for-non-active-status, granting-log-exists."}
+
+  {:db/ident             :mm/Protocol
+   :dt/type              :dt/Class
+   :dt/subclass-of       :mm/Guidance
+   :dt/context           "mm"
+   :dt/label             "Protocol"
+   :dt/native-codec      :markdown
+   :dt/abstract?         false
+   :db/doc "Meta-rule governing how the memory system itself is used — not a pattern (code-level convention), not a preference (taste), but a behavioral discipline that shapes the interaction between collaborators and the memory database.  Per memory/types/protocol.md.  Body sections: The protocol / When to apply (trigger conditions) / How to apply / Why this matters / See also.  Tier: stable-core."}
+
+  {:db/ident             :mm/Preference
+   :dt/type              :dt/Class
+   :dt/subclass-of       :mm/Guidance
+   :dt/context           "mm"
+   :dt/label             "Preference"
+   :dt/native-codec      :markdown
+   :dt/abstract?         false
+   :db/doc "Captured aesthetic, style, or tooling preference — something a collaborator has expressed as a taste or rule-of-thumb that shapes how code should be written, which tools to reach for, or what aesthetic to honor across projects.  Per memory/types/preference.md.  Differ from :mm/Pattern (which describes the WHAT) and :mm/AntiPattern (which describes the WHAT-NOT) by describing the HOW of composition — the grain of the work.  Body sections: The filter / Patterns/instincts / Voice samples / What this means for collaboration / See also.  Tier: stable-core."}]
+
+ ;; :dt/codec-type-keyword routing — frontmatter `type: <keyword>` maps to the concrete class.
+
+ [{:db/ident :mm/Pattern        :dt/codec-type-keyword :pattern}
+  {:db/ident :mm/AntiPattern    :dt/codec-type-keyword :anti-pattern}
+  {:db/ident :mm/Feedback       :dt/codec-type-keyword :feedback}
+  {:db/ident :mm/Authorization  :dt/codec-type-keyword :authorization}
+  {:db/ident :mm/Protocol       :dt/codec-type-keyword :protocol}
+  {:db/ident :mm/Preference     :dt/codec-type-keyword :preference}]
+
+]

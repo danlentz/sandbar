@@ -1,0 +1,55 @@
+## What this predicate means
+
+**A `provides-method-for` B** — pattern/protocol A provides the methodology that artifact B used.  Dagger inverse of `uses-method-in` — where `uses-method-in` is the artifact-side assertion ("this memoir employed pattern X's methodology"), `provides-method-for` is the methodology-side assertion ("pattern X provides the methodology that these memorials used").  Per `protocol/predicate_lifecycle.md` §"Edge assertion is one-sided", the canonical asserted direction is the artifact side (`uses-method-in:`); `provides-method-for:` is derivable via inverse-of entailment and exists for vocabulary completeness + reverse-direction retrieval ("show every memoir that used pattern X's methodology").
+
+## Substrate identity
+
+- **Slot ident**: `{{predicate-ident}}`
+- **Domain**: `{{domain}}`
+- **Range**: `{{range}}`
+- **Cardinality**: `{{cardinality}}`
+- **`:dt/type`**: `:dt/DirectedBinaryRelationProperty` (asymmetric + irreflexive)
+
+## Formal signature
+
+`{{predicate-name}} : {{domain}} × {{range}} → Bool`
+
+## Characteristics
+
+- **Asymmetric** — pattern A provides method for artifact B doesn't imply B provides method for A (OWL 2 RL `prp-asyp`)
+- **Irreflexive** — a memorial doesn't provide its own methodology (OWL 2 RL `prp-irp`)
+- **NOT transitive**
+
+## When to use provides-method-for
+
+In typical authoring posture, you DON'T write `provides-method-for:` on pattern/protocol memorials.  You write `uses-method-in:` on the artifact memorial; the substrate derives `provides-method-for:` on the methodology side via inverse-of entailment.
+
+Use `provides-method-for:` directly only for reverse-direction retrieval contexts (e.g., a methodology memorial's body wanting to enumerate its applications).
+
+## Adjacent predicates
+
+| Direction | Predicate |
+|---|---|
+| Artifact-side | `uses-method-in` — canonical (artifact → methodology) |
+| Methodology-side | **`provides-method-for`** — inverse (methodology → artifact) |
+| Adjacent | `implements` — full spec realization (stronger) |
+| Adjacent | `evidences` — witness/example (different axis) |
+
+## Formal ontology mappings
+
+- **CiTO** `cito:providesMethodFor` — exact semantic match (the source standard)
+- **PAV** `pav:authoredOn` (when method is publication-shaped) — close analogue
+- **DC Terms** `dcterms:isReferencedBy` — distant analogue (broader semantics)
+
+Grounding references in the corpus:
+- [`references/pav_cito_bibo_reference.md`](../references/pav_cito_bibo_reference.md) — CiTO methodology-citation vocabulary
+
+## Inverse-of relation
+
+`provides-method-for` is the canonical inverse of `uses-method-in`.  Substrate may declare `:dt/inverse-of :mm.memory/uses-method-in` to fire prp-inv1/inv2 entailment.
+
+## See also
+
+- [`predicates/uses-method-in.md`](uses-method-in.md) — canonical (artifact-side)
+- [`predicates/implements.md`](implements.md) — stronger conformance
+- [`predicates/evidences.md`](evidences.md) — witness-strength citation

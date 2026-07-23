@@ -1,0 +1,52 @@
+## What this predicate means
+
+**A `specializes` B** — A is a sub-property of B; A is a NARROWER version of the relation B expresses.  Property-level analog of `extends` (which is class-level).
+
+Per RDFS rule rdfs7, declaring `A specializes B` entails: for every fact `x A y`, the fact `x B y` also holds.  Entailment propagates upward in the property hierarchy.
+
+Examples:
+- `:mm.memory/evidences specializes :mm.memory/cites` (evidence is a stronger form of citation)
+- `:mm.memory/triggered-by specializes :mm.memory/motivated-by` (direct trigger is a stronger form of motivation)
+- `:mm.memory/motivated-by specializes :mm.memory/informed-by`
+
+## Substrate identity
+
+- **Slot ident**: `{{predicate-ident}}`
+- **Domain**: `{{domain}}` (typically `:dt/Property`)
+- **Range**: `{{range}}` (typically `:dt/Property`)
+- **Cardinality**: `{{cardinality}}`
+- **Inverse of**: `:mm.memory/generalizes`
+
+## Formal signature
+
+`{{predicate-name}} : {{domain}} × {{range}} → Bool`
+
+## Characteristics
+
+- **Asymmetric** — A specializes B does not imply B specializes A
+- **Irreflexive** — a property doesn't specialize itself
+- **Transitive** — specialization composes
+
+## Audit invariants
+
+- "predicate: dagger-pair lifecycle consistent" — sub-property hierarchy must be acyclic
+- RDFS rule rdfs7 entailment should be enforced in audit
+
+## Formal ontology mappings
+
+Aligned predicates from established formal vocabularies:
+
+- **RDFS** `rdfs:subPropertyOf` — exact semantic match (the canonical sub-property predicate; entailment via rdfs7)
+- **OWL** `owl:subPropertyOf` — exact semantic match (OWL inherits RDFS semantics)
+- **SKOS** `skos:narrower` — distant analogue (concept-level narrowing, not property-level)
+- **DC Terms** — no direct equivalent
+- **PROV-O** — no direct equivalent
+- **CiTO** — no direct equivalent
+
+Grounding references in the corpus:
+- [`references/rdfs_reference.md`](../references/rdfs_reference.md) — RDFS `rdfs:subPropertyOf` + entailment rule rdfs7
+
+## See also
+
+- [`predicates/generalizes.md`](generalizes.md) — inverse partner
+- [`predicates/extends.md`](extends.md) — class-level analog (`rdfs:subClassOf`)

@@ -1,0 +1,120 @@
+## What a `type: task` instance is
+
+A **durable actionable work item** — *"this needs doing; here's the context; here's the definition-of-done."*  Sits between `inbox` (low-ceremony capture of a thought) and `plan` (full design document for a multi-stage arc):
+
+- **`inbox`** — *"I noticed X"* (observation-shaped)
+- **`task`** — *"X should be done"* (imperative, actionable)
+- **`plan`** — *"X is a multi-stage architectural arc with decisions, stages, success criteria"* (design document)
+
+Tasks are where the **durable queue of work** lives.  Unlike in-session ephemeral task tools, tasks persist across sessions as memorial files.  A future session can open with *"what's my highest-priority pending task?"* by querying the corpus.
+
+Task is a subtype of [`meta`](meta.md) — memorials about the memory system itself (here, its work-queue).
+
+## Why tasks are their own type
+
+Three distinguishing concerns:
+
+1. **Actionability is first-class** — an observation can be noticed without being actionable; an idea can be speculative; a task explicitly says *"someone should do this."*  The type makes the commitment legible
+2. **Triage axes are data** — `priority` (how urgent), `effort` (how big), `blockers` (what's stopping it) are orthogonal and together drive decisions about *what to work on next*
+3. **Lifecycle ≠ other types** — a pattern doesn't have `status: pending → active → done`.  A task does.  Making it a distinct type lets audit + retrieval surfaces treat the lifecycle correctly without special-casing
+
+## Substrate identity
+
+- **Class ident**: `{{class-ident}}`
+- **Parent class(es)**: {{parent-classes}}
+- **Ancestor chain**: {{ancestor-chain}}
+- **Native codec**: `{{native-codec}}`
+- **Codec type-keyword(s)**: {{codec-type-keywords}}
+
+## Slot vocabulary ({{slot-count}} slots inherited or declared)
+
+Task memorials inherit `:mm/Memory` plus type-specific required slots:
+
+- **`status`** (required) — `pending` / `active` / `blocked` / `done` / `dropped`
+- **`priority`** (required) — `low` / `medium` / `high` / `urgent`
+- **`effort`** (required) — `trivial` / `small` / `medium` / `large` / `capstone`
+- **`triggered-by`** — origin context (Dan-directive / arc / inbox promotion / prior task)
+- **`blockers`** — first-class list; each blocker is either prose or a path to memorial / resource that must be resolved
+- **`parent`** — arc-forest DAG field; which arc(s) this task belongs under
+
+{{slot-table}}
+
+## Status lifecycle
+
+- **pending** — captured, not yet started.  The default
+- **active** — someone is working on it *right now*
+- **blocked** — can't proceed without something else (see `blockers:`)
+- **done** — completed.  Can be moved to `tasks/done/` subtree or deleted; kept for forensic trail
+- **dropped** — decided not to do; rationale in body
+
+## Priority rubric
+
+- **urgent** — blocks other work; do immediately
+- **high** — should happen this session / this week
+- **medium** — known-important but not blocking
+- **low** — nice-to-have; park-able
+
+## Effort rubric
+
+- **trivial** — < 10 minutes
+- **small** — < 1 hour
+- **medium** — half a session
+- **large** — a full session
+- **capstone** — multi-session arc (should probably be a `plan` instead at that size)
+
+## Canonical body structure
+
+```markdown
+## The work
+
+One paragraph: what specifically needs to happen.  Imperative.
+
+## Context + rationale
+
+Why this matters; what it unlocks; which arc / plan it serves.
+
+## Acceptance
+
+What "done" looks like.  Grep-able if possible.
+
+## Blockers / dependencies
+
+If any, elaborated.  Cross-reference memorials / resources.
+
+## See also
+
+Reciprocal cross-links.
+```
+
+## State-change-detection (captureability)
+
+This class is mid-conversation-captureable.  Inject-triggers:
+- *"come back to this"*
+- *"blocked on X"*
+
+When these signals fire, capture as a task with appropriate priority + blocker fields.
+
+## Relation to in-session task tools
+
+In-session task tracking tools (e.g., TaskCreate/TaskUpdate) are ephemeral session-scoped tracking; `type: task` memorials are durable across sessions.  They **compose**: a session working on a durable task may create in-session tasks to track sub-steps, then mark the durable task `done` when the session's work completes.
+
+## Pitfalls
+
+- **Writing tasks that are really ideas** — if the body is *"maybe we should consider whether to possibly explore X,"* it's an idea.  Tasks are imperative
+- **Effort-size mismatch** — a `capstone`-effort task should probably be a `plan`; a `trivial`-effort task might not need to exist (just do it)
+- **Stale blocked tasks** — if `status: blocked` for weeks, either resolve the blocker, re-scope, or drop; a blocked-task graveyard is noise
+- **Missing `triggered-by`** — without it, a task picked up weeks later lacks context; always name the origin
+
+## Composition with adjacent classes
+
+- **`inbox`** — low-ceremony capture; tasks absorb the actionable subset via review
+- **`plan`** — heavyweight arc design; tasks scale down to single-unit actionable work
+- **`idea`** — speculative; tasks are committed.  An idea reaching ready-state may convert to a task
+
+## See also
+
+- [`types/meta.md`](meta.md) — parent abstract supertype
+- [`types/inbox.md`](inbox.md) — low-ceremony capture sibling
+- [`types/plan.md`](plan.md) — heavyweight arc design
+- [`types/idea.md`](idea.md) — speculative sibling
+- Sandbar substrate: `sandbar/schema/mm-meta.edn`

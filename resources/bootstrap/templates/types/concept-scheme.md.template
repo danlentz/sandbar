@@ -1,0 +1,34 @@
+## What a `type: concept-scheme` instance is
+
+A first-class representation of a TAG-VOCABULARY SCHEME — analog of `skos:ConceptScheme` from the SKOS standard.  A concept-scheme is a NAMED CONTAINER for a set of tags forming a coherent vocabulary (e.g., "memorial-types vocabulary", "library-domain vocabulary", "discipline-status vocabulary").  Tags become members of a scheme via `:mm.tag/in-scheme`, enabling vocabulary boundaries, scheme-scoped audits, and federation between vocabulary publishers.
+
+## Why scheme membership matters
+
+Without scheme containers, tags exist in a flat global namespace.  Conflicts ("foundation-substrate" tag in two unrelated contexts) become genuine ambiguity.  With schemes:
+
+- **Vocabulary boundaries are explicit** — "this tag belongs to scheme X" disambiguates
+- **Scheme-scoped queries** become natural — "show all tags in the memorial-types scheme"
+- **Federation can target schemes** — a community vocabulary publisher exports a scheme; importers map it into their own scheme namespace
+- **Auditing applies per-scheme** — closure-consistency, drift, orphan checks scope to scheme members
+
+## Substrate identity
+
+- **Class ident**: `{{class-ident}}`
+- **Parent class(es)**: {{parent-classes}}
+
+## Slot vocabulary
+
+The class declares **{{slot-count}}** slots:
+
+{{slot-table}}
+
+## Composition with other classes
+
+- **`:mm/Tag`** — tags reference their scheme via `:mm.tag/in-scheme`
+- **`:mm/Vocabulary`** — schemes can name their authoritative vocabulary identifier
+- **`:mm/Dataset`** — schemes can be members of named datasets per DCAT pattern
+
+## See also
+
+- [`types/tag.md`](tag.md) — tag entities that join schemes
+- [`types/vocabulary.md`](vocabulary.md) — vocabulary-identifier class

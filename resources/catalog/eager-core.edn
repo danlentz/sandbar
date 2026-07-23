@@ -1,0 +1,61 @@
+;; Eager-core POLICY (design §6) — the eager-core is a declared predicate over
+;; the single-source catalog-model, NOT a hand-listed set.  The generator emits
+;; the `ToolSearch select:...` block by applying this policy to the CURRENT
+;; catalog, so when consolidation collapses verbs the block regenerates to
+;; reference the merged verbs automatically — no hand-edit, no drift.
+;;
+;; MECHANISM vs MEMBERSHIP (design §6, open question #1):
+;;   F6 delivers the MECHANISM (policy-as-data -> generated block, gate-checked).
+;;   The final 12-15 membership is a Dan-/consolidation-gated decision that
+;;   depends on the consolidated catalog (which does not exist yet).  Two
+;;   ratified decisions disagree on the size (Alt-D ADR + live memory-open = 22;
+;;   W4.5 = 12-15); the re-scope decision rules "derive from the consolidated
+;;   catalog, don't hand-prune."  Until that catalog exists, this policy
+;;   REPRODUCES the current live 22-verb eager-core so the drift gate has a
+;;   stable, faithful baseline — it is deliberately NOT the future 12-15 set.
+;;
+;; Policy evaluation (applied by the generator):
+;;   1. :verbs-eager  — explicit verb names always in the eager core (order
+;;      preserved as listed here — the block is order-sensitive for humans).
+;;   2. :verbs-demoted — verbs FORCIBLY EXCLUDED even if a future :axes-eager
+;;      rule would include them (encodes the composition doctrine's explicit
+;;      "DEMOTE navigate.path-via OUT of the eager core", model-mount decision
+;;      Part 2 — so the demotion can't silently regress).
+;;   3. The generator asserts every :verbs-eager name EXISTS in the model
+;;      (a rename/removal that orphans an eager-core entry FAILS the gate).
+;;
+;; The ToolSearch wire form is mcp__sandbar__sandbar_<axis>_<leaf> with the
+;; verb's dots after the axis turned to underscores in the LEAF only
+;; (sandbar.navigate.outbound-edges -> mcp__sandbar__sandbar_navigate_outbound-edges).
+
+{;; The current live eager-core, verbatim from memory-open.md:35 (22 verbs).
+ ;; Order matches the live block exactly (drift-gate baseline).
+ :verbs-eager
+ ["sandbar.entity.find"
+  "sandbar.entity.find-by-rel-path"
+  "sandbar.entity.create"
+  "sandbar.entity.update"
+  "sandbar.entity.validate"
+  "sandbar.search.bm25f"
+  "sandbar.search.attribute"
+  "sandbar.aggregate.count"
+  "sandbar.aggregate.group-by"
+  "sandbar.aggregate.rank-by"
+  "sandbar.navigate.outbound-edges"
+  "sandbar.navigate.inbound-edges"
+  "sandbar.navigate.siblings-of"
+  "sandbar.navigate.path-via"
+  "sandbar.orient.library-card"
+  "sandbar.ground"
+  "sandbar.workflow.define"
+  "sandbar.workflow.find"
+  "sandbar.workflow.start-process"
+  "sandbar.workflow.transition"
+  "sandbar.workflow.process-state"
+  "sandbar.workflow.orchestrate"]
+
+ ;; FUTURE demotions (design §6 + model-mount Part 2).  Empty today because the
+ ;; live block still includes path-via; the consolidation front flips this to
+ ;; #{"sandbar.navigate.path-via"} when it derives the 12-15 set.  Encoded as
+ ;; data so the demotion is enforceable by the generator, not prose.
+ :verbs-demoted #{}}

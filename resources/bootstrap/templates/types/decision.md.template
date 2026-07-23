@@ -1,0 +1,102 @@
+## What a `type: decision` instance is
+
+An **architectural choice** captured with its alternatives, its rationale, and its acceptance.  Decision memorials are the corpus's ADR (Architecture Decision Record) layer — they preserve *why* a choice was made so future readers don't re-litigate it or rediscover it was already considered.
+
+A well-shaped decision memorial reads: *"we faced X.  We considered A, B, C.  We chose B because of D, E, F.  We accepted these tradeoffs: G, H."*
+
+Decision is a subtype of [`artifact`](artifact.md) — a durable, self-contained output with memorial value beyond its immediate trigger.
+
+## When to create a decision memorial
+
+- An architectural choice is non-obvious and the rationale would be lost without recording it
+- Multiple alternatives were seriously considered, and the reasoning for rejecting them carries value
+- The decision touches a shared invariant or cross-cutting convention that future readers will want to understand
+- Dan (or another principal) explicitly signals a decision via phrases like *"we should X because"* or *"the right answer is X over Y because"*
+
+## When NOT to create one
+
+- The choice was obvious — don't document trivial decisions
+- The decision is ephemeral / in-flight (use a plan's `## Decisions resolved` section instead)
+- The decision is really a pattern (a recurring rule, not a one-time choice) — use `pattern`
+- The decision can be expressed as a single bullet in a parent plan — keep it inline
+
+## Substrate identity
+
+- **Class ident**: `{{class-ident}}`
+- **Parent class(es)**: {{parent-classes}}
+- **Ancestor chain**: {{ancestor-chain}}
+- **Native codec**: `{{native-codec}}`
+- **Codec type-keyword(s)**: {{codec-type-keywords}}
+
+## Slot vocabulary ({{slot-count}} slots inherited or declared)
+
+Decision memorials inherit the full `:mm/Memory` slot vocabulary plus artifact-specific extensions (successional semantics via `supersedes` / `superseded-by`).  The audit invariant `decision-names-alternatives` (warning-severity) checks that decisions enumerate their alternatives — a decision without alternatives reads like an opinion.
+
+{{slot-table}}
+
+## Canonical body structure
+
+Following the standard ADR shape:
+
+```markdown
+## Context
+
+<What situation gave rise to the decision.  Forces, constraints,
+the problem space.>
+
+## Decision
+
+<The choice, stated declaratively.  One paragraph.>
+
+## Alternatives considered
+
+<The serious candidates, each with why it was rejected.  This
+section is load-bearing — a decision without alternatives is
+moralizing.>
+
+## Rationale
+
+<Why the chosen option wins.  Cite principles, constraints, past
+incidents, prior memorials.>
+
+## Consequences / tradeoffs accepted
+
+<The downsides of the decision, recorded so they're not surprises
+to future readers.  Honest acknowledgment of what was given up.>
+
+## See also
+
+<Cross-links: prior decisions this builds on, observations / bugs /
+ideas that prompted it, patterns it enables.>
+```
+
+## Lifecycle + supersession
+
+Decisions are write-once-then-supersede:
+
+- A new decision may override an older one — link via `superseded-by:` on the older + `supersedes:` on the newer
+- Don't delete superseded decisions; they're the forensic trail of how thinking evolved
+- A decision in tension with established discipline may be **amended** rather than fully superseded — a follow-up decision can refine a specific aspect
+
+## Pitfalls
+
+- **Missing alternatives section** — reads like an opinion; future readers re-litigate what was already considered
+- **Rationale that rots** — *"we picked X because Y was slow"* may become false; update or supersede
+- **Confusion with plan docs** — plans describe the full arc; decisions are atomic choices.  Plans reference decisions
+- **Decision-as-feedback** — if the rule is "always do X," it's a pattern or feedback, not a decision
+
+## State-change-detection (captureability)
+
+This class is mid-conversation-captureable.  Inject-triggers:
+- *"the right answer is X over Y because..."*
+- *"we should X because..."*
+
+Capture-first when these signals fire: write a decision memorial with the ADR shape above, then proceed with the work.
+
+## See also
+
+- [`types/artifact.md`](artifact.md) — parent abstract supertype
+- [`types/plan.md`](plan.md) — plans reference decisions; decisions graduate from plan §6 sections when scope outgrows the plan
+- [`types/pattern.md`](pattern.md) — patterns capture recurring rules; decisions are atomic choices
+- [`types/question.md`](question.md) — resolved high-importance questions often spawn decisions
+- Sandbar substrate: `sandbar/schema/mm-artifact.edn`

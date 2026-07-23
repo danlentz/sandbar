@@ -22,7 +22,10 @@
 
      event/log-request          - Logs all HTTP requests
      event/log-request-minimal  - Logs only errors and slow requests
-     event/suppress-event-logging - Suppresses logging for specific routes"
+     event/suppress-event-logging - Suppresses logging for specific routes
+     event/honor-suppress-event-logging-header - Lets an authenticated
+       client suppress its own request's event row via the
+       `x-sandbar-suppress-event-logging: true` header (opt-in per route)"
   (:require [clojure.tools.logging   :as log]
             [io.pedestal.interceptor :as interceptor]
             [sandbar.db.datatype     :as dt])
@@ -360,6 +363,39 @@
     {:name  ::suppress-event-logging
      :enter (fn [context]
               (assoc context :suppress-event-logging? true))}))
+
+(def honor-suppress-event-logging-header
+  "Interceptor that honors a CLIENT-requested per-call event-logging
+   suppression: when the request carries the header
+   `x-sandbar-suppress-event-logging` with value `true` or `1`, set the
+   same `:suppress-event-logging?` context flag the static
+   `suppress-event-logging` route interceptor sets — the flag
+   `should-log?` already consults (the existing, tested server-side
+   suppression gate).  Anything else (absent header, other values) is a
+   no-op: logging proceeds as normal.
+
+   Deliberately OPT-IN PER ROUTE: only routes that include this
+   interceptor let clients suppress their own :event/HttpRequest rows.
+   Wired on /mcp (2026-07-21) so high-frequency machine callers — the
+   PreToolUse recall hook fires on every tool call, minting ~7k
+   permanent event rows/day — can stanch their per-call rows, per Dan's
+   reduce-substantially events ruling (2026-07-21 memory-strategy
+   docket) under the B5 proactive-cleanup authorization.  Reversible on
+   both sides: client drops the header / route drops the interceptor.
+
+   Placement note: on /mcp this sits AFTER `require-bearer`, so an
+   UNAUTHENTICATED probe cannot suppress the logging of its own 401
+   (the interceptor's :enter never runs when auth short-circuits the
+   chain); `log-request`'s :leave still sees the flag because leave
+   phases run after all enters.  Ring lowercases header NAMES; values
+   are matched exactly (\"true\"/\"1\")."
+  (interceptor/interceptor
+    {:name  ::honor-suppress-event-logging-header
+     :enter (fn [context]
+              (if (contains? #{"true" "1"}
+                             (get-in context [:request :headers "x-sandbar-suppress-event-logging"]))
+                (assoc context :suppress-event-logging? true)
+                context))}))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Correlation ID Helpers

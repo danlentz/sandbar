@@ -1,0 +1,32 @@
+## What a `type: concept-group` instance is
+
+A first-class CROSS-CUTTING FACET MEMBERSHIP entity — analog of `iso-thes:ConceptGroup` from ISO 25964.  A concept-group is used for SUBSET GROUPING across the tag vocabulary, ORTHOGONAL to the broader/narrower hierarchy.  Whereas the hierarchy answers "what's narrower than X?", concept-groups answer "what subset shares some cross-cutting property?" — e.g., "deprecated tags", "high-traffic tags", "tags introduced in v0.7.x".
+
+## When to materialize a concept-group
+
+- A subset of tags shares a cross-cutting property worth naming explicitly (status / lineage / facet)
+- The subset doesn't fit cleanly into a single hierarchical scheme
+- The grouping needs to be queryable separately from hierarchy walks
+
+## Substrate identity
+
+- **Class ident**: `{{class-ident}}`
+- **Parent class(es)**: {{parent-classes}}
+
+## Slot vocabulary
+
+The class declares **{{slot-count}}** slots:
+
+{{slot-table}}
+
+## Composition with other classes
+
+- **`:mm/Tag`** — tags can be members of multiple groups (orthogonal facets)
+- **`:mm/ConceptScheme`** — groups are typically scoped within a parent scheme
+- **`:mm/ThesaurusArray`** — sibling pattern for sequential ordering (vs cross-cutting grouping)
+
+## See also
+
+- [`types/tag.md`](tag.md) — tag entities that group joins
+- [`types/concept-scheme.md`](concept-scheme.md) — scheme containing groups
+- [`types/thesaurus-array.md`](thesaurus-array.md) — sibling sequential-ordering pattern

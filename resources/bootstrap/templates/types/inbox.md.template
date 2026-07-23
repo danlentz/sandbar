@@ -1,0 +1,86 @@
+## What a `type: inbox` instance is
+
+A **staging note** — a sub-60-second capture of something worth preserving before it slips, with enough metadata that a `/memory-review` sweep can decide whether to promote it (expand into a proper typed memorial) or discard it.
+
+Inbox entries are **fleeting**, not durable.  The point is to shrink *"notice → capture"* from minutes (full typed memorial) to seconds (one capture call), so the cost of capture doesn't discourage compounding-value proactivity mid-work.
+
+The Zettelkasten tradition calls these **fleeting notes** (Ahrens 2017); this corpus's implementation is the low-ceremony `mem notice` → `inbox/<timestamp>.md` → `/memory-review` promotion pipeline.
+
+Inbox is a subtype of [`meta`](meta.md) — memorials about the memory system itself (here, its capture-staging machinery).
+
+## Why inbox is its own type
+
+Three reasons it earns a distinct type rather than being "a memorial with low fidelity":
+
+1. **Audit exemption** — inbox entries are exempt from the reciprocal / See-also / body-link audits.  Those disciplines are promotion-time work, not capture-time work.  Making `type: inbox` explicit lets the audit suite skip these entries cleanly instead of special-casing by path
+2. **Lifecycle is visible** — a memorial with `type: inbox` is *by definition* not yet in its final form.  Readers seeing the type know to treat the entry as a capture, not a conclusion
+3. **Promotion is the goal** — the `suggested-type` frontmatter names the target shape — the note carries its own promotion plan.  Review is a matter of confirming the suggestion and expanding into the target's canonical body
+
+## Substrate identity
+
+- **Class ident**: `{{class-ident}}`
+- **Parent class(es)**: {{parent-classes}}
+- **Ancestor chain**: {{ancestor-chain}}
+- **Native codec**: `{{native-codec}}`
+- **Codec type-keyword(s)**: {{codec-type-keywords}}
+
+## Slot vocabulary ({{slot-count}} slots inherited or declared)
+
+Inbox memorials inherit `:mm/Memory` plus type-specific required slots:
+
+- **`suggested-type`** (required) — `observation` / `question` / `idea` / `bug` / `feedback` / `preference` / `decision` / `pattern` — one of the target types; names what structure to fill in
+- **`importance`** — `low` / `medium` / `high` — helps review prioritize
+
+{{slot-table}}
+
+## Canonical body structure
+
+The capture tool auto-generates the body:
+
+```markdown
+## The note
+
+<The captured text, verbatim from the capture call argument.>
+
+## Capture context
+
+- **Captured**: <ISO date + time> via `mem notice`.
+- **Suggested type**: <suggested-type>.
+- **Importance**: <low|medium|high>.
+
+## Promotion checklist
+
+<Boilerplate steps: read, choose location, expand, link, audit,
+delete-inbox-file, commit>
+```
+
+## Lifecycle
+
+1. **Capture** — `mem notice "..."` writes `inbox/<timestamp>.md` with minimum frontmatter
+2. **Review** — `/memory-review` sweeps `inbox/` at end-of-arc or on explicit invocation
+3. **Promotion** — entry moves to `<suggested-type>/<slug>.md` with canonical body structure, `related:` frontmatter, and See-also section.  The inbox file is deleted
+4. **Or deletion** — if the note didn't hold up, delete and move on.  No ceremony required to discard
+
+The **70–80% discard target** is a feature: fleeting capture should err toward saving, because the cost of discarding at review is lower than the cost of missing a notice at capture.
+
+## Pitfalls
+
+- **Expanding inbox entries in-place** — if writing a 10-section body under `type: inbox`, you're doing the promotion work at capture time; either commit to capturing in the target type directly, or keep the note terse and expand during review
+- **Letting inbox accumulate indefinitely** — if 30+ entries sit without review, signal-to-noise drops and capture discipline decays.  Run `/memory-review` at session-end or on explicit weekly cadence
+- **Using inbox for things that already have a type** — if you know at capture time it's a bug / observation / idea and have the information, write it as that type directly.  Inbox is for *"worth preserving, not sure in what shape"*
+
+## Composition with adjacent classes
+
+- **`task`** — actionable-work-queue sibling; some inbox captures promote here (committed work) rather than to observation / question / idea (noticed / wondered / proposed)
+- **`observation`** / **`question`** / **`idea`** / **`bug`** — common promotion targets
+- **`feedback`** — when a captured note crystallizes a behavioral rule
+
+## See also
+
+- [`types/meta.md`](meta.md) — parent abstract supertype
+- [`types/task.md`](task.md) — actionable-work-queue sibling
+- [`types/observation.md`](observation.md) — common promotion target
+- [`types/question.md`](question.md) — common promotion target
+- [`types/idea.md`](idea.md) — common promotion target
+- [`types/bug.md`](bug.md) — common promotion target
+- Sandbar substrate: `sandbar/schema/mm-meta.edn`

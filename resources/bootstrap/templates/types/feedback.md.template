@@ -1,0 +1,100 @@
+## What a `type: feedback` instance is
+
+A **correction or rule a principal collaborator has taught** — the discipline layer of the corpus.  Typically captures feedback given in response to specific mistakes or to establish recurring rules (e.g., *"don't commit without authorization,"* *"stop and ask at design decision points,"* *"don't ship TODO markers"*).
+
+Feedback memorials are distinct from anti-patterns by **specificity**: anti-patterns describe general failure modes across projects; feedback memorials typically capture the principal's personal preferences and the specific guidance they give.
+
+Feedback is a subtype of [`guidance`](guidance.md) — memorials that prescribe action.
+
+## When to create a feedback memorial
+
+- A principal explicitly corrects behavior with a reusable rule (*"never skip hooks,"* *"relay blocked commands rather than routing around"*)
+- A pattern of correction recurs across sessions — the feedback needs codification so the correction doesn't need to happen again
+- A behavioral rule is worth persisting across sessions for cross-session continuity
+
+## When NOT to create one
+
+- The feedback is one-off and situational — it doesn't need to compound
+- The rule is general enough to be an anti-pattern — use `anti-pattern`
+- The rule is meta-level about the memory system — use `protocol`
+- The rule is a standing delegation of decision authority — use `authorization`
+
+## Substrate identity
+
+- **Class ident**: `{{class-ident}}`
+- **Parent class(es)**: {{parent-classes}}
+- **Ancestor chain**: {{ancestor-chain}}
+- **Native codec**: `{{native-codec}}`
+- **Codec type-keyword(s)**: {{codec-type-keywords}}
+
+## Slot vocabulary ({{slot-count}} slots inherited or declared)
+
+Feedback memorials inherit `:mm/Memory` plus guidance-specific extensions:
+
+- **`subtree`** — convention: feedback memorials typically live under `memory/interaction/` (renaming from `feedback/` is supported via `subtree-aliases`)
+- **`at-startup`** / **`one-line`** — opt-in to the at-startup-visibility surface for high-frequency corrections
+
+{{slot-table}}
+
+## Canonical body structure
+
+Feedback memorials tend to be short (10-40 lines).  The shape:
+
+```markdown
+## The rule
+
+<One paragraph stating what to do (or not do).>
+
+## Why
+
+<The rationale.  If the feedback came with a reason, quote it
+verbatim.>
+
+## How to apply
+
+<Concrete action.  When does this rule fire?>
+
+## Canonical example
+
+<A past situation where the rule was given or enforced.  Quote
+verbatim where possible.>
+```
+
+## Verbatim voice discipline
+
+Feedback memorials lose value when paraphrased.  *"Never skip hooks"* into *"avoid flag-based bypass"* loses register.  **Quote directly.**  The verbatim quote is the epistemic anchor; paraphrase for clarity in surrounding sections but preserve the principal's exact words in the canonical statement.
+
+## State-change-detection (captureability)
+
+This class is mid-conversation-captureable.  Inject-triggers:
+- *"don't do X"*
+- *"yes that's right"*
+- *"learn behavior:"*
+
+When these signals fire, capture both **positive** AND **negative** rules — feedback isn't only corrections; explicit confirmation of behavior is also feedback worth preserving.
+
+## Pitfalls
+
+- **Losing the verbatim voice** — paraphrasing drifts; quote directly
+- **Drift toward patterns** — if the feedback is a named convention across projects, promote to `pattern`
+- **Principal-specific vs. general** — feedback is one principal's; if the rule applies to any collaborator, consider `anti-pattern` or `protocol`
+- **Capture-as-substitute-for-change** — writing a feedback memorial isn't a substitute for behavior change.  The memorial is *additional*, not the action itself.  A principal correcting the same behavior repeatedly despite documented feedback signals that capture isn't producing change
+
+## Composition with adjacent classes
+
+- **`anti-pattern`** — when feedback generalizes to a recurring failure shape across projects
+- **`pattern`** — when feedback states a positive convention worth naming
+- **`protocol`** — when feedback rises to meta-rule about the memory system itself
+- **`preference`** — when feedback is taste rather than rule
+- **`authorization`** — when feedback grants standing decision authority (different lifecycle: status-tracked, never absorbed into other types)
+- **`idea`** — when feedback is tentative (*"maybe we could X"*); ideas park until settled
+
+## See also
+
+- [`types/guidance.md`](guidance.md) — parent abstract supertype
+- [`types/anti-pattern.md`](anti-pattern.md) — when feedback generalizes
+- [`types/pattern.md`](pattern.md) — when feedback states a positive convention
+- [`types/protocol.md`](protocol.md) — meta-level rules
+- [`types/preference.md`](preference.md) — aesthetic rather than rule
+- [`types/authorization.md`](authorization.md) — standing decision authority
+- Sandbar substrate: `sandbar/schema/mm-guidance.edn`

@@ -1,0 +1,55 @@
+## What this predicate means
+
+**A `related` B** — A is connected to B in some way that doesn't fit a more specific typed-edge.  The catch-all of the vocabulary: when no stronger predicate (cites, refines, evidences, etc.) applies, `related` declares "these belong together" without committing to specific semantics.
+
+The substrate's discipline (per the consult-typed-edge-vocabulary discipline) is: reach for a SPECIFIC predicate first; fall back to `related` only when the relationship is genuinely lateral / mutual / associative.
+
+## Substrate identity
+
+- **Slot ident**: `{{predicate-ident}}`
+- **Domain**: `{{domain}}`
+- **Range**: `{{range}}`
+- **Cardinality**: `{{cardinality}}`
+
+## Formal signature
+
+`{{predicate-name}} : {{domain}} × {{range}} → Bool`
+
+## Characteristics
+
+- **Symmetric** (semantically) — if A is related to B, B is related to A.  Note: the substrate stores the relation in one direction; the reverse is computable via `:_<slot>` reverse-attribute lookup.
+- **Irreflexive** — a memorial doesn't relate to itself via `related`.
+- **NOT transitive** — relatedness doesn't compose.
+
+## When to reach for `related` vs adjacent predicates
+
+| Relationship | Predicate |
+|---|---|
+| Source-claim / authoritative input | `cites` (or `evidences` for stronger) |
+| Refinement of prior decision | `refines` (or `supersedes` for strong-form) |
+| Implementation of spec | `implements` (or `conforms-to` for broader) |
+| Causal motivation | `motivated-by` / `motivates` |
+| Documentation | `documents` / `documented-by` |
+| Composition | `composes-with` / `has-part` / `part-of` |
+| Lineage / inheritance | `descends-from` / `ancestor-of` |
+| Lateral / mutual / associative | **`related`** |
+
+## Formal ontology mappings
+
+Aligned predicates from established formal vocabularies:
+
+- **DC Terms** `dcterms:relation` — exact semantic match (most general relation predicate)
+- **SKOS** `skos:related` — close analogue (SKOS scope is concepts, not memorials, but the semantics align)
+- **OWL** `owl:topObjectProperty` — distant analogue (most-general object property; carries no semantic commitment)
+- **RDFS** — no direct equivalent (RDFS reserves dedicated predicates; `related` is intentionally underspecified)
+- **PROV-O** — no direct equivalent (PROV-O is provenance-typed; `related` is provenance-agnostic)
+
+Grounding references in the corpus:
+- [`references/rdfs_reference.md`](../references/rdfs_reference.md) — RDF / RDFS foundational vocabulary
+- [`references/pav_cito_bibo_reference.md`](../references/pav_cito_bibo_reference.md) — citation-typing prior art
+
+## See also
+
+- [`types/predicate.md`](../types/predicate.md) — predicate-type root
+- [`predicates/cites.md`](cites.md) — stronger source-claim alternative
+- [`predicates/touches.md`](touches.md) — lighter topical-engagement alternative

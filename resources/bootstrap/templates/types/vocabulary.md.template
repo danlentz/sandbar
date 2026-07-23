@@ -1,0 +1,32 @@
+## What a `type: vocabulary` instance is
+
+A first-class identifier for a NAMED VOCABULARY — e.g., `:vocab/skos` (SKOS Simple Knowledge Organization System), `:vocab/dcat` (Data Catalog Vocabulary), `:vocab/foaf` (Friend of a Friend), or any consumer-published vocabulary.  Vocabularies are the meta-level entities that GROUP concept-schemes + their tags into coherent authoritative sources.  Per the tag-modeling ADR §2.2, vocabularies are SKOS / DCAT-inspired identifiers; they sit above concept-schemes in the meta-vocabulary hierarchy.
+
+## When to declare a vocabulary
+
+- A vocabulary publisher emerges (this sandbar instance OR an external authority OR a community-published shared vocabulary)
+- Multiple concept-schemes share authorship + governance
+- Federation needs to identify the source of imported vocabulary content
+
+## Substrate identity
+
+- **Class ident**: `{{class-ident}}`
+- **Parent class(es)**: {{parent-classes}}
+
+## Slot vocabulary
+
+The class declares **{{slot-count}}** slots:
+
+{{slot-table}}
+
+## Composition with other classes
+
+- **`:mm/ConceptScheme`** — schemes can declare membership in a vocabulary
+- **`:mm/Dataset`** — datasets declare their used vocabularies via DCAT pattern
+- **`:mm/Linkset`** — cross-vocabulary mappings declared via linkset between vocabulary sources
+
+## See also
+
+- [`types/concept-scheme.md`](concept-scheme.md) — scheme container
+- [`types/dataset.md`](dataset.md) — DCAT dataset
+- [`types/linkset.md`](linkset.md) — cross-vocabulary linksets

@@ -1,0 +1,64 @@
+## What a `type: markdown-meta-type` instance is
+
+**The default meta-type** for the corpus.  Memorials under this meta-type are stored as markdown files with YAML frontmatter, under the `memory/` subtree, and accessed through the standard memorial-system CLI surface.
+
+Every existing type memorial in a sandbar-backed corpus (decision, plan, library, predicate, observation, ...) implicitly uses `markdown-meta-type` as its meta-type.  The `has-meta-type:` typed-edge is OMITTABLE on type memorials that follow this default; absence of the edge implies `markdown-meta-type`.
+
+Markdown-Meta-Type is a subtype of [`meta-type`](meta-type.md) → [`meta`](meta.md).
+
+## Substrate
+
+- **Storage**: markdown files (`*.md`) under the corpus subtree
+- **Format**: YAML frontmatter + markdown body
+- **Schema authority**: `types/<name>.md` memorials declare what fields each `type:` requires + recommends; `predicates/<name>.md` memorials declare what typed-edge predicates exist + their domain/range
+- **Versioning**: git (every commit captures a snapshot)
+
+## Access surface
+
+| Concern | Tool / surface |
+|---|---|
+| Full-text search | `/memory-search` (BM25F over name / description / tags / body / path) |
+| Single memorial view | `/memory-show <rel-path>` |
+| Subtree listing | `/memory-tree <path>` |
+| Type catalog | `/memory-type-tree` |
+| Typed-edge walks | `/memory-search --from <slug> --via <path-expr>` |
+| Library Card view | `/memory-library-card <rel>` |
+| Aggregation | `/memory-search --aggregate count --group-by ...` |
+
+## Substrate identity
+
+- **Class ident**: `{{class-ident}}`
+- **Parent class(es)**: {{parent-classes}}
+- **Ancestor chain**: {{ancestor-chain}}
+- **Native codec**: `{{native-codec}}`
+- **Codec type-keyword(s)**: {{codec-type-keywords}}
+
+## Slot vocabulary ({{slot-count}} slots inherited or declared)
+
+Markdown-Meta-Type memorials inherit `:mm/Memory` (and `meta-type`) with no additional class-specific slots — this concrete meta-type is the default and uses the standard memorial substrate.
+
+{{slot-table}}
+
+## Discoverability
+
+Type memorials using `markdown-meta-type` are discovered via:
+
+- `/memory-tree memory/types` — enumerate type memorials
+- `/memory-search --types type` — search across type memorials
+- `/memory-type-tree` — type hierarchy view
+
+## When to declare `has-meta-type: markdown-meta-type`
+
+**You don't need to** — it's the default.  The `has-meta-type:` edge is OMITTABLE on type memorials using this default; absence implies `markdown-meta-type`.
+
+Declare it explicitly only in two circumstances:
+
+1. Authoring a type that *could* use a different meta-type (e.g., a code-related type) but you want to assert it uses markdown anyway
+2. As pedagogical example demonstrating the typed-edge pattern
+
+## See also
+
+- [`types/meta-type.md`](meta-type.md) — parent abstract supertype
+- [`types/code-meta-type.md`](code-meta-type.md) — alternative substrate (source code)
+- [`predicates/has-meta-type.md`](../predicates/has-meta-type.md) — typed-edge linking type to meta-type
+- Sandbar substrate: `sandbar/schema/mm-meta.edn`

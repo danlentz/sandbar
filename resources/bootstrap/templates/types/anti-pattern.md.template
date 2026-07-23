@@ -1,0 +1,101 @@
+## What a `type: anti-pattern` instance is
+
+A named, reusable **negative convention** — the wrong move in a class of situations, why it's attractive despite being wrong, and what to do instead.  Every anti-pattern must cite at least one positive pattern as the alternative.
+
+Anti-patterns are the **don't-do-these**.  Their value is in making the temptation explicit so future collaborators recognize it before falling in.  *"Don't grep when xref knows"* is more useful than silence because it names the specific temptation (grep).
+
+Anti-pattern is a subtype of [`guidance`](guidance.md) — memorials that prescribe action (negative prescription here).
+
+## When to create an anti-pattern memorial
+
+- You catch yourself — or another collaborator — doing the wrong thing, and the temptation has a recurring shape worth naming
+- A principal explicitly flags a failure mode (*"don't do X"* / *"stop doing Y"*)
+- A pattern memorial has grown a "When NOT to apply" section large enough to deserve its own inverted memorial
+- A failure mode keeps showing up across sessions and the corrective signal isn't sticking
+
+## When NOT to create one
+
+- The wrong move is obvious and nobody would actually do it; anti-patterns earn their keep on things that are **tempting**
+- The rule is a project-specific one-off (use `feedback` instead)
+- The anti-pattern's positive alternative doesn't have a named pattern yet — write the pattern first, then the anti-pattern can cite it
+
+## Substrate identity
+
+- **Class ident**: `{{class-ident}}`
+- **Parent class(es)**: {{parent-classes}}
+- **Ancestor chain**: {{ancestor-chain}}
+- **Native codec**: `{{native-codec}}`
+- **Codec type-keyword(s)**: {{codec-type-keywords}}
+
+## Slot vocabulary ({{slot-count}} slots inherited or declared)
+
+Anti-pattern memorials inherit `:mm/Memory` plus guidance-specific extensions.  The audit invariant **`anti-pattern-cites-positive-alternative`** (error-severity) requires at least one `patterns/` path in `related:` — the positive alternative is load-bearing.
+
+{{slot-table}}
+
+## Canonical body structure
+
+```markdown
+## The anti-pattern
+
+<What the wrong move looks like, concretely.>
+
+## Why it's tempting
+
+<The local reasoning that leads here.  This section makes the
+memorial useful — if the reader doesn't recognize the temptation,
+they won't apply the warning.>
+
+## Why it's wrong
+
+<The downstream cost.  Not just "it's bad" but the specific
+breakage.  Concrete consequences.>
+
+## The alternative
+
+<Link to the positive pattern(s).  One sentence explaining how
+the alternative addresses the temptation.>
+
+## Canonical example
+
+<A real case where this was caught and corrected.  If possible,
+a commit hash, file:line reference, or past-conversation excerpt.>
+
+## See also
+
+<Related patterns (the positive complements), adjacent anti-patterns,
+relevant feedback memorials.>
+```
+
+## The positive-alternative rule
+
+Anti-patterns without a counter-pattern are **moralizing, not guidance**.  The audit invariant flags this as error-severity.  Reasons:
+
+- Future readers need to know not just "don't do X" but "do Y instead"
+- The positive alternative grounds the negative rule in something actionable
+- The pattern + anti-pattern pair forms a bidirectional teaching surface (read either entry, find the other)
+
+If the alternative doesn't exist yet, **write it first**.  Don't ship an orphan anti-pattern hoping the alternative will catch up.
+
+## Pitfalls
+
+- **Missing positive alternative** — audit flags this as error-severity
+- **Too abstract** — *"don't write bad code"* is noise; anti-patterns must name specific failure shapes
+- **Preaching to the choir** — if nobody has ever actually done this anti-pattern, documenting it is over-specification
+- **Overlap with related anti-pattern** — if two anti-patterns describe the same failure at different zoom levels, collapse or cross-reference
+- **Anti-pattern-as-feedback** — if the rule is project-specific (not cross-cutting), use `feedback` for the principal-correction or `preference` for an aesthetic; reserve anti-pattern for genuinely recurring failure shapes
+
+## Composition with adjacent classes
+
+- **`pattern`** — every anti-pattern cites at least one (positive alternative)
+- **`feedback`** — anti-patterns frequently emerge from accumulated feedback; once a feedback pattern recurs across sessions, it may graduate to anti-pattern
+- **`observation`** — an observation noticing a failure mode often precedes the anti-pattern that names it
+- **`bug`** — bug memorials may cite anti-patterns; the bug is the in-vivo instance, the anti-pattern is the named recurring shape
+
+## See also
+
+- [`types/guidance.md`](guidance.md) — parent abstract supertype
+- [`types/pattern.md`](pattern.md) — the positive complement (required cite)
+- [`types/feedback.md`](feedback.md) — for project-specific corrections
+- [`types/observation.md`](observation.md) — observations of failures often precede the named anti-pattern
+- Sandbar substrate: `sandbar/schema/mm-guidance.edn`

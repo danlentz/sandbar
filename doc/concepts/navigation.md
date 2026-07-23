@@ -86,12 +86,12 @@ EDN path expression → parse → canonicalize via algebraic identities → comp
 
 ## Composition + cross-axis interaction
 
-Navigation is one axis of four (search / aggregate / navigate / orient).  Stage 29 of the comprehensive arc will wire `:from` + `:via` opts onto the search and aggregate verbs so a graph-walk neighborhood becomes the candidate set for ranking / counting.
+Navigation is one axis of four (search / aggregate / navigate / orient).  The cross-axis composition is wired: `:from` + `:via` opts are accepted on the search and aggregate verbs so a graph-walk neighborhood becomes the candidate set for ranking / counting.  Path expressions composed at the search / aggregate boundary use the same path-grammar dialect as `navigate.path-via`.
 
 The composition contract per `decisions/multi_axis_search_composition_2026_05_08.md`:
 
 - **Categorical axes filter** — type restriction, predicate restriction
-- **Numeric axes rank** — BM25F, structural-rank
+- **Numeric axes rank** — BM25F, structural-rank (`:degree` / `:backlink-density` / `:recency` / `:freshness`)
 - **Graph-walk is candidate-set generation** — `:from` + `:hops` (or `:via`) restricts the population for downstream filter + rank
 
 This is the hybrid filter-then-rank model — same shape as SPARQL's `WHERE` clauses chained with `ORDER BY`.
@@ -111,8 +111,8 @@ The path-grammar surface (parse → IR → compile → execute) lives in `sandba
 ## What navigation is NOT for
 
 - **Fulltext relevance** — use `sandbar.search`.
-- **Count / group / rank over a navigation neighborhood** — use `sandbar.aggregate`, composing via Stage 29 cross-axis `:from` + `:via` opts (or compose at the consumer level today).
-- **Session-state summarization** — use `sandbar.orient` (Phase O; arrives at Stages 19-26).
+- **Count / group / rank over a navigation neighborhood** — use `sandbar.aggregate`, composing via cross-axis `:from` + `:via` opts on the search and aggregate verbs.
+- **Library-card style multi-axis neighborhood view** — use `sandbar.orient.library-card` (the substrate-shipped axis of the orient surface).
 - **Eigenvector centrality (PageRank-style)** — outside scope; structural-rank uses direct edge counts.
 
 ## Performance characteristics

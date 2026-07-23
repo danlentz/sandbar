@@ -1,0 +1,38 @@
+## What a `type: frontmatter` instance is
+
+A first-class representation of LONG-TAIL frontmatter — keys present in a memorial's YAML frontmatter that DON'T have a corresponding `:mm.memory/*` slot declaration.  Rather than dropping unknown keys at parse time, the codec preserves them via a `:mm/Frontmatter` entity referenced from the memorial's `:mm.memory/frontmatter` slot.  The extra keys are serialized as EDN-encoded structured data in `:mm.frontmatter/extra`.
+
+## When `:mm/Frontmatter` materializes
+
+The codec materializes a `:mm/Frontmatter` entity ONLY when a memorial's frontmatter has keys that aren't declared on its class.  Memorials with fully-declared frontmatter have no `:mm.memory/frontmatter` ref (the slot is nil).
+
+This is the "extras" capture pattern — preserves data the substrate doesn't formally typify while still being round-trip-stable.
+
+## When to promote vs keep as extras
+
+Extras are FINE for genuinely one-off or transient keys.  Promote to a first-class `:mm.<class>/*` slot when:
+
+- The key recurs across multiple memorials (≥3 occurrences)
+- The key has stable substrate-level semantics (not just informal)
+- Queries against the key would benefit from indexed storage
+
+Per the predicate-vocabulary-gap pattern, schema extension supersedes extras-capture for recurring patterns.
+
+## Substrate identity
+
+- **Class ident**: `{{class-ident}}`
+- **Parent class(es)**: {{parent-classes}}
+
+## Slot vocabulary
+
+The class declares **{{slot-count}}** slot(s):
+
+{{slot-table}}
+
+## Composition with other classes
+
+- **`:mm/Memory`** — memorial's `:mm.memory/frontmatter` ref points at a Frontmatter entity carrying the extras
+
+## See also
+
+- [`types/memory.md`](memory.md) — parent memorial class

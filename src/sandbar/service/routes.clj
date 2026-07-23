@@ -35,8 +35,18 @@
   (endpoint/return {"Content-Type" "image/png"} http-status/success (favicon)))
 
 (def routes
-  `[[["/" {:get home-page} ^:interceptors [(body-params/body-params (content/body-parsers))
-                                           params/url-decode-path-params]
+  ;; NOTE: body-params is ALREADY added by `conn/with-default-interceptors`
+  ;; in sandbar.server.pedestal/create-connector-map.  Adding it again at the
+  ;; route level would cause it to run TWICE — the first run consumes the
+  ;; body stream + populates :json-params; the second run reads from the now-
+  ;; empty stream + OVERWRITES :json-params with nil.  This was Friction
+  ;; Item #9 of the 0.1.1 co-evolution arc, surfaced 2026-05-20.
+  ;;
+  ;; If/when sandbar wants its CSV / EDN-with-tagged-literal extensions, the
+  ;; right move is to replace `with-default-interceptors` with a custom
+  ;; interceptor stack that uses `(body-params/body-params (content/body-parsers))`
+  ;; instead of the default — NOT to layer a second body-params on top.
+  `[[["/" {:get home-page} ^:interceptors [params/url-decode-path-params]
       ["/favicon.ico" {:get favicon-ico}]
 
       ;; Public auth endpoints (no authentication required)
@@ -166,8 +176,16 @@
                               content/log-response
                               content/accept-content
                               params/parsed-params
+                              params/validated-params
                               mcp-auth/bearer-interceptor
-                              mcp-auth/require-bearer]
+                              mcp-auth/require-bearer
+                              ;; AFTER require-bearer: only AUTHENTICATED
+                              ;; callers may suppress their own event row
+                              ;; (401 probes stay logged).  Serves the
+                              ;; PreToolUse recall hook's per-call header
+                              ;; (~7k rows/day stanched) per the 2026-07-21
+                              ;; reduce-substantially events ruling.
+                              event-util/honor-suppress-event-logging-header]
        {:post mcp-transport/mcp-handler}
        ;; SSE channel for server → client notifications (Stage C.3)
        ;; per ADR B.1.1 + B.1.4 + B.1.5. Subscribers managed by

@@ -1,0 +1,94 @@
+## What a `type: content-type` instance is
+
+A **single-axis pointer** characterizing one dimension of external-content shape — either a **format** (MIME type) or a **purpose** (kind), never both.  Sibling of [`resource`](resource.md) under the parent [`reference`](reference.md); both are lightweight reification primitives for the external-content frontier.
+
+The two axes are orthogonal:
+
+| Axis | Field | Examples | Source ontology |
+|---|---|---|---|
+| MIME (format) | `mime:` | `text/html`, `application/pdf`, `application/json`, `text/plain` | IANA media types |
+| kind (purpose) | `kind:` | `talk`, `paper`, `documentation`, `spec`, `dataset` | corpus-local |
+
+**Each `content-types/<slug>.md` declares EXACTLY ONE axis** — populates `mime:` for a format-axis entry, populates `kind:` for a purpose-axis entry, never both.
+
+Content-Type is a sub-subtype: a subtype of [`reference`](reference.md), which is itself a subtype of [`artifact`](artifact.md).
+
+## Why single-axis (and why not compound)
+
+The compound-entry approach (`paper-pdf`, `paper-html`, `paper-md`, ...) is explicitly rejected because:
+
+- Compound entries **split backlink signal** — a query for *"show every PDF"* would have to union backlinks across every `*-pdf` compound entry instead of walking from a single `content-types/pdf.md` node
+- **Combinatorial growth** — every new kind × every new MIME = a new compound entry; quickly explodes
+- **Loses orthogonality** — the two axes are clean and independently queryable when each entry carries one axis
+
+Resources combining both axes use a multi-valued `content-type:` field:
+
+```yaml
+# resources/some-paper-in-pdf.md
+content-type:
+  - content-types/pdf.md
+  - content-types/paper.md
+```
+
+Two pointers per resource, but preserves single-axis queryability.
+
+## When to create a content-type memorial
+
+Reify a content-type when:
+
+1. The corpus cites resources of that format / purpose more than once
+2. The format / purpose carries metadata worth recording (canonical MIME, file extensions, structured-vs-binary axis, project-tooling parseability)
+3. The reification opens useful queries (*"show every PDF the corpus cites"*, *"show every paper"*)
+
+## When NOT to create one
+
+- One-off rare formats (a `.bib` file cited once) — inline the format in body text
+- Hyper-specific MIMEs that won't compound
+- Compound combinations (`paper-pdf`) — never; multi-reference at resource level instead
+
+## Substrate identity
+
+- **Class ident**: `{{class-ident}}`
+- **Parent class(es)**: {{parent-classes}}
+- **Ancestor chain**: {{ancestor-chain}}
+- **Native codec**: `{{native-codec}}`
+- **Codec type-keyword(s)**: {{codec-type-keywords}}
+
+## Slot vocabulary ({{slot-count}} slots inherited or declared)
+
+Content-Type memorials inherit `:mm/Memory` (and `reference`) plus axis-specific extensions:
+
+- **`mime`** — canonical MIME (for format-axis entries) — exactly one of mime/kind
+- **`kind`** — purpose label (for purpose-axis entries) — exactly one of mime/kind
+- **`extensions`** — for MIME-axis entries
+- **`structured?`** — markup vs data-format vs binary
+- **`bb-parseable?`** — corpus-tool parseability hint
+- **`language-class`** — markup / data-format / binary
+
+{{slot-table}}
+
+## Audit invariants
+
+- **`content-type-has-exactly-one-axis`** (warning) — entries with both `mime:` and `kind:` populated, OR neither populated, are flagged
+- **`resource-content-type-is-typed`** (warning) — resource `content-type:` field must point at `content-types/*.md` rel-paths, not literal strings
+
+## Canonical body shape
+
+Most content-types have **no body** — they're pure-frontmatter pointers.  When body content exists, typically:
+
+- One paragraph: what the format / purpose is, with pointers to canonical specs (RFC 8259 for JSON, ISO 32000 for PDF, etc.)
+- Project-specific notes if the format has corpus-relevant nuances (e.g., `text/html` content can be parsed via project tooling; `pdf` is opaque without external tools)
+
+## Pitfalls
+
+- **Declaring both axes** — flagged by audit; single-axis discipline is load-bearing
+- **Compound slugs** — `paper-pdf.md` is wrong; create separate entries, multi-reference at resource level
+- **Free-form `content-type:` in resources** — must point at `content-types/*.md` rel-paths, not literal strings
+- **Stale extension lists** — when a MIME's accepted extensions evolve, update; authoritative source is IANA
+
+## See also
+
+- [`types/reference.md`](reference.md) — parent type
+- [`types/resource.md`](resource.md) — sibling sub-subtype; resources cite content-types via `content-type:` field
+- [`types/artifact.md`](artifact.md) — grandparent abstract supertype
+- Sandbar substrate: `sandbar/schema/mm-artifact.edn`

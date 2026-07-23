@@ -1,0 +1,47 @@
+## What this predicate means
+
+**A `realized-by` B** — B makes A concrete / actual (inverse of `realizes`).  The author-side advertisement: "this abstraction has known instantiations."
+
+Common shapes:
+- A plan realized-by the session-log of its execution
+- A design realized-by the artifact that embodies it
+- A pattern realized-by an implementation memorial
+
+## Substrate identity
+
+- **Slot ident**: `{{predicate-ident}}`
+- **Domain**: `{{domain}}`
+- **Range**: `{{range}}`
+- **Cardinality**: `{{cardinality}}`
+- **Inverse of**: `:mm.memory/realizes`
+
+## Formal signature
+
+`{{predicate-name}} : {{domain}} × {{range}} → Bool`
+
+## When to use
+
+Declare `realized-by:` on A when:
+- A is an abstraction (plan / design / idea / specification)
+- B is a known concrete realization of A
+- The author wants to surface the instantiation pointer
+
+For exhaustive enumeration, reverse-attribute lookup (`:_mm.memory/realizes`) is usually cheaper.
+
+## Formal ontology mappings
+
+Aligned predicates from established formal vocabularies:
+
+- **IAO** `iao:realized_in` — close analogue (in IAO's realization-of relation, the directionality is "abstract realized in concrete")
+- **PROV-O** — no direct flat equivalent (uses `prov:wasGeneratedBy` from the realization side)
+- **OWL** `owl:inverseOf` — sandbar declares `:mm.memory/realized-by` as `inverse-of :mm.memory/realizes`
+- **DC Terms** — no direct equivalent
+- **CiTO** — no direct equivalent
+- **SKOS** — no direct equivalent
+
+Grounding references in the corpus:
+- [`references/rdfs_reference.md`](../references/rdfs_reference.md) — IAO substrate
+
+## See also
+
+- [`predicates/realizes.md`](realizes.md) — forward direction

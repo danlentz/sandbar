@@ -30,9 +30,15 @@
     (let [names (map :name tools/verb-catalog)]
       (is (= (count names) (count (distinct names))))))
 
-  (testing "names follow the sandbar.<group>.<verb> convention"
+  (testing "names follow the sandbar.<group>(.<verb>)? convention"
+    ;; Most verbs are sandbar.<group>.<verb> (3 dot-separated segments).
+    ;; Stage 7.D introduced sandbar.ground (2 segments) as an intentional
+    ;; sandbar-level entry point — per ADR §2.5, the grounding workflow is
+    ;; load-bearing and NOT in a sub-namespace.  Regex accepts both forms.
+    ;; Verb segments may contain digits (e.g., bm25f algorithm-name) — Stage
+    ;; 5.B-pre 0.1.1 co-evolution arc adds sandbar.search.bm25f.
     (doseq [entry tools/verb-catalog]
-      (is (re-matches #"sandbar\.[a-z]+\.[a-z][a-z\-]*"
+      (is (re-matches #"sandbar\.[a-z]+(\.[a-z][a-z0-9\-]*)?"
                       (:name entry))
           (str ":name doesn't match convention: " (:name entry))))))
 
@@ -71,6 +77,8 @@
     (let [names (set (map :name tools/verb-catalog))]
       (is (contains? names "sandbar.entity.create"))
       (is (contains? names "sandbar.entity.find"))
+      (is (contains? names "sandbar.entity.find-by-rel-path")
+          "Gap 1 — rel-path lookup avoids ident-guessing")
       (is (contains? names "sandbar.entity.update"))
       (is (contains? names "sandbar.entity.validate"))))
 
@@ -82,7 +90,9 @@
       (is (contains? names "sandbar.workflow.transition"))
       (is (contains? names "sandbar.workflow.process-state"))
       (is (contains? names "sandbar.workflow.process-history"))
-      (is (contains? names "sandbar.workflow.active-processes"))))
+      (is (contains? names "sandbar.workflow.active-processes"))
+      (is (contains? names "sandbar.workflow.orchestrate")
+          "ι.3 substrate orchestrator MCP verb (W4.1 Increment C)")))
 
   (testing "validation service verbs"
     (let [names (set (map :name tools/verb-catalog))]
@@ -115,7 +125,20 @@
 
   (testing "orientation library-card verb (Phase O — fulltext arc)"
     (let [names (set (map :name tools/verb-catalog))]
-      (is (contains? names "sandbar.orient.library-card")))))
+      (is (contains? names "sandbar.orient.library-card"))))
+
+  (testing "tag-vocabulary verbs (Stage 7.D — tag-modeling first-class arc)"
+    ;; Per decisions/tag_as_first_class_introspectable_type_in_metamodel_2026_05_20.md §2.5
+    (let [names (set (map :name tools/verb-catalog))]
+      (is (contains? names "sandbar.ground")           "compositional grounding workflow (sandbar-level)")
+      (is (contains? names "sandbar.tag.lookup")       "tag-vocabulary primitive")
+      (is (contains? names "sandbar.tag.define")       "author new canonical tag")
+      (is (contains? names "sandbar.tag.audit")        "run 7 tag-lifecycle invariants")
+      (is (contains? names "sandbar.tag.consolidate")  "merge tags; preserve alt-label")
+      (is (contains? names "sandbar.tag.split")        "partition into narrower tags")
+      (is (contains? names "sandbar.tag.rename")       "rename canonical; preserve hidden-label")
+      (is (contains? names "sandbar.tag.align")        "cross-vocabulary SKOS mapping")
+      (is (contains? names "sandbar.tag.harmonize")    "bulk-harmonization DRY-RUN report"))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Aggregation verb input-schema + handler-error tests (Stage 14)
@@ -265,3 +288,48 @@
     (let [r (tools/datomic-type->json-schema :db.type/oddball)]
       (is (= "string" (:type r)))
       (is (re-find #":db.type/oddball" (:description r))))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Coerce-path hardening — slot-key normalization + instant coercion
+;; (W0.found, 2026-06-29).  Both entity.create + entity.update route their
+;; :slots through coerce-slot-map -> normalize-slot-key / coerce-value, so
+;; these pure tests cover both paths.  Fixes:
+;;  (a) colon-prefixed slot-keys silently dropped — cheshire's :key-fn
+;;      keyword mangles a JSON key ":ns/name" into a keyword whose NAMESPACE
+;;      carries the colon, which matched no declared slot;
+;;  (b) entity.update instant coercion threw MCP -32603 on a bare date string.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(deftest slot-candidate-keys-includes-mangled-and-original-shapes
+  (let [cands (set (#'tools/slot-candidate-keys :mm.tag/definition))]
+    (testing "the cheshire-mangled colon-prefixed keyword (the 2026-06-29 bug)"
+      (is (= ":mm.tag" (namespace (keyword ":mm.tag/definition")))
+          "documents the mangling: the leading colon lands in the namespace")
+      (is (contains? cands (keyword ":mm.tag" "definition"))
+          "mangled colon-namespace keyword is now a candidate (was the silent-drop gap)"))
+    (testing "all four original shapes preserved (strict superset)"
+      (is (contains? cands :mm.tag/definition)   "ident keyword")
+      (is (contains? cands "definition")         "bare local name — tag.define relies on this")
+      (is (contains? cands ":mm.tag/definition") "printed-ident string")
+      (is (contains? cands "mm.tag/definition")  "stripped-colon string"))))
+
+(deftest ->instant-accepts-bare-date-and-full-instant
+  (testing "bare date (the entity.update gap) -> UTC start-of-day"
+    (let [d (#'tools/->instant "2026-06-29")]
+      (is (instance? java.util.Date d))
+      (is (= (java.time.Instant/parse "2026-06-29T00:00:00Z") (.toInstant d)))))
+  (testing "full ISO-8601 instant still parses"
+    (let [d (#'tools/->instant "2026-06-29T12:30:00Z")]
+      (is (= (java.time.Instant/parse "2026-06-29T12:30:00Z") (.toInstant d)))))
+  (testing "zoneless local date-time interpreted UTC"
+    (let [d (#'tools/->instant "2026-06-29T12:30:00")]
+      (is (= (java.time.Instant/parse "2026-06-29T12:30:00Z") (.toInstant d)))))
+  (testing "non-string passes through unchanged"
+    (let [now (java.util.Date.)]
+      (is (identical? now (#'tools/->instant now))))))
+
+(deftest coerce-value-instant-no-longer-throws-on-bare-date
+  ;; Regression for the live MCP -32603 on a date-only :mm.memory/last-touched
+  ;; update (2026-06-29).
+  (is (instance? java.util.Date
+                 (#'tools/coerce-value "2026-06-29" :db.type/instant false))))

@@ -12,7 +12,7 @@ Three commitments justify the choice:
 2. **External tooling works immediately.**  `grep -r` on the corpus produces meaningful results.  `git diff` produces meaningful patches.  Every editor opens the file.  These are not Sandbar features; they are consequences of the canonical form being a flat text file.
 3. **Round-trip discipline is enforceable.**  Markdown + YAML have well-specified grammars (CommonMark for the body; YAML 1.2 for the header); the codec layer (see [`codec-layer.md`](codec-layer.md)) maintains semantic equivalence through parse/emit.
 
-The filesystem-canonical commitment (see [`project-graph.md`](project-graph.md)) operates one level up — directory hierarchies are canonical for collections of entities; markdown is canonical for individual entities.
+The filesystem-canonical commitment (see [`projection.md`](projection.md)) operates one level up — directory hierarchies are canonical for collections of entities; markdown is canonical for individual entities.
 
 ## Lineage
 
@@ -54,13 +54,12 @@ A Markdown document's structural shape — H1/H2/H3 headers nesting into section
 
 | Slot                              | Meaning                                                                          |
 |-----------------------------------|----------------------------------------------------------------------------------|
-| `:mm.section/heading`               | The header's text content                                                        |
-| `:mm.section/heading-level`               | The header level (1 / 2 / 3)                                                     |
-| `:mm.section/body`                | The Markdown body between this header and the next                              |
-| `:mm.section/parent`              | Reference to the enclosing parent section (or `:dt/Resource` for top-level)      |
-| `:mm.section/previous-sibling`    | Reference to the previous section at this level under the same parent           |
-| `:mm.section/next-sibling`        | Reference to the next section at this level under the same parent               |
-| `:mm.section/parent` (host `mm/Memory` for top-level sections; nested `mm/Section` for sub-sections)     | Reference to the `:mm/Memory` containing this section                           |
+| `:mm.section/heading`             | The header's text content                                                        |
+| `:mm.section/heading-level`       | The header level (1 / 2 / 3)                                                     |
+| `:mm.section/body`                | The Markdown body between this header and the next                               |
+| `:mm.section/parent`              | Reference to the enclosing entity — the host `:mm/Memory` for top-level sections; the nested parent `:mm/Section` for sub-sections |
+| `:mm.section/previous-sibling`    | Reference to the previous section at this level under the same parent            |
+| `:mm.section/next-sibling`        | Reference to the next section at this level under the same parent                |
 
 ### Path-derived idents
 
@@ -186,7 +185,7 @@ Choosing markdown as canonical is the substrate-level decision that made these o
 ## See also
 
 - [`codec-layer.md`](codec-layer.md) — `sandbar.codec.markdown` is the codec implementation
-- [`project-graph.md`](project-graph.md) — markdown files in a hierarchy form the canonical projection
+- [`projection.md`](projection.md) — markdown files in a hierarchy form the canonical projection
 - [`metamodel.md`](metamodel.md) — `:mm/Memory` and `:mm/Section` are the metamodel entities markdown round-trips with
 - [`doc/api/codec-protocol.md`](../api/codec-protocol.md) — mechanical protocol surface
 - [`doc/guides/implementing-a-codec.md`](../guides/implementing-a-codec.md) — authoring a codec for a new wire format

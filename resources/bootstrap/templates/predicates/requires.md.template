@@ -1,0 +1,64 @@
+## What this predicate means
+
+**A `requires` B** — applying or adhering to memorial A *requires* familiarity with / adherence to memorial B.  The dependency typed-edge: a protocol requires another protocol; a guidance requires a reference; an artifact requires a method specification.  Forms a **strict partial order** — strict because A requires B but B doesn't require A back (asymmetric), no memorial requires itself (irreflexive), and dependency composes transitively (A requires B + B requires C ⊨ A requires C).
+
+## Substrate identity
+
+- **Slot ident**: `{{predicate-ident}}`
+- **Domain**: `{{domain}}`
+- **Range**: `{{range}}`
+- **Cardinality**: `{{cardinality}}`
+- **`:dt/type`**: `:dt/StrictPartialOrderProperty` (intersection class: asymmetric + irreflexive + transitive)
+
+## Formal signature
+
+`{{predicate-name}} : {{domain}} × {{range}} → Bool`
+
+## Characteristics
+
+- **Transitive** — A requires B + B requires C ⊨ A requires C (OWL 2 RL `prp-trp`)
+- **Asymmetric** — A requires B doesn't imply B requires A (OWL 2 RL `prp-asyp`)
+- **Irreflexive** — a memorial doesn't require itself (OWL 2 RL `prp-irp`)
+- **Acyclic** — dependency cycles are schema bugs; `mem audit` enforces
+
+## When to use requires
+
+Default to `requires` ONLY after checking:
+1. Is this a citation? → `cites` (weaker)
+2. Is this evidence? → `evidences` (different semantic)
+3. Is this consumption of a library? → `consumes` (library-specific)
+4. Is this conformance? → `conforms-to` (declarative shape)
+5. Is this dependency-strength? → `requires`
+
+## Adjacent predicates
+
+| Strength | Predicate |
+|---|---|
+| Strongest dependency | **`requires`** — adherence requires the target |
+| Library-specific | `consumes` — uses target as software dependency |
+| Shape-declared | `conforms-to` — implements target's specification |
+| Lighter | `cites` — source-pointer without dependency |
+| Lightest | `mentions` — passing reference |
+
+## Formal ontology mappings
+
+Aligned predicates from established formal vocabularies:
+
+- **DOAP** `doap:repository`-style dependencies (artifact-level)
+- **SKOS** no direct equivalent (SKOS is concept-relations, not dependency)
+- **RDFS / OWL** `owl:imports` — analogous at ontology level
+- **PROV-O** `prov:wasInfluencedBy` — distant analogue
+
+## Strict partial order entailments
+
+Per `:dt/StrictPartialOrderProperty` intersection-class membership (sandbar.db.entailment.core):
+
+- `prp-trp` derives the transitive closure: query "what does X transitively require?"
+- `prp-asyp-violation` surfaces (A requires B) ∧ (B requires A) — schema bugs
+- `prp-irp-violation` surfaces (A requires A) — never valid
+
+## See also
+
+- [`predicates/consumes.md`](consumes.md) — library-specific variant
+- [`predicates/conforms-to.md`](conforms-to.md) — shape conformance
+- [`predicates/cites.md`](cites.md) — weaker source-pointer

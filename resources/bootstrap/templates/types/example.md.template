@@ -1,0 +1,122 @@
+## What a `type: example` instance is
+
+A reusable, self-contained **illustration of a concept**.  An example memorial answers: *"Here is a clear, memorable way to show what X is, such that someone unfamiliar with X can grasp it from this one piece."*
+
+Examples are orthogonal to the other authoring types:
+
+- A **`briefing`** is audience-targeted and occasion-bound (a specific Slack post, a specific standup, a specific interview).  It can be written once and delivered once.
+- A **`reference`** is a retrieval-shaped catalog of external primitives.  A reader consults it for specific fragments.
+- A **`synthesis`** is a derived claim across ≥3 citations.  It asserts.
+- An **`example`** demonstrates.  It's short enough to hold in memory, concrete enough to be memorable, and concept-anchored enough to be reached for when a similar question arises.
+
+The same well-crafted example can be dropped into a briefing as §2 illustration, embedded in a pattern memorial as canonical instance, lifted into onboarding doc for a new collaborator, quoted in a Slack thread when a question re-surfaces, or cited from a reference catalog as the *"see this example"* pointer.  That reusability across occasions is why `example` is its own type.
+
+Example is a subtype of [`artifact`](artifact.md) — a durable, self-contained output with memorial value beyond its immediate trigger.
+
+## Why examples are first-class
+
+The motivating discipline: when a conversation produces a clear, reusable explanation, that explanation is an asset.  Without a home for it, it gets retyped the next time the same question surfaces (or worse, a less-clean variant gets produced under time pressure).  Making examples a first-class type with typed-edge linkage to the concepts they illustrate means:
+
+- The graph can answer *"what are all the examples of concept X we have on hand?"* via the `demonstrates:` typed-edge
+- Authoring a new post / briefing starts with *"which examples do we already have for the concepts this will cover?"*
+- Clear explanations accumulate across the corpus as a recognized pattern, not as scattered paragraphs inside various briefings
+
+## When to create an example memorial
+
+- A conversation produces an explanation of a concept that's clear, self-contained, and likely to be reached for again
+- A briefing / post / thread contained an illustration that deserves to live as its own artifact (extract it)
+- Someone asked *"how is X different from Y"* and the answer crystallized the distinction in a way worth preserving
+- A pattern memorial would benefit from a canonical example; the example is complex enough to warrant its own file rather than inlining
+
+## When NOT to create one
+
+- The explanation is inseparable from a specific audience or occasion (use `briefing`)
+- The explanation is a derived claim aggregating multiple sources (use `synthesis`)
+- The illustration is a prescription *"do this, because"* rather than a demonstration (use `pattern`)
+- The content is a catalog of primitives consulted on demand (use `reference`)
+- The content is too short to warrant its own file; inline it where it's used
+
+## Substrate identity
+
+- **Class ident**: `{{class-ident}}`
+- **Parent class(es)**: {{parent-classes}}
+- **Ancestor chain**: {{ancestor-chain}}
+- **Native codec**: `{{native-codec}}`
+- **Codec type-keyword(s)**: {{codec-type-keywords}}
+
+## Slot vocabulary ({{slot-count}} slots inherited or declared)
+
+Example memorials inherit `:mm/Memory` plus type-specific extensions:
+
+- **`demonstrates`** — typed-edge to the concept(s) this example illustrates.  **At least one entry required** (audit-enforced)
+- **`origin`** — where the example came from (conversation, extracted from briefing, authored standalone)
+- **`audience`** — narrowing hint if the example assumes domain familiarity
+- **`length`** — `short` / `medium` / `long` — signal for when to reach for it
+
+{{slot-table}}
+
+## Audit invariant: example-names-concept
+
+Every `type: example` memorial must have at least one entry in `demonstrates:` frontmatter.  An example without a declared concept is **untethered** — future retrieval can't surface it by what it illustrates.  Enforced at error-severity.
+
+## Canonical body structure
+
+```markdown
+## The prompt / question
+
+<Verbatim or paraphrased.  Preserves the register that made the
+example land.  If authored standalone, describe what question
+it's designed to answer.>
+
+## Brief setup
+
+<The minimum context a stranger needs to parse the answer.  If
+this section grows past a few paragraphs, the genre is probably
+wrong — consider `briefing` or `reference`.>
+
+## The answer / demonstration
+
+<The substantive content.  This is the part that gets lifted into
+future contexts.>
+
+## What it demonstrates  (optional)
+
+<One-liner explicitly naming the concept(s) the example illustrates.
+Ties back to `demonstrates:` frontmatter.>
+
+## See also
+
+<Cross-links to concepts, related examples, deeper references.>
+```
+
+## State-change-detection (captureability)
+
+This class is mid-conversation-captureable.  Inject-triggers:
+- *"that was useful"*
+- *"good example"*
+
+When these signals fire, capture-first with explicit `demonstrates:` edge to the illustrated concept.
+
+## Pitfalls
+
+- **Inlining examples inside briefings** — the example then ships with the briefing but isn't retrievable later.  Preferred: write the example as its own memorial, then cite from the briefing body
+- **Examples without `demonstrates:`** — audit catches this as error-severity; the deeper failure is that the example can't be found when the concept comes up again
+- **Treating examples as tutorials** — an example demonstrates one concept clearly; a tutorial walks through progressive skill-building.  Different genres
+- **Over-setting up** — `## Brief setup` should be the minimum context needed; if setup dominates, the genre is briefing or reference
+
+## Composition with adjacent classes
+
+- **`briefing`** — occasion-bound cousin; examples are audience-agnostic
+- **`reference`** — retrieval-shaped cousin; examples illustrate one concept, references catalog a domain
+- **`synthesis`** — derived-claim cousin; examples explain, syntheses claim
+- **`pattern`** — examples may be cited as canonical instances of patterns
+
+## See also
+
+- [`types/artifact.md`](artifact.md) — parent abstract supertype
+- [`types/briefing.md`](briefing.md) — occasion-bound cousin
+- [`types/reference.md`](reference.md) — retrieval-shaped cousin
+- [`types/synthesis.md`](synthesis.md) — derived-claim cousin
+- [`types/pattern.md`](pattern.md) — patterns cite examples as canonical instances
+- [`predicates/demonstrates.md`](../predicates/demonstrates.md) — the typed edge linking examples to concepts
+- Sandbar substrate: `sandbar/schema/mm-artifact.edn`

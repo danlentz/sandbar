@@ -97,10 +97,10 @@
                             queue *default-queue*
                             max-attempts *default-max-attempts*
                             timeout-ms *default-timeout-ms*}}]
-  (let [now (Date.)
+  (let [^Date now (Date.)
         run-time (cond
                    run-at (if (instance? Date run-at) run-at (Date/from run-at))
-                   delay-ms (Date. (+ (.getTime now) delay-ms))
+                   delay-ms (Date. ^long (+ (.getTime now) delay-ms))
                    :else (throw (ex-info "Either :run-at or :delay-ms required" {})))
         job-data (cond-> {:job/name (or name (str handler))
                           :job/handler handler
@@ -194,11 +194,11 @@
                             skip-if-running? false}}]
   (when (and (nil? cron) (nil? interval-ms))
     (throw (ex-info "Either :cron or :interval-ms required" {})))
-  (let [now (Date.)
+  (let [^Date now (Date.)
         next-run (if interval-ms
-                   (Date. (+ (.getTime now) interval-ms))
+                   (Date. ^long (+ (.getTime now) interval-ms))
                    ;; For cron, we'd need a cron parser - simplified for now
-                   (Date. (+ (.getTime now) (* 60 1000)))) ; 1 minute from now
+                   (Date. ^long (+ (.getTime now) (* 60 1000)))) ; 1 minute from now
         job-data (cond-> {:job/name (or name (str handler))
                           :job/handler handler
                           :job/status :pending
@@ -440,8 +440,8 @@
 (defn complete-execution!
   "Mark an execution as completed successfully."
   [execution & {:keys [result]}]
-  (let [now (Date.)
-        started (:job/started-at execution)
+  (let [^Date now (Date.)
+        ^Date started (:job/started-at execution)
         duration (when started (- (.getTime now) (.getTime started)))]
     @(d/transact (db/conn)
        (cond-> [[:db/add (:db/id execution) :job/finished-at now]
@@ -453,8 +453,8 @@
 (defn fail-execution!
   "Mark an execution as failed."
   [execution & {:keys [error stacktrace status]}]
-  (let [now (Date.)
-        started (:job/started-at execution)
+  (let [^Date now (Date.)
+        ^Date started (:job/started-at execution)
         duration (when started (- (.getTime now) (.getTime started)))]
     @(d/transact (db/conn)
        (cond-> [[:db/add (:db/id execution) :job/finished-at now]
@@ -600,8 +600,8 @@
   (let [interval (or interval-ms
                      ;; Try to get from job metadata or use default
                      (* 60 1000)) ; Default 1 minute
-        now (Date.)
-        next-run (Date. (+ (.getTime now) interval))
+        ^Date now (Date.)
+        next-run (Date. ^long (+ (.getTime now) interval))
         new-run-count (inc (or (:job/run-count job) 0))
         max-runs (:job/max-runs job)
         should-pause? (and max-runs (>= new-run-count max-runs))]

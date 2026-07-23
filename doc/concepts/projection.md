@@ -114,6 +114,8 @@ Codec selection is per-class via `:dt/native-codec`.  Project-graph does not own
 
 5. **Hybrid FS/DB experimentation.**  Use filters to partition which classes live primarily on disk versus primarily in the DB; measure performance and ergonomics; revisit the partition.  This experimentation is what filters were designed for.
 
+6. **Reactive `:mm/EventLog` projection.**  Per-event-firing memorials flagged `:memorial :first-class` flow from the event substrate's in-process bus (see [`event-substrate.md`](event-substrate.md)) through a projection sink that materializes them as `memory/event-logs/<name>.md` files.  The sink IS a subscriber on `sandbar.reactive.tx-source`; it composes through the same `project-graph` discipline (entity → codec → file path) without a separate code path.  High-volume runtime events stay `:db-only` in `:dt/Event` substrate-runtime instances; the `:mm/EventLog` corpus tier holds only the narratively-significant signals.  This is the reactive corpus-projection arc — see `plans/sse_reactive_corpus_projection_arc_2026_05_23.md`.
+
 ## Comparison with adjacent patterns
 
 ### vs. database backup/restore
@@ -159,5 +161,6 @@ An RDF serialization produces a single (often large) file containing the graph a
 - [`metamodel.md`](metamodel.md) — the typed entities project-graph projects
 - [`codec-layer.md`](codec-layer.md) — per-entity wire-format translation that project-graph delegates to
 - [`markdown-as-canonical.md`](markdown-as-canonical.md) — why markdown is the Layer-1 corpus format
+- [`event-substrate.md`](event-substrate.md) — the reactive bus from which `:mm/EventLog` projections are driven
 - [`multi-store-architecture.md`](multi-store-architecture.md) — hybrid FS/DB topology built on project-graph filtering
 - [`doc/guides/sandbar-as-substrate.md`](../guides/sandbar-as-substrate.md) — using project-graph in your own application

@@ -1,0 +1,59 @@
+## What a `type: actor` instance is
+
+**An actor memorial describes an entity that takes actions in the memory system** — an AI model performing a research pass, a human collaborator making a directive, a system process firing a hook.  Actor memorials are **first-class graph citizens** with the same introspection and queryability as predicates, types, libraries, and patterns.
+
+Actor is **abstract** — direct instances are not authored.  Instead one of the three concrete subtypes is used:
+
+- **[`ai-actor`](ai-actor.md)** — versioned AI models (Claude / codex / future agent types)
+- **[`human-actor`](human-actor.md)** — humans with associated runtime context
+- **[`system-actor`](system-actor.md)** — automated processes that aren't AI (hooks, scheduled tasks, CI runners)
+
+Actor is a subtype of [`meta`](meta.md) — memorials about the memory system itself.
+
+## Why actor is first-class
+
+The corpus has implicitly referenced actors since its inception: hundreds of memorials say *"Dan said..."*, *"Claude noticed..."*, *"codex flagged..."*.  Treating these as first-class graph citizens (rather than prose mentions or string scalars):
+
+1. **Versioning becomes queryable** — AI actor instances carry version chains; capability-deltas across versions are traceable
+2. **Authorization dispatches on actor** — rules can fire only when actor X is in context Y
+3. **Performed-by edges accumulate** — artifact memorials can declare `performed-by: actor-X` rather than embedding actor information in prose
+4. **The harness layer becomes a first-class citizen** — system actors (hooks / schedulers) get the same treatment as AI and human actors
+
+## Actor is the WHO axis
+
+Actors are the WHO axis of the (actor, context, event) dispatch tuple.  Rules can fire only when the active actor matches the rule's declared `actor:` field.
+
+## Substrate identity
+
+- **Class ident**: `{{class-ident}}`
+- **Parent class(es)**: {{parent-classes}}
+- **Ancestor chain**: {{ancestor-chain}}
+- **Native codec**: `{{native-codec}}`
+- **Codec type-keyword(s)**: {{codec-type-keywords}}
+
+## Slot vocabulary ({{slot-count}} slots inherited or declared)
+
+Actor memorials inherit `:mm/Memory` plus shared actor-family slots:
+
+- **`belongs-to`** — organizations the actor is a member of (multi-arity)
+- **`runs-in-context`** — runtime context(s) the actor operates in
+- **`versioned-as`** — actor version-chain (or use `supersedes`)
+- **`peer-of`** — actor siblings at same release
+
+Concrete subtypes layer their own type-specific slots.
+
+{{slot-table}}
+
+## Not instantiated directly
+
+Don't write a memorial with `type: actor` — write `type: ai-actor`, `type: human-actor`, or `type: system-actor` (each declaring this class as parent via `:dt/subclass-of`).  The `abstract?: true` schema flag marks this class as non-instantiable.
+
+## See also
+
+- [`types/meta.md`](meta.md) — parent abstract supertype
+- [`types/ai-actor.md`](ai-actor.md) — versioned AI model subtype
+- [`types/human-actor.md`](human-actor.md) — human collaborator subtype
+- [`types/system-actor.md`](system-actor.md) — automated process subtype
+- [`types/organization.md`](organization.md) — actors belong to organizations
+- [`types/context.md`](context.md) — actors run in contexts
+- Sandbar substrate: `sandbar/schema/mm-meta.edn`

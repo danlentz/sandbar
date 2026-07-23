@@ -29,6 +29,7 @@
             [clojure.tools.logging     :as log]
             [sandbar.db.datatype       :as dt]
             [sandbar.projection     :as project-graph]
+            [sandbar.mcp.clearance     :as clearance]
             [sandbar.mcp.notifications :as notifications]
             [sandbar.util.jsonrpc-status :as jsonrpc-status]))
 
@@ -223,11 +224,54 @@
                 {:entity-id (:db/id entity)})
       (pr-str (into {} entity)))))
 
+(defn- read-cleared?
+  "May `principal` read `entity`'s body?  Routes the read-plane authorization
+   through the clearance predicate (EP-N3, AP-S4-2).
+
+   NIL-PRINCIPAL POLICY (read plane): a nil principal here is the in-process /
+   legacy full-access caller (the /mcp chain's require-bearer 401s a nil
+   identity before dispatch, so a nil principal that reaches this handler is
+   in-process) — but per the notify-plane discipline (AP-8) we do NOT grant a
+   nil identity blanket access to a non-`:public` compartment.  A nil principal
+   is cleared for a `:public` entity only; a non-nil principal defers to
+   `cleared-for-compartment?`.
+
+   INERT-UNTIL-S6: `entity-compartment` reads `:mm.memory/visibility` (absent
+   pre-S6) → `*default-visibility*` (`:private`, AP-6), so pre-S6 every entity
+   is `:private` and only a full-clearance token clears it — the read plane
+   fails CLOSED by construction the instant this lands."
+  [principal entity]
+  (let [compartment (clearance/entity-compartment entity)]
+    (if (nil? principal)
+      (= :public (:visibility compartment))
+      (clearance/cleared-for-compartment? principal compartment))))
+
 (defn handle-read
   "MCP `resources/read` — returns the content of a resource at the
-   given URI. Stage C.5: EDN projection for most entities; markdown
-   placeholder for mm/Memory (Stage C.5.1 wires the export emitter)."
-  [id params]
+   given URI, CLEARANCE-GATED (EP-N3, AP-S4-2).  Stage C.5: EDN projection
+   for most entities; markdown placeholder for mm/Memory (Stage C.5.1 wires
+   the export emitter).
+
+   `principal` is the authenticated MCP principal threaded from the dispatch
+   layer (Shape A′ / D2 lift).  A read of an entity whose compartment the
+   principal does not clear is refused — and CRUCIALLY returns the IDENTICAL
+   \"Resource not found\" envelope as a genuinely-absent entity (no existence
+   oracle, AP-10 / §5.1): a distinct \"forbidden\" error would let a caller
+   probe which private URIs EXIST from the error class.  A cleared principal
+   gets the body; everyone else gets \"not found\" — indistinguishable from a
+   truly-absent entity.
+
+   The compartment check is INERT-UNTIL-S6 via `clearance` (the visibility /
+   owning-project / cleared-project slots mint at S6); pre-S6 it fails CLOSED —
+   only a `:public` entity or a full-clearance token reads through.
+
+   The 2-arity overload preserves the pre-gate call contract (nil principal =
+   in-process/legacy caller) for direct in-process callers; the wire always
+   reaches the 3-arity via `protocol/dispatch` with the authenticated
+   principal.  A nil principal is `:public`-only (read-cleared?), so the
+   2-arity path is itself fail-closed — it is NOT a bypass."
+  ([id params] (handle-read id params nil))
+  ([id params principal]
   (try
     (let [uri    (:uri params)
           parsed (parse-uri uri)]
@@ -241,12 +285,16 @@
         :else
         (let [entity (resolve-entity parsed)]
           (cond
-            (nil? entity)
+            ;; NOT-FOUND and FORBIDDEN return the SAME envelope (no existence
+            ;; oracle, AP-10 / EP-N3 §5.1): an absent entity and an entity the
+            ;; principal is not cleared for are indistinguishable to the caller.
+            (or (nil? entity)
+                (not (read-cleared? principal entity)))
             {:jsonrpc "2.0"
              :id      id
              :error   {:code    jsonrpc-status/invalid-params
                        :message (str "Resource not found: " uri)
-                       :data    {:parsed parsed}}}
+                       :data    {:uri uri}}}
 
             :else
             (let [cls-ident (:class-ident parsed)
@@ -263,7 +311,7 @@
        :id      id
        :error   {:code    jsonrpc-status/internal-error
                  :message "Resource read failed"
-                 :data    {:exception-message (.getMessage e)}}})))
+                 :data    {:exception-message (.getMessage e)}}}))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Subscription registry
@@ -331,9 +379,45 @@
 ;; client's open SSE channel. For now Stage C.5 stores by URI alone
 ;; (broadcast on update). Per-subscriber routing lands in C.5.3.
 
+(defn- subscribe-uri-cleared?
+  "May `principal` subscribe to `uri`? (EP-N1 early-refusal predicate.)
+
+   Resolves the URI to its entity and checks the compartment.  A URI that
+   resolves to NO entity is PERMITTED (returns true): refusing a subscribe to
+   a nonexistent URI would leak NON-EXISTENCE (an oracle — 'this URI is refused
+   ⇒ it exists and is private'), so an unresolvable URI is allowed and the
+   AUTHORITATIVE delivery gate (EP-N2 in `entity-updated!`) re-judges at every
+   fire (AP-10, §4.2).  This is the same non-oracle discipline as EP-N3's
+   not-found/forbidden collapse.
+
+   NIL-PRINCIPAL POLICY: mirrors the notify plane (AP-8) — a nil identity is
+   cleared for a `:public` compartment ONLY, not blanket full-access.
+
+   INERT-UNTIL-S6 via `clearance`: pre-S6 a resolvable entity reads `:private`
+   and only a full-clearance token clears it, so EP-N1 fails CLOSED on a
+   resolvable private URI while still permitting unresolvable ones.
+
+   A resolution that ERRORS (e.g. an ident that cannot be looked up) is treated
+   as UNRESOLVABLE → permit: EP-N1 is defense-in-depth only (§4.3) and the
+   AUTHORITATIVE delivery gate (EP-N2) — which reads the registry, touches no
+   DB, and fails CLOSED — carries the security guarantee.  Failing this
+   early-refusal OPEN never weakens confidentiality; it only forgoes the loud
+   up-front error for a URI we could not resolve at subscribe time."
+  [principal uri]
+  (if-let [entity (try (resolve-entity (parse-uri uri))
+                       (catch Exception _ nil))]
+    (let [compartment (clearance/entity-compartment entity)]
+      (if (nil? principal)
+        (= :public (:visibility compartment))
+        (clearance/cleared-for-compartment? principal compartment)))
+    ;; unresolvable (or unresolvable-due-to-error) URI → permit;
+    ;; delivery gate (EP-N2) is authoritative
+    true))
+
 (defn handle-subscribe
-  "MCP `resources/subscribe`. Records URI in subscription registry, bound
-   to the client's SSE subscriber-id when provided.
+  "MCP `resources/subscribe`, CLEARANCE-GATED (EP-N1, AP-S4-2).  Records URI in
+   the subscription registry, bound to the client's SSE subscriber-id when
+   provided.
 
    Accepted params:
      :uri          — required; resource URI
@@ -343,22 +427,51 @@
                      subscriber.  When omitted, the legacy ::broadcast
                      sentinel is bound; updates fan out to all registered
                      SSE subscribers (preserved for non-SSE callers + back-
-                     compat).  Per F-S-001 resolution."
-  [id params]
-  (let [uri      (:uri params)
-        sub-id   (:subscriberId params)]
-    (cond
-      (nil? uri)
-      {:jsonrpc "2.0"
-       :id      id
-       :error   {:code jsonrpc-status/invalid-params :message "resources/subscribe requires :uri parameter"}}
+                     compat).  Per F-S-001 resolution.
 
-      :else
-      (do
-        (subscribe! uri (or sub-id broadcast-sentinel))
-        {:jsonrpc "2.0"
-         :id      id
-         :result  {}}))))
+   `principal` is the authenticated MCP principal threaded from the dispatch
+   layer (Shape A′ / D2 lift).  A subscribe to a URI whose (resolvable) entity
+   compartment the principal does not clear is refused up front
+   (`:reason :subscribe-compartment-forbidden`).  This early-refusal is
+   DEFENSE-IN-DEPTH + a loud UX affordance only — the AUTHORITATIVE gate is
+   delivery-time (EP-N2 in `entity-updated!`), which re-judges every fire and
+   catches `::broadcast` subs that carry no URI.  An UNRESOLVABLE URI is
+   PERMITTED (no existence oracle, AP-10 — see `subscribe-uri-cleared?`).
+
+   The 2-arity overload preserves the pre-gate call contract (nil principal =
+   in-process/legacy caller) for direct in-process callers; the wire always
+   reaches the 3-arity via `protocol/dispatch` with the authenticated
+   principal.  A nil principal clears `:public` URIs only, so the 2-arity path
+   is itself fail-closed — NOT a bypass."
+  ([id params] (handle-subscribe id params nil))
+  ([id params principal]
+   (let [uri      (:uri params)
+         sub-id   (:subscriberId params)]
+     (cond
+       (nil? uri)
+       {:jsonrpc "2.0"
+        :id      id
+        :error   {:code jsonrpc-status/invalid-params :message "resources/subscribe requires :uri parameter"}}
+
+       ;; EP-N1: refuse an obviously-uncleared subscribe to a resolvable URI.
+       (not (subscribe-uri-cleared? principal uri))
+       (do
+         (log/warn :MCP/subscribe-denied
+                   {:uri uri
+                    :principal-eid (:db/id principal)
+                    :reason :subscribe-compartment-forbidden})
+         {:jsonrpc "2.0"
+          :id      id
+          :error   {:code    jsonrpc-status/invalid-params
+                    :message (str "Subscription denied: caller not cleared for the compartment of " uri)
+                    :data    {:uri uri :reason :subscribe-compartment-forbidden}}})
+
+       :else
+       (do
+         (subscribe! uri (or sub-id broadcast-sentinel))
+         {:jsonrpc "2.0"
+          :id      id
+          :result  {}})))))
 
 (defn handle-unsubscribe
   "MCP `resources/unsubscribe`.  Symmetric to handle-subscribe — removes
@@ -386,31 +499,68 @@
 ;; entity. Stage C.5.3 wires this to tx-report-queue automatically.
 
 (defn entity-updated!
-  "Notify subscribers that an entity changed.  Routes
-   notifications/resources/updated to subscribers bound to the entity's
-   URI per F-S-001 resolution:
+  "Notify subscribers that `entity` changed — CLEARANCE-FILTERED at delivery
+   time (EP-N2, the AP-S4-2 KEYSTONE).
 
-   - subscriptions registered with an explicit subscriber-id receive a
-     targeted notification via notifications/publish-to!
-   - subscriptions registered with the legacy ::broadcast sentinel
-     fan out to ALL currently-registered SSE subscribers via
-     notifications/resources-updated! (back-compat path)
+   This is the load-bearing notify-plane gate — the ONLY one of the three
+   enforcement points that catches the `::broadcast` fan-out (broadcast subs
+   carry no URI, so no subscribe-time check can gate them; EP-N1 cannot).  The
+   subscriber recipient set is computed as:
 
-   No-op when no subscriptions exist for the URI."
+       (::broadcast present ⇒ ALL registered subscriber-ids) ∪ (URI-bound ids)
+
+   then FILTERED to subscribers cleared for the mutated entity's compartment
+   via `clearance/subscriber-cleared-for-entity?` (which recovers each
+   subscriber's principal from `notifications/all-subscribers` — the exact
+   registry the SSE transport populates, §1.4).  Delivery is via
+   `notifications/publish-to!` to the SURVIVING ids ONLY.
+
+   The old unconditional `notifications/resources-updated!` broadcast branch is
+   GONE: it routed through `publish!`'s reduce-over-ALL-subscribers with no
+   per-subscriber clearance hook — the exact private→any leak.  Every recipient
+   now passes the same per-subscriber compartment check.
+
+   DELIVERY-TIME EVALUATION IS MANDATORY (§R4): the `+subscriptions+` /
+   `+subscribers+` registries are `defonce` and SURVIVE a hot-load, so a
+   `::broadcast` subscription registered pre-reload must be re-judged against
+   the entity's compartment at EVERY fire — never cached at subscribe time.
+   The filter is keep-if-cleared (never drop-if-forbidden): a subscriber the
+   predicate cannot POSITIVELY clear is excluded (fail-closed by construction).
+
+   INERT-UNTIL-S6 via `clearance`: pre-S6 `entity-compartment` reads no
+   `:mm.memory/visibility` slot → `*default-visibility*` (`:private`, AP-6), so
+   every entity is `:private` and — with no principal-side cleared-project slot
+   yet — only a `:public` entity or a full-clearance token gets through.  The
+   in-process operator is unaffected (it calls this fn but is NOT itself in the
+   subscriber registry).
+
+   No-op when no subscriptions exist for the URI.
+
+   `publish-to!` already silently skips subscriber-ids absent from
+   `+subscribers+` (a URI-bound id that has since disconnected;
+   notifications.clj:176) — no separate liveness check needed here."
   [entity]
-  (let [uri        (entity->uri entity)
-        subs       (get @+subscriptions+ uri #{})
-        broadcast? (contains? subs broadcast-sentinel)
-        specific   (disj subs broadcast-sentinel)]
+  (let [uri  (entity->uri entity)
+        subs (get @+subscriptions+ uri #{})]
     (when (seq subs)
-      (log/debug :MCP/resources-updated
-                 {:uri           uri
-                  :subscribers   (count subs)
-                  :broadcast?    broadcast?
-                  :specific-ids  specific})
-      (when broadcast?
-        (notifications/resources-updated! uri))
-      (when (seq specific)
-        (notifications/publish-to! specific
-                                   "notifications/resources/updated"
-                                   {:uri uri})))))
+      (let [subscribers   (notifications/all-subscribers)
+            ;; Expand ::broadcast to the concrete registered subscriber-id set
+            ;; BEFORE filtering, so a broadcast-bound subscriber is subjected to
+            ;; the same per-subscriber clearance check as a targeted one.
+            candidate-ids (if (contains? subs broadcast-sentinel)
+                            (into (disj subs broadcast-sentinel)
+                                  (keys subscribers))
+                            (disj subs broadcast-sentinel))
+            ;; Delivery-time clearance filter (keep-if-cleared, fail-closed).
+            cleared-ids   (filter #(clearance/subscriber-cleared-for-entity?
+                                     subscribers entity %)
+                                  candidate-ids)]
+        (log/debug :MCP/resources-updated
+                   {:uri        uri
+                    :candidates (count candidate-ids)
+                    :cleared    (count cleared-ids)
+                    :dropped    (- (count candidate-ids) (count cleared-ids))})
+        (when (seq cleared-ids)
+          (notifications/publish-to! cleared-ids
+                                     "notifications/resources/updated"
+                                     {:uri uri}))))))

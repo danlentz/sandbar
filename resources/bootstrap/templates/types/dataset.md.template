@@ -1,0 +1,32 @@
+## What a `type: dataset` instance is
+
+A first-class representation of a NAMED DATASET — analog of `void:Dataset` / `dcat:Dataset` from the VoID and DCAT vocabularies.  A dataset is a NAMED COLLECTION of memorial content with declared vocabularies it uses, themes it covers, and publishers responsible for it.  In sandbar's metacircular substrate, datasets are the unit of cross-corpus federation: each corpus is itself a dataset; vocabulary-only publications are datasets.
+
+## When to materialize a dataset entity
+
+- The corpus is one of multiple coordinated datasets (federation context)
+- A vocabulary publication ships as a standalone dataset for consumption by other corpora
+- Memorial subsets carry distinguished governance / authority (e.g., the foundational substrate dataset vs derivative project-specific dataset)
+
+## Substrate identity
+
+- **Class ident**: `{{class-ident}}`
+- **Parent class(es)**: {{parent-classes}}
+
+## Slot vocabulary
+
+The class declares **{{slot-count}}** slots:
+
+{{slot-table}}
+
+## Composition with other classes
+
+- **`:mm/Vocabulary`** — datasets declare used-vocabulary via DCAT pattern
+- **`:mm/Linkset`** — cross-dataset references materialized as linksets per VoID Linkset
+- **`:mm/ConceptScheme`** — schemes can be members of named datasets
+
+## See also
+
+- [`types/vocabulary.md`](vocabulary.md) — used-vocabulary declaration
+- [`types/linkset.md`](linkset.md) — cross-dataset linksets
+- [`types/concept-scheme.md`](concept-scheme.md) — scheme membership in datasets

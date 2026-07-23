@@ -1,0 +1,57 @@
+## What this predicate means
+
+**A `parent` B** — A is the IMMEDIATE parent of B in a hierarchical tree (arc-forest, document tree, conversation thread).  Single-hop relation; NOT transitive.
+
+Distinguishes from `ancestor-of` (transitive) and `has-part` (containment with potentially many-level structure): `parent:` is exactly one hop in a tree.
+
+Common shapes:
+- A sub-arc's parent is the parent-arc memorial
+- A section memorial's parent is the document it belongs to
+- A reply's parent is the message being replied to (also see `reply-of`)
+
+## Substrate identity
+
+- **Slot ident**: `{{predicate-ident}}`
+- **Domain**: `{{domain}}`
+- **Range**: `{{range}}`
+- **Cardinality**: `{{cardinality}}` (typically `:one` for tree-shape)
+
+## Formal signature
+
+`{{predicate-name}} : {{domain}} × {{range}} → Bool`
+
+## Characteristics
+
+- **Asymmetric** — A parent B does not imply B parent A
+- **Irreflexive** — a memorial isn't its own parent
+- **NOT transitive** — `parent` is exactly one hop; transitive closure is via `ancestor-of`
+
+## When to use parent vs ancestor-of vs has-part
+
+| Predicate | Semantics |
+|---|---|
+| `parent` | exactly one hop in a tree (transitive closure → `ancestor-of`) |
+| `ancestor-of` | transitive lineage (any number of hops) |
+| `has-part` | containment with potentially complex structure |
+
+## Formal ontology mappings
+
+Aligned predicates from established formal vocabularies:
+
+- **SKOS** `skos:broader` — close analogue (immediate broader concept, single hop in concept-scheme tree)
+- **RDFS** `rdfs:subClassOf` — distant analogue (when domain is `:dt/Class`; class-level parent-child)
+- **DC Terms** — no direct equivalent (`dcterms:isPartOf` is transitive, different semantics)
+- **OWL** — no direct equivalent
+- **PROV-O** — no direct equivalent
+- **CiTO** — no direct equivalent
+- **SIOC** `sioc:has_parent` — close analogue (in discussion-tree context)
+
+Grounding references in the corpus:
+- [`references/rdfs_reference.md`](../references/rdfs_reference.md) — RDFS / SKOS substrate
+
+## See also
+
+- [`predicates/ancestor-of.md`](ancestor-of.md) — transitive closure
+- [`predicates/has-part.md`](has-part.md) — containment (different shape)
+- [`predicates/descends-from.md`](descends-from.md) — lineage (inverse direction at transitive level)
+- [`predicates/reply-of.md`](reply-of.md) — adjacent (conversation-tree parent)

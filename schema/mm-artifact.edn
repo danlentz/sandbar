@@ -1,0 +1,1012 @@
+[
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; :mm/Artifact — Abstract Supertype for Durable Output Memorials
+;;
+;; Per:
+;;   - memory/types/artifact.md (corpus self-description)
+;;   - decisions/sandbar_memorial_type_substrate_layering_2026_05_21.md (D2)
+;;   - decisions/substrate_class_catalog_maximally_expressive_opt_in_overrideable_2026_05_21.md (maximally-expressive principle)
+;;   - decisions/sandbar_memorial_type_ontology_corrections_round_c_2026_05_21.md (R5 final taxonomy + R2 4-level inheritance Reference→{Resource, ContentType})
+;;
+;; CONCRETE SUBTYPES (12, declared in this file):
+;;   - :mm/Decision   (ADR; no type-specific slots — body sections + frontmatter inherited)
+;;   - :mm/Plan       (design document + arc memorial; 8 slots)
+;;   - :mm/Log        (chronological session record; 7 slots; handoff-schema-version + closed-at + host)
+;;   - :mm/Example    (reusable illustration; 3 slots; demonstrates: typed-edge already substrate)
+;;   - :mm/Briefing   (audience-targeted explainer; 3 slots: audience + occasion + presented-on)
+;;   - :mm/Library    (deep external-library study; Library-Card axes already substrate-side typed-edges)
+;;   - :mm/Reference  (external-facility pointer; CONCRETE; has sub-subtypes Resource + ContentType)
+;;       ├── :mm/Resource    (URL pointer; 8 slots; url + accessed + ...)
+;;       └── :mm/ContentType (format/purpose axis; 7 slots; mime XOR kind — single-axis discipline)
+;;   - :mm/Memoir     (process record; 5 slots; methodology + provenance + sanitization-log)
+;;   - :mm/Codebase   (code repo; 4 slots beyond has-meta-type; declares has-meta-type :mm/CodeMetaType)
+;;   - :mm/Synthesis  (derived claim ≥ 3 citations; 1 slot: claim; cites already substrate)
+;;
+;; INHERITANCE: :mm/Artifact :dt/subclass-of :mm/Memory.  Concrete subtypes :dt/subclass-of :mm/Artifact.
+;; Reference→Resource and Reference→ContentType form 4-level inheritance chains (Memory → Artifact → Reference → {Resource, ContentType}).
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ ;; Forward Declarations
+ [{:db/ident :mm/Decision     :db/doc "Forward declaration; full class definition later in this file."}
+  {:db/ident :mm/Plan         :db/doc "Forward declaration; full class definition later in this file."}
+  {:db/ident :mm/Log          :db/doc "Forward declaration; full class definition later in this file."}
+  {:db/ident :mm/Example      :db/doc "Forward declaration; full class definition later in this file."}
+  {:db/ident :mm/Briefing     :db/doc "Forward declaration; full class definition later in this file."}
+  {:db/ident :mm/Library      :db/doc "Forward declaration; full class definition later in this file."}
+  {:db/ident :mm/Reference    :db/doc "Forward declaration; full class definition later in this file."}
+  {:db/ident :mm/Resource     :db/doc "Forward declaration; sub-subtype of Reference; full class definition later in this file."}
+  {:db/ident :mm/ContentType  :db/doc "Forward declaration; sub-subtype of Reference; full class definition later in this file."}
+  {:db/ident :mm/Memoir       :db/doc "Forward declaration; full class definition later in this file."}
+  {:db/ident :mm/Codebase     :db/doc "Forward declaration; full class definition later in this file."}
+  {:db/ident :mm/Synthesis    :db/doc "Forward declaration; full class definition later in this file."}
+  ;; S6 keystone-mint: :mm/Project (tie-class Codebase<->Context; sibling of :mm/Codebase under :mm/Artifact).
+  {:db/ident :mm/Project      :db/doc "Forward declaration; full class definition later in this file (S6 keystone mint 2026-07-06)."}]
+
+ [{:db/ident         :mm/Artifact
+   :dt/type          :dt/Class
+   :dt/subclass-of   :mm/Memory
+   :dt/context       "mm"
+   :dt/label         "Artifact"
+   :dt/abstract?     true
+   :db/doc "Abstract supertype for memorial types whose role is producing durable, self-contained outputs with memorial value beyond their immediate trigger.  Per memory/types/artifact.md.  Concrete subtypes: :mm/Decision (ADR), :mm/Plan (design document + arc memorial), :mm/Log (session record), :mm/Example (reusable illustration), :mm/Briefing (audience-targeted explainer), :mm/Library (deep external-library study), :mm/Reference (external-facility pointer; sub-subtypes :mm/Resource + :mm/ContentType), :mm/Memoir (process-record), :mm/Codebase (source-code repo), :mm/Synthesis (derived claim across citations).  Per decisions/sandbar_memorial_type_substrate_layering_2026_05_21.md D2 + decisions/sandbar_memorial_type_ontology_corrections_round_c_2026_05_21.md R5.  Not instantiated directly."}]
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; :mm.plan/* Properties
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident       :mm.plan/status
+   :dt/type        :dt/Property :dt/domain :mm/Plan
+   :dt/range       :db.type/keyword :db/valueType :db.type/keyword :db/cardinality :db.cardinality/one
+   :db/doc "Plan lifecycle state (CLOSED canonical vocab per decisions/canonical_plan_status_vocabulary_and_synonym_normalization_2026_05_28.md): :draft (plan being written; work not started) | :active (work in progress; updated as stages complete) | :complete (all stages landed; completed: date set; retrospective written) | :paused (work deferred; resumable) | :superseded (replaced by a better approach / folded into another arc; distinct from :cancelled) | :cancelled (work abandoned; rationale documented; :abandoned is an alias).  Do NOT leak stage-strings or synonyms (closed/completed/in-progress/open/proposed/...) into this slot.  Per memory/types/plan.md."}
+
+  {:db/ident       :mm.plan/stage
+   :dt/type        :dt/Property :dt/domain :mm/Plan
+   :dt/range       :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+   :db/doc "Current stage name within the plan's arc (e.g., 'Stage 3 of 5: tooling').  Auto-bumped as stages complete.  Per memory/types/plan.md."}
+
+  {:db/ident       :mm.plan/started
+   :dt/type        :dt/Property :dt/domain :mm/Plan
+   :dt/range       :db.type/instant :db/valueType :db.type/instant :db/cardinality :db.cardinality/one
+   :db/doc "ISO date the plan's work started (status :draft → :active transition).  Per memory/types/plan.md."}
+
+  {:db/ident       :mm.plan/completed
+   :dt/type        :dt/Property :dt/domain :mm/Plan
+   :dt/range       :db.type/instant :db/valueType :db.type/instant :db/cardinality :db.cardinality/one
+   :db/doc "ISO date the plan completed (only set once status: :complete).  Per memory/types/plan.md."}
+
+  {:db/ident       :mm.plan/triggered-by
+   :dt/type        :dt/DirectedBinaryRelationProperty :dt/domain :mm/Plan
+   :dt/range       :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+   :db/doc "Free-text — what surfaced this arc (idea, incident, decision, Dan-directive).  Per memory/types/plan.md."}
+
+  {:db/ident       :mm.plan/environment-affinity
+   :dt/type        :dt/Property :dt/domain :mm/Plan
+   :dt/range       :db.type/keyword :db/valueType :db.type/keyword :db/cardinality :db.cardinality/one
+   :db/doc "Which environment the arc is most usefully resumed in: :home | :work | :either | <custom-tag>.  Absent or :either means any-host.  Used by `mem arc ready` to bias surfacing toward matching-affinity arcs when the host's environment is detected.  Per memory/types/plan.md + plans/explicit_handoff_coordinates_2026_05_06.md."}
+
+  {:db/ident       :mm.plan/primary-parent
+   :dt/type        :dt/Property :dt/domain :mm/Plan
+   :dt/range       :mm/Plan :db/valueType :db.type/ref :db/cardinality :db.cardinality/one
+   :db/doc "Primary parent plan when this plan has multiple parents (DAG-capable :mm.memory/parent).  Used for tree display.  Per memory/types/plan.md."}
+
+  {:db/ident       :mm.plan/blocks
+   :dt/type        :dt/Property :dt/domain :mm/Plan
+   :dt/range       :mm/Plan :db/valueType :db.type/ref :db/cardinality :db.cardinality/many
+   :db/doc "Arcs this plan blocks (forward dependency).  Per memory/types/plan.md."}]
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; :mm.log/* Properties
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident       :mm.log/date
+   :dt/type        :dt/Property :dt/domain :mm/Log
+   :dt/range       :db.type/instant :db/valueType :db.type/instant :db/cardinality :db.cardinality/one
+   :db/doc "Calendar date the episode occurred (ISO-8601 YYYY-MM-DD).  REQUIRED for log instances; chronological indexing depends on it.  Per memory/types/log.md."}
+
+  {:db/ident       :mm.log/handoff-schema-version
+   :dt/type        :dt/Property :dt/domain :mm/Log
+   :dt/range       :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+   :db/doc "Logs written from 2026-05-06 onward carry a `handoff-schema-version` (e.g. 'v1').  Authoritative registry of versions + shapes lives at `etc/handoff-schema-versions.edn`.  Per memory/types/log.md + decisions/handoff_format_evolution_no_long_lived_compat.md."}
+
+  {:db/ident       :mm.log/closed-at
+   :dt/type        :dt/Property :dt/domain :mm/Log
+   :dt/range       :db.type/instant :db/valueType :db.type/instant :db/cardinality :db.cardinality/one
+   :db/doc "ISO-8601-with-offset timestamp when the session/episode closed (v1+ handoff shape).  Per memory/types/log.md."}
+
+  {:db/ident       :mm.log/host
+   :dt/type        :dt/Property :dt/domain :mm/Log
+   :dt/range       :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+   :db/doc "Machine / host label where the session ran (v1+ handoff shape).  Per memory/types/log.md."}
+
+  {:db/ident       :mm.log/environment
+   :dt/type        :dt/Property :dt/domain :mm/Log
+   :dt/range       :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+   :db/doc "Claude environment tag (sandboxed / unsandboxed; v1+ handoff shape).  Per memory/types/log.md."}
+
+  {:db/ident       :mm.log/session
+   :dt/type        :dt/Property :dt/domain :mm/Log
+   :dt/range       :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+   :db/doc "Session identifier (commit range, session ID, arc name).  Per memory/types/log.md."}
+
+  {:db/ident       :mm.log/duration
+   :dt/type        :dt/Property :dt/domain :mm/Log
+   :dt/range       :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+   :db/doc "Free-text duration ('2 hours', 'half-day', 'across three sessions').  Calibrates reader expectations.  Per memory/types/log.md."}]
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; :mm.example/* Properties — `demonstrates:` typed-edge already substrate-side
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident       :mm.example/origin
+   :dt/type        :dt/Property :dt/domain :mm/Example
+   :dt/range       :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+   :db/doc "Where the example came from (conversation prompt, extracted from a briefing, authored standalone).  Preserves provenance.  Per memory/types/example.md."}
+
+  {:db/ident       :mm.example/audience
+   :dt/type        :dt/Property :dt/domain :mm/Example
+   :dt/range       :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+   :db/doc "Narrowing hint if the example assumes familiarity with a specific domain.  Default 'general' if omitted.  Per memory/types/example.md."}
+
+  {:db/ident       :mm.example/length
+   :dt/type        :dt/Property :dt/domain :mm/Example
+   :dt/range       :db.type/keyword :db/valueType :db.type/keyword :db/cardinality :db.cardinality/one
+   :db/doc "Signal for when to reach for the example: :short (fits in a Slack message) | :medium | :long (mini-briefing).  Per memory/types/example.md."}]
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; :mm.briefing/* Properties
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident       :mm.briefing/audience
+   :dt/type        :dt/Property :dt/domain :mm/Briefing
+   :dt/range       :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+   :db/doc "Named external readers — REQUIRED for briefing instances.  'Team' is too vague; 'CS graduates new to AI + KA + Claude' is right.  Per memory/types/briefing.md."}
+
+  {:db/ident       :mm.briefing/occasion
+   :dt/type        :dt/Property :dt/domain :mm/Briefing
+   :dt/range       :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+   :db/doc "What's triggering the briefing — REQUIRED for briefing instances.  'Onboarding,' 'quarterly demo,' 'interview preview.'  Per memory/types/briefing.md."}
+
+  {:db/ident       :mm.briefing/presented-on
+   :dt/type        :dt/Property :dt/domain :mm/Briefing
+   :dt/range       :db.type/instant :db/valueType :db.type/instant :db/cardinality :db.cardinality/one
+   :db/doc "ISO date the briefing was delivered.  Absence implies :draft lifecycle state; presence implies :presented.  Per memory/types/briefing.md."}]
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; :mm.resource/* Properties
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident       :mm.resource/url
+   :dt/type        :dt/Property :dt/domain :mm/Resource
+   :dt/range       :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+   :db/doc "Canonical URL (^https?://) — REQUIRED for resource instances.  Per memory/types/resource.md.  Audit `resource-has-url` enforces non-empty + http(s) prefix."}
+
+  {:db/ident       :mm.resource/accessed
+   :dt/type        :dt/Property :dt/domain :mm/Resource
+   :dt/range       :db.type/instant :db/valueType :db.type/instant :db/cardinality :db.cardinality/one
+   :db/doc "ISO date when first cited.  Used by audit `resource-accessed-field-stale` for link-rot warnings.  Per memory/types/resource.md."}
+
+  {:db/ident       :mm.resource/content-type
+   :dt/type        :dt/Property :dt/domain :mm/Resource
+   :dt/range       :mm/ContentType :db/valueType :db.type/ref :db/cardinality :db.cardinality/many
+   :db/doc "Multi-valued ref to :mm/ContentType instances.  When a resource combines axes (e.g., PDF paper), cites BOTH :mm/ContentType pdf AND :mm/ContentType paper per the single-axis-per-content-type discipline.  Per memory/types/resource.md + memory/types/content-type.md."}
+
+  {:db/ident       :mm.resource/language
+   :dt/type        :dt/Property :dt/domain :mm/Resource
+   :dt/range       :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+   :db/doc "BCP-47 language tag (e.g., 'en', 'en-US', 'ja').  Optional; only declare when language affects retrieval.  Per memory/types/resource.md."}
+
+  {:db/ident       :mm.resource/archive-url
+   :dt/type        :dt/Property :dt/domain :mm/Resource
+   :dt/range       :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+   :db/doc "web.archive.org or similar archived snapshot URL for link-rot defense.  Per memory/types/resource.md."}
+
+  {:db/ident       :mm.resource/abstract
+   :dt/type        :dt/Property :dt/domain :mm/Resource
+   :dt/range       :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+   :db/doc "1-3 sentence summary when the resource is a paper or substantial document.  Per memory/types/resource.md."}
+
+  {:db/ident       :mm.resource/license
+   :dt/type        :dt/Property :dt/domain :mm/Resource
+   :dt/range       :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+   :db/doc "License string ('CC-BY-4.0', 'MIT', 'proprietary').  Per memory/types/resource.md."}
+
+  {:db/ident       :mm.resource/version
+   :dt/type        :dt/Property :dt/domain :mm/Resource
+   :dt/range       :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+   :db/doc "Version string when versioning matters (RFC version, library doc version).  Per memory/types/resource.md."}]
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; :mm.content-type/* Properties (single-axis discipline per ADR Decision 8 §8.4)
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident       :mm.content-type/mime
+   :dt/type        :dt/Property :dt/domain :mm/ContentType
+   :dt/range       :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+   :db/doc "Canonical MIME (e.g. 'text/html', 'application/pdf') — for format-axis entries.  EXACTLY ONE of mime/kind populated per the single-axis discipline (audit `content-type-has-exactly-one-axis`).  Per memory/types/content-type.md."}
+
+  {:db/ident       :mm.content-type/kind
+   :dt/type        :dt/Property :dt/domain :mm/ContentType
+   :dt/range       :db.type/keyword :db/valueType :db.type/keyword :db/cardinality :db.cardinality/one
+   :db/doc "Purpose label (:talk, :paper, :documentation, :spec, :dataset) — for purpose-axis entries.  EXACTLY ONE of mime/kind populated per the single-axis discipline.  Per memory/types/content-type.md."}
+
+  {:db/ident       :mm.content-type/extensions
+   :dt/type        :dt/Property :dt/domain :mm/ContentType
+   :dt/range       :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/many
+   :db/doc "Accepted file extensions for MIME-axis entries ('.html' for text/html, '.pdf' for application/pdf).  Multi-valued.  Per memory/types/content-type.md."}
+
+  {:db/ident       :mm.content-type/structured?
+   :dt/type        :dt/Property :dt/domain :mm/ContentType
+   :dt/range       :db.type/boolean :db/valueType :db.type/boolean :db/cardinality :db.cardinality/one
+   :db/doc "True if the format is structured (JSON, XML, EDN), false if unstructured (plain text, PDF) for MIME-axis entries.  Per memory/types/content-type.md."}
+
+  {:db/ident       :mm.content-type/bb-parseable?
+   :dt/type        :dt/Property :dt/domain :mm/ContentType
+   :dt/range       :db.type/boolean :db/valueType :db.type/boolean :db/cardinality :db.cardinality/one
+   :db/doc "True if babashka can parse this MIME natively (via babashka.curl + clojure.data.json etc.).  Per memory/types/content-type.md."}
+
+  {:db/ident       :mm.content-type/language-class
+   :dt/type        :dt/Property :dt/domain :mm/ContentType
+   :dt/range       :db.type/keyword :db/valueType :db.type/keyword :db/cardinality :db.cardinality/one
+   :db/doc "Coarse format classification: :markup (HTML, XML, Markdown) | :data-format (JSON, EDN, CSV) | :binary (PDF, image, video).  Per memory/types/content-type.md."}
+
+  {:db/ident       :mm.content-type/citing-corpus-relevance
+   :dt/type        :dt/Property :dt/domain :mm/ContentType
+   :dt/range       :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+   :db/doc "Free-text note on why this content-type matters for the corpus's citing patterns.  Per memory/types/content-type.md."}]
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; :mm.memoir/* Properties
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident       :mm.memoir/methodology
+   :dt/type        :dt/Property :dt/domain :mm/Memoir
+   :dt/range       :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+   :db/doc "One-line description of the process — REQUIRED for memoir instances.  Example: 'firewall-disciplined pattern extraction from proprietary codebase, abstract-only framing, no file paths retained'.  Per memory/types/memoir.md."}
+
+  {:db/ident       :mm.memoir/provenance
+   :dt/type        :dt/Property :dt/domain :mm/Memoir
+   :dt/range       :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+   :db/doc "Origin of the source material + when the process occurred — REQUIRED.  Example: 'private codebase, read 2026-05-02, abstract patterns only'.  Per memory/types/memoir.md."}
+
+  {:db/ident       :mm.memoir/exclusions
+   :dt/type        :dt/Property :dt/domain :mm/Memoir
+   :dt/range       :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/many
+   :db/doc "What was deliberately NOT read / included.  Multi-valued.  The value of saying what was excluded is nearly equal to the value of saying what was found — it bounds the memoir's epistemic reach.  Per memory/types/memoir.md."}
+
+  {:db/ident       :mm.memoir/sanitization-log
+   :dt/type        :dt/Property :dt/domain :mm/Memoir
+   :dt/range       :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/many
+   :db/doc "(token-candidate, disposition, reason) triples for anything that went through the firewall.  Multi-valued.  Per memory/types/memoir.md."}
+
+  {:db/ident       :mm.memoir/firewall-check-status
+   :dt/type        :dt/Property :dt/domain :mm/Memoir
+   :dt/range       :db.type/keyword :db/valueType :db.type/keyword :db/cardinality :db.cardinality/one
+   :db/doc "Firewall status: :passed | :passed-after-sanitization | :pending.  Integrates with audit `no-proprietary-token-leaks` invariant.  Per memory/types/memoir.md."}]
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; :mm.codebase/* Properties — declares :mm/CodeMetaType composition via :mm.memory/has-meta-type (already substrate-side)
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident       :mm.codebase/repo-root
+   :dt/type        :dt/Property :dt/domain :mm/Codebase
+   :dt/range       :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+   :db/doc "Absolute filesystem path to the repo on this machine.  Resolution-handle for clj-xref invocation.  Per memory/types/codebase.md."}
+
+  {:db/ident       :mm.codebase/canonical-reference
+   :dt/type        :dt/Property :dt/domain :mm/Codebase
+   :dt/range       :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+   :db/doc "Authoritative name (typically a github URL) that survives local-path moves; enables cross-machine identity (same repo cloned to different machines has same canonical reference).  Per memory/types/codebase.md."}
+
+  {:db/ident       :mm.codebase/language
+   :dt/type        :dt/Property :dt/domain :mm/Codebase
+   :dt/range       :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+   :db/doc "Primary language (clojure, python, etc.).  Per memory/types/codebase.md."}
+
+  {:db/ident       :mm.codebase/exploration-verbs
+   :dt/type        :dt/Property :dt/domain :mm/Codebase
+   :dt/range       :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/many
+   :db/doc "List of canonical commands the agent should reach for when exploring this repo's code (`mem xref find <symbol>`, `mem search --scope code <query>`, etc.).  Per memory/types/codebase.md."}]
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; :mm.synthesis/* Properties — :mm.memory/cites already substrate-side
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident       :mm.synthesis/claim
+   :dt/type        :dt/Property :dt/domain :mm/Synthesis
+   :dt/range       :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+   :db/doc "One-line summary of the higher-level pattern the synthesis names — REQUIRED.  Should be quotable as a standalone sentence (claim-shaped, not list-shaped).  Per memory/types/synthesis.md.  Audit invariant `synthesis-has-citations` checks ≥ 3 entries in :mm.memory/cites; that's enforced at the memorial level via the typed-edge."}]
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Class Definitions — concrete Artifact subtypes (12)
+;;
+;; Order: simple first (no slots), then incrementally richer.
+;; Reference → Resource + ContentType form the 4-level inheritance chain.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident             :mm/Decision
+   :dt/type              :dt/Class
+   :dt/subclass-of       :mm/Artifact
+   :dt/context           "mm"
+   :dt/label             "Decision"
+   :dt/native-codec      :markdown
+   :dt/abstract?         false
+   :db/doc "Architectural choice captured with alternatives, rationale, and acceptance — ADR shape.  Per memory/types/decision.md.  Body sections: Context / Decision / Alternatives considered / Rationale / Consequences / See also.  Captureable: mid-conversation-captureable: true; inject-trigger: 'the right answer is X over Y because', 'we should X because'; inject-class: 'Decision-worthy'; audit-class: 'decision'.  Audit invariant: 'decision names alternatives' (warning).  Tier: expanding-periphery."}
+
+  {:db/ident             :mm/Library
+   :dt/type              :dt/Class
+   :dt/subclass-of       :mm/Artifact
+   :dt/context           "mm"
+   :dt/label             "Library"
+   :dt/native-codec      :markdown
+   :dt/abstract?         false
+   :db/doc "Deep, sourced study of a reusable library.  Per memory/types/library.md.  Library Card 11-axis catalog via typed-edge frontmatter (documents/has-part/implements/descends-from/consumes/created-by/cites/provides-method-for/disagrees-with/evidences) — all axes already substrate-side as :mm.memory/* typed-edges.  Audit invariants: library-card-empty (warning), library-without-resources (info).  Structural convention: facade + subpages (libraries/<lib>.md + libraries/<lib>/<topic>.md).  Tier: stable-core."}
+
+  {:db/ident             :mm/Reference
+   :dt/type              :dt/Class
+   :dt/subclass-of       :mm/Artifact
+   :dt/context           "mm"
+   :dt/label             "Reference"
+   :dt/native-codec      :markdown
+   :dt/abstract?         false
+   :db/doc "Pointer to an external facility, convention, or tool.  Per memory/types/reference.md.  Library Card 11-axis catalog applicable (same as :mm/Library).  Sub-subtypes: :mm/Resource (URL pointer) + :mm/ContentType (format/purpose axis).  Tier: stable-core."}
+
+  {:db/ident             :mm/Resource
+   :dt/type              :dt/Class
+   :dt/subclass-of       :mm/Reference
+   :dt/context           "mm"
+   :dt/label             "Resource"
+   :dt/native-codec      :markdown
+   :dt/slots             [:mm.resource/url
+                          :mm.resource/accessed
+                          :mm.resource/content-type
+                          :mm.resource/language
+                          :mm.resource/archive-url
+                          :mm.resource/abstract
+                          :mm.resource/license
+                          :mm.resource/version]
+   :dt/abstract?         false
+   :db/doc "Lightweight pointer to an external URL with metadata — sub-subtype of :mm/Reference (4-level inheritance: Memory → Artifact → Reference → Resource).  Per memory/types/resource.md.  REQUIRED url field (matches ^https?://; audit `resource-has-url`).  Typically frontmatter-only — body grows is a promotion-candidate to :mm/Reference.  Tier: expanding-periphery.  Introduced-in: 0.7.0."}
+
+  {:db/ident             :mm/ContentType
+   :dt/type              :dt/Class
+   :dt/subclass-of       :mm/Reference
+   :dt/context           "mm"
+   :dt/label             "ContentType"
+   :dt/native-codec      :markdown
+   :dt/slots             [:mm.content-type/mime
+                          :mm.content-type/kind
+                          :mm.content-type/extensions
+                          :mm.content-type/structured?
+                          :mm.content-type/bb-parseable?
+                          :mm.content-type/language-class
+                          :mm.content-type/citing-corpus-relevance]
+   :dt/abstract?         false
+   :db/doc "Single-axis pointer characterizing one dimension of external-content shape — either format (:mm.content-type/mime) or purpose (:mm.content-type/kind), NEVER BOTH.  Sub-subtype of :mm/Reference.  Per memory/types/content-type.md + decisions/external_resource_reification_2026_05_06.md Decision 8 §8.4 (compound-entry approach rejected).  Audit invariants: `content-type-has-exactly-one-axis` (warning); `resource-content-type-is-typed` (warning).  Tier: expanding-periphery.  Introduced-in: 0.7.0."}
+
+  {:db/ident             :mm/Plan
+   :dt/type              :dt/Class
+   :dt/subclass-of       :mm/Artifact
+   :dt/context           "mm"
+   :dt/label             "Plan"
+   :dt/native-codec      :markdown
+   :dt/slots             [:mm.plan/status
+                          :mm.plan/stage
+                          :mm.plan/started
+                          :mm.plan/completed
+                          :mm.plan/triggered-by
+                          :mm.plan/environment-affinity
+                          :mm.plan/primary-parent
+                          :mm.plan/blocks]
+   :dt/abstract?         false
+   :db/doc "Design document for in-progress or recently-completed work, preserved as memorial record.  Per memory/types/plan.md.  Two roles: before/during work = work-in-progress artifact; after work = memorial record.  Body sections (canonical 8 + lifecycle): Motivation / Principles / Architecture / Theming / Migration stages / What we are NOT doing / Decisions resolved / Success criteria / References --- Stage log / Retrospective / (when paused) Pause rationale.  Captureable: mid-conversation-captureable: true; inject-trigger: 'pause X', 'I'll do Y next'; inject-class: 'Plan decision'; audit-class: 'plan-decision'.  Supersedes the legacy :active_arc type.  Tier: expanding-periphery."}
+
+  {:db/ident             :mm/Log
+   :dt/type              :dt/Class
+   :dt/subclass-of       :mm/Artifact
+   :dt/context           "mm"
+   :dt/label             "Log"
+   :dt/native-codec      :markdown
+   :dt/slots             [:mm.log/date
+                          :mm.log/handoff-schema-version
+                          :mm.log/closed-at
+                          :mm.log/host
+                          :mm.log/environment
+                          :mm.log/session
+                          :mm.log/duration]
+   :dt/abstract?         false
+   :db/doc "Chronological, dated note memorializing what happened during a specific working episode, rich with interlinks to artifacts produced.  Temporal axis of the memory system.  Per memory/types/log.md.  REQUIRED :mm.log/date.  Body sections: What happened / Context-trigger / Flow / Artifacts produced / Surprises-blockers-pivots / Lessons-rules surfaced / Open ends / See also.  Filename convention v1+: <YYYY-MM-DD>T<HHMM>_<slug>.md.  Dual role: chronological diary + handoff artifact read by `mem session-open`.  Tier: stable-core."}
+
+  {:db/ident             :mm/Example
+   :dt/type              :dt/Class
+   :dt/subclass-of       :mm/Artifact
+   :dt/context           "mm"
+   :dt/label             "Example"
+   :dt/native-codec      :markdown
+   :dt/slots             [:mm.example/origin
+                          :mm.example/audience
+                          :mm.example/length]
+   :dt/abstract?         false
+   :db/doc "Reusable, self-contained illustration of a concept — answers 'Here is a clear, memorable way to show what X is.'  Per memory/types/example.md.  REQUIRED :mm.memory/demonstrates (≥ 1 — first-class typed-edge already substrate; audit `example-names-concept` ERROR if missing).  Captureable: mid-conversation-captureable: true; inject-trigger: 'that was useful', 'good example'; inject-class: 'Reusable output'; audit-class: 'reusable-output'.  Tier: expanding-periphery.  Introduced-in: 0.5.17."}
+
+  {:db/ident             :mm/Briefing
+   :dt/type              :dt/Class
+   :dt/subclass-of       :mm/Artifact
+   :dt/context           "mm"
+   :dt/label             "Briefing"
+   :dt/native-codec      :markdown
+   :dt/slots             [:mm.briefing/audience
+                          :mm.briefing/occasion
+                          :mm.briefing/presented-on]
+   :dt/abstract?         false
+   :db/doc "Concise explanatory document prepared for a specific external audience.  Audience-oriented (most memorials are retrieval-oriented).  Per memory/types/briefing.md.  REQUIRED :mm.briefing/audience + :mm.briefing/occasion.  Lifecycle: :draft (no presented-on) → :presented (with date) → :archived.  Body sections: What this is / Why it matters / Key ideas / How it's built / Where to go deeper / Who to ask.  Tier: expanding-periphery.  Introduced-in: 0.5.13."}
+
+  {:db/ident             :mm/Memoir
+   :dt/type              :dt/Class
+   :dt/subclass-of       :mm/Artifact
+   :dt/context           "mm"
+   :dt/label             "Memoir"
+   :dt/native-codec      :markdown
+   :dt/slots             [:mm.memoir/methodology
+                          :mm.memoir/provenance
+                          :mm.memoir/exclusions
+                          :mm.memoir/sanitization-log
+                          :mm.memoir/firewall-check-status]
+   :dt/abstract?         false
+   :db/doc "Memorialized record of a PROCESS (extraction / study / arc) — distinct from :mm/Library (studies a reusable artifact) and :mm/Plan (designs future work).  Per memory/types/memoir.md.  Methodology + provenance + exclusions + sanitization-log + firewall-check-status are LOAD-BEARING.  Body sections: Premise / Methodology / Provenance + exclusions / Findings / Sanitization log / Confidence-limitations / See also.  Tier: stable-core."}
+
+  {:db/ident             :mm/Codebase
+   :dt/type              :dt/Class
+   :dt/subclass-of       :mm/Artifact
+   :dt/context           "mm"
+   :dt/label             "Codebase"
+   :dt/native-codec      :markdown
+   :dt/slots             [:mm.codebase/repo-root
+                          :mm.codebase/canonical-reference
+                          :mm.codebase/language
+                          :mm.codebase/exploration-verbs]
+   :dt/abstract?         false
+   :db/doc "Source-code repository reified as a memorial entry point — ONE memory per registered repo.  Per memory/types/codebase.md.  COMPOSITION pattern: also declares :mm.memory/has-meta-type :mm/CodeMetaType (already substrate-side) so the substrate uses code-xref index instead of pure-markdown for detail-level navigation.  Detail (namespaces / functions / vars / call graph) lives in `etc/code-xref/<slug>.edn` (built by clj-xref), NOT in parallel memorials per substrate-design ADR D13.  Tier: stable-core.  Introduced-in: 0.7.x."}
+
+  {:db/ident             :mm/Synthesis
+   :dt/type              :dt/Class
+   :dt/subclass-of       :mm/Artifact
+   :dt/context           "mm"
+   :dt/label             "Synthesis"
+   :dt/native-codec      :markdown
+   :dt/slots             [:mm.synthesis/claim]
+   :dt/abstract?         false
+   :db/doc "Derived higher-level claim across multiple cited memorials — the pattern those citations collectively suggest.  Distinct from :mm/Observation (noticed truth), :mm/Decision (chosen path), :mm/Reference (catalog).  Per memory/types/synthesis.md.  REQUIRED :mm.synthesis/claim (one-line, quotable as standalone sentence) + :mm.memory/cites ≥ 3 (already substrate; audit `synthesis-has-citations`).  Body sections: The claim / Evidence (cited memories) / What this implies / Scope and limits / See also.  Tier: stable-core.  Introduced-in: 0.5.13.  Per the Round C reconsidered-IN-substrate finding."}]
+
+ ;; :dt/codec-type-keyword routing — frontmatter `type: <keyword>` maps to the concrete class.
+
+ [{:db/ident :mm/Decision     :dt/codec-type-keyword :decision}
+  {:db/ident :mm/Plan         :dt/codec-type-keyword :plan}
+  {:db/ident :mm/Log          :dt/codec-type-keyword :log}
+  {:db/ident :mm/Example      :dt/codec-type-keyword :example}
+  {:db/ident :mm/Briefing     :dt/codec-type-keyword :briefing}
+  {:db/ident :mm/Library      :dt/codec-type-keyword :library}
+  {:db/ident :mm/Reference    :dt/codec-type-keyword :reference}
+  {:db/ident :mm/Resource     :dt/codec-type-keyword :resource}
+  {:db/ident :mm/ContentType  :dt/codec-type-keyword :content-type}
+  {:db/ident :mm/Memoir       :dt/codec-type-keyword :memoir}
+  {:db/ident :mm/Codebase     :dt/codec-type-keyword :codebase}
+  {:db/ident :mm/Synthesis    :dt/codec-type-keyword :synthesis}]
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; :mm/Activity LIFT (D+++; 2026-05-23) — PROV-O Activity-aligned abstract
+;; supertype under :mm/Artifact.  Re-parents :mm/Log (session chronicle) AND
+;; adds :mm/EventLog (per-event-firing memorial) + :mm/Run (scheduler-job
+;; execution record).
+;;
+;; Per:
+;;   - decisions/mm_activity_prov_o_lift_cross_arc_unification_log_eventlog_run_2026_05_23.md
+;;   - syntheses/logging_events_rules_scheduler_arc_alignment_matrix_2026_05_23.md (G.3)
+;;   - W3C PROV-O Recommendation (https://www.w3.org/TR/prov-o/)
+;;
+;; Three batches per the schema-load tx-ordering observation:
+;;   (i)   forward decls for new classes
+;;   (ii)  slot decls (:mm.activity/* + :mm.event-log/* + :mm.run/*)
+;;   (iii) class decls (incl. :mm/Log re-parent + new concrete classes + codec-type-keywords)
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ ;; Batch (i) — Forward declarations
+ [{:db/ident :mm/Activity  :db/doc "Forward declaration; abstract PROV-O Activity supertype under :mm/Artifact.  Full class declaration in batch (iii)."}
+  {:db/ident :mm/EventLog  :db/doc "Forward declaration; per-event-firing memorial under :mm/Activity.  Full class declaration in batch (iii)."}
+  {:db/ident :mm/Run       :db/doc "Forward declaration; scheduler-job execution record under :mm/Activity.  Full class declaration in batch (iii)."}]
+
+ ;; Batch (ii) — Slot declarations
+ ;; :mm.activity/* — PROV-O Activity-shape slot family inherited by all concrete subclasses
+ [{:db/ident       :mm.activity/started-at
+   :dt/type        :dt/Property :dt/domain :mm/Activity
+   :dt/range       :db.type/instant :db/valueType :db.type/instant :db/cardinality :db.cardinality/one
+   :db/doc "PROV-O prov:startedAtTime — wall-clock instant when the activity began.  Composes with Allen's-13 interval relations + scheduler arc temporal predicates.  Per decisions/mm_activity_prov_o_lift_cross_arc_unification_log_eventlog_run_2026_05_23.md."}
+
+  {:db/ident       :mm.activity/ended-at
+   :dt/type        :dt/Property :dt/domain :mm/Activity
+   :dt/range       :db.type/instant :db/valueType :db.type/instant :db/cardinality :db.cardinality/one
+   :db/doc "PROV-O prov:endedAtTime — wall-clock instant when the activity ended.  Absent for in-progress activities.  Per PROV-O specification."}
+
+  {:db/ident       :mm.activity/agent
+   :dt/type        :dt/Property :dt/domain :mm/Activity
+   :dt/range       :mm/Actor :db/valueType :db.type/ref :db/cardinality :db.cardinality/one
+   :db/doc "PROV-O prov:wasAssociatedWith — the actor responsible for this activity.  Ref to :mm/Actor (or subclass: :mm/AIActor / :mm/HumanActor / :mm/SystemActor)."}
+
+  {:db/ident       :mm.activity/was-informed-by
+   :dt/type        :dt/Property :dt/domain :mm/Activity
+   :dt/range       :mm/Activity :db/valueType :db.type/ref :db/cardinality :db.cardinality/many
+   :db/doc "PROV-O prov:wasInformedBy — upstream activities this one depends on (causal lineage).  Cardinality-many for fan-in dependencies."}
+
+  {:db/ident       :mm.activity/generated
+   :dt/type        :dt/Property :dt/domain :mm/Activity
+   :dt/range       :mm/Memory :db/valueType :db.type/ref :db/cardinality :db.cardinality/many
+   :db/doc "PROV-O prov:wasGeneratedBy (inverse) — memorial entities this activity produced.  E.g., a session activity generated decision + plan memorials; a scheduler run generated a result memorial."}
+
+  {:db/ident       :mm.activity/used
+   :dt/type        :dt/Property :dt/domain :mm/Activity
+   :dt/range       :mm/Memory :db/valueType :db.type/ref :db/cardinality :db.cardinality/many
+   :db/doc "PROV-O prov:used — memorial entities this activity consumed.  E.g., a session read library memorials; a scheduler run read the schedule + job entities."}
+
+  {:db/ident       :mm.activity/status
+   :dt/type        :dt/Property :dt/domain :mm/Activity
+   :dt/range       :db.type/keyword :db/valueType :db.type/keyword :db/cardinality :db.cardinality/one
+   :db/doc "Activity lifecycle state — :pending | :running | :succeeded | :failed | :cancelled.  Sandbar extension to PROV-O; supports query 'which activities are currently running' + 'which failed'."}
+
+  ;; ---- S6 declassification discriminators (ONT-F5) — keyword scalars on :mm/Activity ----
+  {:db/ident       :mm.activity/activity-type
+   :dt/type        :dt/Property :dt/domain :mm/Activity
+   :dt/range       :db.type/keyword :db/valueType :db.type/keyword :db/cardinality :db.cardinality/one
+   :db/doc "Discriminates a declassification graduation (e.g. :declassification) from ordinary projection provenance — else used/generated are identical for a graduation and an export run.  Serves declassification queryability, NOT telemetry.  Per DESIGN-ONTOLOGY §5; ONT-F5."}
+
+  {:db/ident       :mm.activity/visibility-from
+   :dt/type        :dt/Property :dt/domain :mm/Activity
+   :dt/range       :db.type/keyword :db/valueType :db.type/keyword :db/cardinality :db.cardinality/one
+   :db/doc "The lattice level the declassification crossed FROM (e.g. :private).  Absent on non-declassification activities (a plain projection carries neither visibility-from nor visibility-to — the discriminator).  Per DESIGN-ONTOLOGY §5."}
+
+  {:db/ident       :mm.activity/visibility-to
+   :dt/type        :dt/Property :dt/domain :mm/Activity
+   :dt/range       :db.type/keyword :db/valueType :db.type/keyword :db/cardinality :db.cardinality/one
+   :db/doc "The lattice level the declassification crossed TO (e.g. :public).  Makes 'what crossed private->public, and was each crossing sanctioned?' a real query.  Per DESIGN-ONTOLOGY §5."}]
+
+ ;; :mm.event-log/* — per-event-firing memorial slot family
+ [{:db/ident       :mm.event-log/runtime-event
+   :dt/type        :dt/Property :dt/domain :mm/EventLog
+   :dt/range       :dt/Event :db/valueType :db.type/ref :db/cardinality :db.cardinality/one
+   :db/doc "Reference to the :dt/Event substrate runtime instance this memorial wraps.  Per the event-substrate keystone ADR D.4 — :mm/EventLog promotes a runtime :dt/Event firing to corpus-FS-projected memorial status when the signal carries :data {:memorial :first-class}."}
+
+  {:db/ident       :mm.event-log/level
+   :dt/type        :dt/Property :dt/domain :mm/EventLog
+   :dt/range       :db.type/keyword :db/valueType :db.type/keyword :db/cardinality :db.cardinality/one
+   :db/doc "Severity level — :trace | :debug | :info | :warn | :error | :fatal.  Mirrors Telemere signal :level."}
+
+  {:db/ident       :mm.event-log/signal-id
+   :dt/type        :dt/Property :dt/domain :mm/EventLog
+   :dt/range       :db.type/keyword :db/valueType :db.type/keyword :db/cardinality :db.cardinality/one
+   :db/doc "The Telemere :id keyword (e.g., :SYS/STARTED, :SANDBAR/CODEC-REGISTER).  Identifies WHAT kind of signal this was."}
+
+  {:db/ident       :mm.event-log/source-ns
+   :dt/type        :dt/Property :dt/domain :mm/EventLog
+   :dt/range       :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+   :db/doc "Calling namespace of the logging callsite (e.g., \"sandbar.core\", \"datomic.peer\").  For SLF4J-bridged signals this is the logger name (from :location :ns per slf4j-telemere)."}
+
+  {:db/ident       :mm.event-log/msg
+   :dt/type        :dt/Property :dt/domain :mm/EventLog
+   :dt/range       :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+   :db/doc "Human-readable message string — resolved :msg / :msg_ from the Telemere signal."}
+
+  {:db/ident       :mm.event-log/data
+   :dt/type        :dt/Property :dt/domain :mm/EventLog
+   :dt/range       :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+   :db/doc "EDN-serialized structured-payload data map from the Telemere signal's :data field.  Stored as string to support arbitrary nesting + heterogenous value types without leaking Datomic schema concerns to logging callsites."}]
+
+ ;; :mm.run/* — scheduler-job execution slot family (minimal; scheduler arc Stage B adds more)
+ [{:db/ident       :mm.run/attempt-number
+   :dt/type        :dt/Property :dt/domain :mm/Run
+   :dt/range       :db.type/long :db/valueType :db.type/long :db/cardinality :db.cardinality/one
+   :db/doc "1-indexed attempt number under retry policy.  First attempt = 1.  Subsequent retries increment.  Composes with PROV-O wasInformedBy for retry-chain navigation."}
+
+  {:db/ident       :mm.run/output
+   :dt/type        :dt/Property :dt/domain :mm/Run
+   :dt/range       :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+   :db/doc "EDN-serialized return value (on success) or error info (on failure).  String storage avoids Datomic schema constraints on arbitrary handler-return shapes."}
+
+  {:db/ident       :mm.run/parent-run
+   :dt/type        :dt/Property :dt/domain :mm/Run
+   :dt/range       :mm/Run :db/valueType :db.type/ref :db/cardinality :db.cardinality/one
+   :db/doc "Parent :mm/Run for sub-run hierarchies (when a job spawns child runs).  Composes with PROV-O wasInformedBy for unified activity-chain navigation."}]
+
+ ;; Batch (iii) — Class declarations + :mm/Log re-parent + codec-type-keyword routing
+ [{:db/ident         :mm/Activity
+   :dt/type          :dt/Class
+   :dt/subclass-of   :mm/Artifact
+   :dt/context       "mm"
+   :dt/label         "Activity"
+   :dt/abstract?     true
+   :dt/slots         [:mm.activity/started-at
+                      :mm.activity/ended-at
+                      :mm.activity/agent
+                      :mm.activity/was-informed-by
+                      :mm.activity/generated
+                      :mm.activity/used
+                      :mm.activity/status
+                      ;; S6 declassification discriminators (keyword scalars — no MF-1 edge concern)
+                      :mm.activity/activity-type
+                      :mm.activity/visibility-from
+                      :mm.activity/visibility-to]
+   :db/doc "Abstract supertype for memorial types that RECORD an activity (something that happened) with W3C PROV-O alignment.  Concrete subtypes: :mm/Log (session-handoff chronicle), :mm/EventLog (per-event-firing memorial wrapping a :dt/Event runtime instance), :mm/Run (scheduler-job execution record).  Slot vocabulary mirrors PROV-O Activity-shape (:mm.activity/started-at = prov:startedAtTime, :mm.activity/agent = prov:wasAssociatedWith, etc.).  Per decisions/mm_activity_prov_o_lift_cross_arc_unification_log_eventlog_run_2026_05_23.md.  Not instantiated directly.  Composes with: scheduler arc (Allen's-13 relations over Activity intervals); event-substrate keystone D.4 (memorial-face for runtime :dt/Event firings is :mm/EventLog under this hierarchy); rules arc Layer 0 (RDFS-entailment Activity-aware queries)."}
+
+  ;; Re-parent :mm/Log from :mm/Artifact to :mm/Activity (single-attribute mutation;
+  ;; existing :mm/Log instances unchanged — they remain :dt/type :mm/Log and are now
+  ;; transitively :mm/Activity via the new parent).
+  {:db/ident       :mm/Log
+   :dt/subclass-of :mm/Activity}
+
+  {:db/ident         :mm/EventLog
+   :dt/type          :dt/Class
+   :dt/subclass-of   :mm/Activity
+   :dt/context       "mm"
+   :dt/label         "EventLog"
+   :dt/native-codec  :markdown
+   :dt/slots         [:mm.event-log/runtime-event
+                      :mm.event-log/level
+                      :mm.event-log/signal-id
+                      :mm.event-log/source-ns
+                      :mm.event-log/msg
+                      :mm.event-log/data]
+   :dt/abstract?     false
+   :dt/memorial-policy :first-class         ;; per-event-firing memorial — FS-projected to memory/event-logs/.  Explicit (was prose-only in :db/doc; matched the inherited :mm/Memory default but now asserted per bugs/mm_run_eventlog_memorial_policy_declared_in_doc_prose_not_as_slot_2026_05_29).
+   :db/doc "Per-event-firing memorial wrapping a :dt/Event substrate runtime instance.  Materialized by sandbar.logging.handlers/memorial-projection-handler when a Telemere signal carries :data {:memorial :first-class}.  Distinguished from :mm/Log (session-handoff chronicle; covers entire sessions) and :mm/Run (scheduler-job execution; covers job invocations).  Default :dt/memorial-policy :first-class — FS-projected to memory/event-logs/<>.md by the reactive-projection substrate.  Per decisions/mm_activity_prov_o_lift_cross_arc_unification_log_eventlog_run_2026_05_23.md.  Composes with sandbar.logging arc Stage D."}
+
+  {:db/ident         :mm/Run
+   :dt/type          :dt/Class
+   :dt/subclass-of   :mm/Activity
+   :dt/context       "mm"
+   :dt/label         "Run"
+   :dt/native-codec  :markdown
+   :dt/slots         [:mm.run/attempt-number
+                      :mm.run/output
+                      :mm.run/parent-run]
+   :dt/abstract?     false
+   :dt/memorial-policy :db-only            ;; high-volume operational runs — covered by DB-dump arc, NOT FS-projected.  The :db/doc declared this default but the slot was never asserted (fixed 2026-05-29 per bugs/mm_run_eventlog_memorial_policy_declared_in_doc_prose_not_as_slot_2026_05_29); narrative runs may still opt :first-class via per-instance override.
+   :db/doc "Scheduler-job execution record.  Materialized by sandbar.schedule.dispatcher when a :mm/Schedule fires + a :mm/Job handler runs (scheduler arc Stage F).  Default :dt/memorial-policy :db-only — high-volume operational runs covered by the DB-dump arc.  Narrative runs may opt to :first-class via per-instance override.  Per decisions/mm_activity_prov_o_lift_cross_arc_unification_log_eventlog_run_2026_05_23.md.  Additional :mm.run/* slots (:mm.run/job ref to :mm/Job, :mm.run/triggered-by ref to :mm/Schedule, :mm.run/workflow-process ref to :workflow/Process) land when scheduler arc Stage B authors :mm/Schedule + :mm/Job."}]
+
+ ;; Codec-type-keyword routing for the new concrete classes (:mm/Activity is abstract; no codec entry)
+ [{:db/ident :mm/EventLog :dt/codec-type-keyword :event-log}
+  {:db/ident :mm/Run      :dt/codec-type-keyword :run}]
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; :mm/Project — S6 KEYSTONE MINT (2026-07-06) — the tie-class that makes
+;; scope:project real-routed + carries the project-level firewall posture.
+;;
+;; Parent :mm/Artifact (sibling of :mm/Codebase; TYPE not :mm/Meta per the
+;; 2026-05-11 D1 ADR).  As an :mm/Artifact -> :mm/Memory descendant it INHERITS
+;; :mm.memory/name / description / scope / status + the full :mm.memory/* typed-
+;; edge set + :mm/id / :mm/pref-label (mm-namespace.edn) — so those are REUSED,
+;; NOT minted (AP-1, the reduced slot set).  Mints ONLY identity + tie legs +
+;; firewall posture.
+;;
+;; Per:
+;;   - audit-results/xminus-build-2026-07-04/S3/S3-RATIFICATION.md §A (ratified S6 mint manifest)
+;;   - audit-results/xminus-build-2026-07-04/DESIGN-ONTOLOGY.md §2 (slot table)
+;;   - decisions/project_as_first_class_type_2026_05_11.md (D1 TYPE-not-Meta; D2 identity; D3 tie)
+;;   - decisions/s6_proceeding_build_review_manifest_ratified_no_open_decisions_2026_07_06.md
+;;
+;; RepoHandle is NO-MINT (S3 census) so :mm.project/corpus-repo is a
+;; :db.type/string, NOT a ref.  Three-batch tx-ordering shape (slot decls ->
+;; class decl -> sentinel instance) mirrors the :mm/Activity batch pattern above,
+;; because Datomic cannot resolve a :dt/slots ref to an ident asserted in the
+;; SAME tx.  :mm/Project is forward-declared near the top of this file + in
+;; mm.edn (so :mm.memory/owning-project + :mm.context/visible-projects resolve).
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ ;; Batch (ii) — :mm.project/* slot declarations (IDENTITY 2 + TIE 3 + FIREWALL 5 = 10).
+ ;; IDENTITY
+ [{:db/ident       :mm.project/ident
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Project
+   :dt/range       :db.type/keyword
+   :db/valueType   :db.type/keyword
+   :db/cardinality :db.cardinality/one
+   :db/unique      :db.unique/identity
+   :dt/required?   true
+   :db/doc "The FROZEN, rename-proof project key R7 resolves BY — a covenant-stable ident distinct from the mutable :db/ident.  A private->public citation must survive the project being renamed/moved; :db/ident is the DB-interned name, not a frozen covenant key.  :db.unique/identity so a project resolves by ident across a full DB rebuild.  Per DESIGN-ONTOLOGY §2.2 [IDENTITY]; 2026-05-11 D2 identity field; scope-D3 rigid identity (firewall prerequisite)."}
+
+  {:db/ident       :mm.project/authority-uuid
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Project
+   :dt/range       :db.type/uuid
+   :db/valueType   :db.type/uuid
+   :db/cardinality :db.cardinality/one
+   :db/doc "The frozen v5-derivation root for THIS project's per-project id-space (the WF-I2 per-project-authority fix — replaces the process-global +authority+).  Optional (nil-root fallback per identifier.clj).  Distinct from the inherited corpus-wide :mm/id (mm-namespace.edn) which anchors the memorial itself; this anchors the project's OWN id-space.  Per DESIGN-ONTOLOGY §2.2; W1-FEED WF-I2."}
+
+ ;; TIE — the two REF legs (runs-in-context, code-repo) materialize as edges (MF-1);
+ ;; corpus-repo is a STRING (RepoHandle no-mint), not a ref.
+  {:db/ident       :mm.project/runs-in-context
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Project
+   :dt/range       :mm/Context
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/many
+   :dt/required?   true
+   :db/doc "THE direct Project->Context tie (a project runs in home AND work contexts — R2 multi-machine, card-MANY).  The forward leg of the ratified Codebase<->Context tie the W1-v2 draft omitted (ONT-F2).  :mm.context/visible-projects is the read-optimized inverse.  REF slot — MUST appear in :mm/Project's :dt/slots (MF-1) to materialize as a traversable edge.  Per DESIGN-ONTOLOGY §2.2 [TIE]; 2026-05-11 D3; 2026-06-29 acceptance-(d)."}
+
+  {:db/ident       :mm.project/code-repo
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Project
+   :dt/range       :mm/Codebase
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/many
+   :db/doc "The Project->Codebase (source repo) leg of the tie.  :mm/Codebase is the right target (already first-class; carries repo-root / canonical-reference / language).  Card-many (a project may span repos).  Residual ADR-F6: the code leg keeps repo-root/canonical-reference strings, so a public memory's ref to a private code-repo is flow-gated (S7), not structurally path-safe.  REF slot — MUST appear in :dt/slots (MF-1).  Per DESIGN-ONTOLOGY §2.2 [TIE]; 2026-06-29 §42."}
+
+  {:db/ident       :mm.project/corpus-repo
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Project
+   :dt/range       :db.type/string
+   :db/valueType   :db.type/string
+   :db/cardinality :db.cardinality/one
+   :dt/required?   true
+   :db/doc "The project's canonical corpus-repo pointer (where this project's memorials project to).  STRING (git URL or rel-path), NOT a ref — RepoHandle is NO-MINT per the S3 census (no in-graph relocatable-pointer TYPE surfaced; the uri_addressing_discipline carries R7/R3 disciplinarily).  This is the OF-A no-mint collapse the 2026-05-11 ADR's <git URL or rel-path> already allowed.  NOT a REF — does NOT go in :dt/slots-as-edge (it is a scalar).  Per S3-RATIFICATION §A (RepoHandle no-mint); DESIGN-ONTOLOGY §2.2 [TIE] no-mint branch."}
+
+ ;; FIREWALL posture
+  {:db/ident       :mm.project/default-visibility
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Project
+   :dt/range       :db.type/keyword
+   :db/valueType   :db.type/keyword
+   :db/cardinality :db.cardinality/one
+   :dt/required?   true
+   :db/doc "The project's default lattice position (:public / :private) that fresh captures inherit when they carry no intrinsic :mm.memory/visibility.  The Project-level default (distinct from the Context-level :mm.context/firewall-class).  Read-time default-deny: a project with this absent is treated :private by the S7/clearance read helper — never a stored backfill.  Per DESIGN-ONTOLOGY §2.2 [FIREWALL]; 2026-06-29 §43."}
+
+  {:db/ident       :mm.project/firewall-class
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Project
+   :dt/range       :db.type/keyword
+   :db/valueType   :db.type/keyword
+   :db/cardinality :db.cardinality/one
+   :db/doc "Project-level firewall class that COMPOSES most-restrictive (plan-D5) with the Context's :mm.context/firewall-class — a project may be MORE restrictive than its context, never less.  Optional.  Per DESIGN-ONTOLOGY §2.2 [FIREWALL]; plan-D5 default-deny composition."}
+
+  {:db/ident       :mm.project/code-ref-public?
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Project
+   :dt/range       :db.type/boolean
+   :db/valueType   :db.type/boolean
+   :db/cardinality :db.cardinality/one
+   :db/doc "The ruling-6 deferred code-ref toggle (DEFAULT false): may a :public memory reference this project's private code repo?  The SLOT ships schema-ready in S6; the POLICY stays default-deny/deferred (no S6 enforcement reads it as true).  Default false is a READ-TIME semantic (absent => false), NOT a stored value on existing rows.  Per DESIGN-ONTOLOGY §2.2 [FIREWALL]; ruling 6 DEFERRED; A-3.1."}
+
+  {:db/ident       :mm.project/push-allowlist
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Project
+   :dt/range       :db.type/string
+   :db/valueType   :db.type/string
+   :db/cardinality :db.cardinality/many
+   :db/doc "The corpus-canonical push destinations (MOVED here from the gitignored contexts.edn per L-2, so it is git-tracked + PR-reviewable, not a poisonable config edit).  Card-MANY.  A firewall-mechanism slot the ontology OWNS; the enforcement is S9 push-guards.  STRING (not a ref) — does not go in :dt/slots-as-edge.  Per DESIGN-ONTOLOGY §2.2 [FIREWALL]; L-2 fold."}
+
+  {:db/ident       :mm.project/corpus-layout
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Project
+   :dt/range       :db.type/keyword
+   :db/valueType   :db.type/keyword
+   :db/cardinality :db.cardinality/one
+   :db/doc "The R6 corpus<->code repo layout: :separate-repo / :sibling-repo / :submodule / :subdir (ruling 1: NOT public-only; a private code-repo may carry its corpus as a submodule too).  Optional.  Per DESIGN-ONTOLOGY §2.2 [FIREWALL]; ruling 1."}]
+
+ ;; Batch (iii) — :mm/Project class declaration.  :dt/slots lists the 10 minted
+ ;; :mm.project/* slots ONLY; the inherited :mm.memory/* come via :mm/Artifact ->
+ ;; :mm/Memory (exactly as :mm/Codebase's :dt/slots lists only its 4 own slots).
+ ;; The two REF legs (runs-in-context, code-repo) materialize as traversable
+ ;; edges (MF-1); the scalars are listed for introspection completeness.
+ [{:db/ident         :mm/Project
+   :dt/type          :dt/Class
+   :dt/subclass-of   :mm/Artifact
+   :dt/context       "mm"
+   :dt/label         "Project"
+   :dt/native-codec  :markdown
+   :dt/slots         [;; IDENTITY (minted)
+                      :mm.project/ident
+                      :mm.project/authority-uuid
+                      ;; TIE — the two REF legs MUST be here for MF-1 edge materialization
+                      :mm.project/runs-in-context
+                      :mm.project/code-repo
+                      :mm.project/corpus-repo            ;; string; listed for introspection completeness
+                      ;; FIREWALL posture (minted)
+                      :mm.project/default-visibility
+                      :mm.project/firewall-class
+                      :mm.project/code-ref-public?
+                      :mm.project/push-allowlist
+                      :mm.project/corpus-layout]
+   :dt/abstract?     false
+   :db/doc "The keystone tie-class: ties :mm/Codebase (source repo) <-> :mm/Context (runtime compartment) and makes scope:project real-routed.  Parent :mm/Artifact (sibling of :mm/Codebase) — a first-class artifact-shaped project record (TYPE not :mm/Meta per 2026-05-11 D1).  INHERITS :mm.memory/name / description / scope / status + the full :mm.memory/* typed-edge set + :mm/id / :mm/pref-label (mm-namespace.edn) via :mm/Artifact -> :mm/Memory — so those are REUSED, not minted (AP-1, the -4/-5 slot reduction).  Mints only identity (ident / authority-uuid), the tie legs (runs-in-context / code-repo / corpus-repo), and the project-level firewall posture (default-visibility / firewall-class / code-ref-public? / push-allowlist / corpus-layout).  Per S3-RATIFICATION §A; DESIGN-ONTOLOGY §2; project_as_first_class_type_2026_05_11.md."}]
+
+ ;; Codec-type-keyword routing — frontmatter `type: project` maps to :mm/Project.
+ [{:db/ident :mm/Project :dt/codec-type-keyword :project}]
+
+ ;; Batch (iv) — :context/UNASSIGNED sentinel :mm/Context instance.  The valid
+ ;; runs-in-context target for the :project/UNASSIGNED sentinel below (batch v).
+ ;;
+ ;; WHY a NEW :mm/Context sentinel (not :context/Empty): :mm.project/runs-in-context
+ ;; declares :dt/range :mm/Context, but :context/Empty is a :context/Context
+ ;; INSTANCE (context.edn:86 — the vestigial :dt/Ref-subclass sentinel, a DIFFERENT
+ ;; class), so the substrate range validator (datatype.clj value-matches-range?)
+ ;; refuses it: instance-of? :mm/Context :context/Empty is false, and dt/make throws
+ ;; "Slot :mm.project/runs-in-context expects :mm/Context".  A :context/Context
+ ;; target would make :project/UNASSIGNED fail its own class's runs-in-context range
+ ;; (class.validate-all-instances on :mm/Project red on day one).  This seeds a REAL
+ ;; :mm/Context (:dt/type :mm/Context) so the tie satisfies its ratified :dt/range.
+ ;;
+ ;; :mm/Context has NO :dt/required? slots (its :mm.memory/* + :mm.context/* are all
+ ;; optional), so name/label are sufficient for a valid inert instance.  This is
+ ;; the SAME schema-EDN-seeded-instance pattern as :context/Empty (context.edn:86)
+ ;; and :workflow/State seeds — a :db/ident-carrying instance tx AFTER its class decl.
+ ;; :mm/Context is declared in mm.edn, which loads BEFORE mm-artifact.edn
+ ;; (config.edn:30), so :mm/Context is resolvable here.  Seeded in its OWN batch
+ ;; BEFORE batch (v) so :context/UNASSIGNED exists when :project/UNASSIGNED's
+ ;; runs-in-context ref is validated at schema-load.
+ [{:db/ident         :context/UNASSIGNED
+   :dt/type          :mm/Context
+   :dt/context       "context"
+   :dt/label         "UNASSIGNED"
+   :mm.memory/name   "UNASSIGNED"
+   :db/doc "Sentinel :mm/Context — the inert runs-in-context target the :project/UNASSIGNED sentinel ties to.  A real :mm/Context INSTANCE (NOT :context/Empty, which is a :context/Context of a different class that fails :mm.project/runs-in-context's :dt/range :mm/Context).  Carries no machine-id VALUE (AP-MACHINE-ID O3 — the slot is schema-ready but unpopulated).  Seeded in schema EDN so the sentinel tie resolves at first write.  Per DESIGN-ONTOLOGY §4.2; S6 revision-round-1 sentinel-range fix."}]
+
+ ;; Batch (v) — :project/UNASSIGNED sentinel instance.  A :mm/Project INSTANCE
+ ;; (a sentinel VALUE, not a type) the owning-project read-default resolves to.
+ ;; Seeded in schema EDN so it exists at first write.  Satisfies all :dt/required?
+ ;; :mm.project/* slots (ident / runs-in-context / corpus-repo / default-visibility).
+ ;; :context/UNASSIGNED (batch iv above) is the range-valid :mm/Context tie target.
+ [{:db/ident        :project/UNASSIGNED
+   :dt/type         :mm/Project
+   :dt/context      "project"
+   :dt/label        "UNASSIGNED"
+   :mm.project/ident :project/UNASSIGNED
+   :mm.project/default-visibility :private          ;; fail-closed: an unassigned memory reads :private
+   :mm.project/corpus-repo "UNASSIGNED"             ;; required slot; sentinel placeholder, never pushed
+   :mm.project/runs-in-context :context/UNASSIGNED  ;; required tie; the seeded :mm/Context sentinel (batch iv) — range-valid :mm/Context, NOT :context/Empty
+   :db/doc "Sentinel :mm/Project the owning-project default resolves to when a memory carries no :mm.memory/owning-project.  A sentinel VALUE, not a type.  default-visibility :private = fail-closed (an unassigned memory reads private + is confined until assigned).  Seeded in schema EDN so it exists at first write (the clearance read helper + S9 routing resolve absent owning-project to this).  runs-in-context ties to the seeded :context/UNASSIGNED :mm/Context sentinel (batch iv) — :context/Empty is a :context/Context and would fail the :dt/range :mm/Context.  Per DESIGN-ONTOLOGY §4.2."}]
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; S7 BU-6 — the 3 directional-firewall :mm/Shape seeds, RETARGETED to the S6
+;; STRING carriers (S7-PLAN §6; S6 minted NO RepoHandle — corpus-repo is a
+;; string).  Charter idents KEPT for receipt-chain traceability (ruled §8-R18);
+;; the retarget is doc-noted per shape.  Genuine single-entity invariants (C3),
+;; disjoint from the two-entity flow rule (EP-1/EP-3 — sandbar.firewall.*).
+;;
+;; Seed idiom follows the interval XOR precedent (mm-temporal.edn):
+;;   - Constraint sub-entities carry BOTH a tempid (the shape must reference
+;;     them by explicit :db/id within the same tx) AND a stable upsert key so
+;;     initialize-db!'s per-boot schema retransaction is idempotent (the RULE
+;;     at mm-temporal.edn — schema-seeded ref sub-entities without a stable
+;;     key proliferate on reload).
+;;   - The :mm.shape/PatternConstraint sub-entities use a stable :db/ident
+;;     (exactly the XOR discipline — check-pattern re-resolves keyword refs
+;;     via ->entity).
+;;   - The :mm/Fn validator sub-entities DELIBERATELY carry NO :db/ident:
+;;     Datomic's entity API derefs a ref to an ident-bearing entity as the
+;;     ident KEYWORD (the enum-ref behavior; cf. clearance ref-collapse bug
+;;     2026-07-06), and sandbar.shape/check-validator-fn reads
+;;     :dt.fn/source-ns/:dt.fn/source-var directly off the deref'd ref — an
+;;     ident here would collapse the fn ref to a keyword and fail EVERY
+;;     entity closed.  Reload idempotence comes from the :db.unique/identity
+;;     :mm.memory/identity upsert key instead (fixed UUIDs below; stable
+;;     upsert keys, not rel-path-derived — these are DB-only sub-entities).
+;;     The fn IMPLS live on the peer classpath (sandbar.shape.safety, defdbfn
+;;     :classpath-fn — the walker-fn registration pattern) and are resolved
+;;     lazily via requiring-resolve, so the seeds are live in bare-schema
+;;     test fixtures too (which load :required-schema only, never
+;;     load-all-mm-fn-memorials).
+;;
+;; NB :mm.shape/applies-to is :db.cardinality/one (mm.edn), so the charter's
+;; ":mm/Project + :mm/Codebase" target for no-absolute-path is seeded as TWO
+;; shape entities — the charter-ident shape (Project) + an explicitly-named
+;; -codebase sibling carrying the Codebase leg.  Same invariant, same regex.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [;; The 4 :mm.shape/PatternConstraint sub-entities — ONE negative regex
+  ;; (L-2/R7: location is registry-resolved, never corpus-baked): a value
+  ;; passes iff it is NOT absolute (`^/`, `^~`, `^[A-Za-z]:\`), carries NO
+  ;; `file://` scheme, and contains NO `..` traversal.  check-pattern skips
+  ;; absent slots and checks card-many slots per-value (push-allowlist "each").
+  {:db/id #db/id[:db.part/user -111]
+   :db/ident :memory.shapes.pattern/project-corpus-repo-not-absolute
+   :dt/type :mm.shape/PatternConstraint
+   :mm.shape.pattern/property :mm.project/corpus-repo
+   :mm.shape.pattern/regex "\\A(?![/~]|[A-Za-z]:\\\\)(?!.*file://)(?!.*\\.\\.).*\\z"}
+
+  {:db/id #db/id[:db.part/user -112]
+   :db/ident :memory.shapes.pattern/project-push-allowlist-not-absolute
+   :dt/type :mm.shape/PatternConstraint
+   :mm.shape.pattern/property :mm.project/push-allowlist
+   :mm.shape.pattern/regex "\\A(?![/~]|[A-Za-z]:\\\\)(?!.*file://)(?!.*\\.\\.).*\\z"}
+
+  {:db/id #db/id[:db.part/user -113]
+   :db/ident :memory.shapes.pattern/codebase-repo-root-not-absolute
+   :dt/type :mm.shape/PatternConstraint
+   :mm.shape.pattern/property :mm.codebase/repo-root
+   :mm.shape.pattern/regex "\\A(?![/~]|[A-Za-z]:\\\\)(?!.*file://)(?!.*\\.\\.).*\\z"}
+
+  {:db/id #db/id[:db.part/user -114]
+   :db/ident :memory.shapes.pattern/codebase-canonical-reference-not-absolute
+   :dt/type :mm.shape/PatternConstraint
+   :mm.shape.pattern/property :mm.codebase/canonical-reference
+   :mm.shape.pattern/regex "\\A(?![/~]|[A-Za-z]:\\\\)(?!.*file://)(?!.*\\.\\.).*\\z"}
+
+  ;; The 2 :mm/Fn validator sub-entities (NO :db/ident — see banner).
+  {:db/id #db/id[:db.part/user -115]
+   :dt/type :mm/Fn
+   :mm.memory/identity #uuid "23e85a5e-0dcb-4a12-a456-9200121d8e82"
+   :dt.fn/source-ns "sandbar.shape.safety"
+   :dt.fn/source-var "check-project-layout-safety"
+   :dt.fn/lang :clojure
+   :dt.fn/purpose :validate
+   :dt.fn/purity :pure-total
+   :dt.fn/cost-class :cheap
+   :dt.fn/installed-as :classpath-fn
+   :dt.fn/version "1.0.0"
+   :dt.fn/description "Delegate for :mm.shape/project-layout-safety — a :submodule/:subdir corpus-layout's corpus-repo must stay inside the project's own tree.  Impl: sandbar.shape.safety/check-project-layout-safety."}
+
+  {:db/id #db/id[:db.part/user -116]
+   :dt/type :mm/Fn
+   :mm.memory/identity #uuid "9fa0a391-5454-49e6-87a3-9c8c4094e532"
+   :dt.fn/source-ns "sandbar.shape.safety"
+   :dt.fn/source-var "check-repo-handle-url-safety"
+   :dt.fn/lang :clojure
+   :dt.fn/purpose :validate
+   :dt.fn/purity :pure-total
+   :dt.fn/cost-class :cheap
+   :dt.fn/installed-as :classpath-fn
+   :dt.fn/version "1.0.0"
+   :dt.fn/description "Delegate for :mm.shape/repo-handle-url-safety — a :public-default project carrying a populated corpus-repo URL without explicit code-ref-public? consent is a :violation (L-6).  Impl: sandbar.shape.safety/check-repo-handle-url-safety."}
+
+  ;; The 4 :mm/Shape entities referencing the sub-entities via tempid.
+  {:db/ident              :mm.shape/project-layout-safety
+   :dt/type               :mm/Shape
+   :mm.shape/shape-id     "project-layout-safety"
+   :mm.shape/applies-to   :mm/Project
+   :mm.shape/description  "Cross-slot layout invariant (S7-PLAN §6): a :submodule/:subdir :mm.project/corpus-layout's corpus-repo path must not escape the project's own tree (a submodule crossing a visibility boundary).  Boundary: absolute-path/..-traversal REJECTION is :mm.shape/no-absolute-path's job; this shape's specific concern is in-tree confinement for the in-tree layouts (a remote URL, legal under no-absolute-path, is NOT in-tree here).  Other layouts pass unexamined."
+   :mm.shape/severity     :violation
+   :mm.shape/validator-fn #db/id[:db.part/user -115]}
+
+  {:db/ident              :mm.shape/no-absolute-path
+   :dt/type               :mm/Shape
+   :mm.shape/shape-id     "no-absolute-path"
+   :mm.shape/applies-to   :mm/Project
+   :mm.shape/description  "Path-safety invariant (S7-PLAN §6, L-2/R7): :mm.project/corpus-repo + :mm.project/push-allowlist (each) must not be absolute (^/, ^~, ^[A-Za-z]:\\, file://) and must carry no .. traversal — location is registry-resolved, never corpus-baked.  The :mm/Codebase leg of the charter shape lives on :mm.shape/no-absolute-path-codebase (:mm.shape/applies-to is card-one)."
+   :mm.shape/severity     :violation
+   :mm.shape/pattern-constraints [#db/id[:db.part/user -111]
+                                  #db/id[:db.part/user -112]]}
+
+  {:db/ident              :mm.shape/no-absolute-path-codebase
+   :dt/type               :mm/Shape
+   :mm.shape/shape-id     "no-absolute-path-codebase"
+   :mm.shape/applies-to   :mm/Codebase
+   :mm.shape/description  "The :mm/Codebase leg of :mm.shape/no-absolute-path (same L-2/R7 invariant, same regex; split ONLY because :mm.shape/applies-to is card-one): :mm.codebase/repo-root + :mm.codebase/canonical-reference must not be absolute and must carry no .. traversal.  NB this tightens repo-root's legacy 'absolute filesystem path' doc per the S7 charter — the path is registry-resolved henceforth."
+   :mm.shape/severity     :violation
+   :mm.shape/pattern-constraints [#db/id[:db.part/user -113]
+                                  #db/id[:db.part/user -114]]}
+
+  {:db/ident              :mm.shape/repo-handle-url-safety
+   :dt/type               :mm/Shape
+   :mm.shape/shape-id     "repo-handle-url-safety"
+   :mm.shape/applies-to   :mm/Project
+   :mm.shape/description  "RETARGETED (S7-PLAN §6, ruled §8-R18): charter ident kept though S6 minted NO RepoHandle — applies-to :mm/Project ONLY (code-ref-public? lives on Project; a Codebase-side check would be cross-entity, which SHACL cannot express; the Codebase leg's path safety is no-absolute-path-codebase's job).  A :public default-visibility project carrying a populated :mm.project/corpus-repo URL with :mm.project/code-ref-public? absent-or-false is a :violation (L-6; absent => false per ruling 6).  The seeded UNASSIGNED sentinel value counts as UNpopulated."
+   :mm.shape/severity     :violation
+   :mm.shape/validator-fn #db/id[:db.part/user -116]}
+
+  ;; FUTURE-BRANCH fixture (COMMENTED, UNSEEDED — unfalsifiable today, per
+  ;; S7-PLAN §6): RepoHandle-origin-url.  The day :mm/RepoHandle mints, seed
+  ;; the pair below + the one-line applies-to retarget of
+  ;; :mm.shape/repo-handle-url-safety back to :mm/RepoHandle.
+  ;;
+  ;; {:db/id #db/id[:db.part/user -117]
+  ;;  :db/ident :memory.shapes.pattern/repo-handle-origin-url-not-absolute
+  ;;  :dt/type :mm.shape/PatternConstraint
+  ;;  :mm.shape.pattern/property :mm.repo-handle/origin-url
+  ;;  :mm.shape.pattern/regex "\\A(?![/~]|[A-Za-z]:\\\\)(?!.*file://)(?!.*\\.\\.).*\\z"}
+  ;;
+  ;; {:db/ident              :mm.shape/repo-handle-origin-url-safety
+  ;;  :dt/type               :mm/Shape
+  ;;  :mm.shape/shape-id     "repo-handle-origin-url-safety"
+  ;;  :mm.shape/applies-to   :mm/RepoHandle
+  ;;  :mm.shape/description  "origin-url is registry-resolved, never absolute/corpus-baked (L-2/R7)."
+  ;;  :mm.shape/severity     :violation
+  ;;  :mm.shape/pattern-constraints [#db/id[:db.part/user -117]]}
+  ]
+
+]

@@ -1,0 +1,61 @@
+## What this predicate means
+
+**A `next-by-date` B** — A and B are occurrents (logs / sessions / commits / authorization events / plan transitions) where A's temporal position precedes B's; the assertion points forward in time.  The **pairwise cons-list primitive** for append-only event sequences.  Dagger pair with `previous-by-date`.  Strictly superior to SKOS OrderedCollection for immutable append-only sequences because insertion is O(1) local edit (just add forward and backward pointers at the new node), not O(n) reshuffle of a central list.
+
+## Substrate identity
+
+- **Slot ident**: `{{predicate-ident}}`
+- **Domain**: `{{domain}}`
+- **Range**: `{{range}}`
+- **Cardinality**: `{{cardinality}}`
+- **`:dt/type`**: `:dt/DirectedBinaryRelationProperty` (asymmetric + irreflexive)
+
+## Formal signature
+
+`{{predicate-name}} : {{domain}} × {{range}} → Bool`
+
+## Characteristics
+
+- **Asymmetric** — A next-by-date B doesn't imply B next-by-date A (OWL 2 RL `prp-asyp`)
+- **Irreflexive** — an occurrent doesn't follow itself (OWL 2 RL `prp-irp`)
+- **NOT transitive** — A next-by-date B + B next-by-date C does NOT give A next-by-date C.  Chains are walked explicitly (path queries), not collapsed into transitive closure.  This is the pairwise-cons-list property.
+
+## When to use next-by-date
+
+Use `next-by-date` whenever you have a chronologically-ordered sequence of occurrent memorials and need:
+
+- Forward navigation through the chain
+- O(1) insertion at any position
+- Audit-friendly chain integrity (each link is a single typed-edge)
+
+Examples: session log sequences, commit history projection, authorization event chains, plan-stage transitions, memoir series.
+
+## Adjacent predicates
+
+| Direction | Predicate |
+|---|---|
+| Forward | **`next-by-date`** — A precedes B |
+| Backward | `previous-by-date` — A follows B (inverse) |
+| Boundary | `has-beginning` / `has-end` — interval endpoints |
+
+## Formal ontology mappings
+
+- **SIOC 2007** `sioc:next_by_date` — exact semantic match (the source standard)
+- **SKOS OrderedCollection** — alternative shape; pairwise-cons-list strictly superior for append-only
+- **rdf:List** — single-linked-list cons cells (close analogue but rdf:List requires reconstruction at emit)
+
+Grounding references in the corpus:
+- [`references/sioc_reference.md`](../references/sioc_reference.md) — SIOC pairwise navigation patterns
+
+## Pairwise-cons-list invariant
+
+For any chain `A → B → C → D`:
+- Forward: `A next-by-date B`, `B next-by-date C`, `C next-by-date D` (three links; one per node)
+- Backward: `D previous-by-date C`, etc. (derived via prp-inv1/inv2 if `:dt/inverse-of` declared)
+
+The chain's integrity is purely local — no central list to maintain.
+
+## See also
+
+- [`predicates/previous-by-date.md`](previous-by-date.md) — inverse (backward navigation)
+- [`predicates/has-beginning.md`](has-beginning.md) — temporal-boundary axis

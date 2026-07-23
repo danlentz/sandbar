@@ -17,8 +17,9 @@
   Per fulltext arc Stage 13 of
   plans/sandbar_fulltext_search_substrate_arc_2026_05_13.md."
   (:refer-clojure :exclude [count-by group-by rank-by])
-  (:require [sandbar.db.datatype :as dt]
-            [sandbar.db.datomic  :as db]))
+  (:require [sandbar.api.projection :as projection]
+            [sandbar.db.datatype    :as dt]
+            [sandbar.security.query :as secq]))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; count-by — entity count with optional predicate filter
@@ -41,6 +42,11 @@
   [{:keys [class where]}]
   {:pre [(keyword? class)
          (or (nil? where) (sequential? where))]}
+  ;; SECURITY (read-plane namespace firewall): deny :class / :where in a
+  ;; firewalled namespace (:auth/* etc.) BEFORE any query touches the DB.
+  (secq/assert-class-allowed! class)
+  (secq/assert-where-namespaces! where)
+  (dt/assert-where-eids-allowed! where)   ; numeric-eid-form firewall (db-aware)
   {:count (dt/count-of class where)})
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -67,9 +73,19 @@
   {:pre [(keyword? class)
          (keyword? group-by)
          (or (nil? where) (sequential? where))]}
-  (let [groups (dt/group-by-of class group-by where)]
-    {:groups groups
-     :total  (reduce + 0 (vals groups))}))
+  ;; SECURITY (read-plane namespace firewall): deny a firewalled :class,
+  ;; :group-by slot (the credential-hash DUMP vector), or :where attribute.
+  (secq/assert-class-allowed! class)
+  (secq/assert-attribute-allowed! group-by)
+  (secq/assert-where-namespaces! where)
+  (dt/assert-where-eids-allowed! where)   ; numeric-eid-form firewall (db-aware)
+  (let [groups  (dt/group-by-of class group-by where)
+        ;; SECURITY (read-plane firewall): drop firewalled-class buckets from a
+        ;; :group-by whose slot yields class refs (e.g. :dt/type) — closes the
+        ;; eid-keyed per-:auth/*-class instance-cardinality leak.
+        visible (into {} (remove (fn [[k _]] (dt/read-plane-group-key-firewalled? k)) groups))]
+    {:groups visible
+     :total  (reduce + 0 (vals visible))}))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; rank-by — structural-rank re-ordering across 4 axes
@@ -93,6 +109,14 @@
                       :mm.memory/last-touched).  Substrate does not
                       hardcode class-specific temporal axes per
                       substrate-quality discipline.
+    :memorial-policy — optional :dt/memorial-policy keyword
+                      (:first-class / :db-only / :inline).  When set, keep
+                      only instances whose class's EFFECTIVE memorial-policy
+                      (ancestry-walk via dt/effective-memorial-policy-of)
+                      matches — the lattice-native curated-vs-operational
+                      filter (e.g. :first-class excludes the :db-only
+                      :event/* runtime-telemetry subtree + :mm/Run).  Reuses
+                      the same axis sandbar.project.dump partitions by.
 
   Returns:
     {:hits     [{:entity <entity-map> :rank-score <number>} ...]
@@ -100,13 +124,18 @@
      :returned <int>}
 
   Per fulltext arc Stage 13."
-  [{:keys [class rank-by limit temporal-slot]
+  [{:keys [class rank-by limit temporal-slot projection memorial-policy]
     :or   {limit 20}}]
   {:pre [(keyword? class)
          (rank-axis-keyword? rank-by)
          (integer? limit) (>= limit 0)
          (or (not (#{:recency :freshness} rank-by))
-             (keyword? temporal-slot))]}
+             (keyword? temporal-slot))
+         (or (nil? projection) (#{:full :metadata-only} projection))
+         (or (nil? memorial-policy) (keyword? memorial-policy))]}
+  ;; SECURITY (read-plane namespace firewall): deny ranking over a firewalled
+  ;; class (:auth/* etc.) before enumerating its instances.
+  (secq/assert-class-allowed! class)
   (let [pairs   (case rank-by
                   :degree
                   (->> (dt/all-instances-of class)
@@ -126,12 +155,93 @@
                   (dt/recency-rank-of class temporal-slot)
                   :freshness
                   (dt/freshness-rank-of class temporal-slot))
-        total   (count pairs)
-        limited (if (zero? limit) pairs (take limit pairs))
+        ;; Optional lattice-driven memorial-policy filter (per Dan-steer
+        ;; 2026-05-29 — decisions/filter_curated_memorials_by_lattice_memorial_policy_...):
+        ;; keep only entities whose class's EFFECTIVE :dt/memorial-policy
+        ;; matches (e.g. :first-class to surface curated memorials, excluding
+        ;; :db-only runtime telemetry — the :event/* subtree + :mm/Run).
+        ;; Reuses the substrate primitive dt/effective-memorial-policy-of
+        ;; (ancestry-walk, nearest-wins) rather than a bespoke per-type check.
+        ;; Memoized per class-ident (few distinct classes; avoids re-walking
+        ;; ancestry per entity across the full ranked set).
+        filtered (if memorial-policy
+                   (let [policy-of (memoize dt/effective-memorial-policy-of)]
+                     (filterv (fn [[e _]]
+                                (let [t   (:dt/type e)
+                                      cls (if (keyword? t) t (:db/ident t))]
+                                  (= memorial-policy (policy-of cls))))
+                              pairs))
+                   pairs)
+        total   (count filtered)
+        limited (if (zero? limit) filtered (take limit filtered))
         hits    (mapv (fn [[entity rank-score]]
-                        {:entity     entity
+                        {:entity     (projection/apply-projection entity projection)
                          :rank-score rank-score})
                       limited)]
     {:hits     hits
      :total    total
      :returned (count hits)}))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; tag-histogram — frequency of :mm/Tag usage across the corpus
+;; (Stage 5.B-pre #4)
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defn tag-histogram
+  "Return a frequency histogram of :mm/Tag usage across the corpus.
+   Each bin = {:tag <identifier>, :value <string>, :count <int>}; count is
+   the number of entities (any class) that reference the tag via any
+   cardinality-many ref slot.  `:tag` is the canonical tag-ref fallback
+   (:db/ident, else :mm.tag/value, else :db/id — mirrors
+   `sandbar.audit.tag/tag-ref`), so it may be a keyword, string, or Long.
+
+   Optional opts:
+     :limit — cap returned bins (default 0 = no cap); sorted descending
+              by count, ascending by the stringified tag identifier as
+              tie-breaker (type-safe across keyword/string/Long)
+
+   Returns:
+     {:histogram [{:tag <ident|value|eid> :value <string> :count <int>} ...]
+      :total <int>}
+
+   Per Stage 5.B-pre #4 of
+   decisions/stage_5_mcp_verb_authoring_sub_arc_2026_05_21.md."
+  [{:keys [limit] :or {limit 0}}]
+  {:pre [(integer? limit) (>= limit 0)]}
+  ;; Enumerate ALL :mm/Tag instances as entity maps via `dt/all-instances-of`.
+  ;; Corpus tags are identless by design (ref-typed-slot upserts carrying only
+  ;; :mm.tag/value — see sandbar.audit.tag), so the former
+  ;; `dt/all-named-instances-of` (a deprecated alias for `named-idents-of`,
+  ;; whose Datalog requires `[?e :db/ident ?ident]`) matched ZERO tags and the
+  ;; histogram collapsed to {:histogram [] :total 0} across all 118 live tags —
+  ;; the S11/Rec-9 anomaly.  Each tag's `:tag` identifier follows the
+  ;; codebase-canonical fallback (mirrors `sandbar.audit.tag/tag-ref`): its
+  ;; :db/ident when interned, else its :mm.tag/value string, else its numeric
+  ;; :db/id — so an identless-but-valued corpus tag surfaces a human-meaningful
+  ;; key (its value) rather than a bare eid, while `:value` still carries the raw
+  ;; :mm.tag/value (redundant for identless tags, which is acceptable).  `:count`
+  ;; is the number of DISTINCT source entities (tool-card contract: "the number of
+  ;; entities ... that reference the tag"), deduped by source :db/id since one
+  ;; entity may cite a tag via >1 ref slot (e.g. both :mm.memory/tags and
+  ;; :mm.memory/themes).  `keep` (not `map`) over the source :db/id is
+  ;; deliberate defence-in-depth (S11 LC1): ceremony-8's read-plane firewall
+  ;; can rewrite a hop-forbidden inbound edge so its `:source` is elided/nil;
+  ;; `map` would fold that spurious nil into the `distinct` set and inflate the
+  ;; count by one phantom, whereas `keep` (drop-nils) is immune.  This cannot
+  ;; fire today — tag-citation slots are firewall-EXEMPT, so `hop-forbidden?`
+  ;; never rewrites a :mm/Tag inbound edge and every `:source` is present
+  ;; (`map` == `keep` here); it is robust-by-construction for a hypothetical
+  ;; future schema that routes a governed slot at a :mm/Tag.
+  (let [tags    (dt/all-instances-of :mm/Tag)
+        bins    (for [e tags
+                      :let [tag (or (:db/ident e) (:mm.tag/value e) (:db/id e))
+                            val (:mm.tag/value e)
+                            n   (->> (dt/inbound-edges-of (:db/id e) {})
+                                     (keep (comp :db/id :source))
+                                     distinct
+                                     count)]]
+                  {:tag tag :value val :count n})
+        sorted  (sort-by (juxt #(- (:count %)) (comp str :tag)) bins)
+        limited (if (zero? limit) sorted (take limit sorted))]
+    {:histogram (vec limited)
+     :total     (count tags)}))

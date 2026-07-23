@@ -26,7 +26,11 @@
             [datomic.api :as d]
             [sandbar.db.rules :refer [defrule clear-rulebase! all-rules] :as rule]
             [sandbar.db.fn :refer [defdbfn dbfn clear-fnbase! all-dbfn] :as fn]
-            [sandbar.db.datomic :refer [entity describe] :as db]))
+            [sandbar.db.datomic :refer [entity describe] :as db]
+            [sandbar.db.ref :as ref]
+            [sandbar.firewall.enforce :as fw-enforce]
+            [sandbar.reactive :as reactive]
+            [sandbar.security.query :as secq]))
 
 (defn all-datatypes
   "Returns a sequence of all class idents in the database.
@@ -126,6 +130,55 @@
   []
   (named-idents-of :dt/Property))
 
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; S7 EP-1 — THE UNCONDITIONAL FIREWALL FLOOR (BU-4 / CA-1)
+;;
+;; The firewall floor is a SECURITY boundary, NOT a schema check.  It fires on
+;; EVERY interactive commit path INDEPENDENT of `:validate?` (which now gates
+;; SCHEMA required/type/cardinality checks ONLY).  The check is a PURE predicate
+;; over the edge's src/tgt LABELS — principal-INDEPENDENT (rejects on the EDGE,
+;; never the caller).  Delegated wholesale to `sandbar.firewall.enforce`, which
+;; NEVER requires this ns back (R14 acyclicity).  Per S7-PLAN §4 / CA-1.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defn- firewall-guard!
+  "Run the EP-1 author-time flow check for entity-spec `props` of class `dt`
+  and THROW an ex-info `\"Firewall violation\"` carrying the `{:errors [...]}`
+  envelope when any governed edge is FORBIDDEN — else return nil (the write
+  proceeds).  `:skipped` (unresolved governed targets) are WARN-logged, never
+  fatal (the best-effort carrier / stub case, §4.4).
+
+  UNCONDITIONAL: called on every interactive commit path (make*, make,
+  update-entity!) regardless of `:validate?`.  Reads the CURRENT db as the
+  resolver's snapshot.  `spec-index` (optional) threads same-batch forward-refs
+  for the batch floor (CA-6)."
+  ([dt props] (firewall-guard! dt props nil))
+  ([dt props spec-index]
+   (let [{:keys [violations skipped]}
+         (fw-enforce/check-entity-flow (db/db) dt props spec-index)]
+     (fw-enforce/warn-skipped! skipped)
+     (when-let [envelope (fw-enforce/verdicts->error-envelope violations)]
+       (log/debug :DT/FIREWALL-VIOLATION {:class dt :violations (count violations)})
+       (throw (ex-info "Firewall violation" envelope))))))
+
+(defn- firewall-batch-guard!
+  "Run the EP-1 batch flow floor over `entity-specs` (each carrying `:dt/type`)
+  and THROW an ex-info `\"Firewall violation in batch\"` when any governed edge
+  is FORBIDDEN — else return nil.  Firewall-ONLY (the trust-caller bulk contract
+  keeps schema checks the caller's job, R5).  `spec-index` (optional) is the
+  pre-built intra-batch index so a same-batch forward-ref resolves against its
+  sibling (CA-6).  Per S7-PLAN §4.3."
+  ([entity-specs]
+   (firewall-batch-guard! entity-specs (fw-enforce/index-specs-by-ident entity-specs)))
+  ([entity-specs spec-index]
+   (let [{:keys [violations skipped]}
+         (fw-enforce/check-batch (db/db) entity-specs spec-index)]
+     (fw-enforce/warn-skipped! skipped)
+     (when (seq violations)
+       (log/debug :DT/FIREWALL-VIOLATION-BATCH {:violations (count violations)})
+       (throw (ex-info "Firewall violation in batch"
+                       (fw-enforce/verdicts->error-envelope violations)))))))
+
 (defn make*
   "Creates a typed instance without validation.
 
@@ -138,16 +191,144 @@
   Example:
     (make* :User {:user/login \"dan\" :user/secret \"hash\"})
 
-  Note: Use `make` instead for validated instance creation."
+  Note: Use `make` instead for validated instance creation.
+
+  S7 CA-1: an UNCONDITIONAL firewall guard fires immediately before the
+  raw `d/transact` — `make*` is the unvalidated primitive `make`/`make-all`
+  bottom out in, so guarding it here closes the `:validate? false` bypass at
+  the transactor boundary (no interactive write reaches Datomic un-firewalled).
+
+  Bug C10 fix (2026-05-22): the entity is identified by a NAMED
+  string tempid so the post-transact eid lookup is deterministic.
+  The prior implementation used `(-> result :tempids vals first
+  entity)`, which is unsound when the transact contains MORE THAN
+  ONE tempid — e.g., when props carries cardinality-many ref slots
+  whose values are `:db.unique/identity` upsert-maps (each generates
+  its own tempid).  `(first (vals ...))` over an unordered tempids
+  map then non-deterministically returns the wrong entity.
+
+  Named-tempid lookup ensures we always recover the MAIN entity
+  regardless of how many secondary tempids the upsert resolution
+  produces.  If `props` already declares `:db/id`, that takes
+  precedence (caller-explicit identity wins)."
   ([dt] (make* dt {}))
   ([dt props]
-   (let [row (merge props {:dt/type dt})
-         result @(d/transact (db/conn) [row])
-         new-entity (-> result :tempids vals first entity)]
+   ;; S7 CA-1: unconditional firewall floor BEFORE the raw transact.  Throws
+   ;; on a forbidden governed edge whether or not the caller ran validation.
+   (firewall-guard! dt props)
+   (let [main-tid    (or (:db/id props) "main")
+         row         (assoc props :dt/type dt :db/id main-tid)
+         result      @(d/transact (db/conn) [row])
+         new-eid     (get (:tempids result) main-tid main-tid)
+         new-entity  (entity new-eid)]
      (log/debug :DT/MAKE {:class dt :entity-id (:db/id new-entity)})
      new-entity)))
 
-(declare validate-data)  ;; forward declaration
+(declare slots-of)  ; forward reference; defined later in this ns
+
+(defn unique-of
+  "Returns the `:db/unique` value of a slot (`:db.unique/identity` /
+   `:db.unique/value` / nil) — looks up the Property entity by ident
+   via the live Datomic connection.
+
+   Added 2026-05-20 for the bootstrap-memory-substrate sub-arc — needed
+   by `sandbar.codec.markdown/frontmatter->slots` to resolve string
+   values at ref-typed slots as unique-identity upsert maps without
+   hardcoding consumer-class knowledge."
+  [slot]
+  (when slot
+    (some-> slot entity :db/unique)))
+
+(defn unique-identity-slot-of
+  "Returns the FIRST `:db.unique/identity` slot declared on `class-ident`,
+   or nil if none exists.  Used by `sandbar.codec.markdown` to wrap
+   string values at ref-typed slots as upsert maps without hardcoding
+   `{:mm/Tag :mm.tag/value}` consumer-class knowledge."
+  [class-ident]
+  (some (fn [slot]
+          (when (= :db.unique/identity (unique-of slot))
+            slot))
+        (slots-of class-ident)))
+
+(defn make-all*
+  "Creates a batch of typed instances in a SINGLE atomic Datomic
+   transaction — WITHOUT validation.  Batch analog of `make*` extending
+   the `make` / `make*` validated / no-validation parallelism to the
+   batch shape; `make-all` (validated batch) reserved for future
+   addition.
+
+   Arguments:
+     entity-specs - vec of entity-spec maps; each carries `:dt/type` +
+                    sandbar / Datomic keys (`:db/ident`, slot idents).
+
+   Returns the Datomic transaction result map.
+
+   Use when multiple entities must be created atomically with cross-
+   references intact — e.g., an `mm/Memory` plus its child `mm/Section`
+   entities from one corpus markdown file.  Cross-entity refs resolve
+   via Datomic's `:db/ident` upsert semantics within the single tx;
+   forward references inside the batch resolve at transaction time.
+
+   For single-entity creation with pre-transaction validation, use
+   `make` instead.  For single-entity without validation, use `make*`.
+   For batch creation WITH validation, use `make-all` (TBD — not yet
+   defined).
+
+   Added 2026-05-20 per F#17 of memory/plans/sandbar_0_1_1_coevolution_-
+   arc_2026_05_20.md — `sandbar.project.import :persist? true` needs to
+   transact each markdown file's memory + sections atomically so that
+   `:mm.memory/first-section` and `:mm.section/parent` cross-refs
+   resolve via :db/ident upsert.
+
+   S7 (BU-4, §4.3): the NON-optional firewall batch floor fires INSIDE this
+   primitive, so `project.import`, `full-corpus-ingest`, and any FUTURE bulk
+   caller inherit it — a forbidden governed edge in ANY spec throws
+   \"Firewall violation in batch\" and NONE transact.  Firewall-ONLY (the
+   trust-caller bulk contract keeps required/type/cardinality the caller's
+   job, R5).  The 2-arity accepts a pre-built `spec-index` so the VALIDATED
+   `make-all` threads the SAME intra-batch index it built for its schema
+   ref-range pass (CA-6) — a same-batch forward-ref resolves against its
+   sibling instead of over-refusing on tx-ordering."
+  ([entity-specs]
+   (make-all* entity-specs (fw-enforce/index-specs-by-ident entity-specs)))
+  ([entity-specs spec-index]
+   (firewall-batch-guard! entity-specs spec-index)
+   (let [result @(d/transact (db/conn) entity-specs)]
+     (log/debug :DT/MAKE-ALL* {:count (count entity-specs)})
+     result)))
+
+(declare validate-data)          ;; forward declaration
+(declare type-isa?)              ;; forward reference; defined later in this ns
+(declare coerce-ref-slot-values) ;; forward reference; defined with ref->eid
+
+(def ^:dynamic *default-actor*
+  "Ident (keyword) or eid of the actor on whose behalf substrate writes
+   are performed — or nil.  When bound (e.g. by an MCP / orchestrator
+   boundary that knows the calling actor), `make` defaults
+   `:mm.memory/created-by` to it for :mm/Memory subclasses.  nil ⇒ no
+   created-by default (provenance is left unset, never fabricated)."
+  nil)
+
+(defn- apply-memory-defaults
+  "For :mm/Memory subclasses, supply provenance/temporal slots the caller
+   omitted: `:mm.memory/created` + `:mm.memory/last-touched` ⇒ now;
+   `:mm.memory/created-by` ⇒ [*default-actor*] when that var is bound.
+   Absent-only — explicit slots AND codec-parsed frontmatter both win
+   (this runs AFTER the codec merge in `make`).  No-op for non-:mm/Memory
+   classes.  Root fix for MCP-/programmatically-created memorials that
+   lacked these slots and therefore dropped out of `:mm.memory/last-touched`
+   recency views (e.g. arcs created via `entity.create`)."
+  [dt props]
+  (if (type-isa? :mm/Memory dt)
+    (let [now (java.util.Date.)]
+      (cond-> props
+        (not (contains? props :mm.memory/created))
+        (assoc :mm.memory/created now)
+        (not (contains? props :mm.memory/last-touched))
+        (assoc :mm.memory/last-touched now)
+        (and *default-actor* (not (contains? props :mm.memory/created-by)))
+        (assoc :mm.memory/created-by [*default-actor*])))
+    props))
 
 (defn make
   "Creates a typed instance with pre-transaction validation.
@@ -184,7 +365,7 @@
                           :source \"---\\nname: Foo\\n---\\n# Body\\n\"})"
   ([dt] (make dt {} {}))
   ([dt props] (make dt props {}))
-  ([dt props {:keys [validate? format source] :or {validate? true}}]
+  ([dt props {:keys [validate? format source project?] :or {validate? true}}]
    ;; F.1 codec arc Stage F per
    ;; plans/sandbar_codec_layer_arc_2026-05-12.md — when :format +
    ;; :source supplied, parse via the codec mediator first; explicit
@@ -194,6 +375,13 @@
    ;; explicit :format, fall back to the class's :dt/native-codec
    ;; attribute (the mediator's class-default resolution semantics).
    ;; Symmetric with codec/parse's class-aware default.
+   ;;
+   ;; Stage A.5 of SSE-reactive-projection arc (decision eid
+   ;; 17592186094347 + plan eid 17592186094359): on successful create,
+   ;; invoke `reactive/on-entity-changed!` to fire the reactive-
+   ;; projection hook.  `:project?` kwarg participates in three-layer
+   ;; opt-out resolution (per-call kwarg > dynamic binding > class-
+   ;; level skip-list).  Hook is a no-op when no callbacks registered.
    (let [resolved-format (or format
                              (when source
                                (:dt/native-codec (entity dt))))
@@ -201,14 +389,108 @@
                  (let [parse-fn (requiring-resolve 'sandbar.codec/parse)
                        parsed   (parse-fn source {:format resolved-format :class dt})]
                    (merge (dissoc parsed :dt/type) props))
-                 props)]
-     (if-not validate?
-       (make* dt props)
-       (if-let [errors (validate-data dt props)]
-         (do
-           (log/debug :DT/VALIDATION-FAILED {:class dt :errors errors})
-           (throw (ex-info "Validation failed" errors)))
-         (make* dt props))))))
+                 props)
+         ;; Memorial-defaults: AFTER the codec merge (so explicit slots +
+         ;; parsed frontmatter both win), absent-only.  entity.create-
+         ;; defaults fix — MCP/programmatic :mm/Memory creates were missing
+         ;; created/last-touched/created-by and fell out of recency views.
+         props (apply-memory-defaults dt props)
+         ;; Canonicalize `:db.type/ref` slot values to plain eids BEFORE both
+         ;; validation and transact so the two agree — an eid / EntityMap /
+         ;; {:db/id} / {:db/ident} at a ref slot all reduce to the eid Datomic
+         ;; attaches, curing the reject-or-silently-drop split.  Per
+         ;; bugs/dt_make_ref_slots_reject_eids_and_silently_drop_maps_2026_07_02.md.
+         props (coerce-ref-slot-values props)
+         new-entity (if-not validate?
+                      (make* dt props)
+                      (if-let [errors (validate-data dt props)]
+                        (do
+                          (log/debug :DT/VALIDATION-FAILED {:class dt :errors errors})
+                          (throw (ex-info "Validation failed" errors)))
+                        (make* dt props)))]
+     (reactive/on-entity-changed! dt new-entity project?)
+     new-entity)))
+
+(defn make-all
+  "Creates a batch of typed instances in a SINGLE atomic Datomic
+   transaction WITH pre-transaction validation.  Batch analog of `make`
+   extending the `make` / `make*` validated / unvalidated parallelism
+   to the batch shape (symmetric with `make-all*` which is the
+   unvalidated batch counterpart).
+
+   Arguments:
+     entity-specs - vec of entity-spec maps; each carries `:dt/type` +
+                    sandbar / Datomic keys (`:db/ident`, slot idents).
+
+   Returns the Datomic transaction result map (same as `make-all*`).
+
+   Validates EVERY spec via `validate-data` before transacting; if ANY
+   spec fails validation, raises ex-info with `:errors` carrying per-
+   index per-class failure detail and transacts NONE of them (atomic
+   all-or-nothing).  The error envelope shape:
+
+     {:errors [{:errors [...] :index <int> :class <ident>} ...]
+      :total  <int>}
+
+   Cross-entity refs resolve via Datomic's `:db/ident` upsert semantics
+   within the single tx; forward references inside the batch resolve
+   at transaction time (same semantics as `make-all*`).
+
+   For batch creation WITHOUT validation (faster; trust-caller path,
+   e.g. corpus-bulk-import where the codec has pre-validated), use
+   `make-all*` instead.  For single-entity creation, use `make`
+   (validated) or `make*` (unvalidated).
+
+   Per Phase 1 B.4 of substrate-stabilization arc + Dan-directive
+   2026-05-22 — the validated-batch verb is `make-all` (NOT
+   `make-all-validated`); the naming convention is bare-name for
+   validated, `*` suffix for unvalidated.
+
+   Stage A.5 of SSE-reactive-projection arc (decision eid 17592186094347
+   + plan eid 17592186094359): added optional opts map carrying
+   `:project?` kwarg.  After the batch transaction commits, iterates
+   entity-specs + invokes `reactive/on-entity-changed!` per entity that
+   carries `:db/ident` or `:db/id` (anonymous specs are skipped —
+   reactive-projection requires a resolvable post-tx entity to operate
+   on).  Per-spec hook failures don't abort the batch (the substrate
+   already transacted; reactive side-effects are observability-grade)."
+  ([entity-specs] (make-all entity-specs {}))
+  ([entity-specs {:keys [project?]}]
+   ;; S7 CA-6: build the intra-batch spec-index ONCE and thread it into the
+   ;; firewall floor (via make-all* below) so a same-batch forward-ref (a
+   ;; sibling `:db/ident` declared later in the batch, both public) resolves
+   ;; against its sibling rather than over-refusing on tx-ordering.  The
+   ;; schema validate-data pass is unchanged — it already admits the codec's
+   ;; upsert-map cross-ref shape without a live-DB resolve.
+   (let [spec-index (fw-enforce/index-specs-by-ident entity-specs)
+         failures (keep-indexed
+                    (fn [i spec]
+                      (let [dt        (:dt/type spec)
+                            spec-only (dissoc spec :dt/type)]
+                        (when-let [errs (validate-data dt spec-only)]
+                          (assoc errs :index i :class dt))))
+                    entity-specs)]
+     (if (seq failures)
+       (do
+         (log/debug :DT/MAKE-ALL-VALIDATION-FAILED
+                    {:total (count entity-specs) :failures (count failures)})
+         (throw (ex-info "Validation failed for one or more entities"
+                         {:errors (vec failures)
+                          :total  (count entity-specs)})))
+       (let [tx-result (make-all* entity-specs spec-index)]
+         ;; Per-entity reactive-projection hook fire
+         (doseq [spec entity-specs
+                 :let [class-ident  (:dt/type spec)
+                       ident-or-eid (or (:db/ident spec) (:db/id spec))]
+                 :when (and class-ident ident-or-eid)]
+           (try
+             (when-let [ent (entity ident-or-eid)]
+               (reactive/on-entity-changed! class-ident ent project?))
+             (catch Throwable t
+               (log/warn t :REACTIVE/make-all-hook-skipped
+                         {:spec-class class-ident
+                          :spec-ident ident-or-eid}))))
+         tx-result)))))
 
 (defn realize-with
   "General-purpose entity realization helper — given a seed entity + a
@@ -223,6 +505,20 @@
                walk-fn should return ALREADY-DEDUPLICATED related entities;
                realize-with dedupes by :db/id across the BFS visited-set.
 
+   walk-fn's related items may be Datomic Entities OR ref-locators
+   (`:db/ident` keywords / eid longs).  A ref slot read off a LIVE
+   `db/entity` whose target carries a `:db/ident` reads back as the
+   IDENT KEYWORD, not an Entity (the corpus-wide ident-ref navigation
+   shape).  Both the seed AND every walked related item are coerced to
+   an Entity via `db/entity` before their `:db/id` is read, so an
+   ident-keyword / eid ref is FOLLOWED rather than silently dropped by
+   `(:db/id <keyword>) => nil`.  (Before this coercion the seed was
+   resolved but walked refs were not, so a sectioned memory read from a
+   live entity realized to `[memory]` only — its section chain lost —
+   and the caller's section-tree emit path was never taken.  Per
+   observations/live_sink_emits_derived_first_section_for_subclass_-
+   memorials_regenerating_debris_130_files_2026_07_10.)
+
    Returns: vector of entity-spec maps; each map is `(into {:dt/type ...}
    datomic-entity)` for the seed and each walked entity.
 
@@ -232,10 +528,11 @@
    refs.  Composable with `sandbar.codec/emit` on collections + with
    `sandbar.projection` entity-collection paths."
   [entity walk-fn]
-  (let [seed (cond
-               (keyword? entity) (db/entity entity)
-               (number?  entity) (db/entity entity)
-               :else entity)]
+  (let [->entity (fn [x]
+                   (if (or (keyword? x) (number? x))
+                     (db/entity x)
+                     x))
+        seed     (->entity entity)]
     (loop [acc      []
            visited  #{}
            frontier [seed]]
@@ -249,8 +546,9 @@
                               a
                               (let [related (or (walk-fn e) [])
                                     e-map   (into {:dt/type (:dt/type e)} e)]
-                                (doseq [r related
-                                        :let [r-eid (:db/id r)]]
+                                (doseq [r0 related
+                                        :let [r     (->entity r0)
+                                              r-eid (:db/id r)]]
                                   (when (and r-eid (not (contains? visited r-eid)))
                                     (swap! next-frontier conj r)))
                                 (conj a e-map)))))
@@ -291,6 +589,101 @@
                       :else (into {} entity))]
      (emit-fn entity-map opts))))
 
+;; --- Cardinality-many REPLACE semantics (W0.found 2026-06-30) ---
+;; Per decisions/entity_update_card_many_replace_by_default_opt_in_additive_2026_06_30:
+;; update-entity! REPLACES a card-many slot's set by default (retract the
+;; prior members absent from the supplied set, then assert the supplied
+;; set); callers opt into the legacy additive UNION via {:additive? true}.
+;; Reuses the set-replace diff shape proven in sandbar.db.datomic for class
+;; meta-slots (normalize refs by :db/ident; retract refs by :db/id).
+
+(defn- ref->eid
+  "Resolve any ref-typed slot value to the :db/id of the live entity it names,
+   or nil when it resolves to no live entity.
+
+   A 1-line forwarder into the substrate canon `sandbar.db.ref/ref->eid`
+   (S7 BU-0 / ruling R13), supplying the CURRENT db.  Accepts every shape a
+   caller can hand a `:db.type/ref` slot — a Datomic Entity map, a `{:db/id eid}`
+   map, an eid Long, an ident keyword (resolved THROUGH the db, curing the
+   `(:db/id keyword)→nil` sentinel collapse, S6-review #1), a Datomic lookup-ref
+   vector `[:unique-attr v]`, and a single-key upsert map `{:db/ident kw}` /
+   `{<unique-identity-attr> v}` (the codec's ref shape).
+
+   The single ref→eid canon shared by callers that MUST agree: the card-many
+   replace diff (stable set-membership comparison), `make`'s pre-transact ref
+   coercion, and `value-matches-range?`'s existence check.  nil ⇒ unresolvable
+   — treated as a non-matching member by the diff, and (in `make`) left
+   uncoerced so validation rejects it loudly rather than silently dropping it.
+
+   Delegates to the true-leaf `sandbar.db.ref` so `sandbar.firewall.*` and
+   `sandbar.mcp.clearance` share the identical normalization without pulling
+   this ns (acyclicity, ruling R14).
+
+   Per bugs/dt_make_ref_slots_reject_eids_and_silently_drop_maps_2026_07_02.md
+   (validation-and-transaction disagreed on ref shapes; upsert maps validated
+   then silently dropped on the single-tx create path)."
+  [v]
+  (ref/ref->eid (db/db) v))
+
+(defn- ref-valued-slot?
+  "True if `slot-ident`'s property is a `:db.type/ref` slot (its values name
+   other entities rather than carrying literals)."
+  [slot-ident]
+  (= :db.type/ref (:db/valueType (entity slot-ident))))
+
+(defn- coerce-ref-slot-values
+  "Canonicalizes every `:db.type/ref` slot value in `props` to a plain eid via
+   `ref->eid`, returning the rewritten props map.  Card-one slots coerce the
+   lone value; card-many slots coerce each member.  A value `ref->eid` cannot
+   resolve is left UNCHANGED so downstream validation rejects it loudly —
+   coercion never fabricates or silently drops.
+
+   Why this exists: the single-entity `make`/`make*` create path transacted
+   ref values verbatim, so an eid or a Datomic EntityMap failed `:dt/Ref`
+   validation while a `{:db/id eid}` / `{:db/ident kw}` map validated and then
+   silently dropped (Datomic does not attach a bare nested map at a card-one
+   ref).  Coercing to the canonical eid — the same shape the update path's
+   card-many diff already normalizes to — makes validation and transaction
+   agree on every accepted ref shape.
+
+   Per bugs/dt_make_ref_slots_reject_eids_and_silently_drop_maps_2026_07_02.md."
+  [props]
+  (reduce-kv
+   (fn [acc slot v]
+     (if (and (some? v) (ref-valued-slot? slot))
+       (let [coerce-one (fn [x] (or (ref->eid x) x))]
+         (assoc acc slot
+                (cond
+                  (set? v)        (into #{} (map coerce-one) v)
+                  (sequential? v) (into (empty v) (map coerce-one) v)
+                  :else           (coerce-one v))))
+       (assoc acc slot v)))
+   {}
+   props))
+
+(defn- card-many-replace-retracts
+  "For each cardinality-many slot present in `slot-updates`, return the
+   [:db/retract eid slot v] ops removing prior members NOT in the supplied
+   desired set — the retract half of replace-by-diff.  Card-one slots
+   produce no retracts (Datomic auto-retracts the prior single value on
+   assert).  Ref slots canonicalize BOTH prior and desired to :db/id so an
+   unchanged member is never retracted-and-re-added in the same tx (which
+   Datomic would resolve ambiguously); scalar slots compare by value."
+  [ent eid slot-updates]
+  (mapcat
+   (fn [[slot new-val]]
+     (let [prop (entity slot)]
+       (when (= :db.cardinality/many (:db/cardinality prop))
+         (let [ref?    (= :db.type/ref (:db/valueType prop))
+               canon   (if ref? ref->eid identity)
+               new-vec (if (sequential? new-val) new-val [new-val])
+               desired (set (map canon new-vec))
+               prior   (get ent slot)]
+           (for [v prior
+                 :when (not (contains? desired (canon v)))]
+             [:db/retract eid slot (if ref? (ref->eid v) v)])))))
+   slot-updates))
+
 (defn update-entity!
   "Update slot values on an existing entity.
 
@@ -299,6 +692,8 @@
     slot-updates  - map of {:slot-ident new-value ...}
     opts          - optional:
                     :validate? - default true; if false, skips validation
+                    :additive? - default false.  When true, cardinality-many
+                                 slots UNION (append) instead of REPLACE.
 
   Behavior:
   - Resolves entity to its current entity-map shape
@@ -308,27 +703,38 @@
   - Transacts {:db/id <eid> slot-updates...} via Datomic
   - Returns the refreshed entity map
 
-  Cardinality-many slots: the supplied value REPLACES the prior set
-  (Datomic semantics for cardinality-many transactions are additive
-  by default; this function uses a retract+add cycle for replacement
-  semantics when the prior value differs).  TODO: expose `:additive?`
-  opt post-0.1.0 for callers wanting additive semantics.
+  Cardinality-many slots: the supplied value REPLACES the prior set by
+  default — prior members absent from the supplied value are retracted in
+  the same transaction (retract (prior - desired) + assert desired).  Pass
+  `{:additive? true}` to keep the legacy additive UNION (append without
+  retracting).  Card-one slots are unaffected either way (Datomic
+  auto-retracts the prior single value on assert).  Per
+  decisions/entity_update_card_many_replace_by_default_opt_in_additive_2026_06_30.
 
   Per codex SHOULD-FIX #5 — `sandbar.entity.update` MCP verb advertised
   in the catalog but threw not-yet-implemented; this primitive closes
   that gap.  Per the improve-abstraction-not-bypass discipline (the
   prior gap-throw lampshade pointed exactly here)."
   ([entity slot-updates] (update-entity! entity slot-updates {}))
-  ([entity slot-updates {:keys [validate?] :or {validate? true}}]
+  ([entity slot-updates {:keys [validate? project? additive?] :or {validate? true}}]
    (when-not (map? slot-updates)
      (throw (ex-info "update-entity! requires slot-updates to be a map"
                      {:received slot-updates})))
-   (let [ent     (cond
-                   (associative? entity) entity
-                   :else (db/entity entity))
-         eid     (or (:db/id ent)
+   (let [resolved (cond
+                    (associative? entity) entity
+                    :else (db/entity entity))
+         eid     (or (:db/id resolved)
                      (throw (ex-info "update-entity! could not resolve :db/id"
                                      {:entity entity})))
+         ;; S7 (adjudication must-fix #4): build the firewall SOURCE label —
+         ;; and the card-many retracts + validation — from the CANONICAL DB
+         ;; row read by eid, NEVER the caller-supplied map.  A caller passing a
+         ;; SPARSE map (e.g. {:db/id .. :dt/type ..}) would otherwise omit
+         ;; :mm.memory/visibility, defeating intrinsic-visibility-label's
+         ;; declassification guard (T-12) and letting a public row be re-owned
+         ;; into a private project.  The trust model is "labels are on the
+         ;; data", not on the caller's shape — so read the data.
+         ent     (or (db/entity eid) resolved)
          ;; Inline class-ident lookup (class-ident-of is defined below
          ;; in this file; avoid forward-reference for compile order)
          class-ident (:dt/type ent)
@@ -337,17 +743,39 @@
      (when-not class-ident
        (throw (ex-info "update-entity! requires entity to have :dt/type"
                        {:entity entity :merged merged})))
+     ;; S7 CA-1: UNCONDITIONAL firewall floor — OUTSIDE the `validate?` block so
+     ;; an update ADDING a forbidden governed edge is refused whether or not the
+     ;; caller ran schema validation.  Checks the MERGED shape (existing slots +
+     ;; updates) so the src label reflects the entity's real visibility /
+     ;; owning-project, and every governed edge on the post-update entity is
+     ;; evaluated (an update introducing a public→private `cites` throws).
+     (firewall-guard! class-ident (dissoc merged :db/id))
      (when validate?
        (when-let [errors (validate-data class-ident (dissoc merged :db/id :dt/type))]
          (log/debug :DT/UPDATE-VALIDATION-FAILED {:class class-ident :errors errors})
          (throw (ex-info "Validation failed on update" errors))))
-     ;; Transact: assoc all slot-updates onto the existing entity.
-     ;; For cardinality-many slots, this is ADDITIVE under Datomic's
-     ;; default semantics.  Post-0.1.0 work: switch to retract+add for
-     ;; replacement (currently consumer's responsibility if needed).
-     @(d/transact (db/conn)
-                  [(assoc slot-updates :db/id eid)])
-     (db/entity eid))))
+     ;; Transact: assert the supplied slot values.  For cardinality-many
+     ;; slots this REPLACES the prior set (retract prior members absent
+     ;; from the supplied set, prepended so they execute before the assert
+     ;; in the same tx) unless the caller opts into additive UNION via
+     ;; :additive? true.  Card-one slots are unaffected (Datomic
+     ;; auto-retracts the prior value on assert).  Per
+     ;; decisions/entity_update_card_many_replace_by_default_opt_in_additive_2026_06_30.
+     (let [retracts (when-not additive?
+                      (card-many-replace-retracts ent eid slot-updates))]
+       (when (seq retracts)
+         (log/info :DT/UPDATE-CARD-MANY-REPLACE
+                   {:eid eid :class class-ident :retract-count (count retracts)}))
+       @(d/transact (db/conn)
+                    (into (vec retracts) [(assoc slot-updates :db/id eid)])))
+     ;; Stage A.5 of SSE-reactive-projection arc (decision eid
+     ;; 17592186094347 + plan eid 17592186094359): on successful update,
+     ;; fire the reactive-projection hook.  `:project?` participates in
+     ;; the three-layer opt-out priority resolution.  No-op when no
+     ;; callbacks registered.
+     (let [updated-entity (db/entity eid)]
+       (reactive/on-entity-changed! class-ident updated-entity project?)
+       updated-entity))))
 
 (defn class-ident-of
   "Returns the class IDENT (keyword) for entity e — the `:dt/type`
@@ -453,6 +881,74 @@
   [class-ident]
   (into {} (or (:dt/codec-aliases (db/entity class-ident)) [])))
 
+(defn codec-slot-order-of
+  "Returns the canonical slot ordering declared on the class via the
+  `:dt/codec-slot-order` schema attribute, as a vec of slot-idents in
+  emit order; or `[]` if none declared.
+
+  Schema shape: `:dt/codec-slot-order` is cardinality-many; each entry
+  is a `[slot-ident position]` heterogeneous tuple (declared via
+  `:db/tupleTypes [:db.type/keyword :db.type/long]`).  This function
+  sorts by position and projects to slot-idents.
+
+  Used by codecs (e.g., `sandbar.codec.markdown/emit-frontmatter`) for
+  class-declared canonical ordering — replaces the prior `:codec/key-order`
+  metadata threading pattern that carried source-text order through
+  parse → entity → emit.  The class declaration is the introspectable
+  source of truth; source-text accident is not preserved.
+
+  Sister to `codec-aliases-of` / `codec-type-keyword-of` — same
+  introspection-via-schema pattern, different attribute.
+
+  Per decisions/slot_order_declared_by_class_introspectable_2026_05_20.md
+  (Dan-directive 2026-05-20: 'slot order should be declared by the class
+  and introspectable')."
+  [class-ident]
+  (->> (db/entity class-ident)
+       :dt/codec-slot-order
+       (sort-by second)
+       (mapv first)))
+
+(defn codec-type-keywords-of
+  "Returns the SET of `:dt/codec-type-keyword` values declared on the
+  class, or #{} if none.
+
+  Per-class CLASS-ROUTING keyword set: when a markdown document's
+  frontmatter carries `type: <kw>`, the codec routes to the class
+  whose `:dt/codec-type-keyword` set CONTAINS `<kw>`.  Cardinality-
+  many so one class can claim multiple routing keywords (e.g.,
+  :mm/Actor claims both :ai-actor and :human-actor).  Example:
+  :mm/Tag declares `:dt/codec-type-keyword :tag` so files with
+  `type: tag` parse as :mm/Tag entities.
+
+  Per decisions/tag_as_first_class_introspectable_type_in_metamodel_2026_05_20.md
+  Stage 7.C codec class-routing + decisions/actor_as_first_class_metamodel_class_with_mm_actor_slots_2026_05_20.md
+  (cardinality bumped to :many for multi-keyword class routing)."
+  [class-ident]
+  (or (:dt/codec-type-keyword (db/entity class-ident)) #{}))
+
+(defn class-for-codec-type-keyword
+  "Returns the class-ident whose `:dt/codec-type-keyword` matches
+  `type-kw`, or nil if no class claims that type-keyword.
+
+  Used by `sandbar.codec.markdown/parse-document` for metamodel-driven
+  class routing — when a frontmatter's `type:` value matches a class's
+  declared type-keyword, the codec parses the document as that class.
+
+  Schema-attribute is `:db.unique/identity` per meta.edn, so the lookup
+  is an O(1) resolution via Datomic's unique-identity index.  Bypasses
+  `sandbar.db.datomic/entity` because that wrapper treats vectors as
+  already-associative and short-circuits before `d/entity` runs — the
+  lookup-ref shape would never reach Datomic.  We call `d/entity`
+  directly with the lookup-ref instead.
+
+  Per decisions/tag_as_first_class_introspectable_type_in_metamodel_2026_05_20.md
+  Stage 7.C."
+  [type-kw]
+  (when type-kw
+    (when-let [e (d/entity (db/db) [:dt/codec-type-keyword type-kw])]
+      (:db/ident e))))
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Fulltext primitives — Stage 2 of fulltext arc
 ;; (plans/sandbar_fulltext_search_substrate_arc_2026_05_13.md)
@@ -491,6 +987,21 @@
   plans/sandbar_fulltext_search_substrate_arc_2026_05_13.md."
   [class-ident]
   (into {} (or (:dt/bm25f-weights (db/entity class-ident)) [])))
+
+(defn memorial-policy-of
+  "Returns the `:dt/memorial-policy` keyword declared directly on `class-ident`,
+  or nil if undeclared.  One of `:first-class` / `:db-only` / `:inline`.
+
+  Does NOT walk ancestors — call `effective-memorial-policy-of` for
+  inheritance.  Sister to `bm25f-weights-of` / `codec-aliases-of` —
+  same single-class shape, different attribute.
+
+  Per `decisions/option_b_plus_c_ratified_spec_vs_state_criterion_pivot_to_first_class_memorialization_2026_05_23.md`
+  + first-class-memorialization arc Stage B.3 (substrate enforcement
+  wiring).  Consumed by `sandbar.reactive.sinks/fs-projection-sink`
+  + (future) `sandbar.project.dump-db-only` worker."
+  [class-ident]
+  (:dt/memorial-policy (db/entity class-ident)))
 
 (defn fulltext-indexed?
   "Returns true if `attribute` (a slot/property ident) is declared with
@@ -542,8 +1053,11 @@
    (let [base    '[:find (count ?e) .
                    :in $ % ?class
                    :where (instance-of ?class ?e)]
+         ;; SECURITY (read-plane query-layer, AP-S3-6 vector A): sanitize the
+         ;; caller-supplied clauses BEFORE the splice — throws loud ex-info on
+         ;; any non-allowlisted operator, so no unsafe symbol reaches d/q.
          merged  (if (seq where-clauses)
-                   (apply conj base where-clauses)
+                   (apply conj base (secq/sanitize-where where-clauses))
                    base)
          result  (d/q merged (db/db) (all-rules) class-ident)]
      (or result 0))))
@@ -565,11 +1079,51 @@
                    :where
                    (instance-of ?class ?e)
                    [?e ?slot ?v]]
+         ;; SECURITY (read-plane query-layer, AP-S3-6 vector A): sanitize before
+         ;; the splice — see count-of.  Same shared gate, same fail-closed path.
          merged  (if (seq where-clauses)
-                   (apply conj base where-clauses)
+                   (apply conj base (secq/sanitize-where where-clauses))
                    base)
          rows    (d/q merged (db/db) (all-rules) class-ident group-slot)]
      (into {} rows))))
+
+(defn assert-where-eids-allowed!
+  "Read-plane firewall for NUMERIC entity-id references in a `:where` clause
+  vector — the eid-form bypass of the keyword-only `secq/assert-where-namespaces!`
+  (which is pure/db-free and inspects only keywords).  For every integer anywhere
+  in `where-clauses`, db-resolve it to its `:db/ident` and reject (loud ex-info)
+  if that ident is firewalled — an eid in ATTRIBUTE position
+  (`[[?e <auth-attr-eid> ?h]]`) OR VALUE position
+  (`[[?e :dt/type <auth-class-eid>]]`) is a firewalled attribute/class selector.
+  Memory-aware (a corpus `:memory.*` entity eid passes).  db-aware companion to
+  the pure namespace guard; the read-plane wrappers call it alongside
+  `secq/assert-where-namespaces!`.  Per
+  observations/read_plane_where_firewall_bypassed_by_numeric_eid_forms_...2026_07_07."
+  [where-clauses]
+  (when (seq where-clauses)
+    (letfn [(walk [form]
+              (cond
+                (integer? form)
+                (when-let [id (:db/ident (db/entity form))]
+                  (secq/assert-ident-allowed! id))
+                (map? form)  (doseq [[k v] form] (walk k) (walk v))
+                (coll? form) (doseq [x form] (walk x))
+                :else nil))]
+      (doseq [c where-clauses] (walk c))))
+  where-clauses)
+
+(defn read-plane-group-key-firewalled?
+  "True iff an aggregate.group-by result KEY resolves to a firewalled namespace.
+  A `:group-by` on a ref-typed slot (e.g. `:dt/type`) yields raw eid keys; a
+  scalar slot yields keyword/value keys.  Used to DROP firewalled-class buckets
+  from a read-plane group-by result — otherwise `:group-by :dt/type` over an
+  allowed superclass leaks per-`:auth/*`-class instance counts as
+  `{<auth-class-eid> N}`."
+  [k]
+  (let [id (cond (keyword? k) k
+                 (integer? k) (:db/ident (db/entity k))
+                 :else        nil)]
+    (boolean (and id (not (secq/read-plane-ident-allowed? id))))))
 
 (defn degree-of
   "Total ref-attribute count for `entity-ident` — number of (attribute,
@@ -721,9 +1275,19 @@
                           (db/db) eid))
          pred-set  (when predicate
                      (set (if (sequential? predicate) predicate [predicate])))
+         db-now    (db/db)
+         ;; S7 EP-3 (BU-5 / R16): a governed edge whose firewall verdict
+         ;; REFUSES is REWRITTEN — {:predicate :blocked true :reason ...} with
+         ;; NO :target key (key ABSENCE, not a sentinel, so a client feeding
+         ;; :target onward gets nil, never a fake entity).  The forbidden hop
+         ;; is src=eid → slot → tgt=v; principal-INDEPENDENT.  A PERMITTED /
+         ;; exempt edge projects its :target normally.
          project   (fn [[a v]]
-                     {:predicate (or (:db/ident (db/entity a)) a)
-                      :target    (db/entity v)})
+                     (let [slot (or (:db/ident (db/entity a)) a)]
+                       (if (fw-enforce/hop-forbidden? db-now eid slot v)
+                         {:predicate slot :blocked true
+                          :reason :firewall/flow-forbidden}
+                         {:predicate slot :target (db/entity v)})))
          match?    (if pred-set
                      (fn [edge] (pred-set (:predicate edge)))
                      (constantly true))]
@@ -766,9 +1330,18 @@
                           (db/db) eid))
          pred-set  (when predicate
                      (set (if (sequential? predicate) predicate [predicate])))
+         db-now    (db/db)
+         ;; S7 EP-3 (BU-5 / R16): an inbound edge is the WRITTEN edge
+         ;; s → slot → eid (s is the source that authored it; this entity is
+         ;; the target).  Its firewall verdict is the per-hop verdict on that
+         ;; written direction; a FORBIDDEN inbound edge is listed-as-broken
+         ;; (no :source key) from this end too — symmetric with outbound.
          project   (fn [[s a]]
-                     {:predicate (or (:db/ident (db/entity a)) a)
-                      :source    (db/entity s)})
+                     (let [slot (or (:db/ident (db/entity a)) a)]
+                       (if (fw-enforce/hop-forbidden? db-now s slot eid)
+                         {:predicate slot :blocked true
+                          :reason :firewall/flow-forbidden}
+                         {:predicate slot :source (db/entity s)})))
          match?    (if pred-set
                      (fn [edge] (pred-set (:predicate edge)))
                      (constantly true))]
@@ -880,6 +1453,16 @@
              (filter (fn [[eid path]]
                        (and (not= eid self-eid)
                             (same-dir? path))))
+             ;; S7 EP-3 (adjudication must-fix #1; S7-PLAN §5/R15 names
+             ;; siblings-of an EP-3-inherited surface): siblings-of is a
+             ;; rel-path prefix ROW-READ enumeration channel — withhold any
+             ;; sibling the anchor's compartment may not see, so a public
+             ;; anchor cannot discover a private sibling's ident/content.  The
+             ;; per-endpoint firewall verdict (fail-closed, principal-
+             ;; independent) is the same predicate the coarse path-via fallback
+             ;; uses.  Defense-in-depth ahead of S9 physical exclusion.
+             (filter (fn [[eid _]]
+                       (fw-enforce/endpoint-permitted? (db/db) self-eid eid)))
              (mapv (fn [[eid _]] (db/entity eid))))))))
 
 (defn graph-walk-from
@@ -920,6 +1503,24 @@
            (or (nil? pred-set)
                (pred-set (or (:db/ident (db/entity a)) a))))
 
+         db-now         (db/db)
+
+         ;; S7 EP-3 (BU-5 / CA-2): the blocked-hop verdict for one walk-frontier
+         ;; ref-datom row, applied BEFORE the target enters the next frontier.
+         ;; A :forward row is the written edge from-frontier → slot → to-new; an
+         ;; :inverse row `[?n ?a ?f]` binds ?f=from-frontier (object) / ?n=to-new
+         ;; (subject), so the written edge is to-new → slot → from-frontier.
+         ;; Governs whichever physical direction the datom was authored in;
+         ;; principal-INDEPENDENT.  Without this, navigate.walk fully bypasses
+         ;; EP-3 (walk.clj → graph-walk-from's direct d/q, not edges-of).
+         hop-blocked?
+         (fn [{:keys [from-frontier to-new attr direction]}]
+           (let [slot (or (:db/ident (db/entity attr)) attr)]
+             (boolean
+               (if (= :inverse direction)
+                 (fw-enforce/hop-forbidden? db-now to-new slot from-frontier)
+                 (fw-enforce/hop-forbidden? db-now from-frontier slot to-new)))))
+
          step-edges
          (fn [frontier-eids]
            (let [forward-rows (when forward?
@@ -956,7 +1557,16 @@
          (zero? (count frontier)) (persistent! results)
          (>= hop hops)            (persistent! results)
          :else
-         (let [discovered
+         (let [;; S7 EP-3 (CA-2): partition the step-edges into FORBIDDEN
+               ;; (dropped from the frontier, surfaced as {:blocked true} rows
+               ;; with NO :entity — the audit signal) and PERMITTED (traversed
+               ;; normally).  A forbidden target NEVER enters `visited`/frontier,
+               ;; so navigate.walk cannot reach a private target from a public
+               ;; source.
+               all-edges  (step-edges (keys frontier))
+               blocked    (filterv hop-blocked? all-edges)
+               allowed    (remove hop-blocked? all-edges)
+               discovered
                (reduce
                  (fn [acc edge]
                    (let [{:keys [from-frontier to-new attr direction]} edge]
@@ -974,15 +1584,44 @@
                                  :path   (when include-paths?
                                            (conj parent-path step))})))))
                  {}
-                 (step-edges (keys frontier)))]
+                 allowed)
+               ;; Blocked rows carry the predicate + reason but NO :entity/:target
+               ;; and NO :path advance — one per forbidden ref-datom.  Dedup is
+               ;; keyed on [predicate to-new] (NOT the emitted row): a single
+               ;; forbidden target reached via the same predicate twice in one
+               ;; hop collapses to one row, but TWO distinct forbidden targets on
+               ;; the SAME card-many predicate each yield their own row so the
+               ;; S10 audit signal counts one row per forbidden ref-datom (R16).
+               ;; `to-new` is the DEDUP KEY only — it never enters the wire row
+               ;; (no :target eid/ident leaks; key ABSENCE, not a sentinel).  A
+               ;; global seen-set (not `distinct`/`dedupe`) is required because
+               ;; forbidden edges are NOT sorted by key within a hop.
+               blocked-rows
+               (:rows
+                 (reduce
+                   (fn [{:keys [seen rows] :as acc} {:keys [attr to-new]}]
+                     (let [pred (or (:db/ident (db/entity attr)) attr)
+                           k    [pred to-new]]
+                       (if (contains? seen k)
+                         acc
+                         {:seen (conj seen k)
+                          :rows (conj rows
+                                      {:predicate pred
+                                       :blocked   true
+                                       :reason    :firewall/flow-forbidden
+                                       :hop       (inc hop)})})))
+                   {:seen #{} :rows []}
+                   blocked))]
            (recur (inc hop)
                   (into visited (keys discovered))
                   (into {} (map (fn [[eid r]] [eid (:path r)])) discovered)
-                  (reduce
-                    (fn [acc [_ r]]
-                      (conj! acc (if include-paths? r (dissoc r :path))))
-                    results
-                    discovered))))))))
+                  (as-> results $
+                    (reduce
+                      (fn [acc [_ r]]
+                        (conj! acc (if include-paths? r (dissoc r :path))))
+                      $
+                      discovered)
+                    (reduce conj! $ blocked-rows)))))))))
 
 (defn search-fulltext
   "Single-attribute fulltext search via Datomic + Lucene.
@@ -1026,6 +1665,173 @@
       (concat direct-parents
               (mapcat ancestors-of direct-parents)))))
 
+(defn effective-codec-aliases-of
+  "Returns the codec-aliases map merged across the class hierarchy.
+  Walks `:dt/subclass-of` ancestors; leaf-class aliases shadow ancestors
+  for shared keys (specificity wins).
+
+  Used by codecs to handle alias inheritance — e.g., :mm/Decision
+  (subclass of :mm/Memory) inherits :mm/Memory's `:type →
+  :mm.memory/memory-type` alias.  Without this, codec routing to a
+  Memory-subclass loses the :type→:memory-type aliasing because
+  `codec-aliases-of` only consults the leaf class.
+
+  Added 2026-05-21 per
+  plans/codec_subclass_routing_follow_up_arc_2026_05_21.md Stage 1.5
+  (codec slot-inheritance fix).  Sister to `slots-of` which already
+  walks inheritance via the `effective-slot` Datalog rule."
+  [class-ident]
+  (let [chain (cons class-ident (ancestors-of class-ident))]
+    (reduce (fn [acc c] (merge acc (codec-aliases-of c)))
+            {}
+            (reverse chain))))
+
+(defn effective-codec-slot-order-of
+  "Returns the codec-slot-order vector merged across the class hierarchy.
+  Leaf class's declared order comes first; ancestor classes' orders follow
+  in walked order; duplicate slots are deduplicated keeping the FIRST
+  (leaf-closest) occurrence.
+
+  Used by `sandbar.codec.markdown/emit-frontmatter` so that emit respects
+  the canonical ordering declared on ancestors (e.g., :mm/Decision inherits
+  :mm/Memory's slot-order over :mm.memory/* slots that are populated via
+  inheritance).  Without this, emission of Memory-subclass entities would
+  use an unstable iteration-order for inherited slots, breaking round-trip
+  stability.
+
+  Added 2026-05-21 per
+  plans/codec_subclass_routing_follow_up_arc_2026_05_21.md Stage 1.5
+  (codec slot-inheritance fix).  Sister to `effective-codec-aliases-of`."
+  [class-ident]
+  (let [chain (cons class-ident (ancestors-of class-ident))]
+    (vec (distinct (mapcat codec-slot-order-of chain)))))
+
+(defn effective-bm25f-weights-of
+  "Returns the BM25F field-weight map merged across the class hierarchy.
+  Walks `:dt/subclass-of` ancestors; leaf-class weights shadow ancestors
+  for shared slot keys (specificity wins).
+
+  Used by `sandbar.search/search-bm25f` so subclasses of a class declaring
+  `:dt/bm25f-weights` (e.g., the consumer's memorial-subclass family)
+  inherit the parent's declared weights without having to redeclare them.
+  Without this, `search.bm25f` against a subclass fails with
+  'No :dt/bm25f-weights declared on class'.
+
+  Added 2026-05-23 per Gap 13 fix
+  (plans/sandbar_mcp_end_to_end_correctness_pass_substrate_stabilization_arc_2026_05_22.md
+  Stage C — subclass inheritance for class-metadata helpers).  Sister to
+  `effective-codec-aliases-of` / `effective-codec-slot-order-of` — same
+  ancestor-walk pattern, different attribute.  Class-agnostic per
+  interaction/no_hardcoded_consumer_class_knowledge_in_substrate_2026_05_13.md."
+  [class-ident]
+  (let [chain (cons class-ident (ancestors-of class-ident))]
+    (reduce (fn [acc c] (merge acc (bm25f-weights-of c)))
+            {}
+            (reverse chain))))
+
+(defn effective-memorial-policy-of
+  "Returns the `:dt/memorial-policy` declaration nearest to `class-ident` in
+  the `:dt/subclass-of` ancestry chain, or nil if no declaration is found
+  anywhere in the chain.  One of `:first-class` / `:db-only` / `:inline`.
+
+  Unlike `effective-bm25f-weights-of` (which MERGES across the chain),
+  memorial-policy is scalar — nearest-declaration wins (specificity).
+  `:mm/Memory` declares `:first-class` once; all descendants inherit
+  unless they override (e.g., `:event/HttpRequest` declares `:db-only`).
+
+  Composes with `ancestors-of` (substrate primitive — not yet memoized
+  upward, parallel to memoized downward `subclasses-of-cached`; future
+  optimization if projection hot-path warrants).  Used by
+  `sandbar.reactive.sinks/fs-projection-sink` (Stage B.3 enforcement)
+  + (future) `sandbar.project.dump-db-only` (DB-dump arc Stage B).
+
+  nil return means the class is policy-undeclared.  Caller decides
+  default — current MVP at the fs-projection sink treats nil as
+  `:db-only` (conservative: skip projection rather than spuriously
+  emit).  Stage G of the first-class-memorialization arc will turn
+  policy-undeclared into a class-registration-time loud-fail.
+
+  Added 2026-05-23 per
+  `decisions/option_b_plus_c_ratified_spec_vs_state_criterion_pivot_to_first_class_memorialization_2026_05_23.md`
+  + the SPEC-vs-STATE pivot's substrate-enforcement requirement.
+  Sister to `effective-bm25f-weights-of` — same ancestor-walk pattern
+  but scalar reduction (first-match) rather than map-merge.  Mirrors
+  the `:dt/*` substrate-primitive discipline per
+  `interaction/build_on_type_system_reflectively_and_prospectively_dont_reinvent_in_parallel_due_to_tactical_concerns_2026_05_23.md`
+  — replaces a private hierarchy-walking helper that had been
+  authored inside `sandbar.reactive.sinks`."
+  [class-ident]
+  (let [chain (cons class-ident (ancestors-of class-ident))]
+    (some memorial-policy-of chain)))
+
+(def ^{:private true
+       :doc "The three roots of the unified :mm/* runtime lattice (Spec /
+            Activity / Event).  Their subclasses INHERIT :mm/Memory's
+            :first-class memorial-policy but never correspond to a corpus
+            markdown FILE — they carry no :mm.memory/rel-path by design
+            (Schedule/Workflow content-key idents; Run/Process/EventLog
+            telemetry; Event bus primitives).  Per
+            decisions/unified_mm_type_lattice_workflow_process_activity_run_-
+            job_schedule_event_phase_2_2026_05_24."}
+  +runtime-behavioral-roots+
+  [:mm/Spec :mm/Activity :mm/Event])
+
+(def ^{:private true
+       :doc "Runtime-root descendants that ARE corpus documents (project to a
+            corpus markdown FILE and MUST carry a :mm.memory/rel-path) despite
+            living under a runtime-behavioral root — so the root-ancestry
+            exclusion must NOT drop them:
+              :mm/Log      (:mm/Activity) — session-handoff chronicle → memory/logs/
+              :mm/Fn       (:mm/Spec)     — first-class function memorial → memory/fns/
+              :mm/Workflow (:mm/Spec)     — user-visible behavioral spec → memory/workflows/
+            (and their descendants, e.g. :mm/Rule under :mm/Fn — also a corpus
+            document at memory/rules/.)  Per it7 FF-2 (it6 BOARD-MINUTE Lane-B
+            fast-follow #1): the it6 root-ancestry gate SILENTLY EXCLUDED these
+            three (:mm/Log was re-parented under :mm/Activity; :mm/Fn / :mm/Workflow
+            live under :mm/Spec), leaving them at BASE behavior (silent skip / no
+            create-time loud-reject).  Listing them here as an explicit CLASS-LEVEL
+            inclusion restores derive-or-reject + WARN coverage.  This override is
+            MONOTONE — it can only ADD coverage; :mm/Schedule / :mm/EventLog /
+            :mm/Run / :mm/Job / :mm/Event / :mm/Process and every other runtime
+            class stay rel-path-less (regression-pinned)."}
+  +corpus-document-runtime-classes+
+  [:mm/Log :mm/Fn :mm/Workflow])
+
+(defn corpus-document-class?
+  "True when `class-ident` is a FIRST-CLASS memorial that the reactive fs sink
+   projects to a corpus markdown FILE — i.e. its effective memorial-policy is
+   `:first-class` AND EITHER it is an explicit corpus-document class under a
+   runtime root (`+corpus-document-runtime-classes+`: :mm/Log / :mm/Fn /
+   :mm/Workflow + descendants) OR it is NOT under any runtime-behavioral root
+   (`:mm/Spec` / `:mm/Activity` / `:mm/Event`).
+
+   This is the precise 'must carry a `:mm.memory/rel-path`' set: the corpus
+   document types (Decision / Plan / Bug / Observation / Interaction / Feedback /
+   Shape / … PLUS Log / Fn / Workflow).  It EXCLUDES the classes that are
+   `:first-class` only by inheritance from `:mm/Memory` yet legitimately have no
+   rel-path — Schedule (content-key ident), EventLog (telemetry, created via a
+   bare `dt/make`), Run (:db-only), Event/Process/Job kin.
+
+   it7 FF-2 (it6 BOARD-MINUTE Lane-B fast-follow #1) moved this from a pure
+   root-ancestry exclusion to CLASS-LEVEL gating: the coarse root exclusion
+   wrongly dropped :mm/Log (re-parented under :mm/Activity) and :mm/Fn /
+   :mm/Workflow (under :mm/Spec), which ARE corpus documents.  The explicit
+   inclusion is MONOTONE-SAFE — it only ADDS those three (+ descendants) to
+   coverage; it removes nothing, so no rel-path-less runtime create regresses.
+
+   THE single shared predicate behind two defenses (so they can never diverge):
+   `sandbar.store/create-memory!`'s create-time loud-fail and
+   `sandbar.reactive.sinks/fs-projection-sink`'s WARN-on-skip.  Non-throwing —
+   any lookup failure returns false (never reject/alarm on uncertainty).  Per
+   bugs/entity_create_codec_path_mints_identless_relpathless_entities_fs_-
+   projection_silently_skipped_2026_07_08."
+  [class-ident]
+  (boolean
+   (try (and (= :first-class (effective-memorial-policy-of class-ident))
+             (or (some #(type-isa? % class-ident) +corpus-document-runtime-classes+)
+                 (not (some #(type-isa? % class-ident) +runtime-behavioral-roots+))))
+        (catch Throwable _ false))))
+
 (defn direct-subclasses-of
   "Returns the idents of classes that directly extend class dt.
   Only returns immediate children, not transitive descendants."
@@ -1055,17 +1861,121 @@
                (subclass-of ?dt ?c)]
              (db/db) (all-rules) dt)))
 
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Type-relation cache (Stage 5 Phase A.5 — Dan-directive 2026-05-22)
+;;
+;; Memoizes type-relation queries so substrate operations that iterate
+;; type-isa? in tight loops (projection filter, audit invariants, codec
+;; routing, BM25F :where filter resolution) don't re-run Datalog queries
+;; per entity.
+;;
+;; Bounded memory: stores ~50 class-idents × sets of ~10-50 idents each
+;; (a few KB total).  Independent of corpus size.  Type relations are
+;; STRUCTURE, not CONTENT.
+;;
+;; Invalidation: cleared by `sandbar.db.datomic/load-all-schema!` after
+;; each schema reload (schema additions can change subclass closures).
+;; Future class-creating MCP verbs invalidate similarly via
+;; `clear-type-relation-cache!`.
+;;
+;; Per `decisions/dt_layer_exposes_memoized_type_relation_ops_with_schema_invalidation_2026_05_22.md`.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defonce ^:private type-relation-cache
+  ;; {class-ident #{direct-and-transitive-subclass-idents}}  — subclasses, NOT including the class itself
+  (atom {}))
+
+(defn clear-type-relation-cache!
+  "Clear the memoized type-relation cache.  Called by
+  `sandbar.db.datomic/load-all-schema!` after each schema reload (via
+  the post-schema-reload-handlers registry), since schema additions can
+  change the subclass closure.  Also callable from tests + ad-hoc to
+  force a rebuild.  Returns the prior cache value."
+  []
+  (let [prior @type-relation-cache]
+    (reset! type-relation-cache {})
+    prior))
+
+;; Register the cache-clear with datomic's post-schema-reload registry
+;; at namespace load time.  Set-valued registry dedupes on REPL reload.
+;; Per `interaction/dont_use_requiring_resolve_for_namespace_dep_avoidance_2026_05_22.md`.
+(db/register-post-schema-reload-handler! clear-type-relation-cache!)
+
+(defn subclasses-of-cached
+  "Returns the cached set of all transitive subclasses of class-ident
+  (NOT including class-ident itself).  Populates cache on miss via
+  `subclasses-of` (which runs the recursive Datalog query).
+
+  Per `decisions/dt_layer_exposes_memoized_type_relation_ops_with_schema_invalidation_2026_05_22.md`."
+  [class-ident]
+  (or (get @type-relation-cache class-ident)
+      (let [computed (set (subclasses-of class-ident))]
+        (swap! type-relation-cache assoc class-ident computed)
+        computed)))
+
+(defn descendants-of
+  "Returns the set of all class-idents that are `class-ident` OR a
+  transitive subclass.  Substrate primitive for entity-filtering by
+  is-instance-of-class-or-descendant.
+
+  Use this when iterating a collection asking 'is this entity an X
+  descendant?' — `(contains? (descendants-of X) (:dt/type entity))` is
+  O(1) per call.  Compared to per-call `type-isa?` which (before this
+  cache) ran a recursive Datalog query per invocation.
+
+  Per `decisions/dt_layer_exposes_memoized_type_relation_ops_with_schema_invalidation_2026_05_22.md`."
+  [class-ident]
+  (conj (subclasses-of-cached class-ident) class-ident))
+
 (defn subclass-of?
-  "Returns true if c is a subclass of dt (direct or transitive)."
+  "Returns true if c is a subclass of dt (direct or transitive).
+  Uses the cached `subclasses-of-cached` set; O(1) lookup once warm."
   [dt c]
-  (some? ((set (subclasses-of dt)) c)))
+  (contains? (subclasses-of-cached dt) c))
+
+(defn type-isa?
+  "Map-friendly type-membership predicate: returns true if `entity-type`
+  is `dt` exactly OR a transitive subclass of `dt`.  Sister to
+  `instance-of?` which expects a transacted entity (and does an entity
+  lookup); `type-isa?` takes a class-keyword directly and is safe to
+  call on entity-spec MAPS where `:dt/type` is just a keyword.
+
+  Use at substrate boundaries where exact `(= :mm/Memory (:dt/type e))`
+  would miss legitimate subclass instances (e.g., :mm/Decision via
+  :dt/subclass-of :mm/Memory).  Added 2026-05-21 per
+  plans/codec_subclass_routing_follow_up_arc_2026_05_21.md Stage 1.5
+  — same substrate-pure pattern as `memory-class?` in the codec but
+  promoted to dt/* so projection + codec + future consumers share the
+  helper."
+  [dt entity-type]
+  (or (= dt entity-type)
+      (try (subclass-of? dt entity-type)
+           (catch Exception _ false))))
 
 (defn instance-of?
   "Returns true if entity e is an instance of class dt.
-  True when e's :dt/type is dt or a subclass of dt."
+  True when e's :dt/type is dt or a subclass of dt.
+
+  Robust to BOTH shapes of `:dt/type` value:
+  - keyword form (entity-spec map; pre-transact; in-memory data)
+  - Datomic Entity form (post-DB-read; ref-slot resolution returns
+    the target entity rather than its ident)
+
+  Gap 20 fix (2026-05-22): the prior implementation `(= dt t)` /
+  `(subclass-of? dt t)` worked when `t` was a keyword but silently
+  returned false when `t` was an EntityMap — because the keyword-
+  vs-EntityMap comparison is always false + the subclass cache stores
+  keyword idents.  Surfaced via entity.update flow which validates
+  the merged slot map: DB-read ref values fail the type check even
+  though they're already-resolved valid refs."
   [dt e]
-  (let [t (-> e entity :dt/type)]
-    (or (= dt t) (subclass-of? dt t))))
+  (let [t-val   (-> e entity :dt/type)
+        t-ident (cond
+                  (keyword? t-val)      t-val
+                  (associative? t-val)  (:db/ident t-val)
+                  :else                 nil)]
+    (or (= dt t-ident)
+        (and t-ident (subclass-of? dt t-ident)))))
 
 (defn abstract?
   "Returns true if class dt is marked as abstract.
@@ -1160,8 +2070,36 @@
   (and (keyword? dt)
        (= "db.type" (namespace dt))))
 
+(defn- upsert-map-for?
+  "True if `v` is a single-key map whose key is either `:db/ident` OR
+  the unique-identity slot of `target-class`.  Datomic transact resolves
+  such maps to refs via the :db.unique/identity index — they are
+  semantically valid ref-slot values pre-transact even though they are
+  not Datomic Entity instances yet.
+
+  Codec produces this shape for cardinality-many ref slots (per the
+  .md-canonical principle — frontmatter strings like `tags: [observation,
+  test]` become `[{:mm.tag/value \"observation\"} ...]` upsert maps that
+  resolve to :mm/Tag refs at transact time).  Pre-transact validation
+  must accept this shape; otherwise the codec ↔ validation contract
+  breaks at entity.create-with-tags + similar cases.
+
+  Per substrate-stabilization arc C6 / Coupling 1
+  (codec ↔ validation contract gap) — added 2026-05-22."
+  [v target-class]
+  (and (map? v)
+       (= 1 (count v))
+       (let [k (first (keys v))]
+         (or (= :db/ident k)
+             (when target-class
+               (= k (unique-identity-slot-of target-class)))))))
+
 (defn- value-matches-range?
-  "Check if a value matches the expected range type"
+  "Returns true if `value` is admissible for a slot whose declared range is
+   `range-type`.  Literal ranges check the Clojure/Java type; class ranges
+   accept an instance of the target class, a `:db.unique/identity` upsert map,
+   an untyped stub entity, or — for the universal `:dt/Ref` marker — any value
+   resolving to a live entity.  nil range ⇒ anything admissible."
   [value range-type]
   (cond
     ;; No range specified - anything goes
@@ -1189,9 +2127,45 @@
       :db.type/tuple   (vector? value)
       true)  ;; unknown literal type - pass
 
-    ;; Reference to a class - check instance-of
+    ;; Reference to a class — accept any of:
+    ;; (a) a Datomic Entity that is instance-of the target class
+    ;; (b) an upsert map `{<unique-attr> <value>}` that Datomic transact
+    ;;     will resolve to a ref via :db.unique/identity (codec produces
+    ;;     this shape for tags + other ref slots; per C6 of substrate-
+    ;;     stabilization arc — codec ↔ validation contract gap)
+    ;; (c) Gap 20 — an untyped stub entity (resolved entity with :db/id
+    ;;     but NO :dt/type).  Stubs are created via :db/ident upsert when
+    ;;     a citation target doesn't exist yet (per the stub-then-fill
+    ;;     pattern in decisions/mm_memory_typed_edge_migration_string_to_-
+    ;;     ref_2026_05_21.md).  Subsequent ingest of the actual memorial
+    ;;     upserts via the same ident, filling in the slots.  Permissive
+    ;;     validation here honors that intentional design — refusing
+    ;;     untyped stubs would break entity.update on any memorial that
+    ;;     cites a not-yet-ingested target (common during MCP cutover).
+    ;; (d) When the range is the UNIVERSAL ref marker `:dt/Ref` (not a
+    ;;     concrete class), any value that resolves to a live entity — a
+    ;;     raw eid, a Datomic EntityMap, or a `{:db/id eid}` map — is a
+    ;;     valid reference; `instance-of?` fails here because ref-target
+    ;;     classes descend from `:dt/Resource`, a sibling of `:dt/Ref`, not
+    ;;     from `:dt/Ref` itself.  Concrete-class ranges keep the stricter
+    ;;     `instance-of?` check.  Per
+    ;;     bugs/dt_make_ref_slots_reject_eids_and_silently_drop_maps_2026_07_02.md.
     :else
-    (instance-of? range-type value)))
+    (or (instance-of? range-type value)
+        (upsert-map-for? value range-type)
+        ;; Universal `:dt/Ref` marker: any value naming a LIVE entity is a
+        ;; valid reference.  Resolve through the ref->eid canon (so an eid /
+        ;; EntityMap / {:db/id} all reduce identically), then confirm the
+        ;; target actually exists — `d/entity` on a bogus eid yields a shell
+        ;; with :db/id but no attributes, which must NOT pass.
+        (and (= :dt/Ref range-type)
+             (when-let [eid (ref->eid value)]
+               (some? (seq (entity eid)))))
+        ;; Gap 20 untyped-stub acceptance (see (c) above) — a resolved entity
+        ;; with :db/id but no :dt/type, for the stub-then-fill citation path.
+        (when-let [e (try (entity value) (catch Throwable _ nil))]
+          (and (:db/id e)
+               (nil? (:dt/type e)))))))
 
 (defn required? [prop]
   "Check if a property is required"
@@ -1223,10 +2197,29 @@
       (catch Exception _ nil))))
 
 (defn- validate-slot-type
-  "Validate a single slot value against its range. Returns nil if valid, error map if invalid."
+  "Validate a single slot value against its range. Returns nil if valid, error map if invalid.
+
+   Multi-value handling: cardinality-many slots may arrive as
+   - sets (Datomic peer reads return cardinality-many as sets)
+   - vectors / lists / seqs (JSON arrays / EDN vectors at the MCP /
+     codec boundaries)
+
+   Both shapes iterate per-element through value-matches-range?.  Maps
+   are single values (an upsert-map shape like {:mm.tag/value \"x\"}
+   IS the value, not a collection); primitives wrap in a singleton set.
+
+   Before C9 (2026-05-22): only sets iterated; vectors fell through
+   to the singleton-set branch, passing the whole vector to
+   value-matches-range? which (correctly) rejected it as a non-target-
+   class collection.  Surfaced during C6 verification — cardinality-
+   many ref slots with upsert-map values failed validation even
+   though each individual upsert-map satisfies the range type."
   [slot-ident slot-value]
   (let [range-type (range-of slot-ident)
-        values (if (set? slot-value) slot-value #{slot-value})]
+        values (cond
+                 (set? slot-value)        slot-value
+                 (sequential? slot-value) (set slot-value)
+                 :else                    #{slot-value})]
     (when-let [invalid (seq (remove #(value-matches-range? % range-type) values))]
       {:type :invalid-type
        :slot slot-ident

@@ -1,0 +1,52 @@
+## What this predicate means
+
+**A `has-domain` B** — A's source-type (domain) is B.  Applied to predicate memorials: the predicate's domain is the class of entity that can SERVE AS the subject of the relation.
+
+Examples:
+- `:mm.memory/cites has-domain :mm/Memory` (citation source must be a memorial)
+- `:mm.memory/created-by has-domain :mm/Memory` (creation is attributed to memorial subjects)
+- `:mm.memory/specializes has-domain :dt/Property` (sub-property is a property-on-property)
+
+## Substrate identity
+
+- **Slot ident**: `{{predicate-ident}}`
+- **Domain**: `{{domain}}` (typically `:dt/Property`)
+- **Range**: `{{range}}` (typically `:dt/Class`)
+- **Cardinality**: `{{cardinality}}` (typically `:many` — a predicate may have multiple domain classes via disjunction)
+- **Sub-property of**: `:dt/property-domain-relation`
+
+## Formal signature
+
+`{{predicate-name}} : {{domain}} × {{range}} → Bool`
+
+## When to use
+
+Declare `has-domain:` when:
+- A is a predicate / property definition
+- B is the class restricting which entities can serve as subjects of A
+- Audit invariants on conformance can verify (source-of-edge ∈ domain)
+
+## Audit invariants
+
+- "predicate: domain/range conformance" — for every fact `x A y`, `x` must be an instance of the declared domain of A (or its subclass).  RDFS rule rdfs2.
+
+Cross-check via `/memory-audit`.
+
+## Formal ontology mappings
+
+Aligned predicates from established formal vocabularies:
+
+- **RDFS** `rdfs:domain` — exact semantic match (the canonical domain-restriction predicate; entailment via rdfs2)
+- **OWL** `rdfs:domain` — same (OWL uses RDFS's domain predicate directly)
+- **SHACL** `sh:targetClass` — close analogue (shape-validation context, slightly different semantics)
+- **DC Terms** — no direct equivalent
+- **PROV-O** — no direct equivalent
+- **SKOS** — no direct equivalent
+
+Grounding references in the corpus:
+- [`references/rdfs_reference.md`](../references/rdfs_reference.md) — RDFS `rdfs:domain` + entailment rule rdfs2
+
+## See also
+
+- [`predicates/has-range.md`](has-range.md) — dual (range-restriction, target side)
+- [`predicates/specializes.md`](specializes.md) — sub-property hierarchy (entailment composes with domain)

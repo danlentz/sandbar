@@ -1,0 +1,48 @@
+## What a `type: link` instance is
+
+A first-class representation of a MARKDOWN LINK extracted from a memorial body — `[anchor-text](target-rel-path)` becomes a `:mm/Link` entity capturing the href, anchor text, containing section, external-vs-internal flag, and (for internal links) the target memorial reference.  Links are not authored directly; they're produced by the codec's body-content parsing.
+
+## Why links are first-class
+
+Treating links as entities (rather than just substrings in body content) enables:
+
+- **Backlink queries** — "what memorials link TO this one?" via inbound walk on `:mm.link/target-memory`
+- **Link-shape audits** — broken-link detection becomes a substrate invariant
+- **Section-precise origin** — each link knows which `:mm/Section` of its memorial contained it (via `:mm.link/in-section`), enabling section-level "what other memorials does this section link to?" queries
+- **External-vs-internal classification** — `:mm.link/external?` distinguishes corpus-internal refs from web URLs
+
+## Substrate identity
+
+- **Class ident**: `{{class-ident}}`
+- **Parent class(es)**: {{parent-classes}}
+- **Native codec**: `{{native-codec}}`
+
+## Slot vocabulary
+
+The class declares **{{slot-count}}** slots:
+
+{{slot-table}}
+
+## Composition with other classes
+
+- **`:mm/Memory`** — memorial's `:mm.memory/links` enumerates the link entities extracted from its body
+- **`:mm/Section`** — `:mm.link/in-section` references the containing section; section-level link queries follow
+- **`:dt/Resource`** — `:mm.link/target-memory` references the target memorial for internal links
+
+## Distinction from typed-edges
+
+Markdown body links are NOT the same as frontmatter typed-edges:
+
+- Typed-edges (cites, related, motivated-by, etc.) are SEMANTIC relations declared in frontmatter — substrate query surface
+- Body links are NARRATIVE references — they document HOW memorials weave together in prose
+- The two coexist; a memorial often has both
+
+## Codec slot-order
+
+{{slot-order-list}}
+
+## See also
+
+- [`types/memory.md`](memory.md) — memorials whose body content sources link entities
+- [`types/section.md`](section.md) — section-precise link origin
+- [`types/predicate.md`](predicate.md) — typed-edge semantics (the OTHER kind of cross-memorial reference)

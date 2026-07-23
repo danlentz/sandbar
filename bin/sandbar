@@ -1,0 +1,462 @@
+#!/usr/bin/env bash
+# sandbar — lifecycle wrapper for the Sandbar MCP server.
+#
+# Per plans/sandbar_operational_lifecycle_and_full_mcp_cutover_arc_2026_05_21.md
+# Stage X.1.A.
+#
+# Subcommands:
+#   start         — start sandbar if not running; idempotent
+#   stop          — stop sandbar if running; idempotent
+#   restart       — stop + start
+#   status        — show running state + token + memory-count
+#   rotate-token  — issue a new MCP token + persist to ~/.config/sandbar/token
+#   log           — tail the server log
+#   backup        — incremental Datomic backup-db to .sandbar/backups/<sid>-<TS>-...
+#   restore       — restore-db from a backup dir (preflight verify; :dev keeps transactor up)
+#   verify-backup — verify-backup over latest (or named) backup
+#   backup-list   — enumerate backups + status
+#   backup-prune  — prune backups by age/count (--keep-days N [--keep-count K] [--confirm])
+#
+# Configuration via env:
+#   SANDBAR_HOME       — repo root (default: $HOME/src/sandbar)
+#   SANDBAR_CLIENT_DIR — client-project root (default: $HOME/claude)
+#                        Per decisions/sandbar_deployment_consumption_cohabitability_strategy_2026_05_24.md D.A
+#                        Propagated to JVM as -Dsandbar.client-dir=<path>
+#   SANDBAR_PORT       — MCP port (default: 8389; was 8080 pre-2026-05-24).
+#                        Layer 3 of the 3-layer config; overrides
+#                        <SANDBAR_CLIENT_DIR>/.sandbar/config.edn :port
+#   SANDBAR_TOKEN      — bearer token (overrides ~/.config/sandbar/token)
+
+set -euo pipefail
+
+SANDBAR_HOME="${SANDBAR_HOME:-$HOME/src/sandbar}"
+SANDBAR_CLIENT_DIR="${SANDBAR_CLIENT_DIR:-$HOME/claude}"
+SANDBAR_CONFIG="${SANDBAR_CLIENT_DIR}/.sandbar"
+SANDBAR_PID_FILE="${SANDBAR_CONFIG}/sandbar.pid"
+SANDBAR_LOG_FILE="${SANDBAR_CONFIG}/sandbar.log"
+SANDBAR_TOKEN_FILE="${SANDBAR_CONFIG}/token"
+# Port resolution — walk the layered config (Tier 3 env > Tier 2 client
+# .sandbar/config.edn > Tier 1 bundled config/config.edn > 8389 fallback).
+# Per F.1 follow-up of memory/observations/phase_3b_mm_event_lift_-
+# migration_complete_gate2_verified_with_3_followups_2026_05_24.md —
+# without this, env-default 8389 mismatched the Tier-2-pinned 8080 JVM
+# and bin/sandbar status/stop missed the running JVM entirely.
+if [ -z "${SANDBAR_PORT:-}" ]; then
+  for cfg in "${SANDBAR_CONFIG}/config.edn" "${SANDBAR_HOME}/config/config.edn"; do
+    if [ -f "$cfg" ]; then
+      p=$(grep -E '^\s*:port[[:space:]]+[0-9]+' "$cfg" 2>/dev/null | head -1 | grep -oE '[0-9]+' || true)
+      if [ -n "$p" ]; then
+        SANDBAR_PORT="$p"
+        break
+      fi
+    fi
+  done
+fi
+SANDBAR_PORT="${SANDBAR_PORT:-8389}"
+
+# Export so the JVM sees them via System/getenv + as JVM props
+export SANDBAR_CLIENT_DIR SANDBAR_PORT
+export JVM_OPTS="${JVM_OPTS:-} -Dsandbar.client-dir=$SANDBAR_CLIENT_DIR"
+
+mkdir -p "$SANDBAR_CONFIG"
+
+# A successful sentinel is "port is listening on a process".  We prefer
+# the live port-listener (authoritative) but fall back to PID-file-if-
+# alive when port resolution might be wrong (e.g., user override
+# mismatches reality, or transactor changed ports unexpectedly).  The
+# PID-file fallback uses `kill -0` for liveness — never echoes a stale
+# PID.  Per F.1 follow-up (2026-05-24).
+running_pid() {
+  local pid=$(lsof -i :"$SANDBAR_PORT" -t 2>/dev/null | head -1)
+  if [ -n "$pid" ]; then
+    echo "$pid"
+    return
+  fi
+  # Fallback: PID file pointing at a live process.
+  if [ -f "$SANDBAR_PID_FILE" ]; then
+    local file_pid=$(cat "$SANDBAR_PID_FILE" 2>/dev/null)
+    if [ -n "$file_pid" ] && kill -0 "$file_pid" 2>/dev/null; then
+      echo "$file_pid"
+      return
+    fi
+  fi
+}
+
+resolve_token() {
+  if [ -n "${SANDBAR_TOKEN:-}" ]; then
+    echo "$SANDBAR_TOKEN"
+  elif [ -f "$SANDBAR_TOKEN_FILE" ]; then
+    cat "$SANDBAR_TOKEN_FILE"
+  fi
+}
+
+cmd="${1:-status}"
+
+case "$cmd" in
+  start)
+    pid=$(running_pid || true)
+    if [ -n "$pid" ]; then
+      echo "sandbar already running on port $SANDBAR_PORT (PID $pid)"
+      exit 0
+    fi
+    cd "$SANDBAR_HOME"
+    nohup lein run > "$SANDBAR_LOG_FILE" 2>&1 &
+    new_pid=$!
+    echo "$new_pid" > "$SANDBAR_PID_FILE"
+    echo "starting sandbar (PID $new_pid) — log: $SANDBAR_LOG_FILE"
+    # Wait for ready — server answers ANY HTTP code on /mcp once Pedestal
+    # is up.  Polling at 1s for up to 90s (lein cold-start typical ~30s).
+    ready=0
+    for i in $(seq 1 90); do
+      code=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:$SANDBAR_PORT/mcp" 2>/dev/null || true)
+      if [ -n "$code" ] && [ "$code" != "000" ]; then
+        echo "sandbar ready after ${i}s (HTTP $code)"
+        ready=1
+        break
+      fi
+      sleep 1
+    done
+    if [ "$ready" != "1" ]; then
+      echo "sandbar failed to become ready within 90s" >&2
+      echo "last 10 lines of $SANDBAR_LOG_FILE:" >&2
+      tail -10 "$SANDBAR_LOG_FILE" >&2
+      exit 1
+    fi
+    # X.1.B fresh-DB auto-init — per plans/sandbar_operational_lifecycle_-
+    # and_full_mcp_cutover_arc_2026_05_21.md + decisions/restore_sandbar_-
+    # from_durable_git_export_at_memory_open_never_rely_on_db_durability_-
+    # 2026_05_12.md.  Datomic is transient; filesystem (git-tracked) is
+    # canonical.  At each start, if the DB is empty, project memory/ into
+    # it via sandbar.project.import.  Idempotent — never re-imports a
+    # populated DB.
+    # Need a token to make MCP calls.  If we have one (env or cached
+    # file), use it.  Otherwise SKIP fresh-init + warn — the user can
+    # issue a token via `sandbar rotate-token` then re-run start (or
+    # invoke `sandbar init` separately).  Auto-issuing the token here
+    # would require a second lein cold-start (~30s) which makes the
+    # common-case start path slow.
+    token=$(resolve_token)
+    if [ -z "$token" ]; then
+      echo "no MCP token present — skipping fresh-init check"
+      echo "to enable auto-import: 'sandbar rotate-token corpus <key>' then 'sandbar init'"
+      exit 0
+    fi
+    # Check entity count
+    body='{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"sandbar.aggregate.count","arguments":{"class":":mm/Memory"}}}'
+    cnt=$(curl -s -X POST "http://localhost:$SANDBAR_PORT/mcp" \
+          -H "Authorization: Bearer $token" \
+          -H "Content-Type: application/json" \
+          -d "$body" 2>/dev/null | grep -oE 'count[\\"]+ *: *[0-9]+' | head -1 | grep -oE '[0-9]+' || echo 0)
+    if [ "${cnt:-0}" = "0" ]; then
+      corpus_root="${SANDBAR_CORPUS_ROOT:-$HOME/claude}"
+      echo "DB is empty — auto-importing ${corpus_root}/memory/ ..."
+      import_body=$(cat <<EOF
+{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"sandbar.project.import","arguments":{"from":"${corpus_root}","filter":{"tree-filter":"memory/"},"persist?":true}}}
+EOF
+)
+      result=$(curl -s -X POST "http://localhost:$SANDBAR_PORT/mcp" \
+               --max-time 600 \
+               -H "Authorization: Bearer $token" \
+               -H "Content-Type: application/json" \
+               -d "$import_body" 2>/dev/null)
+      imported=$(echo "$result" | grep -oE 'imported[\\"]+ *: *[0-9]+' | head -1 | grep -oE '[0-9]+' || echo 0)
+      groups=$(echo "$result" | grep -oE 'groups[\\"]+ *: *[0-9]+' | head -1 | grep -oE '[0-9]+' || echo 0)
+      failed=$(echo "$result" | grep -oE 'failed-count[\\"]+ *: *[0-9]+' | head -1 | grep -oE '[0-9]+' || echo 0)
+      echo "auto-import complete: $imported entities across $groups memorials ($failed failed)"
+    else
+      echo "DB has $cnt :mm/Memory entities — skipping auto-import"
+    fi
+    exit 0
+    ;;
+
+  stop)
+    pid=$(running_pid || true)
+    if [ -z "$pid" ]; then
+      echo "sandbar not running"
+      rm -f "$SANDBAR_PID_FILE"
+      exit 0
+    fi
+    echo "stopping sandbar (PID $pid)"
+    kill "$pid" 2>/dev/null || true
+    for i in $(seq 1 30); do
+      pid=$(running_pid || true)
+      if [ -z "$pid" ]; then
+        echo "sandbar stopped after ${i}s"
+        rm -f "$SANDBAR_PID_FILE"
+        exit 0
+      fi
+      sleep 1
+    done
+    pid=$(running_pid || true)
+    if [ -n "$pid" ]; then
+      echo "force-killing PID $pid" >&2
+      kill -9 "$pid" 2>/dev/null || true
+    fi
+    rm -f "$SANDBAR_PID_FILE"
+    ;;
+
+  restart)
+    "$0" stop
+    "$0" start
+    ;;
+
+  status)
+    pid=$(running_pid || true)
+    if [ -n "$pid" ]; then
+      echo "RUNNING — port $SANDBAR_PORT (PID $pid)"
+      token=$(resolve_token)
+      if [ -n "$token" ]; then
+        echo "TOKEN  — present ($([ -f "$SANDBAR_TOKEN_FILE" ] && echo "$SANDBAR_TOKEN_FILE" || echo 'env'))"
+        body='{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"sandbar.aggregate.count","arguments":{"class":":mm/Memory"}}}'
+        # Inner text is JSON-encoded, so the `"count"` shows up as
+        # `\"count\"` in the response bytes.  Match either form.
+        cnt=$(curl -s -X POST "http://localhost:$SANDBAR_PORT/mcp" \
+              -H "Authorization: Bearer $token" \
+              -H "Content-Type: application/json" \
+              -d "$body" 2>/dev/null | grep -oE 'count[\\"]+ *: *[0-9]+' | head -1 | grep -oE '[0-9]+' || true)
+        if [ -n "$cnt" ]; then
+          echo "MEMORY — $cnt :mm/Memory entities in DB"
+        else
+          echo "MEMORY — could not read (token rejected? db empty?)"
+        fi
+      else
+        echo "TOKEN  — MISSING (run 'sandbar rotate-token corpus <key>')"
+      fi
+    else
+      echo "STOPPED — port $SANDBAR_PORT free"
+    fi
+    ;;
+
+  rotate-token)
+    service="${2:-corpus}"
+    key="${3:-default-$(date +%s)}"
+    cd "$SANDBAR_HOME"
+    out=$(lein issue-mcp-token "$service" "$key" --rotate 2>&1)
+    echo "$out"
+    new_token=$(echo "$out" | grep -oE 'SANDBAR_TOKEN="[^"]+"' | head -1 | sed 's/.*"\(.*\)"/\1/')
+    if [ -n "$new_token" ]; then
+      echo "$new_token" > "$SANDBAR_TOKEN_FILE"
+      chmod 600 "$SANDBAR_TOKEN_FILE"
+      echo "token written to $SANDBAR_TOKEN_FILE"
+    else
+      echo "warning: could not extract token from issue-mcp-token output" >&2
+      exit 1
+    fi
+    ;;
+
+  export)
+    # X.1.C explicit DB → filesystem projection.  Invokes
+    # sandbar.project.export MCP verb.  DEFAULTS to a scratch dir
+    # (/tmp/sandbar-export-<timestamp>) for SAFETY — overwriting the
+    # canonical memory/ requires explicit `sandbar export --canonical`
+    # to avoid accidental normalization-commits.  Round-trip stability
+    # (per decisions/round_trip_stable_normalization_acceptance_criterion_2026_05_20.md)
+    # guarantees fixed-point output once the first normalization commit
+    # lands, but the FIRST projection rewrites every file with formatting
+    # changes — that's an editorial choice, not a cadence default.
+    pid=$(running_pid || true)
+    if [ -z "$pid" ]; then
+      echo "sandbar not running — start it first ('sandbar start')" >&2
+      exit 1
+    fi
+    token=$(resolve_token)
+    if [ -z "$token" ]; then
+      echo "no MCP token resolvable — set SANDBAR_TOKEN or 'sandbar rotate-token corpus <key>'" >&2
+      exit 1
+    fi
+    if [ "${2:-}" = "--canonical" ]; then
+      out_dir="${SANDBAR_CLIENT_DIR:-$HOME/claude}"
+      echo "WARNING: exporting to CANONICAL ${out_dir}/memory/ (overwrites canonical files)"
+    else
+      out_dir="${2:-/tmp/sandbar-export-$(date +%Y%m%d-%H%M%S)}"
+      mkdir -p "$out_dir"
+    fi
+    echo "exporting DB → ${out_dir}/memory/ ..."
+    export_body=$(cat <<EOF
+{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"sandbar.project.export","arguments":{"to":"${out_dir}"}}}
+EOF
+)
+    result=$(curl -s -X POST "http://localhost:$SANDBAR_PORT/mcp" \
+             --max-time 600 \
+             -H "Authorization: Bearer $token" \
+             -H "Content-Type: application/json" \
+             -d "$export_body" 2>/dev/null)
+    exported=$(echo "$result" | grep -oE 'exported[\\"]+ *: *[0-9]+' | head -1 | grep -oE '[0-9]+' || echo 0)
+    echo "export complete: $exported entities written"
+    if [ "${exported:-0}" = "0" ]; then
+      echo "DEBUG response: $result" >&2
+    fi
+    ;;
+
+  init)
+    # X.1.B fresh-DB auto-init.  Idempotent — invokes sandbar.project.import
+    # ONLY if the DB has zero :mm/Memory entities.  Requires sandbar to be
+    # running + a token resolvable (env OR cached file).
+    pid=$(running_pid || true)
+    if [ -z "$pid" ]; then
+      echo "sandbar not running — start it first ('sandbar start')" >&2
+      exit 1
+    fi
+    token=$(resolve_token)
+    if [ -z "$token" ]; then
+      echo "no MCP token resolvable — set SANDBAR_TOKEN env OR run 'sandbar rotate-token corpus <key>'" >&2
+      exit 1
+    fi
+    body='{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"sandbar.aggregate.count","arguments":{"class":":mm/Memory"}}}'
+    cnt=$(curl -s -X POST "http://localhost:$SANDBAR_PORT/mcp" \
+          -H "Authorization: Bearer $token" \
+          -H "Content-Type: application/json" \
+          -d "$body" 2>/dev/null | grep -oE 'count[\\"]+ *: *[0-9]+' | head -1 | grep -oE '[0-9]+' || echo 0)
+    if [ "${cnt:-0}" = "0" ]; then
+      corpus_root="${SANDBAR_CORPUS_ROOT:-$HOME/claude}"
+      echo "DB is empty — auto-importing ${corpus_root}/memory/ ..."
+      import_body=$(cat <<EOF
+{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"sandbar.project.import","arguments":{"from":"${corpus_root}","filter":{"tree-filter":"memory/"},"persist?":true}}}
+EOF
+)
+      result=$(curl -s -X POST "http://localhost:$SANDBAR_PORT/mcp" \
+               --max-time 600 \
+               -H "Authorization: Bearer $token" \
+               -H "Content-Type: application/json" \
+               -d "$import_body" 2>/dev/null)
+      imported=$(echo "$result" | grep -oE 'imported[\\"]+ *: *[0-9]+' | head -1 | grep -oE '[0-9]+' || echo 0)
+      groups=$(echo "$result" | grep -oE 'groups[\\"]+ *: *[0-9]+' | head -1 | grep -oE '[0-9]+' || echo 0)
+      failed=$(echo "$result" | grep -oE 'failed-count[\\"]+ *: *[0-9]+' | head -1 | grep -oE '[0-9]+' || echo 0)
+      echo "auto-import complete: $imported entities across $groups memorials ($failed failed)"
+    else
+      echo "DB has $cnt :mm/Memory entities — skipping auto-import"
+    fi
+    ;;
+
+  reproject-bootstrap)
+    # Stage 3 of plans/sandbar_bootstrap_authority_arc_2026_05_21.md.
+    # Renders sandbar's substrate state to corpus markdown memorials.
+    # SAFE-DEFAULT: writes to a scratch dir (no canonical overwrite).
+    # Pass --canonical to write to client-project memory/.
+    # Pass --dry-run to report without writing.
+    #
+    # CAVEAT per interaction/bootstrap_rendering_must_preserve_narrative_human_readable_content_2026_05_21.md
+    # — current render output is INTROSPECTION-ONLY (no narrative);
+    # --canonical is BLOCKED until Stage 2.D narrative templates land.
+    shift
+    cd "$SANDBAR_HOME"
+    lein reproject-bootstrap "$@"
+    ;;
+
+  log)
+    tail -f "$SANDBAR_LOG_FILE"
+    ;;
+
+  backup)
+    # Forward to lein backup-db; pass through args (optional label).
+    # Shells out to bin/datomic backup-db (admin JVM); live-system safe.
+    # Per memory/libraries/datomic/backup_restore.md §12 + Dan-directive
+    # c-then-a 2026-05-23.
+    shift
+    cd "$SANDBAR_HOME"
+    exec lein backup-db "$@"
+    ;;
+
+  restore)
+    # Backup-dir REQUIRED.  Preflight verify-backup + :dev-transactor-up
+    # checks run inside the script.
+    shift
+    cd "$SANDBAR_HOME"
+    exec lein restore-db-from "$@"
+    ;;
+
+  verify-backup)
+    # Defaults to LATEST backup if no arg.
+    shift
+    cd "$SANDBAR_HOME"
+    exec lein verify-backup "$@"
+    ;;
+
+  backup-list)
+    cd "$SANDBAR_HOME"
+    exec lein list-backups
+    ;;
+
+  backup-prune)
+    # --keep-days N [--keep-count K] [--confirm]
+    shift
+    cd "$SANDBAR_HOME"
+    exec lein prune-backups "$@"
+    ;;
+
+  verify-restore)
+    # Verify the restore path end-to-end via isolated second transactor.
+    # Doesn't touch the live transactor — operationally safe to run anytime.
+    # Per memory/observations/gate_2_restore_path_verified_end_to_end_lifts_no_reset_db_2026_05_24.md
+    shift
+    cd "$SANDBAR_HOME"
+    exec lein verify-restore "$@"
+    ;;
+
+  config-show|config)
+    # Print the resolved 3-layer config (+ provenance with --provenance).
+    # Per ADR sandbar_deployment_consumption_cohabitability_strategy_2026_05_24 D.G
+    shift || true
+    cd "$SANDBAR_HOME"
+    exec lein config-show "$@"
+    ;;
+
+  list-dbs)
+    # Enumerate Datomic databases on the configured transactor.
+    # Reveals ALL consumers' DBs under the F2 shared-transactor cohabitability model.
+    # Per ADR sandbar_deployment_consumption_cohabitability_strategy_2026_05_24 D.G
+    cd "$SANDBAR_HOME"
+    exec lein list-dbs
+    ;;
+
+  *)
+    cat >&2 <<EOF
+Usage: sandbar <command>
+
+Commands:
+  start                          — start sandbar (idempotent); auto-init if DB empty + token present
+  stop                           — stop sandbar (idempotent)
+  restart                        — stop + start
+  init                           — fresh-DB auto-import (idempotent; requires running + token)
+  export [dir | --canonical]     — DB → fs projection.  Default: /tmp/sandbar-export-<ts>.
+                                   Pass a dir arg to use that path.  `--canonical` overwrites
+                                   the client-project memory/ (only on explicit opt-in).
+  reproject-bootstrap [opts]     — Re-render bootstrap memorials (types/ + predicates/) from
+                                   substrate state.  Default: scratch dir.  Opts: --dry-run,
+                                   --canonical (BLOCKED until templates land), --class :mm/X.
+  status                         — show running state + token + memory-count
+  rotate-token <service> <key>   — issue a fresh MCP token + persist
+  log                            — tail the server log
+  backup [<label>]               — incremental Datomic backup-db to .sandbar/backups/
+                                   <sid>-<TS>[-<label>]-datomic1.0.7482/; writes status.edn
+                                   sidecar.  Live-system safe.  Admin-JVM out-of-band.
+  restore <backup-dir> [<name>]  — restore-db from a backup dir.  Preflights verify-backup +
+                                   :dev-transactor-up.  Target DB name defaults to source
+                                   (per Datomic restore-db invariant).
+  verify-backup [<backup-dir>]   — verify-backup over latest (or named) backup;
+                                   updates status.edn with :verified-at + :verify-exit-code.
+  backup-list                    — list backups + status (newest first).
+  backup-prune [opts]            — prune by age/count.  Opts: --keep-days N, --keep-count K,
+                                   --confirm (DRY RUN without --confirm).
+  verify-restore [<backup-dir>]  — restore-path end-to-end verification via isolated 2nd
+                                   transactor; compares cardinality to live-as-of-t.
+                                   Per Gate 2 ADR; safe (doesn't touch live transactor).
+  config-show [--provenance]     — print the resolved 3-layer config; --provenance shows
+                                   per-layer contributions (bundled defaults + client
+                                   <SANDBAR_CLIENT_DIR>/.sandbar/config.edn + env vars).
+  list-dbs                       — enumerate Datomic databases on the configured transactor;
+                                   reveals all consumers' DBs (F2 cohabitability model).
+
+Config (env):
+  SANDBAR_HOME=$SANDBAR_HOME
+  SANDBAR_PORT=$SANDBAR_PORT
+  SANDBAR_CLIENT_DIR=$SANDBAR_CLIENT_DIR
+  SANDBAR_TOKEN_FILE=$SANDBAR_TOKEN_FILE
+
+Per decisions/sandbar_token_lives_in_client_project_not_user_global_2026_05_21.md:
+tokens live in the CLIENT PROJECT (.sandbar/token under the corpus root),
+not in a user-global ~/.config/sandbar/ location.  Gitignored.
+EOF
+    exit 2
+    ;;
+esac

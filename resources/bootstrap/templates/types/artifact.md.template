@@ -1,0 +1,54 @@
+## What an `artifact` memory is
+
+**Artifact is an abstract supertype** — the category of memorials that produce durable, self-contained outputs with memorial value beyond their immediate trigger.  Concrete subtypes include architectural decisions, plan documents, library studies, external-facility pointers, and source-quote traces.  All share a defining property: they are **consumable outputs** — the memorial IS the canonical record (a library study IS the canonical read about that library; a decision memory IS the record of the choice; a plan IS the design document for an arc).
+
+Contrast with the sibling abstract supertypes:
+
+- **`signal`** — captures observation ("here is what we noticed")
+- **`guidance`** — prescribes action ("when X happens, do / don't do Y")
+- **`meta`** — schema / structural ("about the map, not the territory")
+
+## When `extends: artifact` helps
+
+Category-level rules become expressible across the family:
+
+- *"Every artifact should have `created:` and (if a plan-subtype) `completed:` once status is `complete`"* — lifecycle invariants across the subtype family
+- *"Every artifact may carry `supersedes:` / `superseded-by:` frontmatter"* — only this category has successional semantics; signals and guidance don't supersede
+- *"Every artifact has stable identity that other memorials can reference"* — addressability + citation semantics flow from this
+
+Without supertype membership, each rule enumerates the concrete subtypes manually.  With it, `is-a? artifact` becomes the predicate, and the rule survives the addition of new subtypes.
+
+## Not instantiated directly
+
+Don't write a memorial with `type: artifact` — write one of the concrete subtypes (e.g., `type: decision`, `type: plan`, `type: library`, `type: reference`), each of which declares this class as its parent via `:dt/subclass-of`.  The `abstract?: true` schema flag marks this class as non-instantiable.
+
+## Substrate identity
+
+- **Class ident**: `{{class-ident}}`
+- **Parent class(es)**: {{parent-classes}}
+- **Ancestor chain**: {{ancestor-chain}}
+- **Native codec**: `{{native-codec}}`
+- **Codec type-keyword(s)**: {{codec-type-keywords}}
+
+## Slot vocabulary ({{slot-count}} slots inherited or declared)
+
+Artifact memorials inherit the full `:mm/Memory` slot vocabulary — identity (name / description / scope), provenance (created / last-touched / last-reviewed / created-by / importance), typed-edge predicates (cites / related / refines / evidences / motivated-by / supersedes / superseded-by / ...), structural fields (body-raw / first-section / links / frontmatter / tags / themes), and origin tracking (bootstrap-source / bootstrap-override).
+
+Concrete subtypes layer their own type-specific slots on top — e.g., `:mm.decision/alternatives` for Decision, `:mm.plan/stage` + `:mm.plan/status` for Plan.
+
+{{slot-table}}
+
+## Composition with other classes
+
+- **`:mm/Section`** — body decomposition.  Each H2+ heading becomes an addressable section entity for fine-grained cross-reference.
+- **`:mm/Tag`** — classification.  Tags can be free-text (informal) or canonical (controlled-vocabulary via `:mm/ConceptScheme`).
+- **`:mm/Link`** — markdown-link extraction.  Body links become first-class entities for backlink queries.
+- **`:mm/Frontmatter`** — long-tail extra frontmatter keys not declared on the concrete subtype.
+
+## See also
+
+- [`types/signal.md`](signal.md) — sibling abstract supertype for observational memorials
+- [`types/guidance.md`](guidance.md) — sibling abstract supertype for normative memorials
+- [`types/meta.md`](meta.md) — sibling abstract supertype for schema / structural memorials
+- [`types/memory.md`](memory.md) — the common ancestor (foundational memorial class)
+- Sandbar substrate: `sandbar/schema/mm-artifact.edn`

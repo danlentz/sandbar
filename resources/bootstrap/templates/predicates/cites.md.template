@@ -1,0 +1,61 @@
+## What this predicate means
+
+**A `cites` B** — A references B as an external pointer.  The general-purpose citation typed-edge: a pattern cites a reference, a plan cites a library, a memoir cites a source consulted.  Stronger than `touches` (which is topical engagement without source-dependence); weaker than `evidences` (which asserts B BACKS a specific claim made in A).
+
+## Substrate identity
+
+- **Slot ident**: `{{predicate-ident}}`
+- **Domain**: `{{domain}}`
+- **Range**: `{{range}}`
+- **Cardinality**: `{{cardinality}}`
+- **Sub-property of**: {{super-property}}
+
+## Formal signature
+
+`{{predicate-name}} : {{domain}} × {{range}} → Bool`
+
+## Characteristics
+
+- **Asymmetric** — A citing B doesn't imply B cites A
+- **Irreflexive** — a memorial doesn't cite itself
+- **NOT transitive** — A cites B, B cites C does not give A cites C
+
+## When to use cites
+
+Default to `cites` ONLY after checking:
+1. Is this evidence-strength? → `evidences`
+2. Is this refinement / specialization? → `refines` / `specializes`
+3. Is this dependency? → `consumes` (for libraries) / `requires` (general)
+4. Is this contextual application? → `applies-in` (for rules)
+5. Is this contradiction? → `contradicts`
+6. Otherwise → `cites`
+
+## Adjacent predicates
+
+| Strength | Predicate |
+|---|---|
+| Strongest | `evidences` — A's claim is backed by B |
+| Medium | **`cites`** — A references B as source-pointer |
+| Lighter | `touches` — A engages topic without depending |
+| Lightest | `mentions` — passing reference |
+| Catch-all | `related` — lateral / unspecified |
+
+## Formal ontology mappings
+
+Aligned predicates from established formal vocabularies:
+
+- **CiTO** `cito:cites` — exact semantic match (source-pointer relation)
+- **BIBO** `bibo:cites` — exact match in bibliographic register
+- **DC Terms** `dcterms:references` — close analogue
+- **PROV-O** `prov:wasInfluencedBy` — distant analogue (PROV-O is broader; informational influence)
+- **PAV** — no direct equivalent (PAV builds on `cito:cites` for provenance-typed extensions)
+- **RDFS / OWL** — no direct equivalent (out-of-scope for foundational vocabularies)
+
+Grounding references in the corpus:
+- [`references/pav_cito_bibo_reference.md`](../references/pav_cito_bibo_reference.md) — citation-typing ontology prior art (sandbar's `cites:` semantics align with `cito:cites`)
+
+## See also
+
+- [`predicates/evidences.md`](evidences.md) — stronger
+- [`predicates/touches.md`](touches.md) — lighter
+- [`predicates/related.md`](related.md) — fallback

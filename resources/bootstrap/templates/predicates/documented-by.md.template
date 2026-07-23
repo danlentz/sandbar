@@ -1,0 +1,47 @@
+## What this predicate means
+
+**A `documented-by` B** — B documents A (inverse of `documents`).  The author-side advertisement: "the canonical documentation for me is at B."
+
+Common shapes:
+- A library memorial documented-by its reference memorial
+- A protocol documented-by an explanation memorial
+- A pattern documented-by an example memorial
+
+## Substrate identity
+
+- **Slot ident**: `{{predicate-ident}}`
+- **Domain**: `{{domain}}`
+- **Range**: `{{range}}`
+- **Cardinality**: `{{cardinality}}`
+- **Inverse of**: `:mm.memory/documents`
+
+## Formal signature
+
+`{{predicate-name}} : {{domain}} × {{range}} → Bool`
+
+## When to use
+
+Declare `documented-by:` on A when:
+- The canonical documentation for A lives elsewhere
+- A wants to advertise the pointer to its documentation
+
+For exhaustive enumeration of documentation memorials, reverse-attribute lookup (`:_mm.memory/documents`) is usually cheaper.
+
+## Formal ontology mappings
+
+Aligned predicates from established formal vocabularies:
+
+- **DC Terms** `dcterms:isDescribedBy` — close analogue
+- **RDFS** `rdfs:isDefinedBy` — close analogue when A is an ontology term
+- **OWL** `owl:inverseOf` — sandbar declares `:mm.memory/documented-by` as `inverse-of :mm.memory/documents`
+- **FOAF** — no direct equivalent
+- **PROV-O** — no direct equivalent
+- **SKOS** — no direct equivalent
+- **CiTO** — no direct equivalent
+
+Grounding references in the corpus:
+- [`references/rdfs_reference.md`](../references/rdfs_reference.md) — RDFS / DC Terms substrate
+
+## See also
+
+- [`predicates/documents.md`](documents.md) — forward direction

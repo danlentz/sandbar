@@ -1,0 +1,78 @@
+## What a `type: ai-actor` instance is
+
+**An AI actor memorial describes a specific versioned AI model** — typically a single release of a model from a single provider (a particular Claude version, a particular codex version + model, or a future external AI agent).
+
+Versioning is intentionally **per-release**, not per-conversation-session.  An AI actor instance is the model version; the model is queryable as a graph citizen with version, capabilities, and provider organization.
+
+Within a single AI actor instance, multiple **conversation sessions** occur but those are NOT separate actor memorials — the actor IS the model version, not the per-session execution.
+
+AI Actor is a subtype of [`actor`](actor.md) → [`meta`](meta.md).
+
+## Substrate identity
+
+- **Class ident**: `{{class-ident}}`
+- **Parent class(es)**: {{parent-classes}}
+- **Ancestor chain**: {{ancestor-chain}}
+- **Native codec**: `{{native-codec}}`
+- **Codec type-keyword(s)**: {{codec-type-keywords}}
+
+## Slot vocabulary ({{slot-count}} slots inherited or declared)
+
+AI Actor memorials inherit `:mm/Memory` (and `actor`) plus AI-specific slots:
+
+- **`model-family`** (required) — e.g., `claude` / `codex` / `gpt`
+- **`version`** (required) — e.g., `opus-4-7-1m` / `cli-0-130-0`
+- **`runs-in-context`** (required) — rel-paths to context memorials
+- **`belongs-to`** — organization rel-paths (provider company)
+- **`supersedes`** — predecessor version rel-paths
+- **`peer-of`** — sibling actor rel-paths at same release
+- **`context-window`** — numeric token capacity
+- **`capabilities`** — list of named capability tags
+
+{{slot-table}}
+
+## Canonical body structure
+
+```markdown
+## What this AI actor is
+
+<Model family, version, key distinguishing capabilities.>
+
+## Context window + capabilities
+
+<Token capacity, distinguishing capabilities, notable tools or
+behaviors.>
+
+## Provenance
+
+<Provider organization, release date, version-chain context.>
+
+## Version chain
+
+<What this supersedes; what supersedes it (if any).>
+
+## Operating contexts
+
+<Which contexts this actor operates in (cross-reference context
+memorials).>
+
+## See also
+
+<Sibling actors, parent organization, governing rules.>
+```
+
+## Composition with adjacent classes
+
+- **`organization`** — AI actors typically `belongs-to` the provider organization
+- **`context`** — AI actors run in specific contexts (sandboxed vs unsandboxed)
+- **`rule`** — rules may scope to specific AI actor versions
+- **`event`** — AI actors are typical triggers for `pre-tool-use`, `pre-grounding`, `user-prompt-submit` events
+
+## See also
+
+- [`types/actor.md`](actor.md) — parent abstract supertype
+- [`types/human-actor.md`](human-actor.md) — sibling subtype
+- [`types/system-actor.md`](system-actor.md) — sibling subtype
+- [`types/organization.md`](organization.md) — provider organizations
+- [`types/context.md`](context.md) — runtime contexts
+- Sandbar substrate: `sandbar/schema/mm-meta.edn`

@@ -1,0 +1,107 @@
+## What a `type: type` instance is
+
+**A `type: type` memorial describes what entries of some other type should contain.**  Each memorial file in the corpus's types/ subtree carries the frontmatter `type: type` and narrates one entry-type (pattern, anti-pattern, library, …) — its purpose, required fields, canonical section structure, pitfalls, and example files.
+
+**The Type type is itself `type: type`.**  That's the self-reference: the type-of-types is a valid type, and the Type memorial is an instance of it.  One level of self-reference — no metametametamodel.
+
+This is the metacircular property applied at the type-system level: `dt/Class` is itself a `dt/Class`; our `type: type` is itself `type: type`.
+
+Type is a subtype of [`meta`](meta.md) — memorials about the memory system itself.
+
+## When to create a `type: type` memorial
+
+- A new entry-type is being added to the corpus
+- An existing type has drifted far enough in practice that its original description no longer matches usage
+- A type's conventions are enforced by audit meta-invariants and deserve narrative justification
+
+## When NOT to create one
+
+- The type is obscure and used once — schema description suffices
+- The type's conventions are fully captured by its validation rules
+
+## Substrate identity
+
+- **Class ident**: `{{class-ident}}`
+- **Parent class(es)**: {{parent-classes}}
+- **Ancestor chain**: {{ancestor-chain}}
+- **Native codec**: `{{native-codec}}`
+- **Codec type-keyword(s)**: {{codec-type-keywords}}
+
+## Slot vocabulary ({{slot-count}} slots inherited or declared)
+
+Type memorials inherit `:mm/Memory` plus type-system-specific extensions:
+
+- **`tier`** — `stable-core` / `expanding-periphery` (mandatory; warning-severity if missing)
+- **`abstract?`** — true for non-instantiable types
+- **`required-fields`** / **`recommended-fields`** — frontmatter contract
+- **`extends`** — parent type rel-path
+- **Captureability metadata** (when mid-conversation-captureable): `mid-conversation-captureable`, `inject-trigger`, `inject-class-name`, `inject-action`, `audit-class`
+
+{{slot-table}}
+
+## Stable core vs expanding periphery
+
+A two-tier architecture:
+
+- **Stable core** — types that describe the SYSTEM.  Their definitions rarely change; the types themselves are foundational, codify conventions / supertypes / canonical knowledge.  Adding a new stable-core type is a rare architectural event
+- **Expanding periphery** — types that describe the WORK.  Their instances accumulate continuously through normal use; mid-conversation captures land here.  Adding a new periphery type is an evolution of the capture vocabulary
+
+Every `type: type` memorial MUST declare a `tier:` field; audit invariant `types-have-tier-classification` enforces at warning severity (warning, not error, because reclassification is a legitimate evolution path).
+
+## Captureability declaration
+
+A type may declare itself captureable mid-conversation via:
+
+- **`mid-conversation-captureable: true`** — type participates in the signal-scan reminder
+- **`inject-trigger`** — literal trigger phrases the assistant should watch for
+- **`inject-class-name`** — human-readable class name shown in reminders
+- **`inject-action`** — what the assistant should DO when the trigger fires
+- **`audit-class`** — keyword emitted by audit hooks classifying writes
+- **`subtree`** — canonical subtree where instances land
+
+When `mid-conversation-captureable: true`, the partner fields MUST be populated (audit invariant: `captureable-types-have-trigger-and-classname`, error-severity).
+
+## Canonical body structure
+
+```markdown
+## What a `type: X` memorial is
+
+<One paragraph, the shape.>
+
+## When to create one
+
+<Trigger conditions.>
+
+## When NOT to create one
+
+<Counter-conditions.>
+
+## Required fields
+
+<Frontmatter contract.>
+
+## Canonical section structure
+
+<The memorial body template.>
+
+## Pitfalls
+
+<Easy mistakes.>
+
+## Examples from the corpus
+
+<Live memorials that instantiate the type well.>
+```
+
+## Pitfalls
+
+- **Over-specification** — type docs should capture *conventions*, not *laws*; if every pattern MUST cite exactly three libraries, structure becomes theater
+- **Drift from validation** — if audit enforces an invariant, the type memorial should reference the rule (and vice versa)
+- **Nested self-reference** — resist the urge to document a `type: type-of-types`; one level is enough (CLOS doesn't need metametaclasses to explain metaclasses)
+
+## See also
+
+- [`types/meta.md`](meta.md) — parent abstract supertype
+- [`types/predicate.md`](predicate.md) — analog at one level over (typed-edge vocabulary)
+- [`types/meta-type.md`](meta-type.md) — orthogonal axis (substrate / access protocol)
+- Sandbar substrate: `sandbar/schema/mm-meta.edn`

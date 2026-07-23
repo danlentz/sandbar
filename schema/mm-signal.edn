@@ -1,0 +1,243 @@
+[
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; :mm/Signal — Abstract Supertype for Observed / Captured State
+;;
+;; Per:
+;;   - memory/types/signal.md (corpus self-description)
+;;   - decisions/sandbar_memorial_type_substrate_layering_2026_05_21.md (D2)
+;;   - decisions/sandbar_memorial_type_ontology_corrections_round_c_2026_05_21.md (R5 final taxonomy)
+;;
+;; CONCRETE SUBTYPES:
+;;   - :mm/Observation (noticed truth; confidence + scale-dependent slots)
+;;   - :mm/Question (open epistemic gap; status: open|investigating|resolved|dropped + importance)
+;;   - :mm/Idea (speculative future move; status + effort + timeframe + triggered-by)
+;;   - :mm/Bug (defect observation; severity + status + affects)
+;;
+;; INHERITANCE: :mm/Signal :dt/subclass-of :mm/Memory.
+;; ABSTRACT: :dt/abstract? true — not instantiated directly.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ ;; Forward Declarations — enables slot :dt/domain references before the full class definitions.
+ ;; Matches the convention from schema/mm.edn lines 41-60.
+
+ [{:db/ident :mm/Observation :db/doc "Forward declaration; full class definition later in this file."}
+  {:db/ident :mm/Idea        :db/doc "Forward declaration; full class definition later in this file."}
+  {:db/ident :mm/Question    :db/doc "Forward declaration; full class definition later in this file."}
+  {:db/ident :mm/Bug         :db/doc "Forward declaration; full class definition later in this file."}]
+
+ [{:db/ident         :mm/Signal
+   :dt/type          :dt/Class
+   :dt/subclass-of   :mm/Memory
+   :dt/context       "mm"
+   :dt/label         "Signal"
+   :dt/abstract?     true
+   :db/doc "Abstract supertype for memorial types that capture state about the world rather than prescribing action (:mm/Guidance) or producing durable artifacts (:mm/Artifact).  Per memory/types/signal.md.  Concrete subtypes: :mm/Observation (a known truth about system / env / corpus), :mm/Question (a known unknown worth preserving), :mm/Idea (a proposed future action, not yet pursued), :mm/Bug (an observed defect in external library or code).  Category-level invariant: every :mm/Guidance instance should cite at least one :mm/Signal that motivated it (empirical grounding for normative rules).  Per decisions/sandbar_memorial_type_substrate_layering_2026_05_21.md D2 + decisions/sandbar_memorial_type_ontology_corrections_round_c_2026_05_21.md R5.  Not instantiated directly."}]
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; :mm.observation/* Properties
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident       :mm.observation/confidence
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Observation
+   :dt/range       :db.type/keyword
+   :db/valueType   :db.type/keyword
+   :db/cardinality :db.cardinality/one
+   :db/doc "Confidence in the observation's truth: :tentative (might be wrong; needs validation) | :likely (probably true; some evidence) | :certain (verified).  Observations can graduate along this axis as evidence accumulates.  Per memory/types/observation.md."}
+
+  {:db/ident       :mm.observation/scale-dependent
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Observation
+   :dt/range       :db.type/boolean
+   :db/valueType   :db.type/boolean
+   :db/cardinality :db.cardinality/one
+   :db/doc "True if the observation's relevance grows with system scale (O(n²) performance, table-size, context-budget concerns).  False if scale-independent.  Future-session filtering 'what should I worry about at current scale?' uses this flag.  Per memory/types/observation.md."}]
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; :mm.idea/* Properties
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident       :mm.idea/status
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Idea
+   :dt/range       :db.type/keyword
+   :db/valueType   :db.type/keyword
+   :db/cardinality :db.cardinality/one
+   :db/doc "Idea lifecycle state: :parked (recorded, not actively prioritized; most ideas start here) | :considering (being weighed against current priorities; tradeoffs being sketched) | :exploring (work has begun; prototyping) | :ready (specified enough to implement; waiting for cycle) | :superseded (a better idea replaced this one) | :dropped (decision not to pursue; rationale documented).  Per memory/types/idea.md."}
+
+  {:db/ident       :mm.idea/effort
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Idea
+   :dt/range       :db.type/keyword
+   :db/valueType   :db.type/keyword
+   :db/cardinality :db.cardinality/one
+   :db/doc "Rough sizing of effort to pursue: :small (< half a day; slash command, simple hook, small refactor) | :medium (half-day to 2-3 days; new mem task, small library, small skill) | :large (a week or more; new subsystem, significant refactor, real skill with multiple sub-files) | :capstone (major arc, multiple committable stages, library-scale).  Per memory/types/idea.md."}
+
+  {:db/ident       :mm.idea/timeframe
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Idea
+   :dt/range       :db.type/keyword
+   :db/valueType   :db.type/keyword
+   :db/cardinality :db.cardinality/one
+   :db/doc "When would we pursue this: :now (actively ready; blocking nothing but cycle) | :soon (within a few weeks; relevant to current work) | :someday (nice-to-have; no natural trigger) | :archival (kept for historical context; not expected to be pursued).  Per memory/types/idea.md."}
+
+  {:db/ident       :mm.idea/triggered-by
+   :dt/type        :dt/DirectedBinaryRelationProperty
+   :dt/domain      :mm/Idea
+   :dt/range       :db.type/string
+   :db/valueType   :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/doc "Free-text naming the origin context that spawned this idea (a Dan-directive, an arc, an inbox promotion, a prior task's completion, a library being studied).  Helps re-contextualize the idea when picked up later.  Per memory/types/idea.md."}
+
+  {:db/ident       :mm.idea/superseded-by
+   :dt/type        :dt/StrictPartialOrderProperty
+   :dt/domain      :mm/Idea
+   :dt/range       :mm/Idea
+   :db/valueType   :db.type/ref
+   :db/cardinality :db.cardinality/one
+   :db/doc "When status :superseded, points at the successor idea (or other memorial type that absorbed this one).  Per memory/types/idea.md.  Distinct from the type-level :mm.memory/superseded-by typed-edge which applies across memorial types."}]
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; :mm.question/* Properties
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident       :mm.question/status
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Question
+   :dt/range       :db.type/keyword
+   :db/valueType   :db.type/keyword
+   :db/cardinality :db.cardinality/one
+   :db/doc "Question lifecycle state: :open (noticed, not yet investigated) | :investigating (someone's actively researching) | :resolved (answered; the memory becomes a historical record) | :dropped (no longer relevant; question became moot OR we decided not to pursue).  Per memory/types/question.md."}
+
+  {:db/ident       :mm.question/importance
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Question
+   :dt/range       :db.type/keyword
+   :db/valueType   :db.type/keyword
+   :db/cardinality :db.cardinality/one
+   :db/doc "How important is answering this question: :low (nice-to-know; no decisions gated on the answer) | :medium (affects an adjacent decision; worth answering eventually) | :high (blocks or substantially shapes future work; prioritize answering).  Per memory/types/question.md."}
+
+  {:db/ident       :mm.question/triggered-by
+   :dt/type        :dt/DirectedBinaryRelationProperty
+   :dt/domain      :mm/Question
+   :dt/range       :db.type/string
+   :db/valueType   :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/doc "Free-text naming what work / conversation / memory surfaced this question.  Helps a future session re-contextualize.  Per memory/types/question.md."}]
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; :mm.bug/* Properties
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident       :mm.bug/severity
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Bug
+   :dt/range       :db.type/keyword
+   :db/valueType   :db.type/keyword
+   :db/cardinality :db.cardinality/one
+   :db/doc "Bug severity: :critical (corrupts data, crashes silently, makes library unusable for headline use-case) | :high (common case broken or wrong answer with no clear warning) | :medium (workaroundable but surprising; unhelpful error message; edge case wrong) | :low (minor inconsistency, docs/behavior mismatch, slight paper cut).  Per memory/types/bug.md."}
+
+  {:db/ident       :mm.bug/status
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Bug
+   :dt/range       :db.type/keyword
+   :db/valueType   :db.type/keyword
+   :db/cardinality :db.cardinality/one
+   :db/doc "Bug lifecycle state: :open (observed, not yet confirmed or triaged) | :confirmed (reproduced and understood as a real defect) | :fixed (a commit or version that resolves it is known; leave the memory, update status, add fixed-in:) | :wontfix (deliberate non-fix; rationale documented) | :stale (couldn't reproduce on re-check; kept as history).  Per memory/types/bug.md."}
+
+  {:db/ident       :mm.bug/affects
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Bug
+   :dt/range       :db.type/string
+   :db/valueType   :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/doc "Free-text identifier of the affected library / project + version / sha / 'current master'.  Example: 'clj-format 0.1.2' or 'sandbar arc/mcp-server fa934ea'.  Per memory/types/bug.md frontmatter convention `affects: {library: ..., version: ...}` flattened to a single string slot for simpler storage; richer structured form may be added later if querying by library-name becomes a high-volume axis."}
+
+  {:db/ident       :mm.bug/observed
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Bug
+   :dt/range       :db.type/string
+   :db/valueType   :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/doc "Free-text capture of observation context: date, environment, what was being done when the bug surfaced.  Example: '2026-05-02; babashka 1.12.216 / JVM 21 / macOS 15.4; writing etc/lib/report.clj primitives'.  Per memory/types/bug.md frontmatter convention `observed: {date, environment, context}` flattened."}
+
+  {:db/ident       :mm.bug/reported-by
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Bug
+   :dt/range       :db.type/string
+   :db/valueType   :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/doc "Free-text identifying who reported / observed the bug: 'dan' | 'claude' | 'both' | actor-rel-path.  Per memory/types/bug.md.  When :mm/Actor migration completes, this should become a ref to :mm/Actor instances."}
+
+  {:db/ident       :mm.bug/fixed-in
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Bug
+   :dt/range       :db.type/string
+   :db/valueType   :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/doc "When status :fixed, the sha / version that resolves the bug.  Per memory/types/bug.md."}]
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Class Definitions — concrete Signal subtypes
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ [{:db/ident             :mm/Observation
+   :dt/type              :dt/Class
+   :dt/subclass-of       :mm/Signal
+   :dt/context           "mm"
+   :dt/label             "Observation"
+   :dt/native-codec      :markdown
+   :dt/slots             [:mm.observation/confidence
+                          :mm.observation/scale-dependent]
+   :dt/abstract?         false
+   :db/doc "Notice-without-action: a true statement about the system / environment / corpus that a future session should know — but isn't a bug (nothing broken), isn't an idea (no action to take), isn't a decision (no choice made); just context worth preserving.  Per memory/types/observation.md.  Captureable: mid-conversation-captureable: true; inject-trigger: 'huh, didn't expect', 'turns out', 'I noticed'; inject-class: Observation-worthy; audit-class: observation."}
+
+  {:db/ident             :mm/Idea
+   :dt/type              :dt/Class
+   :dt/subclass-of       :mm/Signal
+   :dt/context           "mm"
+   :dt/label             "Idea"
+   :dt/native-codec      :markdown
+   :dt/slots             [:mm.idea/status
+                          :mm.idea/effort
+                          :mm.idea/timeframe
+                          :mm.idea/triggered-by
+                          :mm.idea/superseded-by]
+   :dt/abstract?         false
+   :db/doc "Speculative future move noticed during current work — something that might compound value later but isn't worth pursuing right now.  Captured so: current work isn't derailed; the thought isn't lost; a future session can find it when context matches; the connection back to original work is preserved.  Per memory/types/idea.md.  Lifecycle: parked → considering → exploring → ready → (sometimes) superseded / dropped."}
+
+  {:db/ident             :mm/Question
+   :dt/type              :dt/Class
+   :dt/subclass-of       :mm/Signal
+   :dt/context           "mm"
+   :dt/label             "Question"
+   :dt/native-codec      :markdown
+   :dt/slots             [:mm.question/status
+                          :mm.question/importance
+                          :mm.question/triggered-by]
+   :dt/abstract?         false
+   :db/doc "Open question worth preserving — something the current session noticed but couldn't answer, and where the answer would matter for future work.  Per memory/types/question.md.  Captureable: mid-conversation-captureable: true; inject-trigger: 'not sure what X means', 'I wonder'; inject-class: Question-worthy; audit-class: question.  Lifecycle: open → investigating → resolved (often spawning a sibling artifact — observation / decision / pattern — that captures the answer) / dropped."}
+
+  {:db/ident             :mm/Bug
+   :dt/type              :dt/Class
+   :dt/subclass-of       :mm/Signal
+   :dt/context           "mm"
+   :dt/label             "Bug"
+   :dt/native-codec      :markdown
+   :dt/slots             [:mm.bug/severity
+                          :mm.bug/status
+                          :mm.bug/affects
+                          :mm.bug/observed
+                          :mm.bug/reported-by
+                          :mm.bug/fixed-in]
+   :dt/abstract?         false
+   :db/doc "Structured defect observation — something that looked wrong during consumption of library X while the session was busy with project Y.  Captures context without derailing current work: drop a bug memory and keep moving; when someone later works on the affected library, the memory is waiting with everything they need (symptom, repro, expected-vs-actual, root cause if known, workaround).  Per memory/types/bug.md.  Lifecycle: open → confirmed → fixed / wontfix / stale."}]
+
+ ;; :dt/codec-type-keyword routing — frontmatter `type: <keyword>` maps to the concrete class.
+
+ [{:db/ident :mm/Observation :dt/codec-type-keyword :observation}
+  {:db/ident :mm/Idea        :dt/codec-type-keyword :idea}
+  {:db/ident :mm/Question    :dt/codec-type-keyword :question}
+  {:db/ident :mm/Bug         :dt/codec-type-keyword :bug}]
+
+]
