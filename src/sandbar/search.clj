@@ -457,6 +457,41 @@
                          db (all-rules) dependent-class slot target-eid)))
           ref-slots)))
 
+(defn bm25f-cache-classes
+  "The set of classes whose per-class analyzed-entry cache has been BUILT
+  (by the startup warm sweep, or lazily on a class's first query).
+
+  Only these caches are maintained incrementally by `entity-changed!` /
+  `entity-removed!`.  A class with no cache yet is built in full on its
+  first query (`analyzed-corpus-for` → `warm-bm25f-cache!`); touching it
+  from a write hook would create a PARTIAL map — one entry — that
+  `analyzed-corpus-for` would then mistake for the complete corpus.
+
+  Diagnostic + test surface."
+  []
+  (set (keys @bm25f-entry-cache)))
+
+(defn cache-classes-for
+  "Every built per-class cache that holds (or must now hold) an instance
+  of `class`: the concrete class plus each ancestor from `dt/ancestors-of`,
+  filtered to `bm25f-cache-classes`.
+
+  `warm-bm25f-cache!` walks `dt/all-instances-of`, which is SUBCLASS-
+  INCLUSIVE, so the `:mm/Memory` cache holds every `:mm/Decision`,
+  `:mm/Bug`, … instance.  Before 2026-09-18 the write hook refreshed only
+  `[concrete-class eid]`: a memorial written after the warm was found by
+  its own class and invisible to `:mm/Memory`-scoped search (the default
+  scope of the recall hook and the orientation ceremony) until the next
+  restart.  Confirmed live by both collaborators; per
+  bugs/bm25f_entity_changed_refreshes_concrete_class_index_only_ancestor_-
+  class_searches_miss_new_entities_until_restart_2026_09_18.
+
+  Order: concrete class first, then ancestors nearest-first (the order
+  `dt/ancestors-of` yields)."
+  [class]
+  (let [built (bm25f-cache-classes)]
+    (filterv built (cons class (dt/ancestors-of class)))))
+
 (defn entity-changed!
   "Cache hook for post-mutation invalidation/refresh.  Called by mutators
   of `:mm/*` class instances (sandbar.entity.create + .update via the MCP
@@ -464,9 +499,14 @@
   update) entity-map; `class` is its class ident.
 
   Behavior:
-   - Direct: Re-tokenizes the entity (single bm25f/analyze-entity call;
-     ~4ms), stores the new analyzed-entry under [class eid], drops the
-     cached corpus-stats for `class`.
+   - Direct: Re-tokenizes the entity and stores the new analyzed-entry
+     under `[c eid]` for EVERY built cache that holds it — the concrete
+     class and each initialized ancestor (`cache-classes-for`) — and
+     drops each of those classes' cached corpus-stats.  Ancestors that
+     inherit the same effective bm25f-weights share ONE
+     bm25f/analyze-entity call (~4ms; the analysis depends only on the
+     weights map, not on the class ident).  A class whose cache is not
+     built is left alone: it will be warmed in full on its first query.
    - Transitive (Phase B tag-content tokenizer support): For every
      dependent class whose bm25f-weights reference this entity's class
      via a ref-slot, finds entries that reference this entity's eid and
@@ -481,11 +521,20 @@
   Idempotent: safe to call multiple times for the same entity."
   [class entity-map]
   (let [eid (:db/id entity-map)]
-    ;; Direct cache update (only if the changed class itself is bm25f-weighted)
+    ;; Direct cache update — only if the changed class is bm25f-weighted,
+    ;; and only into caches that are already built (see cache-classes-for).
     (when (and eid (seq (dt/effective-bm25f-weights-of class)))
-      (let [analyzed (bm25f/analyze-entity class entity-map)]
-        (swap! bm25f-entry-cache assoc-in [class eid] analyzed)
-        (swap! bm25f-stats-cache dissoc class)))
+      (let [by-weights (atom {})
+            analyze-as (fn [c]
+                         ;; one analysis per distinct effective-weights map
+                         (let [w (dt/effective-bm25f-weights-of c)]
+                           (or (get @by-weights w)
+                               (let [a (bm25f/analyze-entity c entity-map)]
+                                 (swap! by-weights assoc w a)
+                                 a))))]
+        (doseq [c (cache-classes-for class)]
+          (swap! bm25f-entry-cache assoc-in [c eid] (analyze-as c))
+          (swap! bm25f-stats-cache dissoc c))))
     ;; Transitive invalidation — dependent classes that resolve this entity
     ;; via ref-target-text in their tokenization.
     (when eid
@@ -503,12 +552,13 @@
 
 (defn entity-removed!
   "Cache hook for post-delete invalidation.  Called by mutators when an
-  entity is retracted/deleted.  Drops the entry from the cache + drops
-  stats for the class.  Idempotent."
+  entity is retracted/deleted.  Drops the entry from EVERY built cache
+  that held it — the concrete class and each initialized ancestor
+  (`cache-classes-for`) — and drops those classes' stats.  Idempotent."
   [class eid]
-  (when (seq (dt/effective-bm25f-weights-of class))
-    (swap! bm25f-entry-cache update class dissoc eid)
-    (swap! bm25f-stats-cache dissoc class)))
+  (doseq [c (cache-classes-for class)]
+    (swap! bm25f-entry-cache update c dissoc eid)
+    (swap! bm25f-stats-cache dissoc c)))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Async BM25F refresh (2026-07-07 — arc/bm25f-async-index)
