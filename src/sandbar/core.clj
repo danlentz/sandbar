@@ -99,34 +99,68 @@
   (and (seq (dt/effective-bm25f-weights-of class-ident))
        (not (dt/type-isa? :dt/Event class-ident))))
 
-(defn start []
-  ;; FOUNDATION FIRST — initialize Telemere handlers BEFORE any (log/info ...)
-  ;; callsite has a chance to fire silently into a no-handler void.  Per
-  ;; Dan-directive 2026-05-23 + memory/interaction/verify_foundational_subsystem_health_after_substrate_edits_2026_05_23.md
-  ;; — substrate restart leaving handlers unconfigured was the failure mode
-  ;; that motivated the logging-foundation-first authorization.
-  (logging-init/start!)
-  (log/info :SYS/START "Starting system components")
-  (alter-var-root #'sys/system component/start)
-  (log/info :SYS/STARTED "System started successfully")
-  ;; Register codecs with the mediator so MCP entity.create + project.import/export
-  ;; can codec-mediate via :format opt.  Per `sandbar.codec.markdown/register!`
-  ;; the explicit-registration model is deliberate (side-effect-on-load is an
-  ;; anti-pattern); without this call, the codec mediator stays empty and
-  ;; entity.create with :format :markdown fails with "No codec registered for
-  ;; format :markdown".  Surfaced 2026-05-22 during MCP cutover work — the
-  ;; verb-catalog advertised codec-mediated authoring but the codec was never
-  ;; registered at startup.
+(defn- register-codecs!
+  "Register codecs with the mediator so MCP entity.create + project.import/export
+   can codec-mediate via :format opt.  Per `sandbar.codec.markdown/register!`
+   the explicit-registration model is deliberate (side-effect-on-load is an
+   anti-pattern); without this call, the codec mediator stays empty and
+   entity.create with :format :markdown fails with \"No codec registered for
+   format :markdown\".  Surfaced 2026-05-22 during MCP cutover work — the
+   verb-catalog advertised codec-mediated authoring but the codec was never
+   registered at startup.
+
+   Needs no database and no port: runs BEFORE the component system opens
+   the HTTP port so the first request can never see an empty mediator."
+  []
   (try
     (codec-md/register!)
     (catch Exception e
       (log/warn e :SYS/CODEC-MARKDOWN-REGISTER-FAILED
-                "Markdown codec registration failed; entity.create with :format :markdown will reject")))
-  ;; Stage 5 D5 — cold-warm the BM25F search cache for every BM25F-searchable
-  ;; class.  First-query post-restart drops from cold-tokenize (~5.7s at
-  ;; 1500-entity scale) to <100ms.  Searchable = class has :dt/bm25f-weights
-  ;; declared.  Per-class warm is independent; failure on one class doesn't
-  ;; block others (per-class try/catch).
+                "Markdown codec registration failed; entity.create with :format :markdown will reject"))))
+
+(defn- start-reactive-projection!
+  "Start the projection worker, register `enqueue-projection!` as the
+   reactive callback, and register the fs + SSE sinks.
+
+   Per decisions/reactive_projection_queue_bounded_buffer_and_health_observability_2026_05_23.md
+   (eid 17592186094353) + plans/sse_reactive_corpus_projection_arc_2026_05_23.md
+   (eid 17592186094359); sinks per that plan's Stage B (closes gap #2, the
+   one-way :format :markdown ingest, by making DB→FS projection live).
+
+   ORDER MATTERS (2026-09-18, reliability sprint item 2.2): this runs
+   BEFORE the component system opens the HTTP port.  It used to run AFTER
+   the port opened AND after the BM25F warm sweep, so for the ~50 s the
+   warm took on the live corpus the server accepted writes that reached
+   the database and were never projected to files (observed on the
+   2026-09-18 restart: `reactive_health` reported 0 sinks three minutes
+   after boot).  Under the filesystem-canonical ruling that window was
+   data loss.  None of this needs the database: the worker is a thread,
+   the callback and sinks are fns; the fs sink consults the database only
+   at drain time, and nothing can be enqueued before the database
+   component exists because every enqueue comes from a dt/* mutation."
+  []
+  (try
+    (reactive-queue/start!)
+    (reactive/register-callback! reactive-queue/enqueue-projection!)
+    (reactive-sinks/register-all!)
+    (log/info :SYS/REACTIVE-PROJECTION-STARTED
+              {:callbacks   (reactive/callback-count)
+               :sinks       (reactive-queue/sink-count)
+               :buffer-size reactive-queue/+default-buffer-size+
+               :corpus-root (reactive-sinks/corpus-root)})
+    (catch Exception e
+      (log/warn e :SYS/REACTIVE-PROJECTION-STARTUP-FAILED
+                "Reactive-projection worker failed to start; dt/* mutations will skip the hook"))))
+
+(defn- warm-bm25f-caches!
+  "Stage 5 D5 — cold-warm the BM25F search cache for every BM25F-searchable
+   class.  First-query post-restart drops from cold-tokenize (~5.7s at
+   1500-entity scale) to <100ms.  Searchable = class has :dt/bm25f-weights
+   declared.  Per-class warm is independent; failure on one class doesn't
+   block others (per-class try/catch).  Needs the database, so it runs
+   after the component system starts; queries arriving during the sweep
+   lazy-build the class they need (slower, never wrong)."
+  []
   (try
     (let [searchable (filter bm25f-warmable-class? (dt/all-classes))]
       (doseq [class searchable]
@@ -138,30 +172,25 @@
             (log/warn e :SYS/BM25F-CACHE-WARM-FAILED {:class class})))))
     (catch Exception e
       (log/warn e :SYS/BM25F-CACHE-WARM-SWEEP-FAILED
-                "BM25F cache cold-warm sweep failed; queries will lazy-build on first access")))
-  ;; Stage A.6 of SSE-reactive-projection arc: start the bounded queue
-  ;; worker + register `enqueue-projection!` as the reactive callback.
-  ;; Per decisions/reactive_projection_queue_bounded_buffer_and_health_observability_2026_05_23.md
-  ;; (eid 17592186094353) + plans/sse_reactive_corpus_projection_arc_2026_05_23.md
-  ;; (eid 17592186094359).  The worker drains the projection-task channel
-  ;; + invokes registered sinks per drain; sinks default empty until
-  ;; Stage B.1+ wires codec.emit / fs.write / SSE.emit.
-  (try
-    (reactive-queue/start!)
-    (reactive/register-callback! reactive-queue/enqueue-projection!)
-    ;; Stage B.1: register the codec.emit + fs.write + SSE.emit sinks.
-    ;; Per plans/sse_reactive_corpus_projection_arc_2026_05_23.md Stage B.
-    ;; Closes gap #2 (entity.create :format :markdown one-way ingest) by
-    ;; making the forward DB→FS projection live.
-    (reactive-sinks/register-all!)
-    (log/info :SYS/REACTIVE-PROJECTION-STARTED
-              {:callbacks   (reactive/callback-count)
-               :sinks       (reactive-queue/sink-count)
-               :buffer-size reactive-queue/+default-buffer-size+
-               :corpus-root (reactive-sinks/corpus-root)})
-    (catch Exception e
-      (log/warn e :SYS/REACTIVE-PROJECTION-STARTUP-FAILED
-                "Reactive-projection worker failed to start; dt/* mutations will skip the hook")))
+                "BM25F cache cold-warm sweep failed; queries will lazy-build on first access"))))
+
+(defn start []
+  ;; FOUNDATION FIRST — initialize Telemere handlers BEFORE any (log/info ...)
+  ;; callsite has a chance to fire silently into a no-handler void.  Per
+  ;; Dan-directive 2026-05-23 + memory/interaction/verify_foundational_subsystem_health_after_substrate_edits_2026_05_23.md
+  ;; — substrate restart leaving handlers unconfigured was the failure mode
+  ;; that motivated the logging-foundation-first authorization.
+  (logging-init/start!)
+  ;; BEFORE THE PORT OPENS (sprint 2.2): codecs + the projection pipeline.
+  ;; Both are database-free; registering them first closes the post-boot
+  ;; window in which writes were accepted but never projected.
+  (register-codecs!)
+  (start-reactive-projection!)
+  (log/info :SYS/START "Starting system components")
+  (alter-var-root #'sys/system component/start)
+  (log/info :SYS/STARTED "System started successfully")
+  ;; AFTER the database is up: the search warm sweep (needs dt/all-classes).
+  (warm-bm25f-caches!)
   ;; γ.3 — autostart the scheduler if config opts in (:scheduler {:enabled? true}).
   ;; Default is :enabled? false (per Q.γ.5 opt-in safety) so this is a no-op
   ;; in the standard dev workflow until a project explicitly turns it on via
