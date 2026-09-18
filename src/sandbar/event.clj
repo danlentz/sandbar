@@ -200,7 +200,18 @@
   ;; Defensive — the registration verb is in sandbar.db.datomic; if not
   ;; available (load order issue), skip + the cache stays manually-
   ;; invalidated via subscribe!/unsubscribe! only.
+  ;;
+  ;; Keyed registration (`::dispatch-cache-flush`): re-registration on
+  ;; namespace reload REPLACES the handler.  History (2026-09-18, sprint
+  ;; item 1.2): this two-argument call ran against a ONE-argument
+  ;; registrar for months; the ArityException was swallowed by the silent
+  ;; catch-all below, so NO handler was ever registered and the dispatch
+  ;; cache kept its pre-reload hierarchy until a subscribe!/unsubscribe!
+  ;; happened to flush it.  The registrar now has the keyed arity, and the
+  ;; catch is LOUD.  Pinned by test/sandbar/event_schema_reload_hook_test.clj.
   (when-let [reg-handler (requiring-resolve 'sandbar.db.datomic/register-post-schema-reload-handler!)]
     (reg-handler ::dispatch-cache-flush
                  (fn [] (invalidate-cache!))))
-  (catch Throwable _ nil))
+  (catch Throwable t
+    (log/warn t :EVENT/DISPATCH-CACHE-RELOAD-HOOK-REGISTRATION-FAILED
+              "post-schema-reload flush for the event dispatch cache was NOT registered; the cache will only flush on subscribe!/unsubscribe!")))

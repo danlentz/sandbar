@@ -169,14 +169,38 @@
 ;; + `decisions/dt_layer_exposes_memoized_type_relation_ops_with_schema_invalidation_2026_05_22.md`.
 
 (defonce post-schema-reload-handlers
-  (atom #{}))
+  ;; {key handler-fn}.  KEYED so that a namespace which registers at load
+  ;; time REPLACES its handler on reload instead of accumulating a fresh
+  ;; fn object per load.  The legacy 1-arity `(register! f)` keys by the
+  ;; fn itself (idempotent for the same fn object, as the old set was).
+  (atom {}))
 
 (defn register-post-schema-reload-handler!
   "Register a no-arg function to run after each `load-all-schema!`.
-  Set-valued: re-registration is idempotent.  Typical usage: clear a
-  cache whose validity depends on schema state."
-  [f]
-  (swap! post-schema-reload-handlers conj f))
+
+  Two arities:
+    (register-post-schema-reload-handler! f)      — keyed by `f` itself
+    (register-post-schema-reload-handler! key f)  — keyed by `key`
+      (e.g. a namespaced keyword); re-registration under the same key
+      replaces the previous handler.
+
+  Typical usage: clear a cache whose validity depends on schema state.
+
+  History: `sandbar.event` called this with TWO arguments
+  (`::dispatch-cache-flush` + fn) against a 1-arity registrar; the
+  ArityException was swallowed by its defensive catch-all, so the event
+  dispatch cache was never flushed on schema reload.  Verified 2026-09-18
+  (Astra finding; sprint item 1.2).  The keyed arity is what that call
+  intended."
+  ([f] (register-post-schema-reload-handler! f f))
+  ([key f]
+   (swap! post-schema-reload-handlers assoc key f)))
+
+(defn post-schema-reload-handler-registered?
+  "True when a handler is registered under `key` (a keyword or the fn
+  itself for 1-arity registrations).  Test / diagnostic surface."
+  [key]
+  (contains? @post-schema-reload-handlers key))
 
 (defn fire-post-schema-reload-handlers!
   "Invoke every registered post-schema-reload handler, swallowing per-
@@ -185,11 +209,11 @@
   preserve the cache-invalidation invariant that `load-all-schema!`
   guarantees."
   []
-  (doseq [handler @post-schema-reload-handlers]
+  (doseq [[key handler] @post-schema-reload-handlers]
     (try (handler)
          (catch Throwable t
            (log/warn t :DB/POST-SCHEMA-RELOAD-HANDLER-FAILED
-                     {:handler (str handler)})))))
+                     {:handler (str key)})))))
 
 (defn load-all-schema!
   "Load every schema in `(required-schema)` order, then fire the
