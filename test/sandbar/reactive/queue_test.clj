@@ -1,35 +1,50 @@
 (ns sandbar.reactive.queue-test
   "Projection-queue contract after the 2026-09-18 redesign (reliability
-  sprint item 2.1).  Pure in-process tests: no database, no filesystem —
+  sprint item 2.1) and the same-day ownership correction (Astra's P1 on
+  the redesign).  Pure in-process tests: no database, no filesystem —
   one recording sink and the queue's own public surface.
 
-  Pins the two verified defects of the original sliding-buffer design and
-  the invariants that replace them:
+  Pins the two verified defects of the original sliding-buffer design,
+  the concurrency defect of the first redesign, and the invariants that
+  replace them:
 
    (a) COALESCING EMITS THE LATEST PAYLOAD — two enqueues before a drain
        dispatch the SECOND state (the old queue dispatched the first and
        cleared the dirty flag; bugs/reactive_queue_coalescing_discards_-
        newer_payload_drain_emits_original_snapshot_astra_finding_2026_09_18).
-   (b) AN ENQUEUE DURING DISPATCH RE-PROJECTS — the entity is taken
-       atomically, so a write that lands while its sinks run is drained on
-       the next pass with the newer state.
+   (b) AN ENQUEUE DURING DISPATCH IS RE-DRAINED BY THE OWNER — a write that
+       lands while the entity's sinks run is projected by the SAME drainer
+       right after its dispatch completes, in order, before the pass
+       returns (never by a competing drainer).
    (c) NOTHING IS STRANDED PAST THE OLD CAPACITY — 4,097 distinct entities
        all drain, and a later write to the first one drains too (the old
        sliding buffer evicted it and its dirty flag pinned it forever;
        bugs/reactive_queue_sliding_buffer_overflow_strands_dirty_entities_-
        never_reenqueued_astra_finding_2026_09_18).
-   (d) OLDEST-FIRST ORDER and the 13-key health snapshot are preserved.
+   (d) OLDEST-FIRST ORDER and the 13-key health snapshot are preserved;
+       ownership is released after a failing sink.
    (e) THE WORKER drains on a wake-up without any manual drain, and
        `stop!` leaves nothing dirty.
+   (f) OVERLAPPING DRAINS SERIALIZE GENERATIONS — while one drainer's sink
+       is still projecting the old state, a concurrent `drain-all!` takes
+       nothing for that entity; the owner projects the new state afterwards,
+       so the final sink value is the newest (the first redesign let the
+       competing drainer project new-then-old: codex/to-claude/2026-09-18T-
+       181049Z_reliability-review-queue-race.md).
+   (g) STOP JOIN TIMEOUT RETAINS THE WORKER — `stop!` whose join times out
+       reports `:stopped? false`, starts NO competing drain on the calling
+       thread, and the worker finishes old-then-new on its own; a second
+       `stop!` joins the retained handle.
 
-  Astra's isolated reproductions of (a) and (c) are the acceptance
-  cases; this suite is their in-repo twin."
+  Astra's isolated reproductions (codex/review-probes/queue-2026-09-18.clj)
+  are the acceptance cases; (a), (c), (f), (g) are their in-repo twins."
   (:require [clojure.test :refer :all]
             [sandbar.reactive.queue :as q]))
 
 (defn- quiesce!
   "Leave the JVM-wide queue state clean around each test."
   []
+  (q/stop!)
   (q/clear-sinks!)
   (q/drain-all!)
   (q/reset-metrics!))
@@ -42,6 +57,27 @@
   (fn [eid slots] (swap! seen conj [eid slots])))
 
 (defn- slots [version] {:db/ident (keyword "test" (str "e" version)) :version version})
+
+(defn- wait-until
+  "Poll `pred` up to `timeout-ms`; true when it became truthy in time."
+  [pred timeout-ms]
+  (let [deadline (+ (System/currentTimeMillis) timeout-ms)]
+    (loop []
+      (cond (pred) true
+            (> (System/currentTimeMillis) deadline) false
+            :else (do (Thread/sleep 10) (recur))))))
+
+(defn- blocking-old-sink
+  "A sink that records each payload's :version into `seen`, but BLOCKS on
+   the \"old\" version until `release-old` is delivered (delivering
+   `entered` when it gets there).  The probe's shape: it holds one
+   generation of an entity in flight while the test enqueues the next."
+  [seen entered release-old]
+  (fn [_ {:keys [version]}]
+    (when (= version "old")
+      (deliver entered true)
+      (deref release-old 10000 :timeout))
+    (swap! seen conj version)))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; (a) coalescing emits the latest payload
@@ -65,27 +101,30 @@
         (is (= 1 (:drain-total h)))))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; (b) an enqueue that lands during dispatch re-projects
+;; (b) an enqueue that lands during dispatch is re-drained by the owner
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-(deftest enqueue-during-dispatch-is-drained-on-the-next-pass
-  (testing "a write that lands while the entity's sinks are running is not lost"
-    (let [seen     (atom [])
+(deftest enqueue-during-dispatch-is-redrained-by-the-owner
+  (testing "a write that lands while the entity's sinks are running is projected by the same drainer, right after, before the pass returns"
+    (let [seen      (atom [])
           reentered (atom false)]
       (q/register-sink!
         (fn [eid s]
           (swap! seen conj [eid s])
           ;; Simulate a concurrent write landing mid-dispatch (exactly once).
           (when (compare-and-set! reentered false true)
-            (q/enqueue-projection! eid (slots "during-dispatch")))))
+            (q/enqueue-projection! eid (slots "during-dispatch"))
+            (is (= #{7} (q/snapshot-in-flight)) "the entity is owned while its sink runs")
+            (is (= 1 (count (q/snapshot-dirty))) "the mid-dispatch write is recorded as dirty"))))
       (q/enqueue-projection! 7 (slots "initial"))
-      (is (= 1 (q/drain-all!)) "first pass drains the initial entry")
-      (is (= 1 (count (q/snapshot-dirty)))
-          "the mid-dispatch write re-inserted the entity as dirty")
-      (is (= 1 (q/drain-all!)) "second pass drains the newer state")
+      (is (= 2 (q/drain-all!))
+          "ONE pass, TWO dispatches: the owner re-drained the mid-dispatch write itself")
       (is (= [[7 (slots "initial")] [7 (slots "during-dispatch")]] @seen)
           "both states projected, in order; nothing lost")
-      (is (empty? (q/snapshot-dirty))))))
+      (is (empty? (q/snapshot-dirty)) "nothing left for a later pass")
+      (is (empty? (q/snapshot-in-flight)) "ownership released")
+      (is (= 2 (:drain-total (q/health))) "each dispatch counted")
+      (is (= 0 (q/drain-all!)) "a further pass has nothing to do"))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; (c) nothing is stranded past the old sliding-buffer capacity
@@ -111,7 +150,7 @@
           "entity 1 projects again (was stranded forever before the fix)"))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; (d) oldest-first order + health shape
+;; (d) oldest-first order + health shape + ownership released on failure
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (deftest drain-order-is-oldest-first-and-health-shape-is-preserved
@@ -136,26 +175,20 @@
              (set (keys h))))
       (is (= q/+default-buffer-size+ (:buffer-size h)))
       (is (false? (:saturated? h)))))
-  (testing "a failing sink is counted, never rethrown, and the entity is still cleared"
+  (testing "a failing sink is counted, never rethrown, the entity is still cleared, and ownership is released"
     (q/clear-sinks!)
     (q/register-sink! (fn [_ _] (throw (ex-info "boom" {}))))
     (q/enqueue-projection! 99 (slots "doomed"))
     (is (= 1 (q/drain-all!)))
     (is (= 1 (:sink-error-total (q/health))))
-    (is (empty? (q/snapshot-dirty)))))
+    (is (empty? (q/snapshot-dirty)))
+    (is (empty? (q/snapshot-in-flight)) "a failed dispatch does not strand the entity in flight")
+    (q/enqueue-projection! 99 (slots "again"))
+    (is (= 1 (q/drain-all!)) "and the entity can be taken again")))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; (e) the worker drains on a wake-up; stop! leaves nothing dirty
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-
-(defn- wait-until
-  "Poll `pred` up to `timeout-ms`; true when it became truthy in time."
-  [pred timeout-ms]
-  (let [deadline (+ (System/currentTimeMillis) timeout-ms)]
-    (loop []
-      (cond (pred) true
-            (> (System/currentTimeMillis) deadline) false
-            :else (do (Thread/sleep 10) (recur))))))
 
 (deftest worker-drains-on-wakeup-and-stop-flushes
   (let [seen (atom [])]
@@ -169,6 +202,92 @@
       (is (= [[42 (slots "woken")]] @seen))
       (is (wait-until #(empty? (q/snapshot-dirty)) 1000))
       (finally
-        (q/stop!)))
+        (let [result (q/stop!)]
+          (is (true? (:stopped? result)) "a worker idle in its loop stops within the join timeout")
+          (is (= 0 (:in-flight result))))))
     (is (false? (:worker-running? (q/health))))
     (is (empty? (q/snapshot-dirty)) "stop! leaves nothing dirty")))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; (f) overlapping drains serialize generations of one entity
+;;
+;; Port of the probe's "overlapping drains" case.  Before the ownership
+;; correction the second drain-all! took the re-inserted entry and
+;; projected "new" while "old" was still in its sink: completion order
+;; ["new" "old"], final sink value "old", dirty map empty.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(deftest overlapping-drains-serialize-generations-of-one-entity
+  (testing "while one drainer's sink projects the old state, a concurrent drain-all! takes nothing for that entity; the owner projects the new state afterwards"
+    (let [entered     (promise)
+          release-old (promise)
+          seen        (atom [])]
+      (q/register-sink! (blocking-old-sink seen entered release-old))
+      (q/enqueue-projection! 7 {:version "old"})
+      (let [first-drain (future (q/drain-all!))]
+        (try
+          (is (deref entered 3000 false) "the first drain reached the sink")
+          (q/enqueue-projection! 7 {:version "new"})
+          (is (= 1 (count (q/snapshot-dirty))) "the new state is dirty while the old one is in flight")
+          (is (= #{7} (q/snapshot-in-flight)) "and the entity is owned by the first drainer")
+          (let [second-drain  (future (q/drain-all!))
+                second-result (deref second-drain 1500 :pending)]
+            (is (= 0 second-result)
+                "the competing drainer completes at once having taken NOTHING: the entity is owned")
+            (is (= [] @seen) "nothing was projected while the old sink is still running")
+            (is (= 1 (count (q/snapshot-dirty))) "the new state is still queued for the owner")
+            (deliver release-old :release)
+            (is (= 2 (deref first-drain 3000 :timeout))
+                "the owner dispatched old, then re-drained new, within its own pass")
+            (is (= ["old" "new"] @seen) "generations in order; the final sink value is the newest")
+            (is (empty? (q/snapshot-dirty)))
+            (is (empty? (q/snapshot-in-flight)))
+            (is (= 2 (:drain-total (q/health)))))
+          (finally
+            (deliver release-old :release)))))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; (g) a stop! whose join times out retains the worker and never competes
+;;
+;; Port of the probe's "stop timeout" case.  Before the correction, stop!
+;; cleared the worker handle after its join timeout and drained on the
+;; calling thread while the worker was still inside its sink: "new" was
+;; projected before "old" finished, final sink value "old".  A short join
+;; timeout keeps the test fast; the default is +stop-join-timeout-ms+.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(deftest stop-join-timeout-retains-the-worker-and-never-competes
+  (testing "stop! reports an incomplete shutdown, drains nothing itself, and the worker finishes old then new"
+    (let [entered     (promise)
+          release-old (promise)
+          seen        (atom [])]
+      (q/register-sink! (blocking-old-sink seen entered release-old))
+      (try
+        (q/start!)
+        (q/enqueue-projection! 8 {:version "old"})
+        (is (deref entered 3000 false) "the worker reached the sink")
+        (q/enqueue-projection! 8 {:version "new"})
+        (let [started (System/currentTimeMillis)
+              result  (q/stop! {:join-timeout-ms 200})
+              elapsed (- (System/currentTimeMillis) started)]
+          (is (false? (:stopped? result)) "the join timed out: incomplete shutdown reported")
+          (is (< elapsed 3000) "stop! returned after its bounded join, not after the sink")
+          (is (= 0 (:drained-on-stop result)) "NO competing drain on the calling thread")
+          (is (= 1 (:remaining-dirty result)) "the new state is still dirty ...")
+          (is (= 1 (:in-flight result)) "... and the entity is still owned by the worker")
+          (is (= [] @seen) "the new state was NOT projected ahead of the old one"))
+        (is (false? (:worker-running? (q/health))) "the stop was requested")
+        (deliver release-old :release)
+        (is (wait-until #(= ["old" "new"] @seen) 3000)
+            "the worker finished old, then re-drained new as the owner, on its own")
+        (let [result (q/stop!)]
+          (is (true? (:stopped? result)) "the second stop! joins the retained worker handle")
+          (is (= 0 (:drained-on-stop result)) "nothing was left for the calling thread")
+          (is (= 0 (:remaining-dirty result)))
+          (is (= 0 (:in-flight result))))
+        (is (empty? (q/snapshot-dirty)))
+        (is (empty? (q/snapshot-in-flight)))
+        (is (= 2 (:drain-total (q/health))))
+        (finally
+          (deliver release-old :release)
+          (q/stop!))))))
