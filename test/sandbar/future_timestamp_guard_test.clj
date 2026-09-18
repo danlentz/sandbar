@@ -35,6 +35,7 @@
             [sandbar.db.datatype :as dt]
             [sandbar.db.datomic :as db]
             [sandbar.mcp.tools :as tools]
+            [sandbar.search :as search]
             [sandbar.store :as store]
             [sandbar.test-util :as tu]))
 
@@ -44,7 +45,10 @@
     ;; The markdown codec is registered at boot in production; register it
     ;; here so the :format :markdown create path resolves.  Idempotent.
     (codec-md/register!)
-    (t)))
+    (try (t)
+         ;; Drain the async BM25F refreshes the MCP creates enqueue, so no
+         ;; work escapes this namespace into the next fixture's database.
+         (finally (search/await-bm25f-quiescent!)))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Helpers
