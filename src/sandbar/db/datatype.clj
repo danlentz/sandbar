@@ -330,6 +330,136 @@
         (assoc :mm.memory/created-by [*default-actor*])))
     props))
 
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Future-timestamp guard (reliability sprint 2026-09-18, item 2.4)
+;;
+;; `:mm.memory/created` and `:mm.memory/last-touched` ORDER the record: the
+;; session-open banner, the recall re-ranking and every recency view sort on
+;; them, and under the files-canonical ruling they are part of the record
+;; itself.  A hand-stamped value that runs ahead of real time outranks
+;; genuinely newer work and misattributes sequence between two collaborators
+;; writing the same morning (observed 2026-09-18: one session one to three
+;; hours ahead of UTC, the next up to forty minutes ahead).  Per
+;; observations/manually_stamped_timestamps_run_ahead_of_utc_stamp_from_-
+;; clock_read_before_write_mechanize_future_timestamp_guard_2026_09_18.
+;;
+;; The guard is a FLOOR like the firewall guard: it fires in `make` and
+;; `update-entity!` regardless of `:validate?`, because a `{:validate? false}`
+;; caller is skipping SCHEMA checks, not opting out of the clock.  It covers
+;; the codec path for free — `make` merges codec-parsed frontmatter BEFORE
+;; the guard runs, so a `created:` line in the future is refused exactly like
+;; an explicit slot.  Only the two slots above are guarded; other instant
+;; slots (`:mm.memory/last-reviewed`, `:mm.schedule/until`, ...) legitimately
+;; live in the future and are untouched.  The bulk paths (`make-all` /
+;; `make-all*` — project.import and the corpus-ingest scripts) do NOT run it:
+;; the file is the record in that direction (sprint item 2.3 reports at
+;; import rather than throwing).
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(def ^:const default-future-timestamp-skew-seconds
+  "Allowed skew AHEAD of server time, in seconds, when neither the dynamic
+   override nor the config key supplies one."
+  60)
+
+(def ^:const future-timestamp-skew-config-key
+  "Top-level config key (config/config.edn or the client .sandbar/config.edn)
+   holding the allowed skew in SECONDS.  Absent, negative or non-numeric ⇒
+   `default-future-timestamp-skew-seconds`."
+  :future-timestamp-skew-seconds)
+
+(def ^:dynamic *future-timestamp-skew-ms*
+  "Per-call override of the allowed skew, in MILLISECONDS.  nil (the default)
+   ⇒ resolve from the config key, then the 60 s default.  Bind it where a
+   tighter or looser window is wanted (tests).  There is deliberately no
+   'off' value — bind a large skew instead."
+  nil)
+
+(def future-timestamp-guarded-slots
+  "The two temporal slots the guard covers — nothing else."
+  [:mm.memory/created :mm.memory/last-touched])
+
+(defn future-timestamp-skew-ms
+  "Resolve the allowed skew in ms: `*future-timestamp-skew-ms*` > config key
+   `:future-timestamp-skew-seconds` > 60 s.  A config read failure or a
+   negative / non-numeric value falls through to the default — the guard
+   never blocks a write because config is unreadable."
+  []
+  (or *future-timestamp-skew-ms*
+      (let [secs (try ((requiring-resolve 'sandbar.util.edn/config-value)
+                       future-timestamp-skew-config-key)
+                      (catch Throwable _ nil))]
+        (when (and (number? secs) (not (neg? secs)))
+          (long (* 1000 secs))))
+      (* 1000 default-future-timestamp-skew-seconds)))
+
+(defn- instant->epoch-ms
+  "Epoch millis of a java.util.Date / java.time.Instant; nil for any other
+   shape (a string or a collection is left to schema type validation)."
+  [v]
+  (cond
+    (instance? java.util.Date v)    (.getTime ^java.util.Date v)
+    (instance? java.time.Instant v) (.toEpochMilli ^java.time.Instant v)
+    :else                           nil))
+
+(defn- epoch-ms->iso [ms]
+  (str (java.time.Instant/ofEpochMilli ms)))
+
+(defn future-timestamp-errors
+  "Error maps — one per guarded slot in `props` whose value runs more than the
+   allowed skew AHEAD of `now` — in the entry shape `validate-data` produces
+   (`:type` / `:slot` / `:message`) plus the guard's own `:value`,
+   `:server-time`, `:ahead-ms` and `:allowed-skew-ms`.  Empty vector when
+   nothing is ahead.  `now` is a java.util.Date and defaults to the server
+   clock.  Shared by the commit floor (`make` / `update-entity!`) and the
+   read-only advisory arm (`entity.validate`), so the two never disagree."
+  ([props] (future-timestamp-errors props (java.util.Date.)))
+  ([props ^java.util.Date now]
+   (let [skew   (future-timestamp-skew-ms)
+         now-ms (.getTime now)]
+     (into []
+           (keep (fn [slot]
+                   (let [v (get props slot)]
+                     (when-some [v-ms (instant->epoch-ms v)]
+                       (let [ahead (- v-ms now-ms)]
+                         (when (> ahead skew)
+                           {:type            :future-timestamp
+                            :slot            slot
+                            :value           v
+                            :server-time     now
+                            :ahead-ms        ahead
+                            :allowed-skew-ms skew
+                            :message (str "Slot " slot " is " (epoch-ms->iso v-ms)
+                                          ", " ahead " ms ahead of server time "
+                                          (epoch-ms->iso now-ms)
+                                          " (allowed skew " skew " ms). Stamp from"
+                                          " a clock read at or before the write;"
+                                          " never estimate forward.")}))))))
+           future-timestamp-guarded-slots))))
+
+(defn- future-timestamp-guard!
+  "Throw the validation-failure envelope when any guarded slot in `props` is
+   ahead of server time by more than the allowed skew; else nil.  `phase` is
+   :create or :update and selects the message its schema-failure sibling uses
+   (\"Validation failed\" / \"Validation failed on update\") so callers that
+   match on the message keep working; `:sandbar/error :future-timestamp` is
+   the machine-readable discriminator."
+  [dt props phase]
+  (when-let [errs (seq (future-timestamp-errors props))]
+    (log/debug :DT/FUTURE-TIMESTAMP-REJECTED
+               {:class dt :phase phase :slots (mapv :slot errs)})
+    (throw (ex-info (if (= :update phase)
+                      "Validation failed on update"
+                      "Validation failed")
+                    {:errors        (vec errs)
+                     :sandbar/error :future-timestamp
+                     :class         dt
+                     :phase         phase
+                     :hint (str "Read the clock (date -u) immediately before the"
+                                " write and stamp "
+                                (apply str (interpose " / " (map str future-timestamp-guarded-slots)))
+                                " with that value — or omit them on create to"
+                                " receive server time.")}))))
+
 (defn make
   "Creates a typed instance with pre-transaction validation.
 
@@ -395,6 +525,11 @@
          ;; defaults fix — MCP/programmatic :mm/Memory creates were missing
          ;; created/last-touched/created-by and fell out of recency views.
          props (apply-memory-defaults dt props)
+         ;; Future-timestamp FLOOR (sprint 2.4, 2026-09-18) — AFTER the codec
+         ;; merge (so a frontmatter `created:` is checked) and AFTER the
+         ;; defaults (read from this same clock, so they cannot trip it),
+         ;; BEFORE ref-coercion / schema validation; unconditional.
+         _     (future-timestamp-guard! dt props :create)
          ;; Canonicalize `:db.type/ref` slot values to plain eids BEFORE both
          ;; validation and transact so the two agree — an eid / EntityMap /
          ;; {:db/id} / {:db/ident} at a ref slot all reduce to the eid Datomic
@@ -750,6 +885,11 @@
      ;; owning-project, and every governed edge on the post-update entity is
      ;; evaluated (an update introducing a public→private `cites` throws).
      (firewall-guard! class-ident (dissoc merged :db/id))
+     ;; Future-timestamp FLOOR (sprint 2.4, 2026-09-18) — checks the SUPPLIED
+     ;; updates only: an inherited future stamp on the stored row must not
+     ;; block an unrelated update (it is corrected by re-stamping through this
+     ;; very verb).  Unconditional, like the firewall floor above.
+     (future-timestamp-guard! class-ident slot-updates :update)
      (when validate?
        (when-let [errors (validate-data class-ident (dissoc merged :db/id :dt/type))]
          (log/debug :DT/UPDATE-VALIDATION-FAILED {:class class-ident :errors errors})
