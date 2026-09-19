@@ -1143,6 +1143,27 @@
   [class-ident]
   (:dt/memorial-policy (db/entity class-ident)))
 
+(defn superseded-when-of
+  "Returns the `:dt/superseded-when` declaration on `class-ident` as a set
+   of `[slot-ident value]` pairs, or `#{}` if none.  A pair's value `:some`
+   means the slot marks the instance superseded whenever it holds any value
+   (an edge such as a superseded-by ref); any other value must match.
+
+   Does NOT walk ancestors — call `effective-superseded-when-of`.  Consumed
+   by `sandbar.search/search-bm25f` for its default ordering (D4c,
+   2026-09-19).  Sister to `bm25f-weights-of` — same tuple-valued
+   class-declaration shape, different attribute."
+  [class-ident]
+  (into #{} (map vec) (or (:dt/superseded-when (db/entity class-ident)) [])))
+
+(defn recency-slot-of
+  "Returns the `:dt/recency-slot` keyword declared directly on
+   `class-ident`, or nil.  The instant-valued slot the search surface
+   breaks relevance ties on (the more recent first).  Does NOT walk
+   ancestors — call `effective-recency-slot-of`."
+  [class-ident]
+  (:dt/recency-slot (db/entity class-ident)))
+
 (defn fulltext-indexed?
   "Returns true if `attribute` (a slot/property ident) is declared with
   `:db/fulltext true`, false otherwise.
@@ -1868,6 +1889,23 @@
     (reduce (fn [acc c] (merge acc (bm25f-weights-of c)))
             {}
             (reverse chain))))
+
+(defn effective-superseded-when-of
+  "Returns the union of `:dt/superseded-when` declarations across the
+   class hierarchy (the class and every `:dt/subclass-of` ancestor), as a
+   set of `[slot-ident value]` pairs.  Empty when nothing in the chain
+   declares one, which keeps the search surface on pure relevance order
+   for that class.  Sister to `effective-bm25f-weights-of`; class-agnostic
+   per interaction/no_hardcoded_consumer_class_knowledge_in_substrate_2026_05_13.md."
+  [class-ident]
+  (into #{} (mapcat superseded-when-of) (cons class-ident (ancestors-of class-ident))))
+
+(defn effective-recency-slot-of
+  "Returns the `:dt/recency-slot` in effect for `class-ident`: the leaf's
+   own declaration, else the nearest ancestor's, else nil.  Sister to
+   `effective-memorial-policy-of` (nearest-wins keyword walk)."
+  [class-ident]
+  (some recency-slot-of (cons class-ident (ancestors-of class-ident))))
 
 (defn effective-memorial-policy-of
   "Returns the `:dt/memorial-policy` declaration nearest to `class-ident` in

@@ -1695,6 +1695,14 @@
    :dt/label         "Memory"
    :dt/native-codec  :markdown
    :dt/memorial-policy :first-class                       ;; inherited by descendants via class-hierarchy walk per first-class-memorialization arc
+   ;; Default search ordering (D4c, 2026-09-19): a memorial with a
+   ;; superseded-by edge, or a superseded status, ranks below every current
+   ;; hit; among equals the more recently touched comes first.  Read via
+   ;; dt/effective-superseded-when-of + dt/effective-recency-slot-of by
+   ;; sandbar.search/search-bm25f; :rank-by :relevance opts out.
+   :dt/superseded-when [[:mm.memory/superseded-by :some]
+                        [:mm.memory/status        :superseded]]
+   :dt/recency-slot    :mm.memory/last-touched
    :dt/codec-aliases [[:type :mm.memory/memory-type]]
    :dt/bm25f-weights [[:mm.memory/name        12.0]
                       [:mm.memory/description  8.0]

@@ -742,6 +742,71 @@
         (d/q '[:find ?e :in $ % ?class :where (instance-of ?class ?e)]
              (db/db) (all-rules) class)))
 
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Default ordering — status- and recency-aware (D4c, 2026-09-19)
+;;
+;; With no :rank-by, hits are ordered by DEMOTED relevance, then by recency:
+;; a superseded hit's ordering weight is its BM25F score times
+;; +superseded-demotion-factor+, so a superseded twin of comparable
+;; relevance yields to its current successor while a superseded record
+;; that is far more relevant than any current hit still surfaces first (a
+;; historical question keeps its answer; the demotion is proportional,
+;; never an absolute bucket — Astra's caution, 2026-09-19 17:28Z).  Among
+;; equal weights the more recent hit comes first; status is evidence about
+;; currency, recency alone confers no authority.
+;;
+;; What "superseded" and "recency" mean is DECLARED PER CLASS in the
+;; schema (:dt/superseded-when and :dt/recency-slot, on :mm/Memory for the
+;; corpus) and read through the same ancestor walk as the weights, so the
+;; substrate stays class-agnostic: a class that declares nothing keeps
+;; pure relevance order.  Demoted hits carry :superseded? true; their
+;; :score is the raw relevance, unchanged.  The policy is applied before
+;; :limit truncates, so a successor outside the relevance top-k can still
+;; enter the result.  :rank-by :relevance opts out; the structural modes
+;; are untouched.  Proof instrument: the corpus's quality harness
+;; (supersession accuracy: three of seven canonical memorials outranked
+;; their superseded twins before), with recall, MRR and NDCG held.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(def ^:const +superseded-demotion-factor+
+  "Multiplier applied to a superseded hit's relevance for ORDERING only.
+   0.5: a twin of comparable relevance ranks below its current successor;
+   a superseded record more than twice as relevant as every current hit
+   still leads.  The hit's reported :score is never scaled."
+  0.5)
+
+(defn- superseded-by-declaration?
+  "True when `entity` matches any `[slot value]` pair of `declaration`
+   (the class's effective :dt/superseded-when set): the slot holds `value`,
+   or holds anything at all when `value` is :some (an edge)."
+  [declaration entity]
+  (boolean
+   (some (fn [[slot value]]
+           (let [v (get entity slot)]
+             (if (= :some value)
+               (if (coll? v) (boolean (seq v)) (some? v))
+               (or (= v value)
+                   (and (keyword? value) (some? v) (= (name value) (name (keyword (str v)))))))))
+         declaration)))
+
+(defn- recency-ms
+  "Epoch milliseconds of the instant in `slot` on `entity`; 0 when the slot
+   is absent or undeclared."
+  [slot entity]
+  (let [v (when slot (get entity slot))]
+    (cond (instance? java.util.Date v)   (.getTime ^java.util.Date v)
+          (instance? java.time.Instant v) (.toEpochMilli ^java.time.Instant v)
+          :else 0)))
+
+(defn- default-order-key
+  "Ascending sort key for the default ordering: demoted relevance (a
+   superseded hit's score times +superseded-demotion-factor+) descending,
+   then recency descending."
+  [{:keys [superseded? score recency]}]
+  (let [s (double (or score 0.0))]
+    [(- (if superseded? (* s +superseded-demotion-factor+) s))
+     (- (long (or recency 0)))]))
+
 (defn- search-bm25f-single
   "Single-class BM25F search over Datomic-stored entities of `:class`.
 
@@ -830,7 +895,19 @@
                      by BM25F score.  BM25F score is preserved on each
                      hit as `:relevance-score`; the primary `:score`
                      becomes the structural rank value.
+                     :relevance — pure BM25F order, opting out of the
+                     default status- and recency-aware ordering.
     :temporal-slot — REQUIRED for :rank-by :recency / :freshness.
+
+  Default ordering (no :rank-by; D4c, 2026-09-19): demoted relevance, then
+  recency, per the class's `:dt/superseded-when` and `:dt/recency-slot`
+  declarations.  A superseded hit orders as if its score were multiplied
+  by `+superseded-demotion-factor+` (0.5), so a twin of comparable
+  relevance yields to its current successor while a far more relevant
+  superseded record still leads; demoted hits carry `:superseded? true`
+  and their `:score` stays the raw relevance.  When a recency slot is
+  declared every hit carries `:recency` (epoch ms).  The policy applies
+  before `:limit`.  A class declaring neither keeps pure relevance order.
 
   Per fulltext arc Stage 4c + Stage 29 of
   plans/sandbar_fulltext_search_substrate_arc_2026_05_13.md."
@@ -843,7 +920,7 @@
          (>= limit 0)
          (or (nil? where) (sequential? where))
          (or (nil? facet-by) (sequential? facet-by))
-         (or (nil? rank-by) (#{:degree :backlink-density :recency :freshness} rank-by))
+         (or (nil? rank-by) (#{:degree :backlink-density :recency :freshness :relevance} rank-by))
          (or (not (#{:recency :freshness} rank-by))
              (keyword? temporal-slot))
          (or (and (nil? from) (nil? via))
@@ -901,11 +978,28 @@
                            :eid    (:eid ae)
                            :score  s
                            :analyzed ae})
+        ;; D4c default ordering (2026-09-19): with no :rank-by, demoted
+        ;; relevance (superseded hits weighted by the demotion factor),
+        ;; then recency, per the class's schema declarations (see "Default
+        ;; ordering" above).  Applied before :limit.  :rank-by :relevance
+        ;; opts out; the structural modes are untouched.
+        structural?     (boolean (and rank-by (not= rank-by :relevance)))
+        declaration     (when (nil? rank-by) (dt/effective-superseded-when-of class))
+        recency-slot    (when (nil? rank-by) (dt/effective-recency-slot-of class))
+        default-order?  (boolean (and (nil? rank-by) (or (seq declaration) (some? recency-slot))))
+        scored          (if default-order?
+                          (mapv (fn [{:keys [entity] :as h}]
+                                  (cond-> (assoc h :recency (recency-ms recency-slot entity))
+                                    (superseded-by-declaration? declaration entity)
+                                    (assoc :superseded? true)))
+                                scored)
+                          scored)
         ;; Stage 29 — :rank-by re-rank composition.  After BM25F filter,
         ;; re-order surviving hits by structural axis (degree / backlink-
         ;; density / recency / freshness).  BM25F score preserved as
         ;; :relevance-score; structural value becomes :score.
-        sorted          (if rank-by
+        sorted          (cond
+                          structural?
                           (let [scored-with-rank
                                 (mapv (fn [{:keys [entity score] :as h}]
                                         (let [eid-or-ident (or (:db/ident entity)
@@ -923,16 +1017,25 @@
                                       compare
                                       #(compare %2 %1))]
                             (sort-by :rank-score cmp scored-with-rank))
+
+                          default-order?
+                          (sort-by default-order-key scored)
+
+                          :else
                           (sort-by :score > scored))
         total           (count sorted)
         limited         (if (zero? limit) sorted (take limit sorted))
         include-set     (set include)
         q-raw-words     (when (include-set :snippets) (raw-query-words query))
-        hits            (mapv (fn [{:keys [entity eid score analyzed relevance-score rank-score]}]
+        hits            (mapv (fn [{:keys [entity eid score analyzed relevance-score rank-score superseded? recency]}]
                                 (cond-> {:entity (projection/apply-projection entity projection)
                                          :eid    eid
-                                         :score  (if rank-by (or rank-score score) score)}
-                                  rank-by
+                                         :score  (if structural? (or rank-score score) score)}
+                                  superseded?
+                                  (assoc :superseded? true)
+                                  (and default-order? (some? recency-slot))
+                                  (assoc :recency (or recency 0))
+                                  structural?
                                   (assoc :relevance-score (or relevance-score score))
                                   (include-set :field-scores)
                                   (assoc :field-scores
@@ -1071,9 +1174,16 @@
                                (search-bm25f-single (assoc per-class-opts :class c)))
                              class)
         merged-hits    (into [] (mapcat :hits) per-class-res)
-        ;; Merge + sort by raw score descending.  Cross-class raw-score
-        ;; comparability is APPROXIMATE (per-class IDF/length norm differ).
-        sorted         (vec (sort-by :score > merged-hits))
+        ;; Merge + sort.  With no :rank-by the D4c default ordering applies
+        ;; across classes: each hit carries :superseded? / :recency when its
+        ;; class declares them (recency is epoch ms, so no Date reaches the
+        ;; comparator), and a class declaring nothing sorts undemoted with
+        ;; recency 0.  Otherwise raw score descending.
+        ;; Cross-class raw-score comparability is APPROXIMATE (per-class
+        ;; IDF/length norm differ).
+        sorted         (vec (if (nil? (:rank-by opts))
+                              (sort-by default-order-key merged-hits)
+                              (sort-by :score > merged-hits)))
         total          (count sorted)
         limited        (if (zero? limit) sorted (vec (take limit sorted)))
         t-end          (System/currentTimeMillis)

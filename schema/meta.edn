@@ -415,6 +415,36 @@
             source-text order through parse → entity → emit (brittle:
             metadata dropped on any new map construction)."}
 
+  {:db/ident :dt/superseded-when
+   :dt/type  :dt/Property
+   :dt/domain :dt/Class
+   :dt/range :db.type/tuple
+   :db/valueType :db.type/tuple
+   :db/tupleTypes [:db.type/keyword :db.type/keyword]
+   :db/cardinality :db.cardinality/many
+   :db/doc "Per-class declaration of what marks an instance as SUPERSEDED,
+            for the search surface's default ordering (sandbar.search/
+            search-bm25f, D4c of the 2026-09-19 reliability sprint).
+            Each entry is [slot-ident value]: the instance is superseded
+            when the slot holds that value, or holds ANY value when the
+            value is :some (an edge such as a superseded-by ref).  Union
+            across the class hierarchy (effective-superseded-when-of).
+            A class that declares nothing keeps pure relevance order.
+            Consumed only for ordering; never for filtering."}
+
+  {:db/ident :dt/recency-slot
+   :dt/type  :dt/Property
+   :dt/domain :dt/Class
+   :dt/range :db.type/keyword
+   :db/valueType :db.type/keyword
+   :db/cardinality :db.cardinality/one
+   :db/doc "Per-class declaration of the instant-valued slot that carries
+            an instance's recency (e.g. a last-touched stamp), for the
+            search surface's default ordering: among hits of equal
+            relevance the more recent comes first.  Leaf class wins over
+            ancestors (effective-recency-slot-of).  Absent: no recency
+            tie-break."}
+
   {:db/ident :dt/bm25f-weights
    :dt/type  :dt/Property
    :dt/domain :dt/Class
