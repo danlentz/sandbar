@@ -775,19 +775,48 @@
    still leads.  The hit's reported :score is never scaled."
   0.5)
 
+(defn- reverse-ref-slot?
+  "True for the reverse-reference form of a ref slot (`:ns/_attr`): the
+   declaration means \"some entity's attr points at this one\"."
+  [slot]
+  (= \_ (first (name slot))))
+
+(defn- forward-ref-of
+  "`:ns/_attr` → `:ns/attr`."
+  [slot]
+  (keyword (namespace slot) (subs (name slot) 1)))
+
+(defn- reverse-marked-eids
+  "The eids that the reverse-reference pairs of `declaration` mark: for each
+   `[:ns/_attr :some]`, every entity some other entity's `attr` points at.
+   One indexed (VAET) query per such attr, computed ONCE per search — the
+   scorer's entity maps are plain maps and carry no reverse references, and
+   the corpus asserts supersession one-sidedly on the successor."
+  [declaration]
+  (into #{}
+        (mapcat (fn [[slot value]]
+                  (when (and (reverse-ref-slot? slot) (= :some value))
+                    (map first (d/q '[:find ?e :in $ ?a :where [_ ?a ?e]]
+                                    (db/db) (forward-ref-of slot))))))
+        declaration))
+
 (defn- superseded-by-declaration?
-  "True when `entity` matches any `[slot value]` pair of `declaration`
-   (the class's effective :dt/superseded-when set): the slot holds `value`,
-   or holds anything at all when `value` is :some (an edge)."
-  [declaration entity]
+  "True when `entity` matches any pair of `declaration` (the class's
+   effective :dt/superseded-when set): its eid is in `reverse-marked` (the
+   reverse-reference pairs, resolved once per search); or a forward slot
+   holds `value`, or holds anything at all when `value` is :some (an edge)."
+  [declaration reverse-marked entity]
   (boolean
-   (some (fn [[slot value]]
-           (let [v (get entity slot)]
-             (if (= :some value)
-               (if (coll? v) (boolean (seq v)) (some? v))
-               (or (= v value)
-                   (and (keyword? value) (some? v) (= (name value) (name (keyword (str v)))))))))
-         declaration)))
+   (or (contains? reverse-marked (:db/id entity))
+       (some (fn [[slot value]]
+               (when-not (reverse-ref-slot? slot)
+                 (let [v (get entity slot)]
+                   (if (= :some value)
+                     (if (coll? v) (boolean (seq v)) (some? v))
+                     (or (= v value)
+                         (and (keyword? value) (some? v)
+                              (= (name value) (name (keyword (str v))))))))))
+             declaration))))
 
 (defn- recency-ms
   "Epoch milliseconds of the instant in `slot` on `entity`; 0 when the slot
@@ -987,10 +1016,11 @@
         declaration     (when (nil? rank-by) (dt/effective-superseded-when-of class))
         recency-slot    (when (nil? rank-by) (dt/effective-recency-slot-of class))
         default-order?  (boolean (and (nil? rank-by) (or (seq declaration) (some? recency-slot))))
+        reverse-marked  (if (seq declaration) (reverse-marked-eids declaration) #{})
         scored          (if default-order?
                           (mapv (fn [{:keys [entity] :as h}]
                                   (cond-> (assoc h :recency (recency-ms recency-slot entity))
-                                    (superseded-by-declaration? declaration entity)
+                                    (superseded-by-declaration? declaration reverse-marked entity)
                                     (assoc :superseded? true)))
                                 scored)
                           scored)

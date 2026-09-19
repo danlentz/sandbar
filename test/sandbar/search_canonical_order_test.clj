@@ -70,7 +70,7 @@
 
 (deftest declarations-are-read-with-inheritance
   (testing ":mm/Memory declares both; :mm/Decision inherits them; :mm/Tag declares neither"
-    (is (= #{[:mm.memory/superseded-by :some] [:mm.memory/status :superseded]}
+    (is (= #{[:mm.memory/_supersedes :some] [:mm.memory/superseded-by :some] [:mm.memory/status :superseded]}
            (dt/effective-superseded-when-of :mm/Memory)))
     (is (= :mm.memory/last-touched (dt/effective-recency-slot-of :mm/Memory)))
     (is (= (dt/effective-superseded-when-of :mm/Memory)
@@ -101,6 +101,18 @@
     (let [result (search/search-bm25f {:query "zorblatt" :class :mm/Memory :projection :full})]
       (is (= ["current-note" "stale-note"] (hit-names result)))
       (is (true? (:superseded? (second (:hits result))))))))
+
+(deftest a-twin-marked-only-by-its-successors-supersedes-edge-yields
+  (testing "the corpus convention: the successor asserts `supersedes`; the twin carries nothing, and is still demoted (reverse-reference marker, resolved once per search)"
+    (let [twin (make-memory! :mm/Memory "old-authorization" "kelpwright grant" {})]
+      (make-memory! :mm/Memory "new-authorization" "kelpwright grant"
+                    {:mm.memory/supersedes [(:db/id twin)]})
+      (let [result (search/search-bm25f {:query "kelpwright" :class :mm/Memory :projection :full})
+            [a b]  (:hits result)]
+        (is (= ["new-authorization" "old-authorization"] (hit-names result)))
+        (is (= (:score a) (:score b)) "equal raw relevance")
+        (is (nil? (:superseded? a)))
+        (is (true? (:superseded? b)) "marked through the successor's edge alone")))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; (a2) the demotion is proportional, not an absolute bucket
