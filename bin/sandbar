@@ -66,8 +66,16 @@ mkdir -p "$SANDBAR_CONFIG"
 # mismatches reality, or transactor changed ports unexpectedly).  The
 # PID-file fallback uses `kill -0` for liveness — never echoes a stale
 # PID.  Per F.1 follow-up (2026-05-24).
+# The lsof lookup is restricted to the LISTENING socket (2026-09-19): the
+# unfiltered form listed every process with a socket on the port, clients
+# included, and took the first — right after a restart it named the
+# session's mcp-remote bridge instead of the server, and `stop` would have
+# killed that client first and then force-killed the JVM (bugs/bin_sandbar_-
+# running_pid_takes_the_first_process_on_the_port_... 2026-09-19).  The
+# listener stays FIRST on purpose: `stop` must signal the java process, not
+# the lein wrapper shell the PID file records.
 running_pid() {
-  local pid=$(lsof -i :"$SANDBAR_PORT" -t 2>/dev/null | head -1)
+  local pid=$(lsof -nP -iTCP:"$SANDBAR_PORT" -sTCP:LISTEN -t 2>/dev/null | head -1)
   if [ -n "$pid" ]; then
     echo "$pid"
     return
