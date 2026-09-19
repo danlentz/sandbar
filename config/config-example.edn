@@ -65,6 +65,15 @@
              :system-jobs? true
              :jobs         []}
 
+ ;; Future-timestamp guard (reliability sprint 2026-09-18, item 2.4).
+ ;; dt/make and dt/update-entity! — hence entity.create / entity.update and
+ ;; the markdown codec create path — refuse a :mm.memory/created or
+ ;; :mm.memory/last-touched value more than this many SECONDS ahead of
+ ;; server time (absent values default to server time on create).  Absent
+ ;; or non-numeric ⇒ 60.  Per-call override: sandbar.db.datatype/
+ ;; *future-timestamp-skew-ms*.
+ :future-timestamp-skew-seconds 60
+
  :nrepl   {:port 28888}
  :auth {:twitter
         {:consumer-key    ""

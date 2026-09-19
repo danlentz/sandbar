@@ -1534,7 +1534,11 @@
           fw-errs      (mapv fw-enforce/verdict->error
                             (:violations (fw-enforce/check-entity-flow
                                            (db/db) class-ident props)))
-          all-errs     (into (vec schema-errs) fw-errs)]
+          ;; Sprint 2.4 (2026-09-18) advisory arm — the same future-timestamp
+          ;; verdict the commit floor throws (dt/future-timestamp-guard! in
+          ;; make / update-entity!), for the same reason as the firewall arm.
+          ts-errs      (dt/future-timestamp-errors props)
+          all-errs     (-> (vec schema-errs) (into ts-errs) (into fw-errs))]
       (if (seq all-errs)
         {:valid? false :errors {:errors all-errs}}
         {:valid? true}))))
