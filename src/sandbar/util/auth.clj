@@ -266,9 +266,78 @@
                      :event/tags #{:auth}})
         {:success true :principal user}))))
 
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; API-key verification cache (reliability sprint D4, 2026-09-19)
+;;
+;; `verify-password` is bcrypt+sha512: about 280 ms per call on the dev
+;; machine, and it ran on EVERY authenticated request.  That floor dwarfed
+;; the work behind it (a warm search over all memories is 140 to 175 ms; a
+;; count is 2 ms) and spent more than half of the recall hook's 500 ms
+;; budget before any search ran (the D4 idle baseline, 2026-09-19).
+;;
+;; A presented key that has verified against an account's stored hash
+;; stays verified for as long as that stored hash is unchanged, so the
+;; verdict is cached under [service-name, SHA-256 of the presented key,
+;; the stored hash it verified against].  A rotated key changes the stored
+;; hash and misses the cache by construction; account activity and expiry
+;; are re-checked on every request BEFORE the cache is consulted; entries
+;; expire after `*api-key-verification-ttl-ms*`; the cache is bounded and
+;; drops everything when full; failed verifications are never cached.  The
+;; presented key itself is never stored, only its SHA-256.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(def ^:dynamic *api-key-verification-ttl-ms*
+  "How long a verified [service, key, stored-hash] triple stays verified
+   without re-running bcrypt.  Ten minutes."
+  (* 10 60 1000))
+
+(def ^:private api-key-verification-cache-max
+  "Entries kept before the cache is dropped wholesale (a handful of
+   service accounts exist; this is a safety bound, not a working set)."
+  1024)
+
+(defonce ^:private api-key-verification-cache (atom {}))
+
+(defn clear-api-key-verification-cache!
+  "Forget every cached verification (tests; operator use after a key
+   compromise, though rotating the key already invalidates its entries)."
+  []
+  (reset! api-key-verification-cache {}))
+
+(defn- sha256-hex
+  [^String s]
+  (let [md (java.security.MessageDigest/getInstance "SHA-256")
+        bs (.digest md (.getBytes s "UTF-8"))]
+    (apply str (map #(format "%02x" (bit-and % 0xff)) bs))))
+
+(defn verify-api-key-cached
+  "`verify-password` for API keys with the verification cache in front of
+   it.  Returns true when `api-key` verifies against `stored-hash` for
+   `service-name`, from the cache when the same triple verified within the
+   TTL, else by running bcrypt and caching a success."
+  [service-name api-key stored-hash]
+  (if (or (nil? api-key) (nil? stored-hash))
+    false
+    (let [k   [service-name (sha256-hex api-key) stored-hash]
+          now (System/currentTimeMillis)
+          at  (get @api-key-verification-cache k)]
+      (if (and at (< (- now at) *api-key-verification-ttl-ms*))
+        true
+        (let [ok? (verify-password api-key stored-hash)]
+          (when ok?
+            (swap! api-key-verification-cache
+                   (fn [m]
+                     (let [m (if (>= (count m) api-key-verification-cache-max) {} m)]
+                       (assoc m k now)))))
+          ok?)))))
+
 (defn authenticate-api-key
   "Authenticate a service account with API key.
-   Returns {:success true :principal sa} or {:success false :reason ...}"
+   Returns {:success true :principal sa} or {:success false :reason ...}
+
+   The bcrypt verification is cached per [service, presented key, stored
+   hash] for `*api-key-verification-ttl-ms*` (see the cache block above);
+   activity and expiry are checked on every call regardless."
   [service-name api-key]
   (let [sa (find-service-account service-name)]
     (cond
@@ -283,7 +352,7 @@
            (.after (Date.) (:auth/expires-at sa)))
       {:success false :reason :account-expired}
 
-      (not (verify-password api-key (:auth/api-key-hash sa)))
+      (not (verify-api-key-cached service-name api-key (:auth/api-key-hash sa)))
       (do
         (event/log! :warn "Failed API key authentication"
                     {:event/kind :auth/login-failure
