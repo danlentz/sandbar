@@ -43,6 +43,10 @@
  ;;                     classes from :workflow, and :mm.memory/* slots from :mm
  ;;                     family.  Per ι.2 substrate execution 2026-05-25.)
  :required-schema [:meta :ref :literal :fn :any :context :event :user :twit :auth :audit :workflow :job :mm :mm-artifact :mm-signal :mm-guidance :mm-meta :mm-verb :mm-temporal :mm-namespace :workflow-session]
+ ;; :workflow {:stale-session-window-ms 43200000}
+ ;;   — inactivity window (ms) for the crashed-session staleness rule of
+ ;;     sandbar.util.workflow/close-leaked-sessions! (sprint 3.4).  Absent ⇒
+ ;;     the code default of twelve hours.
 
  ;; γ scheduler config.  Per Dan-directive 2026-05-28 the two system jobs
  ;; are scheduled by default (amends the original Q.γ.5 :enabled? false

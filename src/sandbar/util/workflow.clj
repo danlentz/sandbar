@@ -58,6 +58,7 @@
             [datomic.api :as d]
             [sandbar.db.datatype :as dt]
             [sandbar.db.datomic :as db]
+            [sandbar.util.edn :as cfg]
             [sandbar.util.event :as event])
   (:import [java.net JarURLConnection]
            [java.util Date]
@@ -668,60 +669,331 @@
         (db/entity (:db/id process))))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; Leaked-session reconciliation (Bug-1 defense-in-depth)
+;; Leaked-session reconciliation (Bug-1 defense-in-depth + crashed-session
+;; staleness rule — reliability sprint 2026-09-18 item 3.4)
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (def ^:private leaked-close-path
   "Transition path that drives a non-terminal :workflow/session process to the
    :session/closed terminal, keyed by current state-name.  Used by
-   `close-leaked-sessions!`."
+   `close-leaked-sessions!` for the ENDED-but-open leak kind (the subject
+   already carries :mm.session/ended-at, so the session's own handoff asked
+   for a close — finishing that close is the truthful terminal)."
   {:session/opening [:session/start :session/close :session/finalize]
    :session/active  [:session/close :session/finalize]
    :session/closing [:session/finalize]
    :session/paused  [:session/resume-maintenance :session/close :session/finalize]})
 
-(defn close-leaked-sessions!
-  "Reconcile LEAKED session-processes — any active (non-terminal) workflow
-   process whose subject :mm/Session has :mm.session/ended-at set.  Such a
-   process is a Bug-1 orphan: the handoff marked the session ended but the
-   process was never finalized (per
-   bugs/… + the 2026-05-29 session-lifecycle-hardening arc).  Each leak is
-   driven to :session/closed via the reachable path for its current state
-   (`leaked-close-path`).
+(def default-stale-session-window-ms
+  "Default inactivity window for the crashed-session staleness rule
+   (reliability sprint 2026-09-18, item 3.4): twelve hours, in milliseconds.
+   Override per call via `:stale-after-ms`, or per deployment via the config
+   key `[:workflow :stale-session-window-ms]`."
+  (* 12 60 60 1000))
 
-   Idempotent — re-running after all leaks are closed is a no-op (no active
-   process then has an ended subject).  Genuinely-live sessions (subject has
-   NO :mm.session/ended-at) are SKIPPED, so the current session is never closed
-   out from under itself.
+(def ^:private stale-close-path
+  "Transition path that drives a STALE (crashed) :workflow/session process to a
+   terminal state, keyed by current state-name.
+
+   A stale session never handed off, so from :session/opening and
+   :session/active it is driven to the :session/failed terminal through the
+   κ-P8 fail-shaped transitions — the same ones the orchestrator uses for its
+   own hard-fail conditions (`try-transition-to-failed!`) — whose `on-fail`
+   effect records the reason in :mm.session-process/failure-reason (+
+   failure-instant).  From :session/closing the session itself already asked
+   to close (its handoff crashed between :session/close and
+   :session/finalize), so it is finalized to :session/closed exactly like the
+   ended-but-open kind.
+
+   :session/paused is DELIBERATELY absent: maintenance-mode pause is an
+   explicit operator hold (κ P6), never auto-failed on inactivity.  A stale
+   paused process is reported under :held and left alone."
+  {:session/opening [:session/fail-from-opening]
+   :session/active  [:session/fail]
+   :session/closing [:session/finalize]})
+
+(defn- instant-ms
+  [^Date d]
+  (when d (.getTime d)))
+
+(declare get-process-history)
+
+(defn session-process-last-activity
+  "Latest activity instant the substrate records for a workflow process, or
+   nil when it records none.
+
+   ACTIVITY DEFINITION (crashed-session staleness rule, sprint 3.4) — the max
+   over these explicit slot values:
+     - the process's :workflow/started-at;
+     - every :workflow/history-timestamp on the process's history (one per
+       transition a ceremony applied — open, pause/resume, close, finalize);
+     - on the subject :mm/Session: :mm.session/started-at, :mm.memory/created
+       and :mm.memory/last-touched (the last is written by any explicit touch
+       of the session memorial, e.g. the handoff's :phase/link update).
+
+   Why slots and not Datomic transaction time: slot values are deterministic,
+   backdatable in tests, and survive a DB restore.  Why not the events linked
+   to the process (:event/target): the orchestrator emits them at the same
+   transitions the history already records, and they are retention-bound
+   (Phase 4.2 rollup-and-prune) — a verdict that flips when telemetry is
+   pruned is not a rule.
+
+   Trade-off, stated plainly: a live session that applies no transition and
+   touches nothing for longer than the window is indistinguishable from a
+   crashed one by this evidence.  The window (default 12h) is where that line
+   is drawn; a live session that long is itself a hand-off that never
+   happened."
+  [process]
+  (let [subject  (get-process-subject process)
+        history  (get-process-history process)
+        instants (concat [(:workflow/started-at process)]
+                         (map :workflow/history-timestamp history)
+                         (when subject
+                           [(:mm.session/started-at subject)
+                            (:mm.memory/created subject)
+                            (:mm.memory/last-touched subject)]))]
+    (when-let [ds (seq (remove nil? instants))]
+      (apply max-key instant-ms ds))))
+
+(defn- session-process?
+  "True when `process` runs the :workflow/session definition.  The staleness
+   rule applies ONLY to session processes — a long-running process of any
+   other workflow is not a crashed session."
+  [process]
+  (= :workflow/session
+     (:workflow/definition-name (get-process-workflow process))))
+
+(defn- humanize-ms
+  [ms]
+  (let [mins (quot (long ms) 60000)
+        h    (quot mins 60)
+        m    (rem mins 60)]
+    (if (pos? h) (format "%dh%02dm" h m) (format "%dm" m))))
+
+(def ^:private ended-reason
+  "reconcile: close leaked ended-but-open session (Bug-1)")
+
+(defn- stale-reason
+  [^Date last-activity idle-ms window-ms]
+  (str "reconcile: closed as stale by the leaked-session sweep — no activity since "
+       (.toInstant last-activity)
+       " (idle " (humanize-ms idle-ms) " > window " (humanize-ms window-ms)
+       "); the session never wrote :mm.session/ended-at"
+       " (crashed-session staleness rule, sprint 3.4)"))
+
+(defn- resolve-stale-window-ms
+  "Explicit arg → config [:workflow :stale-session-window-ms] → default."
+  [stale-after-ms]
+  (or stale-after-ms
+      (try (cfg/config-value :workflow :stale-session-window-ms)
+           (catch Exception _ nil))
+      default-stale-session-window-ms))
+
+(defn- classify-process
+  "Classify one active (non-terminal) process for the sweep.  Returns a
+   candidate map with :kind :ended or :kind :stale, or nil when the process is
+   left alone.  A stale process whose state has no registered close-path
+   (:session/paused) comes back with :held? true."
+  [process ^Date now window-ms]
+  (let [pid      (:db/id process)
+        subject  (get-process-subject process)
+        state-kw (:workflow/state-name (get-current-state process))
+        base     {:process-id    pid
+                  :state         state-kw
+                  :subject-id    (:db/id subject)
+                  :subject-ident (:db/ident subject)}
+        ended-at (:mm.session/ended-at subject)]
+    (cond
+      (some? ended-at)
+      (assoc base
+             :kind     :ended
+             :ended-at ended-at
+             :path     (get leaked-close-path state-kw)
+             :reason   ended-reason)
+
+      (not (session-process? process))
+      nil
+
+      :else
+      (let [last-activity (session-process-last-activity process)
+            idle-ms       (when last-activity
+                            (- (instant-ms now) (instant-ms last-activity)))]
+        (when (and idle-ms (> idle-ms window-ms))
+          (let [path (get stale-close-path state-kw)]
+            (cond-> (assoc base
+                           :kind          :stale
+                           :last-activity last-activity
+                           :idle-ms       idle-ms
+                           :reason        (stale-reason last-activity idle-ms window-ms))
+              path       (assoc :path path)
+              (not path) (assoc :held? true
+                                :note (if (= state-kw :session/paused)
+                                        "maintenance-mode hold (κ P6): not auto-closed on inactivity"
+                                        "no stale close-path registered for this state")))))))))
+
+(defn leaked-session-plan
+  "READ-ONLY classification of every active (non-terminal) workflow process
+   for `close-leaked-sessions!` — the sweep's dry-run report.  Transacts
+   nothing.
+
+   Two leak kinds:
+     :ended — the subject :mm/Session carries :mm.session/ended-at (a Bug-1
+              orphan: the handoff marked the session ended but the process
+              was never finalized).  Closed via `leaked-close-path`.
+     :stale — a :workflow/session process whose subject has NO ended-at and
+              no recorded activity (`session-process-last-activity`) for
+              longer than the window: a crashed session, which can never
+              write ended-at itself (sprint 3.4).  Closed via
+              `stale-close-path`; a stale :session/paused process is HELD
+              (reported, never closed).
+
+   Processes of other workflows are never :stale candidates.  Live sessions
+   (activity inside the window, no ended-at) are left alone.
+
+   Options:
+     :now            — java.util.Date; default server time.
+     :stale-after-ms — inactivity window; default
+                       `default-stale-session-window-ms` (12h), or the config
+                       key [:workflow :stale-session-window-ms].
+
+   Returns {:now :window-ms :scanned :leaks :stale :held
+            :candidates [{:process-id :state :kind :path :reason …} …]
+            :would-close [pid …]}."
+  [& {:keys [now stale-after-ms]}]
+  (let [now        (or now (Date.))
+        window-ms  (resolve-stale-window-ms stale-after-ms)
+        actives    (list-active-processes)
+        candidates (into [] (keep #(classify-process % now window-ms)) actives)
+        closable   (remove :held? candidates)]
+    {:now         now
+     :window-ms   window-ms
+     :scanned     (count actives)
+     :leaks       (count (filter #(= :ended (:kind %)) candidates))
+     :stale       (count (filter #(and (= :stale (:kind %)) (not (:held? %))) candidates))
+     :held        (count (filter :held? candidates))
+     :candidates  candidates
+     :would-close (mapv :process-id closable)}))
+
+(defn- apply-close-path!
+  "Drive process `pid` along `path` (transition names), re-fetching the
+   process before each step because its state advances between transitions.
+   Throws on the first transition that fails."
+  [pid path reason]
+  (doseq [t path]
+    (transition! (find-process pid) t :reason reason)))
+
+(defn- stamp-session-ended-at!
+  "Once a stale process has reached a terminal state, stamp the subject's
+   :mm.session/ended-at with `now` (server time).  Runs strictly AFTER the
+   terminal transition so the Bug-1 invariant 'ended-at set ⟹ process
+   terminal' holds at every instant.  Returns nil, or the error message when
+   the stamp failed (the process is terminal regardless)."
+  [subject-id ^Date now]
+  (when subject-id
+    (try
+      (dt/update-entity! subject-id {:mm.session/ended-at now})
+      nil
+      (catch Exception e
+        (log/warn :WORKFLOW/STALE-SESSION-ENDED-AT-STAMP-FAILED
+                  {:subject-id subject-id :error (.getMessage e)})
+        (.getMessage e)))))
+
+(defn close-leaked-sessions!
+  "Reconcile LEAKED session-processes.  Two leak kinds (see
+   `leaked-session-plan`):
+
+     :ended — any active (non-terminal) process whose subject :mm/Session has
+              :mm.session/ended-at set — a Bug-1 orphan (the handoff marked
+              the session ended but the process was never finalized).  Driven
+              to :session/closed via the reachable path for its current state
+              (`leaked-close-path`).  Behavior unchanged since the 2026-05-29
+              session-lifecycle-hardening arc.
+     :stale — a :workflow/session process whose subject has NO ended-at and
+              no recorded activity for longer than the window (default 12h).
+              A crashed session never writes ended-at, so before sprint 3.4
+              the sweep could not reach it and the process lived forever.
+              Driven to its terminal via `stale-close-path` (:session/failed
+              from opening/active — the reason lands in
+              :mm.session-process/failure-reason through the on-fail effect;
+              :session/closed from closing), every transition's history entry
+              carrying the stale reason; then, only once the process is
+              terminal, the subject's :mm.session/ended-at is stamped with
+              server time.  A stale :session/paused process is held, not
+              closed.
+
+   A failing transition leaves that process and its session untouched
+   (recorded under :skipped), so the sweep can never manufacture a new
+   ended-but-open leak.  Idempotent — a second run after all leaks are closed
+   changes nothing.  Live sessions are SKIPPED: the current session is never
+   closed out from under itself unless it has been silent past the window.
 
    The orchestrator's Bug-1 fix couples ended-at to a terminal finalize, which
-   PREVENTS new leaks via the ceremony; this sweep cleans up pre-existing
-   orphans + guards against any non-orchestrator close path.
+   PREVENTS new :ended leaks via the ceremony; this sweep cleans up
+   pre-existing orphans, guards any non-orchestrator close path, and (3.4)
+   retires crashed sessions.
 
-   Returns {:scanned <active-count> :leaks <n> :closed [eid…] :skipped [{…}…]}."
-  []
-  (let [actives (list-active-processes)
-        leaked? (fn [p] (some? (:mm.session/ended-at (get-process-subject p))))
-        leaks   (filterv leaked? actives)]
-    (reduce
-      (fn [acc p]
-        (let [pid      (:db/id p)
-              state-kw (:workflow/state-name (get-current-state p))
-              path     (get leaked-close-path state-kw)]
-          (try
-            (when-not (seq path)
-              (throw (ex-info "No close-path registered for current state"
-                              {:state state-kw :process-id pid})))
-            (doseq [t path]
-              ;; re-fetch each step — the process state advances between transitions
-              (transition! (find-process pid) t
-                           :reason "reconcile: close leaked ended-but-open session (Bug-1)"))
-            (update acc :closed conj pid)
-            (catch Exception e
-              (update acc :skipped conj {:process-id pid :state state-kw
-                                         :error (.getMessage e)})))))
-      {:scanned (count actives) :leaks (count leaks) :closed [] :skipped []}
-      leaks)))
+   Options (all keyword args; the zero-arg call applies with defaults):
+     :dry-run?       — true ⇒ classify and report WITHOUT transacting
+                       (:mode :dry-run, :would-close listed).  Default false:
+                       the sweep has always applied by default.
+     :now            — server time (java.util.Date); default (Date.).
+     :stale-after-ms — inactivity window; default
+                       `default-stale-session-window-ms` (12h) or the config
+                       key [:workflow :stale-session-window-ms].
+
+   Returns the plan map (:now :window-ms :scanned :leaks :stale :held
+   :candidates :would-close) plus
+     :mode     :dry-run | :apply
+     :closed   [pid …]  — processes driven to a terminal state
+     :skipped  [{:process-id :state :kind :error} …]
+     :receipts [{:process-id :kind :state :terminal-state :ended-at
+                 (:ended-at-error)} …] — one per closed process."
+  [& {:keys [dry-run? now stale-after-ms]}]
+  (let [plan (leaked-session-plan :now now :stale-after-ms stale-after-ms)
+        now  ^Date (:now plan)]
+    (if dry-run?
+      (do
+        (log/info :WORKFLOW/LEAKED-SESSION-SWEEP-DRY-RUN (dissoc plan :candidates))
+        (assoc plan :mode :dry-run :closed [] :skipped [] :receipts []))
+      (reduce
+        (fn [acc {:keys [process-id state kind path reason subject-id held?] :as c}]
+          (if held?
+            acc
+            (try
+              (when-not (seq path)
+                (throw (ex-info "No close-path registered for current state"
+                                {:state state :process-id process-id :kind kind})))
+              (apply-close-path! process-id path reason)
+              (let [terminal  (:workflow/state-name
+                               (get-current-state (find-process process-id)))
+                    ended-err (when (= kind :stale)
+                                (stamp-session-ended-at! subject-id now))]
+                (log/info :WORKFLOW/LEAKED-SESSION-CLOSED
+                          {:process-id    process-id
+                           :kind          kind
+                           :from          state
+                           :to            terminal
+                           :last-activity (:last-activity c)
+                           :idle-ms       (:idle-ms c)})
+                (-> acc
+                    (update :closed conj process-id)
+                    (update :receipts conj
+                            (cond-> {:process-id     process-id
+                                     :kind           kind
+                                     :state          state
+                                     :terminal-state terminal
+                                     :ended-at       (if (= kind :stale) now (:ended-at c))}
+                              ended-err (assoc :ended-at-error ended-err)))))
+              (catch Exception e
+                (log/warn :WORKFLOW/LEAKED-SESSION-CLOSE-FAILED
+                          {:process-id process-id :kind kind :state state
+                           :error (.getMessage e)})
+                (update acc :skipped conj {:process-id process-id
+                                           :state      state
+                                           :kind       kind
+                                           :error      (.getMessage e)})))))
+        (assoc plan :mode :apply :closed [] :skipped [] :receipts [])
+        (:candidates plan)))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; History
