@@ -83,13 +83,6 @@
                (visibility/entity-visible-to? (:identity request) e))
       e)))
 
-(defmacro ^:private as-principal
-  "Run `body` with the request's authenticated principal bound for the
-   projection layer's compartment backstop."
-  [request & body]
-  `(binding [visibility/*principal* (:identity ~request)]
-     ~@body))
-
 (defn- parse-entity-ref
   "Parse an entity reference from path parameters.
   All entities must have namespaced keywords: /ns/name -> :ns/name"
@@ -107,16 +100,29 @@
     (catch Exception _ nil)))
 
 (defn- describe-entity
-  "Get a serializable description of an entity."
+  "Get a serializable description of an entity.  The projection runs under
+   the principal the scope gate bound on the interceptor context, so a
+   compartment the caller does not clear redacts here as everywhere else."
   [ref]
   (when-let [e (resolve-entity ref)]
     (entity->map e)))
 
-(defn- class-exists? [class-kw]
-  (some? (resolve-entity class-kw)))
+(defn- class-exists?
+  "True iff `class-kw` names an entity that IS a class (`:dt/Class` by the
+   type lattice).  A resource-KIND check, not an existence check: a memory or
+   a property ident supplied to a class route is not-found (D4b-R1, the
+   arbitrary-ident substitution)."
+  [class-kw]
+  (when-let [e (resolve-entity class-kw)]
+    (boolean (some->> (dt/class-ident-of e) (dt/type-isa? :dt/Class)))))
 
-(defn- property-exists? [prop-kw]
-  (some? (resolve-entity prop-kw)))
+(defn- property-exists?
+  "True iff `prop-kw` names an entity that IS a property (`:dt/Property` or a
+   subclass by the type lattice) — the KIND check the property routes apply
+   before describing anything (D4b-R1)."
+  [prop-kw]
+  (when-let [e (resolve-entity prop-kw)]
+    (boolean (some->> (dt/class-ident-of e) (dt/type-isa? :dt/Property)))))
 
 (defn- entity-ident
   "Get the :db/ident of an entity, handling both entity maps and refs"
@@ -196,10 +202,11 @@
   "GET /api/store/classes/:ns/:name - Full class description.  A class
    DEFINITION stays introspectable whatever its namespace (the schema registry
    is metamodel shape, Dan 2026-07-07); its INSTANCES are the guarded surface."
-  [request _ {:keys [ns name]}]
+  [_ _ {:keys [ns name]}]
   (let [class-kw (parse-entity-ref ns name)]
-    (if-let [desc (as-principal request (describe-entity class-kw))]
-      (let [slots (dt/slots-of class-kw)
+    (if (class-exists? class-kw)
+      (let [desc (describe-entity class-kw)
+            slots (dt/slots-of class-kw)
             direct-slots (dt/direct-slots-of class-kw)
             direct-slot-idents (set (keep entity-ident direct-slots))
             parents (dt/parents-of class-kw)
@@ -226,7 +233,7 @@
       (let [instances (dt/all-instances-of class-kw)]
         {:class class-kw
          :count (count instances)
-         :instances (as-principal request (mapv entity->map instances))}))))
+         :instances (mapv entity->map instances)}))))
 
 (defhandler list-direct-instances
   "GET /api/store/classes/:ns/:name/instances/direct - Direct instances only"
@@ -239,7 +246,7 @@
       (let [instances (dt/direct-instances-of class-kw)]
         {:class class-kw
          :count (count instances)
-         :instances (as-principal request (mapv entity->map instances))}))))
+         :instances (mapv entity->map instances)}))))
 
 (defhandler list-slots
   "GET /api/store/classes/:ns/:name/slots - All effective slots (inherited + direct)"
@@ -356,12 +363,14 @@
      :properties (sort properties)}))
 
 (defhandler get-property
-  "GET /api/store/properties/:ns/:name - Full property description"
+  "GET /api/store/properties/:ns/:name - Full property description.  The
+   ident must name a PROPERTY (`property-exists?`); any other kind of entity,
+   a memory included, is not-found (D4b-R1)."
   [_ _ {:keys [ns name]}]
   (let [prop-kw (parse-entity-ref ns name)]
-    (if-let [desc (describe-entity prop-kw)]
+    (if (property-exists? prop-kw)
       {:property prop-kw
-       :description desc
+       :description (describe-entity prop-kw)
        :domain (dt/domain-of prop-kw)
        :range (dt/range-of prop-kw)
        :cardinality (dt/cardinality-of prop-kw)
@@ -405,7 +414,7 @@
       (let [class-type (dt/class-of ref)]
         {:id ref
          :class class-type
-         :entity (as-principal request (entity->map e))})
+         :entity (entity->map e)})
       (endpoint/not-found {:error "Entity not found" :id ref}))))
 
 (defhandler validate-entity
@@ -431,19 +440,25 @@
       :valid 148
       :invalid 2
       :errors [{:entity 123 :class :example/User :errors [...]}]}"
-  [_ _ {:keys [ns name]}]
+  [request _ {:keys [ns name]}]
   (let [class-kw (parse-entity-ref ns name)]
     (cond
       (not (class-exists? class-kw)) (endpoint/not-found {:error "Class not found" :class class-kw})
       (not (secq/read-plane-namespace-allowed? class-kw)) (forbidden-class class-kw)
       :else
-      (let [results (dt/validate-all-instances class-kw)]
+      (let [results   (dt/validate-all-instances class-kw)
+            principal (:identity request)
+            ;; D4b-R1: the per-entity error entries name entities; an entity
+            ;; the principal is not cleared for is dropped from the report.
+            ;; The totals stay (a weak count oracle, the accepted class).
+            errors    (filterv #(visibility/entity-visible-to? principal (resolve-entity (:entity %)))
+                               (:errors results))]
         {:class class-kw
          :total (:total results)
          :valid (:valid results)
          :invalid (:invalid results)
          :all-valid? (zero? (:invalid results))
-         :errors (:errors results)}))))
+         :errors errors}))))
 
 (defhandler entity-class
   "GET /api/store/entities/:ns/:name/class - Get entity's class"
@@ -453,7 +468,7 @@
       (let [class-type (dt/class-of ref)]
         {:id ref
          :class class-type
-         :class-description (when class-type (as-principal request (describe-entity class-type)))})
+         :class-description (when class-type (describe-entity class-type))})
       (endpoint/not-found {:error "Entity not found" :id ref}))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -462,14 +477,15 @@
 
 (defhandler check-instance-of
   "GET /api/store/types/instance-of/:class-ns/:class-name/:entity-ns/:entity-name"
-  [_ _ {:keys [class-ns class-name entity-ns entity-name]}]
+  [request _ {:keys [class-ns class-name entity-ns entity-name]}]
   (let [class-kw (parse-entity-ref class-ns class-name)
         entity-ref (parse-entity-ref entity-ns entity-name)]
     (cond
       (not (class-exists? class-kw))
       (endpoint/not-found {:error "Class not found" :class class-kw})
 
-      (not (resolve-entity entity-ref))
+      ;; D4b-R1: absent, firewalled and uncleared answer the same not-found.
+      (not (readable-entity request entity-ref))
       (endpoint/not-found {:error "Entity not found" :id entity-ref})
 
       :else

@@ -28,6 +28,7 @@
      sees it everywhere; a `:public` memory is visible to all; the in-process
      nil-principal path stays unrestricted."
   (:require [cheshire.core       :as json]
+            [clojure.set]
             [clojure.string      :as str]
             [clojure.test        :refer :all]
             [io.pedestal.test    :refer [response-for]]
@@ -317,3 +318,59 @@
                                           :arguments {"ident" (str private-ident) "projection" "full"}})
             payload (json/parse-string (get-in resp [:result :content 0 :text]) true)]
         (is (= private-body (body-of payload)))))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; D4b-R1 (Astra, 2026-09-19 19:51Z) — the metadata-shaped store routes must
+;; refuse an arbitrary ident by resource KIND and run every projection with the
+;; principal bound.  Before the fix the property route described any existing
+;; ident, a private memory included, under the unrestricted nil-principal
+;; convention because the handler never bound the principal.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(deftest metadata-routes-refuse-arbitrary-idents-and-bind-the-principal
+  (let [{:keys [writer reader]} (seed-principals!)
+        _ (seed-memories!)
+        priv-path (str (namespace private-ident) "/" (name private-ident))
+        pub-path  (str (namespace public-ident) "/" (name public-ident))
+        priv-eid  (:db/id (dt/find-by-ident private-ident))
+        get       (fn [token path] (rest-call token :get path))
+        leaks?    (fn [resp] (str/includes? (str (:body resp)) private-body))]
+
+    (testing "the property route refuses a memory ident by kind, cleared or not, private or public"
+      (doseq [[label token path] [[:reader-private reader priv-path] [:writer-private writer priv-path]
+                                  [:reader-public reader pub-path]]]
+        (let [resp (get token (str "/api/store/properties/" path))]
+          (is (= 404 (:status resp)) (str label " " (pr-str (parse resp))))
+          (is (not (leaks? resp)) (str label " must not carry the private body"))))
+      (doseq [suffix ["/domain" "/range"]]
+        (let [resp (get reader (str "/api/store/properties/" priv-path suffix))]
+          (is (= 404 (:status resp)) suffix)
+          (is (not (leaks? resp)) suffix))))
+
+    (testing "a real property stays introspectable to the read-only principal"
+      (let [resp (get reader "/api/store/properties/mm.memory/name")]
+        (is (= 200 (:status resp)) (pr-str (parse resp)))
+        (is (= "mm.memory/name" (:property (parse resp))))))
+
+    (testing "the class routes refuse a memory ident by kind"
+      (doseq [suffix ["" "/instances" "/instances/direct" "/slots" "/hierarchy" "/validate"]]
+        (let [resp (get reader (str "/api/store/classes/" priv-path suffix))]
+          (is (= 404 (:status resp)) (str "classes" suffix " " (pr-str (parse resp))))
+          (is (not (leaks? resp)) (str "classes" suffix)))))
+
+    (testing "the type predicate and the entity-class route hide an uncleared entity"
+      (let [resp (get reader (str "/api/store/types/instance-of/mm/Observation/" priv-path))]
+        (is (= 404 (:status resp)) (pr-str (parse resp))))
+      (let [resp (get writer (str "/api/store/types/instance-of/mm/Observation/" priv-path))]
+        (is (= 200 (:status resp)))
+        (is (true? (:instance-of? (parse resp)))))
+      (is (= 404 (:status (get reader (str "/api/store/entities/" priv-path "/class")))))
+      (is (= 200 (:status (get writer (str "/api/store/entities/" priv-path "/class"))))))
+
+    (testing "the class validation report never names an entity the principal is not cleared for"
+      (let [reader-report (parse (get reader "/api/store/classes/mm/Observation/validate"))
+            writer-report (parse (get writer "/api/store/classes/mm/Observation/validate"))
+            named (fn [report] (set (map :entity (:errors report))))]
+        (is (vector? (:errors reader-report)) (pr-str reader-report))
+        (is (not (contains? (named reader-report) priv-eid)))
+        (is (clojure.set/subset? (named reader-report) (named writer-report)))))))

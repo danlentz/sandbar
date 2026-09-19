@@ -27,12 +27,21 @@
    renders it as EDN or JSON per the Accept header.  The deny is a log line,
    not an event row (Dan's retention ruling of 2026-09-19).
 
+   On allow the gate also BINDS the principal for everything downstream: it
+   puts `sandbar.security.visibility/*principal*` into the context's
+   `:bindings` map, which Pedestal's chain establishes around every later
+   interceptor and handler, so every projection on the REST plane runs under
+   the one visibility decision whether or not the handler remembers to bind
+   it (D4b-R1, Astra's 2026-09-19 19:51Z finding: the property route described
+   any ident under the unrestricted nil-principal convention).
+
    Requires `sandbar.mcp.authz` (the pure decision core) and nothing of the
    verb catalog; it is a thin transport adapter, like the dispatch gate."
   (:require [clojure.string          :as str]
             [clojure.tools.logging   :as log]
             [io.pedestal.interceptor :as interceptor]
             [sandbar.mcp.authz       :as authz]
+            [sandbar.security.visibility :as visibility]
             [sandbar.util.http-status :as http-status]))
 
 (def self-service-prefix
@@ -100,7 +109,9 @@
                    :reason (:reason decision)
                    :role   (when (map? scope) (first (:scope/capabilities scope)))})
         (assoc context :response (deny-response request decision scope)))
-      context)))
+      ;; Allowed: bind the principal for every downstream interceptor and
+      ;; handler (Pedestal honours `:bindings` on the context).
+      (update context :bindings assoc #'visibility/*principal* principal))))
 
 (def require-scope
   "Pedestal interceptor applying `require-scope-enter` — mount it in the
