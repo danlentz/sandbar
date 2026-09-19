@@ -34,9 +34,11 @@
     GET /api/store/types/instance-of/:ns/:name/:entity-ns/:entity-name
     GET /api/store/types/subclass-of/:parent-ns/:parent-name/:child-ns/:child-name"
   (:require [clojure.tools.logging :as log]
-            [datomic.api :as d]
+            [sandbar.api.projection :as projection]
             [sandbar.db.datomic :as db]
             [sandbar.db.datatype :as dt]
+            [sandbar.security.query :as secq]
+            [sandbar.security.visibility :as visibility]
             [sandbar.service.endpoint :as endpoint :refer [defhandler]]
             [sandbar.service.params :as params :refer [defvalidator]]
             [sandbar.util.http-status :as http-status]))
@@ -45,11 +47,48 @@
 ;; Helpers
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
+(declare resolve-entity)
+
 (defn- entity->map
-  "Convert a Datomic entity to a plain map for JSON serialization."
+  "Convert a Datomic entity to a plain map for serialization — the SAME
+   scrubbed projection the MCP verbs return (`projection/full-projection`):
+   a firewalled-namespace entity collapses to the redaction marker, a visible
+   one loses its firewalled slots, nested refs project to metadata, and an
+   entity outside the bound principal's compartment clearance redacts.  The
+   raw `(into {} (d/touch e))` this replaced serialized every touched field,
+   credential hashes included (contract CT-02, D4b, 2026-09-19)."
   [e]
-  (when e
-    (into {} (d/touch e))))
+  (projection/full-projection e))
+
+(defn- forbidden-class
+  "HTTP 403 for a class whose namespace is firewalled off the read plane —
+   the REST twin of the loud MCP `assert-class-allowed!` refusal.  Decided on
+   the requested ident alone (a static namespace rule), so it discloses
+   nothing beyond what the class DEFINITION routes already show (a class's
+   existence is metamodel shape, public by Dan's 2026-07-07 ruling); the
+   handlers check existence first so an unknown class stays 404."
+  [class-kw]
+  (endpoint/forbidden {:error  "Class is firewalled off the read plane"
+                       :class  class-kw
+                       :reason :namespace-not-read-plane-allowed}))
+
+(defn- readable-entity
+  "Resolve `ref` to an entity the caller may read, or nil.  nil covers absent,
+   firewalled-namespace and compartment-uncleared alike, so the handlers answer
+   one not-found envelope for all three (no existence oracle) — the REST leg
+   of the one visibility decision (`visibility/entity-visible-to?`, CT-03)."
+  [request ref]
+  (when-let [e (resolve-entity ref)]
+    (when (and (secq/read-plane-entity-visible? e)
+               (visibility/entity-visible-to? (:identity request) e))
+      e)))
+
+(defmacro ^:private as-principal
+  "Run `body` with the request's authenticated principal bound for the
+   projection layer's compartment backstop."
+  [request & body]
+  `(binding [visibility/*principal* (:identity ~request)]
+     ~@body))
 
 (defn- parse-entity-ref
   "Parse an entity reference from path parameters.
@@ -154,10 +193,12 @@
      :classes (sort classes)}))
 
 (defhandler get-class
-  "GET /api/store/classes/:ns/:name - Full class description"
-  [_ _ {:keys [ns name]}]
+  "GET /api/store/classes/:ns/:name - Full class description.  A class
+   DEFINITION stays introspectable whatever its namespace (the schema registry
+   is metamodel shape, Dan 2026-07-07); its INSTANCES are the guarded surface."
+  [request _ {:keys [ns name]}]
   (let [class-kw (parse-entity-ref ns name)]
-    (if-let [desc (describe-entity class-kw)]
+    (if-let [desc (as-principal request (describe-entity class-kw))]
       (let [slots (dt/slots-of class-kw)
             direct-slots (dt/direct-slots-of class-kw)
             direct-slot-idents (set (keep entity-ident direct-slots))
@@ -176,25 +217,29 @@
 
 (defhandler list-instances
   "GET /api/store/classes/:ns/:name/instances - All instances including subclass instances"
-  [_ _ {:keys [ns name]}]
+  [request _ {:keys [ns name]}]
   (let [class-kw (parse-entity-ref ns name)]
-    (if (class-exists? class-kw)
+    (cond
+      (not (class-exists? class-kw)) (endpoint/not-found {:error "Class not found" :class class-kw})
+      (not (secq/read-plane-namespace-allowed? class-kw)) (forbidden-class class-kw)
+      :else
       (let [instances (dt/all-instances-of class-kw)]
         {:class class-kw
          :count (count instances)
-         :instances (mapv entity->map instances)})
-      (endpoint/not-found {:error "Class not found" :class class-kw}))))
+         :instances (as-principal request (mapv entity->map instances))}))))
 
 (defhandler list-direct-instances
   "GET /api/store/classes/:ns/:name/instances/direct - Direct instances only"
-  [_ _ {:keys [ns name]}]
+  [request _ {:keys [ns name]}]
   (let [class-kw (parse-entity-ref ns name)]
-    (if (class-exists? class-kw)
+    (cond
+      (not (class-exists? class-kw)) (endpoint/not-found {:error "Class not found" :class class-kw})
+      (not (secq/read-plane-namespace-allowed? class-kw)) (forbidden-class class-kw)
+      :else
       (let [instances (dt/direct-instances-of class-kw)]
         {:class class-kw
          :count (count instances)
-         :instances (mapv entity->map instances)})
-      (endpoint/not-found {:error "Class not found" :class class-kw}))))
+         :instances (as-principal request (mapv entity->map instances))}))))
 
 (defhandler list-slots
   "GET /api/store/classes/:ns/:name/slots - All effective slots (inherited + direct)"
@@ -352,21 +397,22 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (defhandler get-entity
-  "GET /api/store/entities/:ns/:name - Get entity by db/id or db/ident"
-  [_ _ {:keys [ns name]}]
+  "GET /api/store/entities/:ns/:name - Get entity by db/ident.  Absent,
+   firewalled and compartment-uncleared entities answer the same not-found."
+  [request _ {:keys [ns name]}]
   (let [ref (parse-entity-ref ns name)]
-    (if-let [desc (describe-entity ref)]
+    (if-let [e (readable-entity request ref)]
       (let [class-type (dt/class-of ref)]
         {:id ref
          :class class-type
-         :entity desc})
+         :entity (as-principal request (entity->map e))})
       (endpoint/not-found {:error "Entity not found" :id ref}))))
 
 (defhandler validate-entity
   "GET /api/store/entities/:ns/:name/validate - Validate entity against its class"
-  [_ _ {:keys [ns name]}]
+  [request _ {:keys [ns name]}]
   (let [ref (parse-entity-ref ns name)]
-    (if (resolve-entity ref)
+    (if (readable-entity request ref)
       (let [validation (dt/validate ref)]
         {:id ref
          :valid? (nil? validation)
@@ -387,25 +433,27 @@
       :errors [{:entity 123 :class :example/User :errors [...]}]}"
   [_ _ {:keys [ns name]}]
   (let [class-kw (parse-entity-ref ns name)]
-    (if (class-exists? class-kw)
+    (cond
+      (not (class-exists? class-kw)) (endpoint/not-found {:error "Class not found" :class class-kw})
+      (not (secq/read-plane-namespace-allowed? class-kw)) (forbidden-class class-kw)
+      :else
       (let [results (dt/validate-all-instances class-kw)]
         {:class class-kw
          :total (:total results)
          :valid (:valid results)
          :invalid (:invalid results)
          :all-valid? (zero? (:invalid results))
-         :errors (:errors results)})
-      (endpoint/not-found {:error "Class not found" :class class-kw}))))
+         :errors (:errors results)}))))
 
 (defhandler entity-class
   "GET /api/store/entities/:ns/:name/class - Get entity's class"
-  [_ _ {:keys [ns name]}]
+  [request _ {:keys [ns name]}]
   (let [ref (parse-entity-ref ns name)]
-    (if (resolve-entity ref)
+    (if (readable-entity request ref)
       (let [class-type (dt/class-of ref)]
         {:id ref
          :class class-type
-         :class-description (when class-type (describe-entity class-type))})
+         :class-description (when class-type (as-principal request (describe-entity class-type)))})
       (endpoint/not-found {:error "Entity not found" :id ref}))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;

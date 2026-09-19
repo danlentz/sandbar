@@ -55,7 +55,8 @@
     because seq iteration only surfaces realized attrs)"
   (:require [clojure.string :as str]
             [datomic.api    :as d]
-            [sandbar.security.query :as secq])
+            [sandbar.security.query :as secq]
+            [sandbar.security.visibility :as visibility])
   (:import (datomic Entity)))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -90,11 +91,16 @@
     ;; a visible entity keeps only non-firewalled slots.  metadata carries no
     ;; firewalled slot, so a visible entity is unchanged; a firewalled one
     ;; collapses to the redaction marker (no :db/ident / :dt/type enumeration).
-    (secq/read-plane-scrub-projection
-      (cond-> {}
-        (:db/id entity)    (assoc :db/id    (:db/id entity))
-        (:db/ident entity) (assoc :db/ident (:db/ident entity))
-        (:dt/type entity)  (assoc :dt/type  (:dt/type entity))))))
+    ;; COMPARTMENT backstop (D4b / CT-03): when a principal is bound for the
+    ;; read plane, an entity it is not cleared for collapses to the compartment
+    ;; marker — including a nested ref reached via project-nested-value.
+    (visibility/compartment-scrub
+      entity
+      (secq/read-plane-scrub-projection
+        (cond-> {}
+          (:db/id entity)    (assoc :db/id    (:db/id entity))
+          (:db/ident entity) (assoc :db/ident (:db/ident entity))
+          (:dt/type entity)  (assoc :dt/type  (:dt/type entity)))))))
 
 (defn- project-nested-value
   "Project a slot value for inclusion in `:full` projection output.
@@ -150,9 +156,12 @@
       ;; an otherwise-allowed entity) from a visible one.  Applied to EVERY
       ;; full-projected entity so navigate/rank-by/class.instances/search/etc.
       ;; cannot leak firewalled data through their RETURNED entities.
-      (secq/read-plane-scrub-projection
-        (cond-> slots
-          (:db/id touched) (assoc :db/id (:db/id touched)))))))
+      ;; COMPARTMENT backstop (D4b / CT-03) — see metadata-projection.
+      (visibility/compartment-scrub
+        touched
+        (secq/read-plane-scrub-projection
+          (cond-> slots
+            (:db/id touched) (assoc :db/id (:db/id touched))))))))
 
 (defn frontmatter-projection
   "Project a Datomic Entity to its FRONTMATTER — all scalar + ref slots

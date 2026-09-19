@@ -31,6 +31,8 @@
             [sandbar.projection     :as project-graph]
             [sandbar.mcp.clearance     :as clearance]
             [sandbar.mcp.notifications :as notifications]
+            [sandbar.security.query    :as secq]
+            [sandbar.security.visibility :as visibility]
             [sandbar.util.jsonrpc-status :as jsonrpc-status]))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -153,19 +155,31 @@
 ;; means every :db/ident-bearing entity is auto-exposed; no hand-curated
 ;; resource list.
 
+(declare read-cleared?)
+
 (defn handle-list
   "MCP `resources/list` — returns the catalog of named entities as
-   resource descriptions. Returns ALL named instances of :dt/Resource
-   (the metamodel root); subsequent stages add pagination.
+   resource descriptions.  Returns the named instances of :dt/Resource
+   (the metamodel root) the `principal` may read (`read-cleared?`, the
+   same decision as `resources/read`); subsequent stages add pagination.
+   The 2-arity is the nil-principal in-process path (public + non-
+   compartmented entities only, see `read-cleared?`); the wire reaches the
+   3-arity via `protocol/dispatch`.
 
    Uses `dt/named-entities-of` (returns entity maps; explicit return
    shape per the Q1=B dt/* split) rather than the prior
    `dt/all-named-instances-of` (returns idents — which then fed into
    `entity->resource-description` expecting entity maps, producing
    nil URIs and broken descriptions; codex MUST-FIX #2)."
-  [id _params]
+  ([id params] (handle-list id params nil))
+  ([id _params principal]
   (try
     (let [resources (->> (dt/named-entities-of :dt/Resource)
+                         ;; D4b / CT-03: the catalog applies the SAME decision
+                         ;; as resources/read — a firewalled or uncleared entity
+                         ;; is not advertised (closes the 2026-07-07 known gap:
+                         ;; :auth/* instances were enumerated by ident and URI).
+                         (filter #(read-cleared? principal %))
                          (map entity->resource-description)
                          (sort-by :uri)
                          vec)]
@@ -178,7 +192,7 @@
        :id      id
        :error   {:code    jsonrpc-status/internal-error
                  :message "Resource list failed"
-                 :data    {:exception-message (.getMessage e)}}})))
+                 :data    {:exception-message (.getMessage e)}}}))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; resources/read handler
@@ -224,27 +238,31 @@
                 {:entity-id (:db/id entity)})
       (pr-str (into {} entity)))))
 
-(defn- read-cleared?
-  "May `principal` read `entity`'s body?  Routes the read-plane authorization
-   through the clearance predicate (EP-N3, AP-S4-2).
+(defn read-cleared?
+  "May `principal` be shown `entity` on the resources plane?  The ONE read-plane
+   visibility decision (`visibility/entity-visible-to?`, D4b / CT-03) behind the
+   resources plane's own namespace and nil-principal rules:
 
-   NIL-PRINCIPAL POLICY (read plane): a nil principal here is the in-process /
-   legacy full-access caller (the /mcp chain's require-bearer 401s a nil
-   identity before dispatch, so a nil principal that reaches this handler is
-   in-process) — but per the notify-plane discipline (AP-8) we do NOT grant a
-   nil identity blanket access to a non-`:public` compartment.  A nil principal
-   is cleared for a `:public` entity only; a non-nil principal defers to
-   `cleared-for-compartment?`.
+   - the read-plane namespace firewall applies first: an instance of a
+     firewalled class (an `:auth/*` account) is never shown, whatever the
+     principal (`secq/read-plane-entity-visible?`);
+   - NIL-PRINCIPAL POLICY (resources plane): a nil principal is the in-process /
+     legacy caller — but per the notify-plane discipline (AP-8) it is NOT granted
+     a restricted compartment: it sees entities outside the compartment model
+     (the metamodel, tags) and `:public` memories only;
+   - a non-nil principal defers to `entity-visible-to?`: outside the compartment
+     model → shown; a compartmented memory → shown iff the principal clears it
+     (`:public`, or `:auth/full-clearance?`, or a cleared owning project);
+     `:private` and absent-visibility memories fail closed otherwise.
 
-   INERT-UNTIL-S6: `entity-compartment` reads `:mm.memory/visibility` (absent
-   pre-S6) → `*default-visibility*` (`:private`, AP-6), so pre-S6 every entity
-   is `:private` and only a full-clearance token clears it — the read plane
-   fails CLOSED by construction the instant this lands."
+   Shared by `handle-read` (the body) and `handle-list` (the catalog), so a
+   resource refused on one is not advertised by the other."
   [principal entity]
-  (let [compartment (clearance/entity-compartment entity)]
-    (if (nil? principal)
-      (= :public (:visibility compartment))
-      (clearance/cleared-for-compartment? principal compartment))))
+  (and (secq/read-plane-entity-visible? entity)
+       (if (nil? principal)
+         (or (not (visibility/compartmented? entity))
+             (= :public (:visibility (clearance/entity-compartment entity))))
+         (visibility/entity-visible-to? principal entity))))
 
 (defn handle-read
   "MCP `resources/read` — returns the content of a resource at the

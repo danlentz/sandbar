@@ -58,6 +58,7 @@
             [sandbar.schedule           :as sched]
             [sandbar.search             :as search]
             [sandbar.security.query     :as secq]
+            [sandbar.security.visibility :as visibility]
             [sandbar.shape              :as shape]
             [sandbar.store              :as store]
             [sandbar.db.datatype        :as dt]
@@ -604,7 +605,12 @@
         ;; SECURITY (read-plane namespace firewall): refuse to hand back a
         ;; firewalled-class entity (e.g. an :auth/* account) fetched by ident/eid.
         (do (secq/assert-entity-allowed! entity)
-            {:entity (projection/apply-projection entity projection)})
+            (if (visibility/entity-visible-to? visibility/*principal* entity)
+              {:entity (projection/apply-projection entity projection)}
+              ;; D4b / CT-03: an entity whose compartment the principal does
+              ;; not clear answers the SAME shape as an absent one (no
+              ;; existence oracle), the decision resources/read applies.
+              (visibility/missing-shape (str ident-or-id))))
         {:entity nil :missing? true :lookup (str ident-or-id) :reasons reasons}))))
 
 (defn- entity-find-by-rel-path-handler [args]
@@ -636,8 +642,11 @@
          :reasons #{:rel-path/unparseable}}
         (let [{:keys [valid? entity reasons]} (eref/validate ident)]
           (if valid?
-            {:entity (projection/apply-projection entity projection)
-             :resolved-ident (str ident)}
+            (if (visibility/entity-visible-to? visibility/*principal* entity)
+              {:entity (projection/apply-projection entity projection)
+               :resolved-ident (str ident)}
+              ;; D4b / CT-03: uncleared answers as absent (see entity-find).
+              (assoc (visibility/missing-shape rel-path) :resolved-ident (str ident)))
             {:entity nil :missing? true :lookup rel-path
              :resolved-ident (str ident) :reasons reasons}))))))
 
@@ -2764,7 +2773,7 @@
     :handler entity-create-handler}
    {:name "sandbar.entity.find"
     :title "Look up an entity by ident or eid"
-    :description "WHICH: looks up an entity by `:ident` (interned keyword) or `:id` (numeric eid).  Returns the entity-map projection (`:db/id`, `:db/ident` if interned, namespaced-keyword slots).\n\nWHEN: use to fetch the current state of a known entity.  Most common 'read one entity' verb.  When NOT to use: (a) you want all instances of a class — `sandbar.class.instances`; (b) you want fulltext search — `sandbar.search.bm25f`; (c) you don't know the ident — discover via `sandbar.class.instances` first; (d) you have a corpus rel-path (e.g. 'decisions/foo.md') but not the ident — use `sandbar.entity.find-by-rel-path` instead.\n\nHOW: provide ONE of `:ident` (keyword-form string) OR `:id` (numeric eid).  IDENT FORM: corpus :mm/Memory entities use the `memory.`-prefixed namespace convention — e.g. `\":memory.decisions/foo\"` (NOT `\":decisions/foo\"`); `\":memory.patterns.architectural.sandbar/X\"` for nested dirs.  Metamodel idents (`:dt/Class`, `:mm/Memory`, `:mm.tag/value`, etc.) use their own namespaces and don't have the memory. prefix.  Returns `{:entity <entity-map>}` if found, or `{:entity nil :missing? true :lookup <provided> :reasons #{}}` if not found.\n\nORDER: leaf-call; no prerequisites.\n\nCOMBINATION: pre-step before `sandbar.entity.update` (confirm the entity exists); after `sandbar.entity.create` (read back the created entity, though create returns the entity directly so this is rarely needed).  For RELATED entities, use `sandbar.navigate.{outbound,inbound,siblings-of}` or `sandbar.orient.library-card`.  When you have a filesystem rel-path instead of an ident, use `sandbar.entity.find-by-rel-path` to avoid ident-guessing."
+    :description "WHICH: looks up an entity by `:ident` (interned keyword) or `:id` (numeric eid).  Returns the entity-map projection (`:db/id`, `:db/ident` if interned, namespaced-keyword slots).\n\nWHEN: use to fetch the current state of a known entity.  Most common 'read one entity' verb.  When NOT to use: (a) you want all instances of a class — `sandbar.class.instances`; (b) you want fulltext search — `sandbar.search.bm25f`; (c) you don't know the ident — discover via `sandbar.class.instances` first; (d) you have a corpus rel-path (e.g. 'decisions/foo.md') but not the ident — use `sandbar.entity.find-by-rel-path` instead.\n\nHOW: provide ONE of `:ident` (keyword-form string) OR `:id` (numeric eid).  IDENT FORM: corpus :mm/Memory entities use the `memory.`-prefixed namespace convention — e.g. `\":memory.decisions/foo\"` (NOT `\":decisions/foo\"`); `\":memory.patterns.architectural.sandbar/X\"` for nested dirs.  Metamodel idents (`:dt/Class`, `:mm/Memory`, `:mm.tag/value`, etc.) use their own namespaces and don't have the memory. prefix.  Returns `{:entity <entity-map>}` if found, or `{:entity nil :missing? true :lookup <provided> :reasons #{}}` if not found.  A memory-shaped entity whose confidentiality compartment the authenticated principal does not clear answers that SAME not-found shape (no existence oracle) — the one visibility decision `resources/read`, `resources/list` and the REST entity read also apply (D4b, 2026-09-19).\n\nORDER: leaf-call; no prerequisites.\n\nCOMBINATION: pre-step before `sandbar.entity.update` (confirm the entity exists); after `sandbar.entity.create` (read back the created entity, though create returns the entity directly so this is rarely needed).  For RELATED entities, use `sandbar.navigate.{outbound,inbound,siblings-of}` or `sandbar.orient.library-card`.  When you have a filesystem rel-path instead of an ident, use `sandbar.entity.find-by-rel-path` to avoid ident-guessing."
     :inputSchema {:type "object"
                   :properties {:ident      {:type "string" :description "Entity ident (keyword string, e.g. ':memory.decisions/foo' for corpus memories or ':dt/Class' for metamodel)"}
                                :id         {:type "integer" :description "Entity eid (numeric)"}
@@ -2773,7 +2782,7 @@
     :handler entity-find-handler}
    {:name "sandbar.entity.find-by-rel-path"
     :title "Look up an :mm/Memory entity by corpus rel-path"
-    :description "WHICH: looks up an :mm/Memory entity by its corpus rel-path (e.g. 'plans/sandbar_as_mcp_server_arc_2026-05-12.md').  Resolves the rel-path to the substrate's `:memory.<dir>/<name>` ident via the canonical codec convention, then returns the entity-map projection.\n\nWHEN: use when you have a corpus filesystem path on hand and need the entity — without reverse-engineering the substrate's ident form.  The most common 'I know the file path, give me the entity' use case.  When NOT to use: (a) you already have the ident — `sandbar.entity.find` (slightly faster — skips rel-path parsing); (b) the entity isn't an :mm/Memory (e.g., :mm/Tag, :dt/Class) — those don't use the `memory.X/Y` ident convention so `sandbar.entity.find` with the appropriate ident is the right call; (c) fulltext search — `sandbar.search.bm25f`.\n\nHOW: `:rel-path` is the corpus rel-path string.  Accepts forms with or without the leading 'memory/' prefix: 'decisions/foo.md' AND 'memory/decisions/foo.md' both resolve to `:memory.decisions/foo`.  The .md extension is optional but conventional.  Returns `{:entity <entity-map> :resolved-ident <ident-string>}` if found, or `{:entity nil :missing? true :lookup <rel-path> :resolved-ident <ident-or-nil> :reasons <set>}` if not found.  The `:resolved-ident` field is included on both success and miss so consumers see what ident the rel-path mapped to.\n\nORDER: leaf-call; no prerequisites.\n\nCOMBINATION: pairs with `sandbar.orient.library-card` / `sandbar.navigate.*` for typed-edge exploration once the entity is in hand.  Per Gap 1 of the MCP cutover exercise 2026-05-22 — eliminates the ident-guessing friction surfaced when verbs only accept the substrate's internal ident form."
+    :description "WHICH: looks up an :mm/Memory entity by its corpus rel-path (e.g. 'plans/sandbar_as_mcp_server_arc_2026-05-12.md').  Resolves the rel-path to the substrate's `:memory.<dir>/<name>` ident via the canonical codec convention, then returns the entity-map projection.\n\nWHEN: use when you have a corpus filesystem path on hand and need the entity — without reverse-engineering the substrate's ident form.  The most common 'I know the file path, give me the entity' use case.  When NOT to use: (a) you already have the ident — `sandbar.entity.find` (slightly faster — skips rel-path parsing); (b) the entity isn't an :mm/Memory (e.g., :mm/Tag, :dt/Class) — those don't use the `memory.X/Y` ident convention so `sandbar.entity.find` with the appropriate ident is the right call; (c) fulltext search — `sandbar.search.bm25f`.\n\nHOW: `:rel-path` is the corpus rel-path string.  Accepts forms with or without the leading 'memory/' prefix: 'decisions/foo.md' AND 'memory/decisions/foo.md' both resolve to `:memory.decisions/foo`.  The .md extension is optional but conventional.  Returns `{:entity <entity-map> :resolved-ident <ident-string>}` if found, or `{:entity nil :missing? true :lookup <rel-path> :resolved-ident <ident-or-nil> :reasons <set>}` if not found.  The `:resolved-ident` field is included on both success and miss so consumers see what ident the rel-path mapped to.  An entity whose compartment the authenticated principal does not clear answers the miss shape (no existence oracle), as `sandbar.entity.find` does.\n\nORDER: leaf-call; no prerequisites.\n\nCOMBINATION: pairs with `sandbar.orient.library-card` / `sandbar.navigate.*` for typed-edge exploration once the entity is in hand.  Per Gap 1 of the MCP cutover exercise 2026-05-22 — eliminates the ident-guessing friction surfaced when verbs only accept the substrate's internal ident form."
     :inputSchema (one-required
                    {:rel-path   {:type "string" :description "Corpus rel-path (e.g. 'decisions/foo.md' or 'memory/decisions/foo.md'); leading 'memory/' and trailing '.md' optional"}
                     :projection {:type "string" :description "Entity shape: 'full' (default; complete entity-map) or 'metadata-only' (just :db/id/:db/ident/:dt/type)"}}
@@ -3724,7 +3733,12 @@
                         (assert-read-plane-call! canonical arguments)
                         (swap! tool-call-counts update canonical (fnil inc 0))
                         (let [t0 (System/nanoTime)
-                              r  ((:handler verb) arguments)
+                              ;; D4b / CT-03: the principal is bound for the
+                              ;; read plane so every projected entity — a find,
+                              ;; a search hit, a navigation target, a nested
+                              ;; ref — passes the one visibility decision.
+                              r  (binding [visibility/*principal* principal]
+                                   ((:handler verb) arguments))
                               ms (quot (- (System/nanoTime) t0) 1000000)]
                           (when (> ms *slow-tool-call-threshold-ms*)
                             (log/warn :MCP/slow-tool-call {:tool canonical :ms ms}))

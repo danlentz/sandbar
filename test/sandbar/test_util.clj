@@ -21,19 +21,38 @@
   "Session ID for authenticated API requests in tests"
   nil)
 
+(defn ensure-role!
+  "Return the eid of the `:auth/Role` named `role-name`, minting it when the
+   fixture database has none.  Idempotent per database."
+  [role-name]
+  (or (d/q '[:find ?r . :in $ ?n :where [?r :auth/role-name ?n]]
+           (db/db) role-name)
+      (:db/id (dt/make :auth/Role
+                       {:auth/role-name  role-name
+                        :auth/role-label (str "Fixture role " (name role-name))}
+                       {:validate? false}))))
+
 (defn create-test-user!
   "Create a test user for API authentication.
-   Returns the user entity."
+   Returns the user entity.
+
+   The user carries the `:read-write` capability role (`auth/read-write-role`)
+   by default — the role the live operator holds.  Since 2026-09-19 (D4b) the
+   protected `/api` stack applies the same scope decision as the MCP dispatch
+   gate, so a role-less principal is unscoped and refused (AP-2); a fixture
+   user that is meant to be refused passes `:roles []` explicitly."
   ([] (create-test-user! {}))
-  ([{:keys [username email password]
+  ([{:keys [username email password roles]
      :or {username "testuser"
           email "test@sandbar.test"
-          password "testpassword123"}}]
+          password "testpassword123"
+          roles [auth/read-write-role]}}]
    (dt/make :auth/User
      {:auth/username username
       :auth/email email
       :auth/password-hash (auth/hash-password password)
       :auth/principal-name (str "Test User: " username)
+      :auth/roles (mapv ensure-role! roles)
       :auth/active? true})))
 
 (defn get-test-session!

@@ -14,6 +14,7 @@
             [sandbar.api.workflow         :as workflow-api]
             [sandbar.mcp.auth             :as mcp-auth]
             [sandbar.mcp.transport        :as mcp-transport]
+            [sandbar.service.authorization :as authorization]
             [sandbar.service.content      :as content]
             [sandbar.service.endpoint     :as endpoint :refer [defhandler]]
             [sandbar.service.params       :as params]
@@ -77,6 +78,13 @@
                               params/log-params
                               auth/authentication-interceptor
                               auth/require-authentication
+                              ;; The scope gate — the SAME principal decision the
+                              ;; MCP dispatch gate applies (family-scope-decision):
+                              ;; read-only and unscoped principals are refused
+                              ;; every mutating route, unscoped principals every
+                              ;; read, before any handler runs (D4b / CT-01,
+                              ;; 2026-09-19).  /api/auth/* self-service is exempt.
+                              authorization/require-scope
                               endpoint/entity-ref-error-interceptor]
        ["/status" {:get status/status-handler}]
        ["/auth"

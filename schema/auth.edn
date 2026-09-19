@@ -80,6 +80,14 @@
    :db/cardinality :db.cardinality/one
    :db/doc "Whether this principal can authenticate"}
 
+  {:db/ident :auth/full-clearance?
+   :dt/type :dt/Property
+   :dt/domain :auth/Principal
+   :dt/range :db.type/boolean
+   :db/valueType :db.type/boolean
+   :db/cardinality :db.cardinality/one
+   :db/doc "Read-plane clearance for EVERY confidentiality compartment — the operator's own credential sees every :mm/Memory by construction, not by a nil-principal accident (AP-11 mechanism (b), ratified with the S5 notify/read-plane gate; read by sandbar.mcp.clearance/principal-clears-project?).  Minted 2026-09-19 (reliability sprint D4b, contract CT-03) so the one visibility decision the tool, resource and REST reads share can be satisfied by a real principal: absent or false, a principal clears NO compartment and every memory-shaped entity reads as not-found to it (fail-closed).  The per-project clearance set (:auth/cleared-projects) remains unminted, S9/S10 scope."}
+
   {:db/ident :auth/created-at
    :dt/type :dt/Property
    :dt/domain :auth/Principal
@@ -312,6 +320,7 @@
    :dt/slots [:auth/principal-name
               :auth/roles
               :auth/active?
+              :auth/full-clearance?
               :auth/created-at
               :auth/metadata]}]
 

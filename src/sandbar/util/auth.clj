@@ -425,6 +425,16 @@
    permitted to call read/introspection verbs only."
   :read-only)
 
+(def read-write-role
+  "The role-name keyword marking a principal as a writer — the capability role
+   Dan minted for the corpus operator on 2026-07-06 (AP-2 lockout resolution,
+   data-only) and later granted to the codex account.  Its meaning is the
+   absence of the read-only restriction: a principal carrying ANY capability
+   role is scoped (AP-2), and one carrying this role and not `read-only-role`
+   may mutate.  Named here so fixtures and the REST gate spell the same
+   keyword the live database carries."
+  :read-write)
+
 (defn read-only-principal?
   "True iff `principal` carries the `:read-only` role.  Returns false for nil
    (no authenticated principal — the legacy/local full-access path), so the

@@ -852,18 +852,28 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (deftest entity-lifecycle-test
-  (testing "Created entities appear in API responses"
-    ;; Create a test User instance
-    (let [user (dt/make* :model/User {:user/login "testuser"
-                                        :user/secret "testhash"})]
-      ;; Verify instance appears in list
-      (let [{:keys [status body]} (api-get-edn "/api/store/classes/model/User/instances")]
-        (is (= http-status/success status)
-            "Should return 200 OK")
-        (is (pos? (:count body))
-            "Should have at least one User instance")
-        (is (some #(= "testuser" (:user/login %)) (:instances body))
-            "Should include the created user")))))
+  (testing "A class outside the read-plane namespaces is not enumerable over REST"
+    ;; Since D4b (2026-09-19, contract CT-02) the generic store reads apply
+    ;; the read-plane namespace firewall the MCP verbs apply: `:model/User`
+    ;; (which carries `:user/secret`) is refused by namespace, loudly, and its
+    ;; secret is never serialized.  The positive lifecycle proof — a created
+    ;; entity of an allowed class appears in the enumeration and the entity
+    ;; read — lives in `sandbar.rest-authorization-parity-test`.
+    (dt/make* :model/User {:user/login "testuser"
+                           :user/secret "testhash-never-serialized"})
+    (let [response (api-get "/api/store/classes/model/User/instances")
+          body     (tu/parse-edn-body response)]
+      (is (= http-status/forbidden (:status response))
+          "Should be refused by namespace")
+      (is (= :namespace-not-read-plane-allowed (:reason body)))
+      (is (not (str/includes? (str (:body response)) "testhash-never-serialized"))
+          "the secret is never serialized"))
+    (let [response (api-get "/api/store/classes/model/User/instances/direct")]
+      (is (= http-status/forbidden (:status response))))
+    (testing "the class definition itself stays introspectable"
+      (let [{:keys [status body]} (api-get-edn "/api/store/classes/model/User")]
+        (is (= http-status/success status))
+        (is (= :model/User (:class body)))))))
 
 (deftest class-hierarchy-integration-test
   (testing "Class hierarchy is consistent"
@@ -926,17 +936,16 @@
             "Resource validation should include at least as many as Class validation")))))
 
 (deftest validate-instances-with-created-entities-test
-  (testing "Validation includes newly created entities"
-    ;; Create a valid User
+  (testing "Validation of a class outside the read-plane namespaces is refused"
+    ;; D4b / CT-02: the validation report names instances, so it follows the
+    ;; same namespace rule as the enumerations.  `dt/Class/validate` above is
+    ;; the positive case.
     (dt/make* :model/User {:user/login "validate-api-test-user"
                            :user/secret "testhash"})
     (let [{:keys [status body]} (api-get-edn "/api/store/classes/model/User/validate")]
-      (is (= http-status/success status)
-          "Should return 200 OK")
-      (is (pos? (:total body))
-          "Should have User instances")
-      (is (pos? (:valid body))
-          "Should have valid User instances"))))
+      (is (= http-status/forbidden status)
+          "Should be refused by namespace")
+      (is (= :namespace-not-read-plane-allowed (:reason body))))))
 
 (deftest validate-instances-json-test
   (testing "GET /api/store/classes/dt/Class/validate returns valid JSON"

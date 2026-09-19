@@ -19,11 +19,15 @@
    wrong number of appendages. Intergalactic lawsuits are expensive.
 
    Schema defined in schema/zorp.edn"
-  (:require [clojure.test :refer :all]
+  (:require [cheshire.core :as json]
+            [clojure.test :refer :all]
+            [cognitect.transit :as transit]
             [datomic.api :as d]
             [sandbar.db.datatype :as dt]
             [sandbar.db.datomic :as db]
-            [sandbar.test-util :as tu]))
+            [sandbar.test-util :as tu]
+            [sandbar.util.codec :as codec])
+  (:import [java.io ByteArrayInputStream ByteArrayOutputStream]))
 
 (use-fixtures :each (tu/make-test-db-fixture {:test-name "zorp-test"
                                               :extra-schema [:zorp]}))
@@ -934,9 +938,12 @@
       (is (= "dt/Property" (:class body))))))
 
 (deftest api-zorp-instances-test
-  ;; The instances endpoint shows what's actually in the database.
+  ;; The generic REST store reads apply the read-plane namespace firewall the
+  ;; MCP verbs apply (D4b, contract CT-02, 2026-09-19): the demo namespace is
+  ;; outside the corpus + metamodel allowlist, so its INSTANCES are refused,
+  ;; loudly, while its class definitions and hierarchy stay introspectable
+  ;; (the tests above).  Zorp's warehouse is not on the read plane.
   (testing "Create instances and query via API"
-    ;; Create some test instances
     (dt/make :zorp/HighTop {:footwear/name "API Test Dunks"
                             :footwear/size "api-test"
                             :footwear/price 199.99M
@@ -946,54 +953,61 @@
                              :footwear/sentient? true
                              :flipflop/mood "testing"})
 
-    (testing "Footwear instances include all subclass instances"
-      (let [{:keys [status body]} (tu/api-get-edn "/api/store/classes/zorp/Footwear/instances")]
-        (is (= 200 status))
-        (is (= :zorp/Footwear (:class body)))
-        (is (>= (:count body) 2))
-        (let [names (set (map :footwear/name (:instances body)))]
-          (is (contains? names "API Test Dunks"))
-          (is (contains? names "API Test Kevin")))))
+    (testing "Footwear instances are refused by namespace, direct and inherited"
+      (doseq [path ["/api/store/classes/zorp/Footwear/instances"
+                    "/api/store/classes/zorp/Sneaker/instances"
+                    "/api/store/classes/zorp/HighTop/instances/direct"]]
+        (let [{:keys [status body]} (tu/api-get-edn path)]
+          (is (= 403 status) path)
+          (is (= :namespace-not-read-plane-allowed (:reason body)) path)
+          (is (nil? (:instances body)) "no instance data in a refusal"))))
 
-    (testing "Sneaker instances via JSON"
-      (let [{:keys [status body]} (tu/api-get-json "/api/store/classes/zorp/Sneaker/instances")]
-        (is (= 200 status))
-        (is (= "zorp/Sneaker" (:class body)))
-        (let [names (set (map #(get % :footwear/name) (:instances body)))]
-          (is (contains? names "API Test Dunks"))
-          (is (not (contains? names "API Test Kevin")) "FlipFlop is not a Sneaker"))))
+    (testing "an unknown class is still not-found, whatever its namespace"
+      (let [{:keys [status]} (tu/api-get-edn "/api/store/classes/zorp/Unknown/instances")]
+        (is (= 404 status))))
 
-    (testing "Instance values with numeric types via Transit"
-      (let [{:keys [status body]} (tu/api-get-transit "/api/store/classes/zorp/HighTop/instances")]
-        (is (= 200 status))
-        (let [dunks (first (filter #(= "API Test Dunks" (:footwear/name %)) (:instances body)))]
-          (is (some? dunks) "Should find the test dunks")
-          ;; Transit preserves numeric types perfectly
-          (is (= 25.5 (:sneaker/bounce-factor dunks)) "double preserved")
-          (is (decimal? (:footwear/price dunks)) "BigDecimal preserved")
-          (is (= 199.99M (:footwear/price dunks))))))))
+    (testing "the instances exist in the store (the refusal is the read plane's, not the write's)"
+      (is (>= (count (dt/all-instances-of :zorp/Footwear)) 2)))))
+
+(defn- round-trip
+  "Encode `body` with the REST content encoder `encoder` and parse it back with
+   `parse` (a fn over the encoded string)."
+  [encoder parse body]
+  (let [out (ByteArrayOutputStream.)]
+    (encoder body out)
+    (parse (String. (.toByteArray out) "UTF-8"))))
+
+(defn- parse-transit [^String s]
+  (transit/read (transit/reader (ByteArrayInputStream. (.getBytes s "UTF-8")) :json)))
 
 (deftest api-zorp-numeric-precision-test
   ;; Numeric precision matters. Especially for prices.
   ;; "That'll be 1234567.89 credits." "Actually it's 1234567.890000001." NO.
-  (testing "BigDecimal precision preserved in EDN"
-    (dt/make :zorp/SpaceBoot {:footwear/name "Precision Boot"
-                              :footwear/size "test"
-                              :footwear/price 1234567.89M
-                              :footwear/gravity-rating 0.000063})
+  ;; The property lives in the REST content encoders (sandbar.util.codec),
+  ;; which every /api response passes through; since the demo instances are
+  ;; refused on the read plane (D4b / CT-02) the encoders are exercised
+  ;; directly with the same values the store used to serve.
+  (let [boot {:footwear/name "Precision Boot"
+              :footwear/price 1234567.89M
+              :footwear/gravity-rating 0.000063
+              :sneaker/bounce-factor 25.5}]
+    (testing "BigDecimal and double precision preserved in EDN"
+      ;; the EDN stream carries reader tags for BigDecimal, so it is read the
+      ;; way test-util's parse-edn-body reads every EDN response
+      (let [b (round-trip codec/clj->edn-stream read-string boot)]
+        (is (= 1234567.89M (:footwear/price b)) "BigDecimal precision intact")
+        (is (decimal? (:footwear/price b)) "BigDecimal preserved")
+        (is (= 0.000063 (:footwear/gravity-rating b)) "Double precision intact")))
 
-    (let [{:keys [status body]} (tu/api-get-edn "/api/store/classes/zorp/SpaceBoot/instances")]
-      (is (= 200 status))
-      (let [boot (first (filter #(= "Precision Boot" (:footwear/name %)) (:instances body)))]
-        (is (some? boot))
-        (is (= 1234567.89M (:footwear/price boot)) "BigDecimal precision intact")
-        (is (= 0.000063 (:footwear/gravity-rating boot)) "Double precision intact"))))
+    (testing "Numeric values in JSON"
+      ;; JSON has no BigDecimal, so it becomes a number. Still precise, just a different type.
+      (let [b (round-trip codec/clj->json-stream #(json/parse-string % true) boot)]
+        (is (number? (:footwear/price b)) "Price becomes JSON number")
+        (is (= 1234567.89 (double (:footwear/price b))) "and keeps its digits")
+        (is (number? (:footwear/gravity-rating b)) "Gravity becomes JSON number")))
 
-  (testing "Numeric values in JSON"
-    ;; JSON doesn't have BigDecimal, so it becomes a number. Still precise, just a different type.
-    (let [{:keys [status body]} (tu/api-get-json "/api/store/classes/zorp/SpaceBoot/instances")]
-      (is (= 200 status))
-      (let [boot (first (filter #(= "Precision Boot" (get % :footwear/name)) (:instances body)))]
-        (is (some? boot))
-        (is (number? (get boot :footwear/price)) "Price becomes JSON number")
-        (is (number? (get boot :footwear/gravity-rating)) "Gravity becomes JSON number")))))
+    (testing "Numeric types preserved through Transit"
+      (let [b (round-trip codec/clj->transit-json-stream parse-transit boot)]
+        (is (= 25.5 (:sneaker/bounce-factor b)) "double preserved")
+        (is (decimal? (:footwear/price b)) "BigDecimal preserved")
+        (is (= 1234567.89M (:footwear/price b)))))))

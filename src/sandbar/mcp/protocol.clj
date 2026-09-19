@@ -134,13 +134,14 @@
    principal INSIDE the handler consume it explicitly: `tools/call` (the
    read-only verb-class gate, Shape A′) and — per S5 charter item 3 — the
    compartment-aware `resources/read` + `resources/subscribe` handlers, which
-   thread the principal to their EP-N3/EP-N1 compartment checks (inert until S6
-   mints the visibility/clearance slots)."
+   thread the principal to their EP-N3/EP-N1 compartment checks, and since D4b
+   (2026-09-19) `resources/list`, which applies the same read decision to the
+   catalog so a refused resource is not advertised."
   {"initialize"                  (fn [id params _] (handle-initialize id params))
    "notifications/initialized"   (fn [_ _ _] nil) ;; client confirms ready; no response
    "tools/list"                  (fn [id params _] (tools/handle-list id params))
    "tools/call"                  (fn [id params principal] (tools/handle-call id params principal))
-   "resources/list"              (fn [id params _] (resources/handle-list id params))
+   "resources/list"              (fn [id params principal] (resources/handle-list id params principal))
    "resources/read"              (fn [id params principal] (resources/handle-read id params principal))
    "resources/subscribe"         (fn [id params principal] (resources/handle-subscribe id params principal))
    "resources/unsubscribe"       (fn [id params _] (resources/handle-unsubscribe id params))

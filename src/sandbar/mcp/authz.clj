@@ -293,57 +293,75 @@
   [decision]
   (and (map? decision) (true? (:deny decision))))
 
+(defn family-scope-decision
+  "The pure scope decision over a FAMILY, shared by every transport.  Given a
+   `family` (`:exempt` / `:read` / `:mutating` / `:tools-call`) and the `scope`
+   descriptor (`principal->scope`'s return), return `::allow` or
+   `{:deny true :reason <keyword>}`.
+
+   `method-scope-decision` (the MCP dispatch gate) classifies a JSON-RPC method
+   into its family and calls this; the REST `/api` gate
+   (`sandbar.service.authorization/require-scope`) classifies an HTTP request
+   (GET = `:read`, anything else = `:mutating`, session self-service =
+   `:exempt`) and calls the SAME function — so a principal is refused or
+   admitted identically over both transports (reliability sprint D4b, contract
+   CT-01, 2026-09-19).  Evaluation order is load-bearing:
+
+     1. EXEMPT FIRST — lifecycle / self-service always allows, regardless of
+        scope (a client cannot present a scoped principal before `initialize`
+        completes; a session must be able to end itself).
+     2. `::unrestricted` (nil-principal in-process path) — allow everything.
+     3. UNSCOPED-DENY (AP-2) — an authenticated but role-less principal is
+        `:scope/unscoped?`; deny every non-exempt family with
+        `:unscoped-principal-denied`.  Checked BEFORE family policy so a
+        role-less principal is refused uniformly, not per-family.
+     4. FAMILY POLICY —
+          `:tools-call` → allow (verb-class delegated to handle-call, Shape A′)
+          `:read`       → allow (scoped principal; the compartment axis is the
+                          read plane's own decision, `clearance/entity-visible-to?`)
+          `:mutating`   → deny read-only with `:read-only-principal-forbidden-
+                          mutation`; else allow (a scoped, non-read-only
+                          principal may mutate)."
+  [family scope]
+  (cond
+    ;; (1) Lifecycle / self-service exemption — before any scope reasoning.
+    (= :exempt family)
+    allow
+
+    ;; (2) Legacy/local nil-principal path — full access, unchanged.
+    (= ::unrestricted scope)
+    allow
+
+    ;; (3) Fail-closed unscoped-deny (AP-2) — role-less authenticated
+    ;; principal is refused every non-exempt family.
+    (:scope/unscoped? scope)
+    (deny reason-unscoped-denied)
+
+    ;; (4) Family policy for a scoped principal.
+    (= :mutating family)
+    (if (:scope/read-only? scope)
+      (deny reason-read-only-forbidden-mutation)
+      allow)
+
+    ;; :read and :tools-call for a scoped principal — allow.  (The tools/call
+    ;; verb-class check + the read-only mutating-verb deny live in handle-call
+    ;; per Shape A′; the compartment axis is decided on the read plane itself.)
+    :else
+    allow))
+
 (defn method-scope-decision
   "The pure dispatch-gate decision.  Given a `method` name and the `scope`
    descriptor (`principal->scope`'s return — either `::unrestricted` or a scope
    map), return `::allow` or `{:deny true :reason <keyword>}`.
 
-   PURE — no DB reads, no URI resolution.  Evaluation order (load-bearing):
-
-     1. EXEMPT FIRST — `initialize` + `notifications/initialized` always allow,
-        regardless of scope (a client cannot present a scoped principal before
-        `initialize` completes).
-     2. `::unrestricted` (nil-principal in-process path) — allow everything.
-     3. UNSCOPED-DENY (AP-2) — an authenticated but role-less principal is
-        `:scope/unscoped?`; deny every non-exempt method with
-        `:unscoped-principal-denied`.  Checked BEFORE family policy so a
-        role-less principal is refused uniformly, not per-family.
-     4. FAMILY POLICY —
-          `:tools-call` → allow (verb-class delegated to handle-call, Shape A′)
-          `:read`       → allow (scoped principal; compartment axis inert to S6)
-          `:mutating`   → deny read-only with `:read-only-principal-forbidden-
-                          mutation`; else allow (a scoped, non-read-only
-                          principal may mutate).
-
+   PURE — no DB reads, no URI resolution.  Classifies the method into its
+   family (`method->family`, deny-by-default for an unknown method) and defers
+   to `family-scope-decision`, the ONE decision the REST gate also applies.
    The destination/compartment `:reason` keywords are NOT returned by any
-   branch — they are reserved for S6 (see the reason-* defs)."
+   branch — they are reserved for the compartment stages (see the reason-*
+   defs)."
   [method scope]
-  (let [family (method->family method)]
-    (cond
-      ;; (1) Lifecycle exemption — before any scope reasoning.
-      (= :exempt family)
-      allow
-
-      ;; (2) Legacy/local nil-principal path — full access, unchanged.
-      (= ::unrestricted scope)
-      allow
-
-      ;; (3) Fail-closed unscoped-deny (AP-2) — role-less authenticated
-      ;; principal is refused every non-exempt method.
-      (:scope/unscoped? scope)
-      (deny reason-unscoped-denied)
-
-      ;; (4) Family policy for a scoped principal.
-      (= :mutating family)
-      (if (:scope/read-only? scope)
-        (deny reason-read-only-forbidden-mutation)
-        allow)
-
-      ;; :read and :tools-call for a scoped principal — allow.  (The tools/call
-      ;; verb-class check + the read-only mutating-verb deny live in
-      ;; handle-call per Shape A′; the compartment axis is inert until S6.)
-      :else
-      allow)))
+  (family-scope-decision (method->family method) scope))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Deny → JSON-RPC error envelope
@@ -355,24 +373,26 @@
 ;; `:reason`; `:role` is included when the scope carries one.
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-(defn- deny-message
-  "Human-readable message for a dispatch deny — names the method + the reason so
-   the caller learns exactly why (fail-loud, mirroring `read-only-denied`)."
-  [method reason]
+(defn deny-message
+  "Human-readable message for a scope deny — names the refused unit (an MCP
+   method such as `tools/call`, or an HTTP request such as `POST /api/events`)
+   and the reason so the caller learns exactly why (fail-loud, mirroring
+   `read-only-denied`).  Shared by the MCP dispatch gate and the REST gate."
+  [unit reason]
   (case reason
     :unscoped-principal-denied
-    (str "Permission denied: method '" method "' requires a scoped principal;"
+    (str "Permission denied: " unit " requires a scoped principal;"
          " the authenticated principal carries no capability-bearing role and"
          " is denied all non-exempt methods (fail-closed).")
 
     :read-only-principal-forbidden-mutation
-    (str "Permission denied: method '" method "' mutates the substrate and the"
+    (str "Permission denied: " unit " mutates the substrate and the"
          " authenticated principal holds the read-only role ("
          auth/read-only-role "), which may call read/introspection methods"
          " only.")
 
     ;; Fallthrough — any reserved/future reason gets a generic scope message.
-    (str "Permission denied: method '" method "' is outside the authenticated"
+    (str "Permission denied: " unit " is outside the authenticated"
          " principal's scope (" reason ").")))
 
 (defn deny->jsonrpc-error

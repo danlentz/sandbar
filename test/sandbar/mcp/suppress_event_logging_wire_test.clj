@@ -66,7 +66,13 @@
 
 (defn- seed-bearer!
   "Seed a read-only ServiceAccount whose api-key is generated at RUNTIME
-  (no committed credential literal); return its Bearer token."
+  (no committed credential literal); return its Bearer token.
+
+  The account carries `:auth/full-clearance?`, as the recall hook's live
+  credential does: since D4b (2026-09-19) the one read-plane visibility
+  decision redacts a memory the principal does not clear from every projected
+  hit, and the seeded guidance memory carries no visibility (a `:private`
+  compartment by default).  Read-only and cleared are independent axes."
   []
   (let [api-key (str (java.util.UUID/randomUUID))
         svc     :suppress-wire-probe
@@ -75,10 +81,11 @@
                           :auth/role-label "suppress-wire read-only"}
                          {:validate? false})]
     (dt/make :auth/ServiceAccount
-             {:auth/service-name svc
-              :auth/api-key-hash (auth/hash-password api-key)
-              :auth/roles        [(:db/id role)]
-              :auth/active?      true}
+             {:auth/service-name    svc
+              :auth/api-key-hash    (auth/hash-password api-key)
+              :auth/roles           [(:db/id role)]
+              :auth/full-clearance? true
+              :auth/active?         true}
              {:validate? false})
     (str (name svc) ":" api-key)))
 

@@ -219,17 +219,24 @@
    scoped, non-read-only principal may call mutating verbs over `/mcp`
    (`sandbar.mcp.authz/method-scope-decision` + `tools/handle-call`).
    Writes through `db/conn`, i.e. whatever `db/**conn*` holds.  Returns the
-   Bearer token `<service>:<key>`."
+   Bearer token `<service>:<key>`.
+
+   The principal carries `:auth/full-clearance?` — the operator's credential
+   shape since D4b (2026-09-19): a memory written with no owning project reads
+   as a `:private` compartment, and the one read-plane visibility decision
+   redacts the create ECHO for a principal that does not clear it.  This test
+   is about boot order, not clearance, so its writer is the cleared operator."
   []
   (let [role (dt/make :auth/Role
                       {:auth/role-name  :boot-order-acceptance-writer
                        :auth/role-label "Fixture writer (boot-order acceptance)"}
                       {:validate? false})]
     (dt/make :auth/ServiceAccount
-             {:auth/service-name service-name
-              :auth/api-key-hash (auth/hash-password api-key)
-              :auth/roles        [(:db/id role)]
-              :auth/active?      true}
+             {:auth/service-name    service-name
+              :auth/api-key-hash    (auth/hash-password api-key)
+              :auth/roles           [(:db/id role)]
+              :auth/full-clearance? true
+              :auth/active?         true}
              {:validate? false})
     (str (name service-name) ":" api-key)))
 
