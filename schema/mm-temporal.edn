@@ -32,14 +32,18 @@
 ;;
 ;;   :mm/Event (LIFTED to abstract per collision-resolution ADR;
 ;;              OBSERVED — outside-view happening / news / occurrence)
-;;     ├── :mm/HookEvent     (NEW concrete; receives the 6 existing
+;;     └── :mm/HookEvent     (NEW concrete; receives the 6 existing
 ;;                              :mm/Event hook-event-kind instances via the
 ;;                              migration tx-fn; carries :mm.hook-event/*
 ;;                              slots that are the renamed :mm.event/* slots)
-;;     └── (ADDITIVE re-parent under :mm/Event of the existing :event/*
-;;          family; preserves their existing :dt/Event parent for back-compat)
-;;          :event/SystemEvent, :event/ApiCall, :event/HttpRequest,
-;;          :event/Transaction, :event/ServerEvent, :event/UserEvent
+;;
+;;   The :event/* runtime-event family (SystemEvent, ApiCall, HttpRequest,
+;;   Transaction, ServerEvent, UserEvent) stays under :dt/Event ONLY.  Its
+;;   additive re-parent under :mm/Event (2026-05-24 to 2026-09-19) made
+;;   every runtime event row a memory and was retracted one-off by Dan's
+;;   retention-review ruling of 2026-09-19; see the note at the end of the
+;;   re-parent block below and sandbar.db.datomic/retract-runtime-event-
+;;   memory-edges!.
 ;;
 ;; CROSS-ROOT TYPED EDGES (semantic glue):
 ;;   :mm.activity/spec      : Activity → Spec    (this Activity executes this Spec)
@@ -878,13 +882,18 @@
   ;; :workflow/Process — add :mm/Process parent (preserves :dt/Ref parent)
   {:db/ident :workflow/Process :dt/subclass-of :mm/Process}
 
-  ;; :event/* family — add :mm/Event parent (preserves :dt/Event parent for back-compat)
-  {:db/ident :event/SystemEvent :dt/subclass-of :mm/Event}
-  {:db/ident :event/ApiCall     :dt/subclass-of :mm/Event}
-  {:db/ident :event/HttpRequest :dt/subclass-of :mm/Event}
-  {:db/ident :event/Transaction :dt/subclass-of :mm/Event}
-  {:db/ident :event/ServerEvent :dt/subclass-of :mm/Event}
-  {:db/ident :event/UserEvent   :dt/subclass-of :mm/Event}]
+  ;; The :event/* family is NO LONGER re-parented under :mm/Event.  From
+  ;; 2026-05-24 to 2026-09-19 the six runtime-event classes (SystemEvent,
+  ;; ApiCall, HttpRequest, Transaction, ServerEvent, UserEvent) carried an
+  ;; additive :dt/subclass-of :mm/Event here, which made every runtime event
+  ;; row an :mm/Memory instance: 71,565 of the 91,792 entities counted as
+  ;; memories on 2026-09-19 were request, server and system event rows.
+  ;; Dan's retention-review ruling (2026-09-19): the six links are retracted
+  ;; one-off.  A schema load only asserts, so a store that still carries
+  ;; them is healed at boot by sandbar.db.datomic/retract-runtime-event-
+  ;; memory-edges! (idempotent; runs from initialize-db!).  The classes keep
+  ;; their :dt/Event parent (schema/event.edn).
+  ]
 
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;

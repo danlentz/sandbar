@@ -706,6 +706,48 @@
              plan)]
         {:mode :apply :groups plan :pruned pruned}))))
 
+(def +runtime-event-classes+
+  "The six concrete runtime-event classes of the `:dt/Event` tree.  From
+   2026-05-24 to 2026-09-19 each also carried `:dt/subclass-of :mm/Event`
+   (the additive re-parent of the collision-resolution ADR), which made every
+   runtime event row an `:mm/Memory` instance: 71,565 of the 91,792 entities
+   counted as memories on 2026-09-19 were request, server and system event
+   rows.  Dan's retention-review ruling of that day retracted the six links
+   one-off; `retract-runtime-event-memory-edges!` is that retraction, run at
+   every boot as an idempotent guard."
+  [:event/SystemEvent :event/ApiCall :event/HttpRequest
+   :event/Transaction :event/ServerEvent :event/UserEvent])
+
+(defn retract-runtime-event-memory-edges!
+  "Retract `:dt/subclass-of :mm/Event` from each runtime-event class that
+   still carries it, then fire the post-schema-reload handlers so memoized
+   class closures are rebuilt.  Idempotent: a store without the links
+   transacts nothing and fires nothing.  Runs from `initialize-db!` after the
+   schema load: the schema source no longer declares the links, but a Datomic
+   schema load only asserts, so a store initialized before 2026-09-19 (or a
+   restored backup of one) keeps them until this guard runs.  Returns the
+   vector of class idents whose link was retracted."
+  [uri]
+  (let [c        (conn uri)
+        db       (d/db c)
+        mm-event (d/entid db :mm/Event)
+        carrying (if mm-event
+                   (->> +runtime-event-classes+
+                        (filter (fn [cls]
+                                  (when-let [e (d/entid db cls)]
+                                    (seq (d/q '[:find ?c :in $ ?c ?p
+                                                :where [?c :dt/subclass-of ?p]]
+                                              db e mm-event)))))
+                        vec)
+                   [])]
+    (when (seq carrying)
+      @(d/transact c (mapv (fn [cls] [:db/retract cls :dt/subclass-of :mm/Event])
+                           carrying))
+      (fire-post-schema-reload-handlers!)
+      (log/info :DB/RUNTIME-EVENT-MEMORY-EDGES-RETRACTED
+                {:classes carrying :uri uri}))
+    carrying))
+
 (defn initialize-db! [uri & schema]
   ;; Stage 5 Phase B (2026-05-22): always reload schema + dbfns at start,
   ;; regardless of whether the DB needed to be created.  Datomic's
@@ -729,6 +771,10 @@
   ;; this ns for db/conn + db/db-uri).
   (let [created? (ensure-db! uri)]
     (apply load-all-schema! uri schema)
+    ;; 2026-09-19: the six runtime-event classes must not be :mm/Event
+    ;; subclasses (Dan's retention-review ruling); heal a store that still
+    ;; carries the links.  Idempotent; no-op on a fresh store.
+    (retract-runtime-event-memory-edges! uri)
     ;; Self-heal schema-seeded constraint sub-entities that proliferated on
     ;; pre-:db/ident reloads (idempotent no-op once healed).  Must run after
     ;; load-all-schema! so the canonical idented sub-entities exist.

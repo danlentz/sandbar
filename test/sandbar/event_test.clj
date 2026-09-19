@@ -33,11 +33,14 @@
 (deftest server-event-hierarchy-test
   (testing "ServerEvent class hierarchy"
     (is (some? (db/entity :event/ServerEvent)) "ServerEvent should exist")
-    ;; Per the metamodel-unification arc (mm/Event collision-resolution ADR 2026-05-24):
-    ;; the :event/* family is ADDITIVELY re-parented under :mm/Event while keeping
-    ;; the legacy :dt/Event parent for back-compat.  Expected parents set = both.
-    (is (= #{:dt/Event :mm/Event} (set (dt/parents-of :event/ServerEvent)))
-        "ServerEvent parents should be :dt/Event + :mm/Event (additive re-parent per mm/Event collision-resolution ADR)")
+    ;; 2026-05-24 to 2026-09-19 the :event/* family was ADDITIVELY re-parented
+    ;; under :mm/Event (collision-resolution ADR), which made every runtime
+    ;; event row an :mm/Memory instance.  Dan's retention-review ruling of
+    ;; 2026-09-19 retracted the six links one-off: the family is under
+    ;; :dt/Event only (see runtime-events-are-not-memories-test below and
+    ;; sandbar.db.runtime-event-edges-test for the boot-time guard).
+    (is (= #{:dt/Event} (set (dt/parents-of :event/ServerEvent)))
+        "ServerEvent's only parent is :dt/Event (the :mm/Event link was retracted 2026-09-19)")
     (is (not (dt/abstract? :event/ServerEvent)) "ServerEvent should not be abstract"))
 
   (testing "ServerEvent ancestors"
@@ -49,22 +52,22 @@
 (deftest user-event-hierarchy-test
   (testing "UserEvent class hierarchy"
     (is (some? (db/entity :event/UserEvent)) "UserEvent should exist")
-    (is (= #{:dt/Event :mm/Event} (set (dt/parents-of :event/UserEvent)))
-        "UserEvent parents should be :dt/Event + :mm/Event (additive re-parent per mm/Event collision-resolution ADR)")
+    (is (= #{:dt/Event} (set (dt/parents-of :event/UserEvent)))
+        "UserEvent's only parent is :dt/Event (the :mm/Event link was retracted 2026-09-19)")
     (is (not (dt/abstract? :event/UserEvent)) "UserEvent should not be abstract")))
 
 (deftest system-event-hierarchy-test
   (testing "SystemEvent class hierarchy"
     (is (some? (db/entity :event/SystemEvent)) "SystemEvent should exist")
-    (is (= #{:dt/Event :mm/Event} (set (dt/parents-of :event/SystemEvent)))
-        "SystemEvent parents should be :dt/Event + :mm/Event (additive re-parent per mm/Event collision-resolution ADR)")
+    (is (= #{:dt/Event} (set (dt/parents-of :event/SystemEvent)))
+        "SystemEvent's only parent is :dt/Event (the :mm/Event link was retracted 2026-09-19)")
     (is (not (dt/abstract? :event/SystemEvent)) "SystemEvent should not be abstract")))
 
 (deftest http-request-hierarchy-test
   (testing "HttpRequest class hierarchy"
     (is (some? (db/entity :event/HttpRequest)) "HttpRequest should exist")
-    (is (= #{:event/ServerEvent :mm/Event} (set (dt/parents-of :event/HttpRequest)))
-        "HttpRequest parents should be :event/ServerEvent + :mm/Event (additive re-parent per mm/Event collision-resolution ADR)"))
+    (is (= #{:event/ServerEvent} (set (dt/parents-of :event/HttpRequest)))
+        "HttpRequest's only parent is :event/ServerEvent (the :mm/Event link was retracted 2026-09-19)"))
 
   (testing "HttpRequest full ancestor chain"
     (let [ancestors (set (dt/ancestors-of :event/HttpRequest))]
@@ -76,14 +79,33 @@
 (deftest api-call-hierarchy-test
   (testing "ApiCall class hierarchy"
     (is (some? (db/entity :event/ApiCall)) "ApiCall should exist")
-    (is (= #{:event/ServerEvent :mm/Event} (set (dt/parents-of :event/ApiCall)))
-        "ApiCall parents should be :event/ServerEvent + :mm/Event (additive re-parent per mm/Event collision-resolution ADR)")))
+    (is (= #{:event/ServerEvent} (set (dt/parents-of :event/ApiCall)))
+        "ApiCall's only parent is :event/ServerEvent (the :mm/Event link was retracted 2026-09-19)")))
 
 (deftest transaction-hierarchy-test
   (testing "Transaction class hierarchy"
     (is (some? (db/entity :event/Transaction)) "Transaction should exist")
-    (is (= #{:event/ServerEvent :mm/Event} (set (dt/parents-of :event/Transaction)))
-        "Transaction parents should be :event/ServerEvent + :mm/Event (additive re-parent per mm/Event collision-resolution ADR)")))
+    (is (= #{:event/ServerEvent} (set (dt/parents-of :event/Transaction)))
+        "Transaction's only parent is :event/ServerEvent (the :mm/Event link was retracted 2026-09-19)")))
+
+(deftest runtime-events-are-not-memories-test
+  (testing "no runtime-event class is a subclass of :mm/Memory or :mm/Event (Dan's retention-review ruling 2026-09-19)"
+    (doseq [cls [:event/SystemEvent :event/ApiCall :event/HttpRequest
+                 :event/Transaction :event/ServerEvent :event/UserEvent]]
+      (is (not (dt/subclass-of? :mm/Event cls))
+          (str cls " must not be under :mm/Event"))
+      (is (not (dt/subclass-of? :mm/Memory cls))
+          (str cls " must not be under :mm/Memory"))
+      (is (dt/subclass-of? :dt/Event cls)
+          (str cls " keeps its :dt/Event ancestry"))))
+  (testing "a runtime event row is not an :mm/Memory instance"
+    (let [row (dt/make :event/SystemEvent {:event/name "not a memory"
+                                           :event/level :info
+                                           :event/namespace "sandbar.event-test"})]
+      (is (dt/instance-of? :event/SystemEvent row))
+      (is (dt/instance-of? :dt/Event row))
+      (is (not (dt/instance-of? :mm/Event row)) "a runtime event is not an :mm/Event")
+      (is (not (dt/instance-of? :mm/Memory row)) "a runtime event is not a memory"))))
 
 (deftest subclass-relationships-test
   (testing "subclasses-of returns all transitive subclasses"
