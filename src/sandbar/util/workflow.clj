@@ -932,6 +932,16 @@
    pre-existing orphans, guards any non-orchestrator close path, and (3.4)
    retires crashed sessions.
 
+   ACTIVITY BETWEEN PLANNING AND CLOSURE (D3, 2026-09-19): the sweep
+   classifies every active process first and closes afterwards.  Immediately
+   before closing a candidate it re-fetches the process and classifies it
+   AGAIN against the same window; a candidate that is no longer a candidate
+   — fresh activity on its session, a transition that moved it, a hold —
+   is WITHDRAWN, not closed, and reported under :withdrawn.  A live session
+   that shows activity in that gap is therefore never failed on a stale
+   plan.  A transition that still fails after the re-check is recorded
+   under :skipped as before.
+
    Options (all keyword args; the zero-arg call applies with defaults):
      :dry-run?       — true ⇒ classify and report WITHOUT transacting
                        (:mode :dry-run, :would-close listed).  Default false:
@@ -940,50 +950,78 @@
      :stale-after-ms — inactivity window; default
                        `default-stale-session-window-ms` (12h) or the config
                        key [:workflow :stale-session-window-ms].
+     :before-apply   — TEST SEAM: a fn of the candidate map, called after
+                       planning and before the apply-time re-check, so a
+                       test can inject activity into exactly that gap.
+                       nil (the default) does nothing.
 
    Returns the plan map (:now :window-ms :scanned :leaks :stale :held
    :candidates :would-close) plus
-     :mode     :dry-run | :apply
-     :closed   [pid …]  — processes driven to a terminal state
-     :skipped  [{:process-id :state :kind :error} …]
-     :receipts [{:process-id :kind :state :terminal-state :ended-at
-                 (:ended-at-error)} …] — one per closed process."
-  [& {:keys [dry-run? now stale-after-ms]}]
-  (let [plan (leaked-session-plan :now now :stale-after-ms stale-after-ms)
-        now  ^Date (:now plan)]
+     :mode      :dry-run | :apply
+     :closed    [pid …]  — processes driven to a terminal state
+     :withdrawn [{:process-id :state :kind :note} …] — candidates that were
+                no longer candidates at apply time (left untouched)
+     :skipped   [{:process-id :state :kind :error} …]
+     :receipts  [{:process-id :kind :state :terminal-state :ended-at
+                  (:ended-at-error)} …] — one per closed process."
+  [& {:keys [dry-run? now stale-after-ms before-apply]}]
+  (let [plan      (leaked-session-plan :now now :stale-after-ms stale-after-ms)
+        now       ^Date (:now plan)
+        window-ms (:window-ms plan)]
     (if dry-run?
       (do
         (log/info :WORKFLOW/LEAKED-SESSION-SWEEP-DRY-RUN (dissoc plan :candidates))
-        (assoc plan :mode :dry-run :closed [] :skipped [] :receipts []))
+        (assoc plan :mode :dry-run :closed [] :withdrawn [] :skipped [] :receipts []))
       (reduce
         (fn [acc {:keys [process-id state kind path reason subject-id held?] :as c}]
           (if held?
             acc
             (try
-              (when-not (seq path)
-                (throw (ex-info "No close-path registered for current state"
-                                {:state state :process-id process-id :kind kind})))
-              (apply-close-path! process-id path reason)
-              (let [terminal  (:workflow/state-name
-                               (get-current-state (find-process process-id)))
-                    ended-err (when (= kind :stale)
-                                (stamp-session-ended-at! subject-id now))]
-                (log/info :WORKFLOW/LEAKED-SESSION-CLOSED
-                          {:process-id    process-id
-                           :kind          kind
-                           :from          state
-                           :to            terminal
-                           :last-activity (:last-activity c)
-                           :idle-ms       (:idle-ms c)})
-                (-> acc
-                    (update :closed conj process-id)
-                    (update :receipts conj
-                            (cond-> {:process-id     process-id
-                                     :kind           kind
-                                     :state          state
-                                     :terminal-state terminal
-                                     :ended-at       (if (= kind :stale) now (:ended-at c))}
-                              ended-err (assoc :ended-at-error ended-err)))))
+              (when before-apply (before-apply c))
+              ;; Apply-time re-check against the live process: the plan was
+              ;; computed a moment ago and activity may have arrived since.
+              (let [fresh (some-> (find-process process-id)
+                                  (classify-process now window-ms))
+                    withdrawn-note
+                    (cond
+                      (nil? fresh)              "no longer a candidate at apply time (activity arrived after planning)"
+                      (:held? fresh)            "held at apply time (the process moved to a held state after planning)"
+                      (not= (:kind fresh) kind) "candidate kind changed after planning"
+                      (not= (:state fresh) state) "the process changed state after planning")]
+                (if withdrawn-note
+                  (do
+                    (log/info :WORKFLOW/LEAKED-SESSION-CANDIDATE-WITHDRAWN
+                              {:process-id process-id :kind kind :state state
+                               :note withdrawn-note})
+                    (update acc :withdrawn conj {:process-id process-id
+                                                 :state      state
+                                                 :kind       kind
+                                                 :note       withdrawn-note}))
+                  (do
+                    (when-not (seq path)
+                      (throw (ex-info "No close-path registered for current state"
+                                      {:state state :process-id process-id :kind kind})))
+                    (apply-close-path! process-id path reason)
+                    (let [terminal  (:workflow/state-name
+                                     (get-current-state (find-process process-id)))
+                          ended-err (when (= kind :stale)
+                                      (stamp-session-ended-at! subject-id now))]
+                      (log/info :WORKFLOW/LEAKED-SESSION-CLOSED
+                                {:process-id    process-id
+                                 :kind          kind
+                                 :from          state
+                                 :to            terminal
+                                 :last-activity (:last-activity c)
+                                 :idle-ms       (:idle-ms c)})
+                      (-> acc
+                          (update :closed conj process-id)
+                          (update :receipts conj
+                                  (cond-> {:process-id     process-id
+                                           :kind           kind
+                                           :state          state
+                                           :terminal-state terminal
+                                           :ended-at       (if (= kind :stale) now (:ended-at c))}
+                                    ended-err (assoc :ended-at-error ended-err))))))))
               (catch Exception e
                 (log/warn :WORKFLOW/LEAKED-SESSION-CLOSE-FAILED
                           {:process-id process-id :kind kind :state state
@@ -992,7 +1030,7 @@
                                            :state      state
                                            :kind       kind
                                            :error      (.getMessage e)})))))
-        (assoc plan :mode :apply :closed [] :skipped [] :receipts [])
+        (assoc plan :mode :apply :closed [] :withdrawn [] :skipped [] :receipts [])
         (:candidates plan)))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;

@@ -292,3 +292,55 @@
           "a later history entry counts as activity"))
     (is (zero? (:stale (wf/leaked-session-plan)))
         "and a session active 1h ago is not stale")))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Activity arriving between planning and closure (D3, 2026-09-19)
+;;
+;; The sweep classifies first and closes afterwards.  Whatever arrives in that
+;; gap must withdraw the candidate, never fail it on the stale plan.  The
+;; `:before-apply` seam is called with the candidate after planning and before
+;; the apply-time re-check — exactly the gap.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(deftest activity-between-planning-and-closure-withdraws-the-candidate
+  (testing "a session touched after the sweep planned it but before it closed it is left alone"
+    (let [[pid sid] (start-session-process! {:started-at  (hours-ago 13)
+                                             :transitions [[:session/start nil]]})
+          fired     (atom 0)
+          summary   (wf/close-leaked-sessions!
+                      :before-apply (fn [c]
+                                      (when (= pid (:process-id c))
+                                        (swap! fired inc)
+                                        ;; any explicit touch of the session memorial is activity
+                                        (dt/update-entity! sid {:mm.memory/last-touched (Date.)}))))]
+      (is (= 1 @fired) "the seam fired once, for this candidate")
+      (is (= [pid] (:would-close summary)) "the plan had named the session as stale")
+      (is (empty? (:closed summary)) "nothing was closed")
+      (is (empty? (:skipped summary)) "nothing errored")
+      (is (= [pid] (mapv :process-id (:withdrawn summary))) "the candidate was withdrawn at apply time")
+      (is (re-find #"activity arrived after planning" (:note (first (:withdrawn summary)))))
+      (is (= :session/active (state-of pid)) "the session is still active")
+      (is (nil? (ended-at-of sid)) "and carries no ended-at")))
+
+  (testing "a transition applied after planning (an operator hold) also withdraws it, and the hold stands"
+    (let [[pid sid] (start-session-process! {:started-at  (hours-ago 13)
+                                             :transitions [[:session/start nil]]})
+          summary   (wf/close-leaked-sessions!
+                      :before-apply (fn [c]
+                                      (when (= pid (:process-id c))
+                                        (wf/transition! (wf/find-process pid) :session/pause-maintenance
+                                                        :reason "operator hold during the sweep"))))]
+      (is (empty? (:closed summary)))
+      (is (empty? (:skipped summary)))
+      (is (= [pid] (mapv :process-id (:withdrawn summary))))
+      (is (= :session/paused (state-of pid)) "the pause stands; the sweep did not fail the process")
+      (is (nil? (ended-at-of sid)))))
+
+  (testing "with nothing arriving in the gap the stale session is closed as before"
+    (let [[pid sid] (start-session-process! {:started-at  (hours-ago 13)
+                                             :transitions [[:session/start nil]]})
+          summary   (wf/close-leaked-sessions! :before-apply (fn [_] nil))]
+      (is (= [pid] (:closed summary)))
+      (is (empty? (:withdrawn summary)))
+      (is (= :session/failed (state-of pid)))
+      (is (some? (ended-at-of sid))))))
