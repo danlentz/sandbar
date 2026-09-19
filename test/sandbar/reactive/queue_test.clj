@@ -21,7 +21,7 @@
        sliding buffer evicted it and its dirty flag pinned it forever;
        bugs/reactive_queue_sliding_buffer_overflow_strands_dirty_entities_-
        never_reenqueued_astra_finding_2026_09_18).
-   (d) OLDEST-FIRST ORDER and the 13-key health snapshot are preserved;
+   (d) OLDEST-FIRST ORDER and the 14-key health snapshot are preserved;
        ownership is released after a failing sink.
    (e) THE WORKER drains on a wake-up without any manual drain, and
        `stop!` leaves nothing dirty.
@@ -35,9 +35,16 @@
        reports `:stopped? false`, starts NO competing drain on the calling
        thread, and the worker finishes old-then-new on its own; a second
        `stop!` joins the retained handle.
+   (h) A RESTART AFTER AN INCOMPLETE STOP KEEPS THE RETIRED WORKER JOINABLE —
+       `start!` after a timed-out `stop!` moves the outgoing worker to a
+       retired set instead of overwriting its handle; the next `stop!` joins
+       every worker and stays incomplete while any is inside its sink
+       (Astra's P2, codex/to-claude/2026-09-19T102851Z_queue-rereview-
+       edf1a9b.md).
 
-  Astra's isolated reproductions (codex/review-probes/queue-2026-09-18.clj)
-  are the acceptance cases; (a), (c), (f), (g) are their in-repo twins."
+  Astra's isolated reproductions (codex/review-probes/queue-2026-09-18.clj
+  and queue-rereview-2026-09-19.clj) are the acceptance cases; (a), (c),
+  (f), (g), (h) are their in-repo twins."
   (:require [clojure.test :refer :all]
             [sandbar.reactive.queue :as q]))
 
@@ -166,13 +173,14 @@
       (q/drain-all!)
       (is (= [10 20 30] (mapv first @seen)) "oldest first")
       (is (= (slots "a2") (second (first @seen))) "and with its latest state")))
-  (testing "health keeps its 13 keys and the historical :buffer-size"
+  (testing "health keeps its 14 keys and the historical :buffer-size"
     (let [h (q/health)]
       (is (= #{:worker-running? :buffer-size :dirty-entity-count :oldest-pending-age-ms
                :enqueue-total :drain-total :coalesce-total :sink-error-total
                :registered-sinks :saturated? :startup-instant :last-enqueue-instant
-               :last-drain-instant}
+               :last-drain-instant :retired-workers}
              (set (keys h))))
+      (is (= 0 (:retired-workers h)))
       (is (= q/+default-buffer-size+ (:buffer-size h)))
       (is (false? (:saturated? h)))))
   (testing "a failing sink is counted, never rethrown, the entity is still cleared, and ownership is released"
@@ -288,6 +296,56 @@
         (is (empty? (q/snapshot-dirty)))
         (is (empty? (q/snapshot-in-flight)))
         (is (= 2 (:drain-total (q/health))))
+        (finally
+          (deliver release-old :release)
+          (q/stop!))))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; (h) a restart after an incomplete stop! keeps the retired worker joinable
+;;
+;; Port of Astra's re-review probe (codex/review-probes/queue-rereview-
+;; 2026-09-19.clj, "restarting-after-incomplete-stop-retains-all-worker-
+;; ownership").  Before the correction, start! overwrote the sole stored
+;; worker channel with the fresh worker, so the next stop! joined only that
+;; one and reported {:stopped? true ... :in-flight 1} while the old worker
+;; was still inside its sink; a filesystem write could then land after a
+;; caller believed shutdown complete.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(deftest restart-after-incomplete-stop-keeps-the-retired-worker-joinable
+  (testing "stop! stays incomplete while any worker that can still dispatch is inside its sink, across a start!"
+    (let [entered     (promise)
+          release-old (promise)
+          seen        (atom [])]
+      (q/register-sink! (blocking-old-sink seen entered release-old))
+      (try
+        (let [first-worker (q/start!)]
+          (q/enqueue-projection! 9 {:version "old"})
+          (is (deref entered 3000 false) "the first worker reached the sink")
+          (is (false? (:stopped? (q/stop! {:join-timeout-ms 100})))
+              "incomplete: the first worker is inside its sink")
+          (let [second-worker (q/start!)]
+            (is (not (identical? first-worker second-worker)) "a fresh worker was started")
+            (is (true? (:worker-running? (q/health))))
+            (is (= 1 (:retired-workers (q/health))) "the first worker is retired, not forgotten")
+            (let [result (q/stop! {:join-timeout-ms 200})]
+              (is (false? (:stopped? result))
+                  "shutdown must remain incomplete while a retired worker is inside its sink")
+              (is (= 0 (:drained-on-stop result)) "no competing drain on the calling thread")
+              (is (= 1 (:in-flight result)) "the entity is still owned by the retired worker")
+              (is (= 1 (:retired-workers result)))
+              (is (= [] @seen) "nothing was projected ahead of the old state"))))
+        (is (false? (:worker-running? (q/health))))
+        (deliver release-old :release)
+        (is (wait-until #(= ["old"] @seen) 3000) "the retired worker finished its dispatch on its own")
+        (let [result (q/stop!)]
+          (is (true? (:stopped? result)) "the third stop! joins the retired worker")
+          (is (= 0 (:in-flight result)))
+          (is (= 0 (:remaining-dirty result)))
+          (is (= 0 (:retired-workers result))))
+        (is (= 0 (:retired-workers (q/health))))
+        (is (empty? (q/snapshot-dirty)))
+        (is (empty? (q/snapshot-in-flight)))
         (finally
           (deliver release-old :release)
           (q/stop!))))))

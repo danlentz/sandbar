@@ -219,8 +219,14 @@
   ;;  :live        atom  — THIS worker's own stop signal.  The loop reads
   ;;                       its own atom (not the shared flag), so a start!
   ;;                       after an incomplete stop! can never revive a
-  ;;                       worker that is on its way out}
-  (atom {:running? false :worker-chan nil :live nil}))
+  ;;                       worker that is on its way out
+  ;;  :retired     #{ch} — channels of workers past a stop! whose join timed
+  ;;                       out, still finishing a dispatch.  A start! moves
+  ;;                       the outgoing worker here instead of dropping its
+  ;;                       handle, so every worker that can still dispatch
+  ;;                       stays joinable and a stop! is complete only when
+  ;;                       ALL of them have exited (Astra's P2, 2026-09-19)}
+  (atom {:running? false :worker-chan nil :live nil :retired #{}}))
 
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -562,6 +568,39 @@
 ;; Lifecycle
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
+(defn- worker-exited?
+  "True when a worker channel has yielded (or closed): its thread is gone.
+   Non-blocking.  Consumes the :worker-exited value on first sight; the
+   channel is closed after that and keeps answering true."
+  [ch]
+  (let [[_ c] (a/alts!! [ch] :default ::pending)]
+    (not= c :default)))
+
+(defn- retired-worker-count!
+  "Drop retired workers that have exited; return how many are still
+   finishing a dispatch."
+  []
+  (count (:retired (swap! +worker-state+ update :retired
+                          (fn [chans] (into #{} (remove worker-exited?) chans))))))
+
+(defn- join-workers!
+  "Wait up to `timeout-ms` for every channel in `chans` to yield or close.
+   Returns the set of channels still pending when the deadline passes
+   (empty when all exited).  A final non-blocking sweep still collects
+   workers that exited right at the deadline."
+  [chans timeout-ms]
+  (let [deadline (+ (System/currentTimeMillis) timeout-ms)]
+    (loop [pending (set (remove nil? chans))]
+      (if (empty? pending)
+        pending
+        (let [remaining (- deadline (System/currentTimeMillis))
+              [_ ch]    (if (pos? remaining)
+                          (a/alts!! (conj (vec pending) (a/timeout remaining)))
+                          (a/alts!! (vec pending) :default ::pending))]
+          (if (contains? pending ch)
+            (recur (disj pending ch))
+            pending))))))
+
 (defn start!
   "Start the projection worker thread.  Idempotent — calling on an
    already-running worker is a no-op (returns the existing worker
@@ -571,21 +610,28 @@
    finishing its last dispatch; it can never resume (it reads its own
    `live?` signal, already false), so a fresh worker is started alongside
    it and the overlap is logged (`:REACTIVE/worker-previous-still-exiting`).
-   Per-entity ownership keeps the brief overlap correct."
+   Per-entity ownership keeps the brief overlap correct, and the outgoing
+   worker's handle is kept in `:retired` so the next `stop!` still joins
+   it.  (Astra's P2, 2026-09-19: the handle used to be overwritten here,
+   so a stop! after a restart reported a complete shutdown while the old
+   worker was still inside its sink.)"
   []
   (let [live?     (atom true)
         [old _]   (swap-vals! +worker-state+
                               (fn [s] (if (:running? s)
                                         s
-                                        (assoc s :running? true :live live?))))]
+                                        (cond-> (assoc s :running? true :live live?)
+                                          (:worker-chan s)
+                                          (update :retired (fnil conj #{}) (:worker-chan s))))))]
     (if (:running? old)
       (do
         (log/debug :REACTIVE/worker-already-running)
         (:worker-chan old))
-      (let [retained (:worker-chan old)]
-        (when (and retained (nil? (a/poll! retained)))
+      (let [still-exiting (retired-worker-count!)]
+        (when (pos? still-exiting)
           (log/warn :REACTIVE/worker-previous-still-exiting
-                    {:note "a worker whose stop! join timed out is still finishing its last dispatch; starting a fresh one"}))
+                    {:retired-workers still-exiting
+                     :note "a worker whose stop! join timed out is still finishing its last dispatch; starting a fresh one and keeping the old handle joinable"}))
         (let [wc (worker-loop live?)]
           (swap! +worker-state+ assoc :worker-chan wc)
           (log/info :REACTIVE/worker-started
@@ -607,61 +653,77 @@
    thread so a clean shutdown leaves nothing unprojected.  Idempotent.
 
    Returns `{:stopped? bool :drained-on-stop n :remaining-dirty n
-   :in-flight n}`.
+   :in-flight n :retired-workers n}`.
 
    If the join TIMES OUT (a sink is still running), `stop!` does NOT drain
    on the calling thread — that was a competing drainer, and it projected
    the newer generation of an in-flight entity ahead of the older one
-   (Astra's P1, 2026-09-18).  Instead it RETAINS the worker handle,
-   returns `:stopped? false`, and warns `:REACTIVE/worker-stop-join-timeout`;
-   the worker finishes its dispatch, re-drains anything that landed for the
-   entity it owns, runs a final sweep, and exits on its own.  A later
-   `stop!` joins the retained handle and completes the shutdown.
+   (Astra's P1, 2026-09-18).  Instead it RETAINS the worker handle in
+   `:retired`, returns `:stopped? false`, and warns
+   `:REACTIVE/worker-stop-join-timeout`; the worker finishes its dispatch,
+   re-drains anything that landed for the entity it owns, runs a final
+   sweep, and exits on its own.  A later `stop!` joins the retained handle
+   and completes the shutdown.
+
+   Every worker that can still dispatch is joined here — the current one
+   AND every retired one (a `start!` after a timed-out stop! keeps the
+   outgoing worker's handle).  The shutdown is complete only when ALL of
+   them have exited; while any remains, `:stopped?` is false and nothing is
+   drained on the calling thread (Astra's P2, 2026-09-19: a stop after a
+   restart used to join only the fresh worker and report completion while
+   the old one was still inside its sink).
 
    Synchronous on purpose: a stop that returned while the thread was
    still draining let a just-stopped worker take entities out from under
    the next caller (observed in the 2026-09-18 test suite)."
   ([] (stop! {}))
   ([{:keys [join-timeout-ms] :or {join-timeout-ms +stop-join-timeout-ms+}}]
-   (let [{:keys [worker-chan live]} @+worker-state+]
+   (let [{:keys [worker-chan live retired]} @+worker-state+]
      (swap! +worker-state+ assoc :running? false)
      (when live (reset! live false))
      (a/offer! +wake-chan+ :stop)
-     (let [exited? (or (nil? worker-chan)
-                       (let [[_ ch] (a/alts!! [worker-chan (a/timeout join-timeout-ms)])]
-                         (identical? ch worker-chan)))]
-       (if exited?
+     (let [pending   (cond-> (set retired) worker-chan (conj worker-chan))
+           remaining (join-workers! pending join-timeout-ms)]
+       (if (empty? remaining)
          (do
-           (swap! +worker-state+ assoc :worker-chan nil :live nil)
+           (swap! +worker-state+ assoc :worker-chan nil :live nil :retired #{})
            (let [drained (try (drain-all!) (catch Throwable _ 0))
                  result  {:stopped?        true
                           :drained-on-stop drained
                           :remaining-dirty (count @+dirty-entities+)
-                          :in-flight       (count @+in-flight+)}]
+                          :in-flight       (count @+in-flight+)
+                          :retired-workers 0}]
              (log/info :REACTIVE/worker-stopped
                        (merge {:final-enqueue-total (:enqueue-total @+metrics+)
                                :final-drain-total   (:drain-total @+metrics+)}
                               result))
              result))
-         (let [result {:stopped?        false
-                       :drained-on-stop 0
-                       :remaining-dirty (count @+dirty-entities+)
-                       :in-flight       (count @+in-flight+)}]
-           (log/warn :REACTIVE/worker-stop-join-timeout
-                     (merge {:timeout-ms join-timeout-ms
-                             :note       (str "worker handle retained; no competing drain started;"
-                                              " the worker finishes and exits on its own —"
-                                              " call stop! again to join it")}
-                            result))
-           result))))))
+         (do
+           ;; Every worker that has not exited stays joinable for the next
+           ;; stop! (or start!) to account for.
+           (swap! +worker-state+ assoc :worker-chan nil :live nil :retired remaining)
+           (let [result {:stopped?        false
+                         :drained-on-stop 0
+                         :remaining-dirty (count @+dirty-entities+)
+                         :in-flight       (count @+in-flight+)
+                         :retired-workers (count remaining)}]
+             (log/warn :REACTIVE/worker-stop-join-timeout
+                       (merge {:timeout-ms join-timeout-ms
+                               :note       (str "worker handle(s) retained; no competing drain started;"
+                                                " the worker finishes and exits on its own —"
+                                                " call stop! again to join it")}
+                              result))
+             result)))))))
 
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Health surface
 ;;
 ;; Returns a snapshot of the metric state.  Backing fn for the
-;; sandbar.reactive.health MCP verb.  13 keys; shape unchanged by the
-;; 2026-09-18 redesign (`:buffer-size` now means the soft cap).
+;; sandbar.reactive.health MCP verb.  14 keys: the 13 of the 2026-09-18
+;; redesign (`:buffer-size` now means the soft cap) plus `:retired-workers`
+;; (2026-09-19, Astra's P2), so a worker still exiting after a timed-out
+;; stop! is visible.
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (defn- oldest-pending-age-ms
@@ -693,11 +755,14 @@
      :saturated?             bool (oldest-pending > threshold)
      :startup-instant        java.time.Instant
      :last-enqueue-instant   java.time.Instant or nil
-     :last-drain-instant     java.time.Instant or nil"
+     :last-drain-instant     java.time.Instant or nil
+     :retired-workers        int (workers past a timed-out stop! that are
+                                  still finishing a dispatch; 0 normally)"
   []
   (let [m      @+metrics+
         oldest (oldest-pending-age-ms)]
     {:worker-running?       (:running? @+worker-state+)
+     :retired-workers       (retired-worker-count!)
      :buffer-size           +default-buffer-size+
      :dirty-entity-count    (count @+dirty-entities+)
      :oldest-pending-age-ms oldest
