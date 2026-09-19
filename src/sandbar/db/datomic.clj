@@ -17,15 +17,54 @@
 
 (def ^:dynamic **conn*   (atom nil))
 
+(def uri-override-property
+  "JVM system property that, when set, overrides the configured database URI
+   for the no-arg `db-uri` and therefore for the `conn` fallback.  The `:test`
+   lein profile sets it to an in-memory URI (the test fence, 2026-09-19): a
+   test that forgets its scratch-database fixture then lands in a throwaway
+   store instead of the configured live one.  Before the fence, the core
+   scheduler tests wrote about 65 telemetry rows into the live database on
+   every full-suite run through exactly this fallback."
+  "sandbar.db.uri")
+
 (defn db-spec []
   (dedn/config-value :db))
 
 (defn db-uri
-  ([] (db-uri (db-spec)))
+  ([] (or (System/getProperty uri-override-property)
+          (db-uri (db-spec))))
   ([spec] (apply str  ((juxt :url :sid) spec))))
 
+(defn mem-uri?
+  "True for a Datomic in-memory URI (`datomic:mem://…`)."
+  [uri]
+  (and (string? uri) (string/starts-with? uri "datomic:mem://")))
+
+(defonce ^:private fence-warned? (atom false))
+
+(defn- warn-fence-fallback-once!
+  "Under the test fence, log ONCE per JVM which test first fell through to
+   the in-memory fallback store — the breadcrumb for finding a test that
+   runs without its scratch-database fixture."
+  [uri]
+  (when (compare-and-set! fence-warned? false true)
+    (let [frame (->> (.getStackTrace (Thread/currentThread))
+                     (map str)
+                     (filter #(re-find #"_test[.$]" %))
+                     first)]
+      (log/warn "test fence: a database access fell through to the in-memory fallback store"
+                {:uri uri :first-test-frame frame}))))
+
 (defn conn
-   ([]     (or @**conn* (conn (db-uri))))
+   ([]     (or @**conn*
+               (let [uri (db-uri)]
+                 ;; An in-memory fallback store (the test fence) has to exist
+                 ;; before it can be connected to; create-database is
+                 ;; idempotent and a no-op for every other storage.
+                 (when (mem-uri? uri)
+                   (d/create-database uri)
+                   (warn-fence-fallback-once! uri))
+                 (conn uri))))
    ([uri] (d/connect uri)))
 
 (defn ensure-db! [uri]

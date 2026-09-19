@@ -22,10 +22,13 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Fixtures
 
-(use-fixtures :each (tu/make-test-db-fixture {:test-name "schedule-test"
-                                              :auth?     false}))
-
+;; ONE use-fixtures call: a second `(use-fixtures :each …)` replaces the
+;; first, which left these tests without a scratch database and writing
+;; into the live store through the connection fallback (2026-09-19 census;
+;; see sandbar.db.test-fence-test).
 (use-fixtures :each
+  (tu/make-test-db-fixture {:test-name "schedule-test"
+                            :auth?     false})
   (fn [f]
     (binding [state/*scheduler-state*
               (atom (state/initial-state))]

@@ -213,8 +213,7 @@
         from (:state old)]
     (if (= (:state new) to-state)
       (do (logging/info ::transition
-                        {:from from :to to-state :reason reason}
-                        :db-only)
+                        {:from from :to to-state :reason reason})
           new)
       (throw (ex-info (format "Illegal scheduler state transition: %s → %s"
                               from to-state)

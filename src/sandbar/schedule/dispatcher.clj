@@ -243,14 +243,12 @@
         schedule (resolve-schedule schedule-eid)]
     (if (nil? schedule)
       (do (logging/warn ::add-schedule-missing
-                        {:schedule-eid schedule-eid}
-                        :db-only)
+                        {:schedule-eid schedule-eid})
           nil)
       (let [next-at (compute-next-fire-at schedule now-inst)]
         (if (nil? next-at)
           (do (logging/info ::add-schedule-no-future-fires
-                            {:schedule-eid schedule-eid}
-                            :db-only)
+                            {:schedule-eid schedule-eid})
               nil)
           (do (state/swap-state!
                 update :queue
@@ -274,28 +272,41 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (defn- detect-clock-drift!
-  "Compute wall-vs-monotonic drift over the interval bounded by
-   `wall-start-ms` / `mono-start-ns` (the loop's last reference
-   timestamps) and now.  Update `:clock-drift-ms` in state; emit
-   `:mm.event/SchedulerClockDrift` if magnitude exceeds the
-   configured threshold."
-  [wall-start-ms mono-start-ns]
-  (let [wall-now-ms (System/currentTimeMillis)
-        mono-now-ns (System/nanoTime)
-        wall-elapsed  (- wall-now-ms wall-start-ms)
-        mono-elapsed  (long (/ (- mono-now-ns mono-start-ns) 1000000))
-        drift-ms      (- wall-elapsed mono-elapsed)
-        threshold-ms  (or (:clock-drift-threshold-ms (state/snapshot)) 5000)]
-    (state/swap-state! assoc :clock-drift-ms drift-ms)
-    (when (>= (Math/abs drift-ms) threshold-ms)
-      (event/fire! {:event/class             :mm.event/SchedulerClockDrift
-                    :mm.schedule-event/drift-ms     drift-ms
-                    :mm.schedule-event/threshold-ms threshold-ms
-                    :timestamp                       (now)})
-      (logging/warn ::clock-drift
-                    {:drift-ms drift-ms :threshold-ms threshold-ms}
-                    :db-only))
-    drift-ms))
+  "Compute wall-vs-monotonic drift over the interval from the baseline held
+   in state (`:clock-baseline`, `{:wall-ms :mono-ns}`, set at fire-loop
+   start) to `clocks`.  Update `:clock-drift-ms` in state; when the
+   magnitude reaches the configured threshold, fire
+   `:mm.event/SchedulerClockDrift`, log ONE warn line, and RE-BASELINE at
+   `clocks` — so a laptop sleep produces one warning, not one per fire until
+   the dispatcher restarts.  Before 2026-09-19 the baseline was the loop's
+   start instants and the warning was a `:db-only` database row: 18,356 of
+   the 36,361 SystemEvent rows in the live store were this one signal
+   re-firing (7,527 of them on 2026-09-17).  A log line, not a row.
+
+   `clocks` is `{:wall-ms <currentTimeMillis> :mono-ns <nanoTime>}`; the
+   no-arg form reads the system clocks, tests pass synthetic ones.  A
+   missing baseline is initialised from `clocks` (drift 0).  Returns
+   drift-ms."
+  ([] (detect-clock-drift! {:wall-ms (System/currentTimeMillis)
+                            :mono-ns (System/nanoTime)}))
+  ([{:keys [wall-ms mono-ns] :as clocks}]
+   (let [baseline      (or (:clock-baseline (state/snapshot))
+                           (do (state/swap-state! assoc :clock-baseline clocks)
+                               clocks))
+         wall-elapsed  (- wall-ms (:wall-ms baseline))
+         mono-elapsed  (long (/ (- mono-ns (:mono-ns baseline)) 1000000))
+         drift-ms      (- wall-elapsed mono-elapsed)
+         threshold-ms  (or (:clock-drift-threshold-ms (state/snapshot)) 5000)]
+     (state/swap-state! assoc :clock-drift-ms drift-ms)
+     (when (>= (Math/abs drift-ms) threshold-ms)
+       (event/fire! {:event/class             :mm.event/SchedulerClockDrift
+                     :mm.schedule-event/drift-ms     drift-ms
+                     :mm.schedule-event/threshold-ms threshold-ms
+                     :timestamp                       (now)})
+       (logging/warn ::clock-drift
+                     {:drift-ms drift-ms :threshold-ms threshold-ms})
+       (state/swap-state! assoc :clock-baseline clocks))
+     drift-ms)))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Fire-emission + misfire-policy
@@ -325,8 +336,7 @@
       ;; Schedule was retracted between queue-insert and fire-time
       (nil? schedule)
       (do (logging/warn ::fire-schedule-rejected-missing
-                        {:schedule-eid schedule-eid :fire-at fire-at}
-                        :db-only)
+                        {:schedule-eid schedule-eid :fire-at fire-at})
           :rejected)
 
       ;; Misfire detected — consult policy
@@ -339,8 +349,7 @@
                             {:schedule-eid schedule-eid
                              :fire-at      fire-at
                              :delta-ms     (.toMillis
-                                            (Duration/between fire-at now-inst))}
-                            :db-only)
+                                            (Duration/between fire-at now-inst))})
               :skipped)
 
           ;; :misfire/fire-once-now AND :misfire/reschedule both fire
@@ -363,8 +372,7 @@
 
           ;; Unknown policy — log + fire conservatively
           (do (logging/warn ::unknown-misfire-policy
-                            {:policy policy :schedule-eid schedule-eid}
-                            :db-only)
+                            {:policy policy :schedule-eid schedule-eid})
               (event/fire! {:event/class                 :mm.event/Scheduled
                             :mm.schedule-event/schedule  schedule-eid
                             :scheduled-fire-at           fire-at
@@ -501,11 +509,14 @@
    (::fire-thread-died → scheduler :inactive)."
   []
   (try
-    (let [wall-start-ms (System/currentTimeMillis)
-          mono-start-ns (System/nanoTime)]
+    (do
+      ;; A fresh drift baseline for this fire-loop run; detect-clock-drift!
+      ;; moves it forward each time it reports (one warning per clock jump).
+      (state/swap-state! assoc :clock-baseline {:wall-ms (System/currentTimeMillis)
+                                                :mono-ns (System/nanoTime)})
       (loop []
         (when (= :scheduler.state/active (:state (state/snapshot)))
-          (detect-clock-drift! wall-start-ms mono-start-ns)
+          (detect-clock-drift!)
           (let [continue?
                 (try
                   (let [head (queue-head (:queue (state/snapshot)))]
@@ -600,8 +611,7 @@
                                :handler-pool pool
                                :fire-thread  t))
           (logging/info ::started
-                        {:handler-pool-size (or (:handler-pool-size (state/snapshot)) 4)}
-                        :db-only)
+                        {:handler-pool-size (or (:handler-pool-size (state/snapshot)) 4)})
           :started))))
 
 (defn pause!
@@ -663,7 +673,7 @@
            (state/swap-state! assoc :fire-thread nil :handler-pool nil)
            (state/transition-state! :scheduler.state/inactive
                                     :reason "dispatcher stop! (drain complete)")
-           (logging/info ::stopped {} :db-only)
+           (logging/info ::stopped {})
            :stopped)))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;

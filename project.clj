@@ -104,6 +104,12 @@
              ;; emits bench-results/baseline.edn for regression
              ;; comparison.  See doc/BENCH.md for the discipline.
              :bench {:source-paths ["bench"]}
+             ;; Test fence (2026-09-19): under `lein test` every
+             ;; `sandbar.db.datomic/db-uri` fallback resolves to an in-memory
+             ;; store, so a test that forgets its scratch-database fixture can
+             ;; never write into the configured live database.  Pinned by
+             ;; sandbar.db.test-fence-test.
+             :test {:jvm-opts ["-Dsandbar.db.uri=datomic:mem://sandbar-test-fallback"]}
              :uberjar {:aot [sandbar.core] }}
 
   :aliases {"bench" ["with-profile" "+bench"

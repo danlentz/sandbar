@@ -30,10 +30,13 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Fixtures
 
-(use-fixtures :each (tu/make-test-db-fixture {:test-name "job-dispatcher-test"
-                                              :auth?     false}))
-
+;; ONE use-fixtures call: a second `(use-fixtures :each …)` replaces the
+;; first, which left these tests without a scratch database and writing
+;; into the live store through the connection fallback (2026-09-19 census;
+;; see sandbar.db.test-fence-test).
 (use-fixtures :each
+  (tu/make-test-db-fixture {:test-name "job-dispatcher-test"
+                            :auth?     false})
   (fn [f]
     (binding [state/*scheduler-state*
               (atom (state/initial-state {:enabled? true}))]
@@ -176,8 +179,13 @@
         (let [evt (first @!complete)]
           (is (= sched-eid (:mm.schedule-event/schedule evt)))
           (is (= job-eid   (:mm.schedule-event/job evt)))
-          (is (pos? (:mm.schedule-event/duration-ms evt))
-              "Duration is positive ms"))
+          ;; nat-int?, not pos?: on the in-memory scratch store a trivial
+          ;; job completes inside a millisecond.  `pos?` only ever held
+          ;; while this test was unknowingly running against the live dev
+          ;; store (dead fixture, see the use-fixtures note above), whose
+          ;; transaction latency always cost at least a millisecond.
+          (is (nat-int? (:mm.schedule-event/duration-ms evt))
+              "Duration is a non-negative ms count"))
         (finally
           (unsub-started)
           (unsub-complete))))))

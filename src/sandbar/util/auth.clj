@@ -292,10 +292,12 @@
 
       :else
       (do
-        (event/log! :info "Successful API key authentication"
-                    {:event/kind :auth/login-success
-                     :event/actor (:db/id sa)
-                     :event/tags #{:auth :api}})
+        ;; A log line, not a database row.  One `:event/ServerEvent` row per
+        ;; authenticated request was 94% of that class (17,675 of 18,775 on
+        ;; 2026-09-19) with no consumer; the failure branch above keeps its
+        ;; row.  Dan's retention-review ruling, 2026-09-19.
+        (log/debug "Successful API key authentication"
+                   {:event/kind :auth/login-success :event/actor (:db/id sa)})
         {:success true :principal sa}))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;

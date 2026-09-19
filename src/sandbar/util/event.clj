@@ -311,48 +311,72 @@
                     (log/warn e "Failed to log HTTP error event"))))
               (assoc context :io.pedestal.interceptor.chain/error ex))}))
 
+(def ^:dynamic *log-all-requests?*
+  "Test seam for the production request logger.  When true,
+   `log-request-minimal` writes an `:event/HttpRequest` row for EVERY
+   request that passes `should-log?` (the pre-2026-09-19 behaviour of
+   `log-request`), so the request-detail tests can verify
+   `request->event-data` through the real routes.  Production leaves it
+   false: only server errors and exceptions become rows.  Bind it with
+   `with-redefs` in tests — the interceptor chain may run on another
+   thread, where a thread-local `binding` would be invisible."
+  false)
+
 (def log-request-minimal
-  "Lightweight version of log-request that only logs errors and slow requests.
+  "Pedestal interceptor — the production request logger on the /api and
+   /mcp routes since 2026-09-19 (Dan's retention-review ruling).
 
-   - Logs requests that result in 5xx errors
-   - Logs requests that take longer than 1000ms
-   - Skips logging for normal successful requests
+   Writes an `:event/HttpRequest` row ONLY for a server error (a 5xx
+   response) or an exception escaping the chain.  Routine requests, client
+   errors (4xx) and slow requests write NO row: the per-request line from
+   `params/log-params` and the slow-tool-call line at the MCP dispatch
+   layer (`sandbar.mcp.tools/handle-call`, which can name the verb — every
+   MCP call is `POST /mcp`, so a request row never could) carry that
+   information as log output.  The raw request series `log-request` used to
+   mint, about one row per MCP call, had no consumer: 16,429 rows on
+   2026-09-19, all routine.
 
-   Useful for high-traffic endpoints where full logging would be too expensive."
-  (let [slow-threshold-ms 1000]
-    (interceptor/interceptor
-      {:name  ::log-request-minimal
-       :enter (fn [context]
-                (assoc context :event/start-time (System/currentTimeMillis)))
-       :leave (fn [context]
-                (when (should-log? context)
-                  (let [start-time  (:event/start-time context)
-                        duration    (when start-time (- (System/currentTimeMillis) start-time))
-                        status-code (get-in context [:response :status])
-                        is-error?   (and status-code (>= status-code 500))
-                        is-slow?    (and duration (> duration slow-threshold-ms))]
-                    (when (or is-error? is-slow?)
-                      (try
-                        (let [event-data (-> (request->event-data context)
-                                             (assoc :event/tags (cond-> #{}
-                                                                  is-error? (conj :error)
-                                                                  is-slow?  (conj :slow))))]
-                          (log-event! :event/HttpRequest event-data))
-                        (catch Exception e
-                          (log/warn e "Failed to log HTTP request event"))))))
-                context)
-       :error (fn [context ex]
-                (when (should-log? context)
-                  (try
-                    (let [event-data (-> (request->event-data context)
-                                         (assoc :event/level :error
-                                                :event/status :failure
-                                                :event/exception (str (type ex) ": " (.getMessage ex))
-                                                :event/tags #{:error :exception}))]
-                      (log-event! :event/HttpRequest event-data))
-                    (catch Exception e
-                      (log/warn e "Failed to log HTTP error event"))))
-                (assoc context :io.pedestal.interceptor.chain/error ex))})))
+   On enter: records the start time and a correlation id, exactly as
+   `log-request` does, so the rows that ARE minted have the same shape.
+   On leave: mints the row iff the status is 5xx (tag `:error`), or
+   `*log-all-requests?*` is on (tests).
+   On error: mints the row (tags `:error` `:exception`).
+
+   `should-log?` still governs every path: the /api/events loop guard and
+   the `:suppress-event-logging?` context flag (set by the static route
+   interceptor or by the client header)."
+  (interceptor/interceptor
+    {:name  ::log-request-minimal
+     :enter (fn [context]
+              (let [correlation-id (or (:event/correlation-id context)
+                                       (UUID/randomUUID))]
+                (assoc context
+                       :event/start-time (System/currentTimeMillis)
+                       :event/correlation-id correlation-id)))
+     :leave (fn [context]
+              (when (should-log? context)
+                (let [status-code (get-in context [:response :status])
+                      is-error?   (and status-code (>= status-code 500))]
+                  (when (or is-error? *log-all-requests?*)
+                    (try
+                      (let [event-data (cond-> (request->event-data context)
+                                         is-error? (assoc :event/tags #{:error}))]
+                        (log-event! :event/HttpRequest event-data))
+                      (catch Exception e
+                        (log/warn e "Failed to log HTTP request event"))))))
+              context)
+     :error (fn [context ex]
+              (when (should-log? context)
+                (try
+                  (let [event-data (-> (request->event-data context)
+                                       (assoc :event/level :error
+                                              :event/status :failure
+                                              :event/exception (str (type ex) ": " (.getMessage ex))
+                                              :event/tags #{:error :exception}))]
+                    (log-event! :event/HttpRequest event-data))
+                  (catch Exception e
+                    (log/warn e "Failed to log HTTP error event"))))
+              (assoc context :io.pedestal.interceptor.chain/error ex))}))
 
 (def suppress-event-logging
   "Interceptor that suppresses event logging for specific routes.

@@ -9,8 +9,21 @@
             [sandbar.util.event :as event])
   (:import [java.util UUID Date]))
 
-(use-fixtures :each (tu/make-test-db-fixture {:test-name "api-event-test"
-                                              :extra-schema [:event]}))
+(defn- log-every-request-fixture
+  "The request-detail tests in this namespace verify `request->event-data`
+   through the real routes.  Since 2026-09-19 the production logger
+   (`event/log-request-minimal`) writes a row only for a server error or an
+   exception, so those tests run with the `*log-all-requests?*` seam ON.
+   The production contract itself is pinned by the
+   `production-request-logger-*` tests at the end of this file, which turn
+   the seam OFF explicitly."
+  [t]
+  (with-redefs [event/*log-all-requests?* true] (t)))
+
+(use-fixtures :each
+  (tu/make-test-db-fixture {:test-name "api-event-test"
+                            :extra-schema [:event]})
+  log-every-request-fixture)
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; POST /api/events - Create event with type in body
@@ -628,3 +641,65 @@
       (is (some? event))
       (when event
         (is (= "GET /api/store/classes/dt/Ref/hierarchy" (:event/name event)))))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; The production contract of the request logger (2026-09-19)
+;;
+;; `event/log-request-minimal` is what the /api and /mcp routes run.  With
+;; the `*log-all-requests?*` seam OFF (the production default) it writes an
+;; :event/HttpRequest row ONLY for a server error or an exception.  The
+;; request-detail tests above run with the seam ON; these run with it OFF.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(deftest production-request-logger-writes-no-row-for-routine-requests
+  (with-redefs [event/*log-all-requests?* false]
+    (testing "a 200 leaves no :event/HttpRequest row"
+      (let [{:keys [status]} (tu/api-get-edn "/api/store/classes")]
+        (is (= 200 status))
+        (is (nil? (find-event-for-path "/api/store/classes"))
+            "routine requests are not persisted (Dan's retention-review ruling 2026-09-19)")))
+    (testing "a 404 (a client error) leaves no row either"
+      (let [{:keys [status]} (tu/api-get-edn "/api/store/classes/nonexistent/NotAClass")]
+        (is (= 404 status))
+        (is (nil? (find-event-for-path "/api/store/classes/nonexistent/NotAClass")))))))
+
+(deftest production-request-logger-writes-a-row-for-server-errors
+  (with-redefs [event/*log-all-requests?* false]
+    (testing ":leave mints a row tagged :error for a 5xx response"
+      (let [leave (:leave event/log-request-minimal)
+            ctx   {:request  {:request-method :get :uri "/api/boom"}
+                   :response {:status 500}
+                   :route    {:route-name :sandbar.api.store/classes}
+                   :event/start-time (System/currentTimeMillis)}]
+        (leave ctx)
+        (let [event (find-event-for-path "/api/boom")]
+          (is (some? event) "a server error must leave a row")
+          (is (= 500 (:http/status-code event)))
+          (is (= :error (:event/level event)))
+          (is (= :failure (:event/status event)))
+          (is (contains? (set (:event/tags event)) :error)))))
+    (testing ":error mints a row tagged :exception when the chain throws"
+      (let [error-fn (:error event/log-request-minimal)
+            ctx      {:request {:request-method :post :uri "/api/kaboom"}
+                      :route   {:route-name :sandbar.api.store/classes}
+                      :event/start-time (System/currentTimeMillis)}]
+        (error-fn ctx (ex-info "kaboom" {}))
+        (let [event (find-event-for-path "/api/kaboom")]
+          (is (some? event) "an escaping exception must leave a row")
+          (is (= :error (:event/level event)))
+          (is (contains? (set (:event/tags event)) :exception)))))
+    (testing "the loop guard still applies: /api/events requests never log"
+      (let [leave (:leave event/log-request-minimal)
+            ctx   {:request  {:request-method :get :uri "/api/events"}
+                   :response {:status 500}
+                   :route    {:route-name :sandbar.api.event/list}
+                   :event/start-time (System/currentTimeMillis)}]
+        (leave ctx)
+        (is (nil? (find-event-for-path "/api/events")))))))
+
+(deftest production-request-logger-enter-carries-a-correlation-id
+  (testing "the minimal logger records a start time and a correlation id on enter, like log-request"
+    (let [enter (:enter event/log-request-minimal)
+          ctx   (enter {:request {:request-method :get :uri "/api/x"}})]
+      (is (number? (:event/start-time ctx)))
+      (is (instance? UUID (:event/correlation-id ctx))))))

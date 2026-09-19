@@ -3,38 +3,32 @@
    ships with the platform and runs by default (per Dan-directive
    2026-05-28, renaming the prior 'demo' framing).
 
-   Two system jobs at present, both emitting `:db-only` operational
-   telemetry (NOT `:first-class` — see MEMORIAL POLICY below):
+   Two system jobs at present, both emitting LOG LINES ONLY — no database
+   row, no memorial (see MEMORIAL POLICY below):
 
-     - db-stats              (FREQ=MINUTELY;INTERVAL=15) — substrate counts
+     - db-stats              (FREQ=HOURLY;INTERVAL=1) — substrate counts
        {:memorials :classes :properties :total-entities}
-     - reactive-queue-health (FREQ=MINUTELY;INTERVAL=10) — the 13-key
+     - reactive-queue-health (FREQ=HOURLY;INTERVAL=1) — the 13-key
        sandbar.reactive.queue/health snapshot
 
-   ## Memorial policy — :db-only (Dan-directive 2026-05-28)
+   ## Memorial policy — log lines only (Dan's retention-review ruling 2026-09-19)
 
-   These are HIGH-FREQUENCY (every 10–15 min ≈ 240/day), LOW-CONTENT
-   operational-informational signals.  They emit `:db-only`, which routes
-   through `sandbar.logging.handlers` to an `:event/SystemEvent` runtime
-   instance under the `:dt/Event` hierarchy — NOT a `:first-class`
-   `:mm/EventLog`.  Rationale:
+   These are LOW-CONTENT operational signals, HOURLY (≈ 48/day for the
+   pair).  They emit plain Telemere signals: printed to `sandbar.log` by
+   the LOG handler, persisted nowhere.  History:
 
-   - `:mm/EventLog` is a `:mm/Memory` subtype (Memory → Artifact →
-     Activity → EventLog).  A `:first-class` emission is therefore a
-     corpus member: it inflates `:mm/Memory` counts (a SELF-INFLATING
-     feedback loop — db-stats COUNTS memorials, so each first-class run
-     bumps the count the next run reports) and is walked by BM25F
-     (`sandbar.search` indexes `dt/all-instances-of :mm/Memory`),
-     polluting IDF/avgdl corpus statistics + search results.
-   - `:event/SystemEvent` (`:db-only`) is NOT a `:mm/Memory`, so it is
-     invisible to BM25F + corpus-wide queries and is never FS-projected —
-     yet remains queryable as operational history (covered by the
-     DB-dump/backup arc) and still prints to `sandbar.log` (the Telemere
-     LOG handler fires independent of memorial policy; that is where the
-     stats output is read operationally).
-   - Mirrors the schema's own `:mm/Run` precedent (default
-     `:dt/memorial-policy :db-only`, \"high-volume operational runs
-     covered by the DB-dump arc\").
+   - 2026-05-28: emitted `:db-only` — an `:event/SystemEvent` row per fire
+     rather than a `:first-class` `:mm/EventLog` (a `:mm/Memory` subtype,
+     which would have inflated the memory count, fed BM25F and been
+     FS-projected).  The row was meant as queryable operational history.
+   - 2026-09-19: nobody ever read those rows from the database (13,751 of
+     them at the census, plus one `:mm/Run` per fire at the old ten- and
+     fifteen-minute cadence), the log file carried the same numbers, and
+     Dan ruled that telemetry is retained only where its value exceeds the
+     code needed to keep it.  So: log lines only, hourly, and the
+     accumulated rows deleted with the backlog.
+   - `:mm/Run` records are still minted per fire by the job-dispatcher (the
+     scheduler's audit trail); at hourly cadence that is 48 a day.
 
    These are the 'system jobs' umbrella — distinct from user-defined jobs.
    Future system jobs (scheduled tag.audit / Gate-2 verify-restore / SHACL
@@ -45,7 +39,7 @@
      - sandbar.schedule.dispatcher (fire-thread + queue)
      - sandbar.schedule.job-dispatcher (event subscriber + Run lifecycle)
      - sandbar.event (class-hierarchical dispatch)
-     - sandbar.logging (Telemere :db-only memorial-projection → SystemEvent)
+     - sandbar.logging (Telemere signal → the LOG handler; no memorial)
      - sandbar.db.datatype + sandbar.reactive.queue (the observed substrate)
 
    per γ.1 ADR §1.4 + the γ scheduler arc plan.
@@ -107,27 +101,22 @@
   "System job fn — invoked by sandbar.schedule.job-dispatcher per fire of
    the db-stats :mm/Schedule.
 
-   Computes substrate-count stats via `db-stats` + emits ONE `:db-only`
+   Computes substrate-count stats via `db-stats` + emits ONE plain
    operational-telemetry signal via `sandbar.logging/info` carrying the
-   stats map.  The `:db-only` flag routes the signal through the
-   memorial-projection handler to an `:event/SystemEvent` runtime
-   instance (NOT a corpus `:mm/EventLog`) — queryable operational history
-   without corpus / BM25F pollution (see ns MEMORIAL POLICY).  The stats
-   also print to `sandbar.log` via the Telemere LOG handler.
+   stats map — a log line in `sandbar.log`, no database row (see ns
+   MEMORIAL POLICY; log-only since 2026-09-19).
 
    Argument shape: `run-ctx` map carrying:
      {:run-eid      <numeric eid of the :mm/Run instance>
       :schedule-eid <numeric eid of the firing :mm/Schedule>
       :job-eid      <numeric eid of the :mm/Job being executed>}
 
-   Returns the stats map (also carried in the log signal's :data slot
-   for consumers that read the SystemEvent later)."
+   Returns the stats map (also carried in the log signal's :data slot)."
   [run-ctx]
   (let [stats (db-stats)]
     (logging/info ::db-stats
                   "System job: DB-stats substrate snapshot"
-                  (merge stats run-ctx)
-                  :db-only)
+                  (merge stats run-ctx))
     stats))
 
 (defn log-reactive-queue-health
@@ -135,9 +124,9 @@
 
    Same shape as `log-db-stats` but reports the 13-key health map from
    `sandbar.reactive.queue/health` (the backing fn for the
-   `sandbar.reactive.health` MCP verb).  Emits ONE `:db-only`
-   operational-telemetry signal per fire (→ `:event/SystemEvent`, NOT a
-   corpus `:mm/EventLog`; see ns MEMORIAL POLICY) carrying:
+   `sandbar.reactive.health` MCP verb).  Emits ONE plain
+   operational-telemetry signal per fire (a log line, no database row;
+   see ns MEMORIAL POLICY) carrying:
 
      {:worker-running?        bool
       :buffer-size            int (sliding-buffer capacity)
@@ -158,8 +147,7 @@
   (let [health (reactive-queue/health)]
     (logging/info ::reactive-queue-health
                   "System job: reactive-queue health snapshot"
-                  (merge health run-ctx)
-                  :db-only)
+                  (merge health run-ctx))
     health))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -249,7 +237,7 @@
   [{:db/ident                   :sandbar.system/db-stats-schedule
     :dt/type                    :mm/Schedule
     :mm.schedule/target         :sandbar.system/db-stats-job
-    :mm.schedule/recurrence     "FREQ=MINUTELY;INTERVAL=15"
+    :mm.schedule/recurrence     "FREQ=HOURLY;INTERVAL=1"
     :mm.schedule/timezone       "UTC"
     :mm.schedule/dtstart        now-date
     :mm.schedule/misfire-policy :misfire/fire-once-now
@@ -257,7 +245,7 @@
    {:db/ident                   :sandbar.system/reactive-queue-health-schedule
     :dt/type                    :mm/Schedule
     :mm.schedule/target         :sandbar.system/reactive-queue-health-job
-    :mm.schedule/recurrence     "FREQ=MINUTELY;INTERVAL=10"
+    :mm.schedule/recurrence     "FREQ=HOURLY;INTERVAL=1"
     :mm.schedule/timezone       "UTC"
     :mm.schedule/dtstart        now-date
     :mm.schedule/misfire-policy :misfire/fire-once-now
@@ -294,6 +282,5 @@
       (logging/info ::system-jobs-seeded
                     {:schedule-idents system-schedule-idents
                      :schedule-eids   schedule-eids
-                     :dtstart         (str now-date)}
-                    :db-only)
+                     :dtstart         (str now-date)})
       schedule-eids)))

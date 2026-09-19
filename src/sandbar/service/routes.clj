@@ -68,7 +68,7 @@
        {:get auth-api/me}]
 
       ;; Protected API (authentication required)
-      ["/api" ^:interceptors [event-util/log-request
+      ["/api" ^:interceptors [event-util/log-request-minimal
                               content/data-body
                               content/log-response
                               content/accept-content
@@ -171,7 +171,7 @@
       ;; Authorization: Bearer <token> + delegates to sandbar.util.auth/authenticate-api-key;
       ;; mcp-auth/require-bearer terminates with 401 + WWW-Authenticate: Bearer if
       ;; no :identity attached.
-      ["/mcp" ^:interceptors [event-util/log-request
+      ["/mcp" ^:interceptors [event-util/log-request-minimal
                               content/data-body
                               content/log-response
                               content/accept-content

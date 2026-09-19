@@ -33,7 +33,17 @@
   unauthenticated requests, so a throwaway read-only ServiceAccount is
   seeded with a RUNTIME-generated api-key — no credential literal is
   committed.  The suppress interceptor sits AFTER `require-bearer`, so
-  only authenticated calls can suppress (401 probes stay logged)."
+  only authenticated calls can suppress (401 probes stay logged).
+
+  2026-09-19 (Dan's retention-review ruling): the /mcp route now uses
+  `event/log-request-minimal`, which writes a row ONLY for a server error
+  or an exception — a routine call mints nothing whether or not the header
+  is present.  The suppression contract above is kept as belt and braces
+  and exercised with the `event/*log-all-requests?*` test seam ON (the
+  fixture below); `production-mcp-route-mints-no-row-for-routine-calls`
+  pins the new default with the seam OFF.  '401 probes stay logged' no
+  longer holds for request rows (a 401 is a client error); a failed API-key
+  check still writes its `:event/ServerEvent` row in `sandbar.util.auth`."
   (:require [cheshire.core       :as json]
             [clojure.test        :refer :all]
             [datomic.api         :as d]
@@ -42,13 +52,17 @@
             [sandbar.db.datatype :as dt]
             [sandbar.search      :as search]
             [sandbar.test-util   :as tu :refer [service]]
-            [sandbar.util.auth   :as auth]))
+            [sandbar.util.auth   :as auth]
+            [sandbar.util.event  :as event]))
 
 (use-fixtures :each
   (tu/make-test-db-fixture {:test-name    "mcp-suppress-event-wire-test"
                             :auth?        false
                             :extra-schema [:auth :event]})
-  (fn [t] (search/clear-bm25f-cache!) (t)))
+  (fn [t] (search/clear-bm25f-cache!) (t))
+  ;; The suppression contract is exercised with every-request logging ON;
+  ;; the production default (no row for a routine call) has its own test.
+  (fn [t] (with-redefs [event/*log-all-requests?* true] (t))))
 
 (defn- seed-bearer!
   "Seed a read-only ServiceAccount whose api-key is generated at RUNTIME
@@ -151,3 +165,15 @@
         (Thread/sleep 60)
         (is (= (inc before) (mcp-event-row-count))
             "only \"true\"/\"1\" suppress; anything else logs as normal")))))
+
+(deftest production-mcp-route-mints-no-row-for-routine-calls
+  (with-redefs [event/*log-all-requests?* false]
+    (let [bearer (seed-bearer!)
+          _      (seed-guidance-memory!)
+          resp   (recall-hook-call bearer {})]
+      (Thread/sleep 60)
+      (is (= 200 (:status resp)))
+      (is (zero? (mcp-event-row-count))
+          (str "since 2026-09-19 a routine /mcp call writes no :event/HttpRequest "
+               "row at all (Dan's retention-review ruling); the suppress header "
+               "is belt and braces")))))

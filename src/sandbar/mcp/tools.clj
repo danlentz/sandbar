@@ -3640,6 +3640,15 @@
   [{:type "text"
     :text (json/generate-string (safe-for-json data) {:pretty true})}])
 
+(def ^:dynamic *slow-tool-call-threshold-ms*
+  "A `tools/call` slower than this logs ONE warn line naming the verb and
+   the duration (`:MCP/slow-tool-call`).  This replaces the per-request
+   database rows the /mcp route used to mint for slow requests, which could
+   never name the verb (every MCP call is `POST /mcp`).  Dan's
+   retention-review ruling, 2026-09-19: slow calls are logged by tool name,
+   not stored."
+  1000)
+
 (defn handle-call
   "MCP `tools/call` — dispatch a named verb from the catalog and project
    its result.
@@ -3700,7 +3709,12 @@
                         ;; Keyed by the CANONICAL dotted name so the registry-
                         ;; exempt set stays coherent under the wire rename.
                         (assert-read-plane-call! canonical arguments)
-                        ((:handler verb) arguments)
+                        (let [t0 (System/nanoTime)
+                              r  ((:handler verb) arguments)
+                              ms (quot (- (System/nanoTime) t0) 1000000)]
+                          (when (> ms *slow-tool-call-threshold-ms*)
+                            (log/warn :MCP/slow-tool-call {:tool canonical :ms ms}))
+                          r)
                         (catch clojure.lang.ExceptionInfo e
                           {:_user-error true
                            :message (.getMessage e)

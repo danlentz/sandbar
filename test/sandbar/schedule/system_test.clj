@@ -48,13 +48,11 @@
   (testing "log-db-stats fires the memorial emit + returns the stats map"
     (let [run-ctx {:run-eid 12345 :schedule-eid 67890 :job-eid 11111}
           ;; Snapshot BEFORE the emit.  log-db-stats computes its own
-          ;; db-stats first, THEN emits — and the emit itself persists an
-          ;; entity (a :db-only :event/SystemEvent), which bumps
-          ;; :total-entities.  Comparing `result` to a db-stats call taken
-          ;; AFTER the emit would be off-by-one (the very feedback-loop
-          ;; reason these jobs are :db-only, not :first-class :mm/Memory).
-          ;; So compare against the pre-emit snapshot: nothing mutates the
-          ;; DB between `before` and log-db-stats's internal computation.
+          ;; db-stats first, THEN emits.  Since 2026-09-19 the emit is a log
+          ;; line only (no :event/SystemEvent row), so the DB is unchanged
+          ;; by it; the ordering is kept so the assertion stays honest if a
+          ;; memorial policy ever returns (a row would bump :total-entities
+          ;; and a post-emit snapshot would be off by one).
           before (system/db-stats)
           result (system/log-db-stats run-ctx)]
       (is (map? result))
@@ -120,13 +118,13 @@
               ":mm.job/fn resolves to a :mm/Fn entity"))
         ;; Schedule references its Job + carries the right RRULE
         (let [sched (datomic.api/entity db :sandbar.system/db-stats-schedule)]
-          (is (= "FREQ=MINUTELY;INTERVAL=15" (:mm.schedule/recurrence sched))
+          (is (= "FREQ=HOURLY;INTERVAL=1" (:mm.schedule/recurrence sched))
               "db-stats schedule has 15-min RRULE")
           (is (some? (:mm.schedule/dtstart sched)) "dtstart anchored")
           (is (= :mm/Job (:dt/type (datomic.api/entity db (:mm.schedule/target sched))))
               ":mm.schedule/target resolves to a :mm/Job entity"))
         (let [sched (datomic.api/entity db :sandbar.system/reactive-queue-health-schedule)]
-          (is (= "FREQ=MINUTELY;INTERVAL=10" (:mm.schedule/recurrence sched))
+          (is (= "FREQ=HOURLY;INTERVAL=1" (:mm.schedule/recurrence sched))
               "reactive-queue-health schedule has 10-min RRULE"))))))
 
 (deftest seed-system-jobs-is-idempotent

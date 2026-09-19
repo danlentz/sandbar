@@ -29,10 +29,15 @@
 ;; Fixtures
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-(use-fixtures :each (tu/make-test-db-fixture {:test-name "dispatcher-test"
-                                              :auth?     false}))
-
+;; ONE use-fixtures call.  A second `(use-fixtures :each …)` REPLACES the
+;; first (clojure.test keeps each-fixtures in ns metadata), which is how
+;; these tests ran for months with NO scratch database: every dispatcher
+;; test transacted schedules, runs and telemetry into the configured live
+;; store through the connection fallback.  Found by the 2026-09-19 census;
+;; fenced by sandbar.db.test-fence-test.
 (use-fixtures :each
+  (tu/make-test-db-fixture {:test-name "dispatcher-test"
+                            :auth?     false})
   (fn [f]
     ;; Scope a fresh scheduler-state per test so concurrent runs don't
     ;; share queue/handler-pool/fire-thread.  Per Q.γ.2 atom-inside-
