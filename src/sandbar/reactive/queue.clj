@@ -109,6 +109,7 @@
    - `(snapshot-dirty)` / `(snapshot-dirty-full)` / `(snapshot-in-flight)`
      — diagnostics"
   (:require [clojure.core.async    :as a]
+            [clojure.set           :as set]
             [clojure.tools.logging :as log])
   (:import [java.time Instant]))
 
@@ -601,6 +602,28 @@
             (recur (disj pending ch))
             pending))))))
 
+(defn- reconcile-after-join!
+  "Bring `+worker-state+` up to date after a `stop!` joined `pending` and
+   found `remaining` still running — BY IDENTITY, never by wholesale
+   replacement.  The current handle and stop signal are cleared only when
+   they are still the ones this `stop!` targeted (`worker-chan`); a worker
+   that a concurrent `start!` published during the join stays owned, with
+   its own signal.  Retired entries this `stop!` saw exit are dropped; the
+   ones still running are kept (or added) so the next `stop!` joins them.
+   Returns the new state.
+
+   (Astra's overlapping-lifecycle review, 2026-09-19: the timeout branch
+   used to `assoc :worker-chan nil :live nil :retired remaining`, erasing a
+   replacement worker's join handle and stop signal, so a later `stop!`
+   reported a complete shutdown while that worker still dispatched.)"
+  [worker-chan pending remaining]
+  (let [exited (set/difference pending remaining)]
+    (swap! +worker-state+
+           (fn [s]
+             (cond-> (update s :retired #(into (set (remove exited %)) remaining))
+               (identical? (:worker-chan s) worker-chan)
+               (assoc :worker-chan nil :live nil))))))
+
 (defn start!
   "Start the projection worker thread.  Idempotent — calling on an
    already-running worker is a no-op (returns the existing worker
@@ -673,6 +696,17 @@
    restart used to join only the fresh worker and report completion while
    the old one was still inside its sink).
 
+   A `start!` that lands WHILE this stop! is still joining publishes a
+   fresh worker with its own signal.  This stop! owns only the workers it
+   snapshotted: after the join it reconciles the state by identity
+   (`reconcile-after-join!`), so the replacement keeps its handle and
+   signal and the next `stop!` joins it.  Such a stop! reports
+   `:superseded? true`, drains nothing on the calling thread (the queue is
+   running again), and logs `:REACTIVE/stop-superseded-by-start`.  (Astra's
+   overlapping-lifecycle review of b3e5162, 2026-09-19: the timeout branch
+   used to erase the replacement, which then dispatched after a later
+   stop! had reported a complete shutdown.)
+
    Synchronous on purpose: a stop that returned while the thread was
    still draining let a just-stopped worker take entities out from under
    the next caller (observed in the 2026-09-18 test suite)."
@@ -682,38 +716,38 @@
      (swap! +worker-state+ assoc :running? false)
      (when live (reset! live false))
      (a/offer! +wake-chan+ :stop)
-     (let [pending   (cond-> (set retired) worker-chan (conj worker-chan))
-           remaining (join-workers! pending join-timeout-ms)]
+     (let [pending     (cond-> (set retired) worker-chan (conj worker-chan))
+           remaining   (join-workers! pending join-timeout-ms)
+           state       (reconcile-after-join! worker-chan pending remaining)
+           superseded? (boolean (and (:running? state)
+                                     (some? (:worker-chan state))
+                                     (not (identical? (:worker-chan state) worker-chan))))
+           counts      (fn [m] (cond-> (assoc m
+                                              :remaining-dirty (count @+dirty-entities+)
+                                              :in-flight       (count @+in-flight+)
+                                              :retired-workers (count (:retired state)))
+                                 superseded? (assoc :superseded? true)))]
+       (when superseded?
+         (log/warn :REACTIVE/stop-superseded-by-start
+                   {:note "a start! landed during this stop!'s join; the replacement worker keeps its handle and signal; nothing drained on the calling thread"}))
        (if (empty? remaining)
-         (do
-           (swap! +worker-state+ assoc :worker-chan nil :live nil :retired #{})
-           (let [drained (try (drain-all!) (catch Throwable _ 0))
-                 result  {:stopped?        true
-                          :drained-on-stop drained
-                          :remaining-dirty (count @+dirty-entities+)
-                          :in-flight       (count @+in-flight+)
-                          :retired-workers 0}]
-             (log/info :REACTIVE/worker-stopped
-                       (merge {:final-enqueue-total (:enqueue-total @+metrics+)
-                               :final-drain-total   (:drain-total @+metrics+)}
-                              result))
-             result))
-         (do
-           ;; Every worker that has not exited stays joinable for the next
-           ;; stop! (or start!) to account for.
-           (swap! +worker-state+ assoc :worker-chan nil :live nil :retired remaining)
-           (let [result {:stopped?        false
-                         :drained-on-stop 0
-                         :remaining-dirty (count @+dirty-entities+)
-                         :in-flight       (count @+in-flight+)
-                         :retired-workers (count remaining)}]
-             (log/warn :REACTIVE/worker-stop-join-timeout
-                       (merge {:timeout-ms join-timeout-ms
-                               :note       (str "worker handle(s) retained; no competing drain started;"
-                                                " the worker finishes and exits on its own —"
-                                                " call stop! again to join it")}
-                              result))
-             result)))))))
+         (let [drained (if superseded? 0 (try (drain-all!) (catch Throwable _ 0)))
+               result  (counts {:stopped? true :drained-on-stop drained})]
+           (log/info :REACTIVE/worker-stopped
+                     (merge {:final-enqueue-total (:enqueue-total @+metrics+)
+                             :final-drain-total   (:drain-total @+metrics+)}
+                            result))
+           result)
+         ;; Every worker that has not exited stays joinable for the next
+         ;; stop! (or start!) to account for — reconciled above.
+         (let [result (counts {:stopped? false :drained-on-stop 0})]
+           (log/warn :REACTIVE/worker-stop-join-timeout
+                     (merge {:timeout-ms join-timeout-ms
+                             :note       (str "worker handle(s) retained; no competing drain started;"
+                                              " the worker finishes and exits on its own —"
+                                              " call stop! again to join it")}
+                            result))
+           result))))))
 
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;

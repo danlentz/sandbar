@@ -41,11 +41,21 @@
        every worker and stays incomplete while any is inside its sink
        (Astra's P2, codex/to-claude/2026-09-19T102851Z_queue-rereview-
        edf1a9b.md).
+   (i) A START DURING A PENDING STOP KEEPS THE REPLACEMENT WORKER OWNED —
+       an older `stop!` whose join is still pending when `start!` publishes a
+       fresh worker reconciles the state by identity when it returns: the
+       replacement keeps its handle and stop signal, a later `stop!` joins it
+       and stays incomplete while its sink is blocked, and nothing dispatches
+       after a completed shutdown (Astra's overlapping-lifecycle review of
+       b3e5162, codex/reviews/2026-09-19T115111Z_queue-b3e5162-review.md:
+       the timeout cleanup used to erase the replacement).
 
-  Astra's isolated reproductions (codex/review-probes/queue-2026-09-18.clj
-  and queue-rereview-2026-09-19.clj) are the acceptance cases; (a), (c),
-  (f), (g), (h) are their in-repo twins."
-  (:require [clojure.test :refer :all]
+  Astra's isolated reproductions (codex/review-probes/queue-2026-09-18.clj,
+  queue-rereview-2026-09-19.clj and the overlapping-lifecycle probe in her
+  b3e5162 review) are the acceptance cases; (a), (c), (f), (g), (h), (i)
+  are their in-repo twins."
+  (:require [clojure.core.async :as a]
+            [clojure.test :refer :all]
             [sandbar.reactive.queue :as q]))
 
 (defn- quiesce!
@@ -348,4 +358,76 @@
         (is (empty? (q/snapshot-in-flight)))
         (finally
           (deliver release-old :release)
+          (q/stop!))))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; (i) a start! during a pending stop! keeps the replacement worker owned
+;;
+;; Port of Astra's overlapping-lifecycle probe (codex/reviews/2026-09-19T-
+;; 115111Z_queue-b3e5162-review.md).  At b3e5162 the older stop!'s timeout
+;; cleanup set :worker-chan nil :live nil :retired remaining from its OWN
+;; snapshot, discarding the join handle and stop signal of a worker that
+;; start! had published during the join; a later stop! then joined only the
+;; old worker and reported {:stopped? true :in-flight 1 :retired-workers 0}
+;; while the replacement was still inside its sink, and the replacement went
+;; on dispatching new work after "complete" shutdowns.  The base (9bad7a8)
+;; passed this probe because its timeout branch left the current handle
+;; alone.  The state is now reconciled by identity after every join.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defn- exited?
+  "True once a worker channel has yielded or closed (non-blocking)."
+  [ch]
+  (let [[_ c] (a/alts!! [ch] :default ::pending)]
+    (not= c :default)))
+
+(deftest start-during-a-pending-stop-keeps-the-replacement-worker-owned
+  (testing "an older stop!'s timeout cleanup must not erase a worker started during its join"
+    (let [old-entered (promise) release-old (promise)
+          new-entered (promise) release-new (promise)
+          after-stop  (promise)]
+      (q/register-sink!
+        (fn [eid _]
+          (case (long eid)
+            1 (do (deliver old-entered true) (deref release-old 10000 :timeout))
+            2 (do (deliver new-entered true) (deref release-new 10000 :timeout))
+            3 (deliver after-stop true)
+            nil)))
+      (try
+        (let [old-worker (q/start!)]
+          (q/enqueue-projection! 1 {})
+          (is (deref old-entered 3000 false) "the old worker reached its sink")
+          (let [first-stop (future (q/stop! {:join-timeout-ms 600}))]
+            ;; The old stop! has claimed its worker and is waiting on its sink.
+            (is (wait-until #(false? (:worker-running? (q/health))) 2000)
+                "the stop was requested")
+            (let [new-worker (q/start!)]
+              (is (not (identical? old-worker new-worker)) "a fresh worker was started during the join")
+              (q/enqueue-projection! 2 {})
+              (is (deref new-entered 3000 false) "the replacement worker reached its sink")
+              (let [r (deref first-stop 2500 :timeout)]
+                (is (map? r) "the older stop! returned")
+                (is (false? (:stopped? r)) "it timed out on its own blocked worker")
+                (is (true? (:superseded? r)) "and reports that a start! superseded it"))
+              (is (true? (:worker-running? (q/health))) "the replacement is still the running worker")
+              ;; Finish the old worker before examining the replacement.
+              (deliver release-old true)
+              (is (wait-until #(exited? old-worker) 3000) "the old worker exited on its own")
+              (let [r (q/stop! {:join-timeout-ms 100})]
+                (is (false? (:stopped? r))
+                    "a stop must remain incomplete while the replacement sink is blocked")
+                (is (= 1 (:retired-workers r)) "the replacement is retired and joinable, not forgotten")
+                (is (= 0 (:drained-on-stop r)) "no competing drain on the calling thread"))
+              (deliver release-new true)
+              (is (true? (:stopped? (q/stop! {:join-timeout-ms 2000})))
+                  "the next stop! joins the replacement and completes the shutdown")
+              ;; Every stop! completed.  A forgotten worker must not keep running.
+              (q/enqueue-projection! 3 {})
+              (is (false? (deref after-stop 1200 false))
+                  "nothing dispatches after a completed shutdown")
+              (is (exited? new-worker) "the replacement channel is closed")
+              (is (= 0 (:retired-workers (q/health)))))))
+        (finally
+          (deliver release-old true)
+          (deliver release-new true)
           (q/stop!))))))
