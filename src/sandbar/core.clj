@@ -64,17 +64,42 @@
 
    A NON-`:config` designator is still read as a raw classpath EDN
    resource via `edn/resource-value` — an extension seam for booting
-   from an alternate bundled config; no production caller uses it."
+   from an alternate bundled config; no production caller uses it.
+
+   Overrides (2026-09-19, reliability sprint D1): a MAP argument builds the
+   SAME graph, same component types and same dependency declarations, on
+   test resources — `{:config <map> :db-spec <spec> :port <port>
+   :nrepl? <bool>}`, each optional.  `sandbar.core-boot-order-acceptance-test`
+   boots this graph on a free port and an in-memory store, fresh and
+   pre-initialized, through the unmodified `start`.
+
+   Dependency: `:pedestal` USES `:datomic`, so the HTTP port opens only after
+   the database component has run `initialize-db!` and set `db/**conn*`.
+   `component/system-map` is insertion-ordered and `start-system` keeps that
+   order for components without a declared dependency, so before this
+   declaration `:pedestal` started BEFORE `:datomic`: the port answered
+   before schema was loaded and before the connection was set.  On an
+   existing store the connection fallback hid it; on a fresh store the first
+   requests failed.  The projection pipeline needs no such dependency — it
+   is registered in `start` before `component/start` runs at all."
   ([] (make-system :config))
-  ([configuration-designator]
-   (let [config (if (= :config configuration-designator)
-                  (edn/config-value)
-                  (edn/resource-value configuration-designator nil))]
-     (component/system-map
-       :config   config
-       :pedestal (pedestal/make-pedestal-server :dev)
-       :datomic  (db/make-datomic-peer (db/db-spec))
-       :nrepl    (nrepl/make-nrepl-server config)))))
+  ([designator-or-overrides]
+   (let [overrides  (when (map? designator-or-overrides) designator-or-overrides)
+         designator (if overrides :config designator-or-overrides)
+         config     (or (:config overrides)
+                        (if (= :config designator)
+                          (edn/config-value)
+                          (edn/resource-value designator nil)))
+         db-spec    (or (:db-spec overrides) (db/db-spec))
+         pedestal   (if-let [port (:port overrides)]
+                      (pedestal/make-pedestal-server :dev port)
+                      (pedestal/make-pedestal-server :dev))
+         nrepl?     (:nrepl? overrides true)]
+     (cond-> (component/system-map
+               :config   config
+               :pedestal (component/using pedestal [:datomic])
+               :datomic  (db/make-datomic-peer db-spec))
+       nrepl? (assoc :nrepl (nrepl/make-nrepl-server config))))))
 
 (defn init []
   (log/info :SYS/INIT "Initializing system")

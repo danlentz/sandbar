@@ -69,6 +69,26 @@
       (is (map? system)
           "System should be created with explicit :config designator"))))
 
+(deftest make-system-declares-the-port-depends-on-the-database
+  (testing "the HTTP port opens only after the database component has started (reliability sprint D1, 2026-09-19)"
+    (let [system (core/make-system)]
+      (is (= {:datomic :datomic} (component/dependencies (:pedestal system)))
+          (str ":pedestal USES :datomic — component/system-map is insertion-ordered and start-system "
+               "keeps that order for undeclared components, so without this the port opened before "
+               "initialize-db! had run"))))
+  (testing "an overrides map builds the same graph on test resources"
+    (let [system (core/make-system {:config  {:scheduler {:enabled? false}}
+                                    :db-spec {:url "datomic:mem://" :sid "make-system-overrides"}
+                                    :port    1
+                                    :nrepl?  false})]
+      (is (= {:scheduler {:enabled? false}} (:config system)))
+      (is (= "datomic:mem://make-system-overrides" (:uri (:datomic system)))
+          "the DatomicPeer is built on the override spec")
+      (is (instance? sandbar.server.pedestal.Pedestal (:pedestal system)))
+      (is (not (contains? system :nrepl)) ":nrepl? false omits the nREPL component")
+      (is (= {:datomic :datomic} (component/dependencies (:pedestal system)))
+          "the dependency declaration is the builder's, not the caller's"))))
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; make-system config routing — the boot path must resolve :config through
 ;; the LAYERED loader (sandbar.config), not the raw config.edn resource.

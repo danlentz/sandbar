@@ -80,6 +80,19 @@
       (log/info "Pedestal stopped")
       (assoc self :server nil))))
 
-(defn make-pedestal-server [mode]
-  (let [connector (if (= mode :prod) prod-connector dev-connector)]
-    (map->Pedestal {:connector connector :server nil})))
+(defn make-pedestal-server
+  "The HTTP component.  `(make-pedestal-server mode)` wraps the process-wide
+   `defonce` connector for `mode` (`:prod` / `:dev`) on the configured port.
+   `(make-pedestal-server mode port)` builds a FRESH connector on `port` over
+   the same connector map (the full sandbar interceptor stack and
+   `service.routes/routes`), so the production system graph can be booted on
+   a free port — what `sandbar.core-boot-order-acceptance-test` does."
+  ([mode]
+   (let [connector (if (= mode :prod) prod-connector dev-connector)]
+     (map->Pedestal {:connector connector :server nil})))
+  ([mode port]
+   (let [connector (-> (create-connector-map (merge service/service
+                                                    (when (= mode :dev) {:env :dev})
+                                                    {::http/port port}))
+                       (jetty/create-connector nil))]
+     (map->Pedestal {:connector connector :server nil}))))
