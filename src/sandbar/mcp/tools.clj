@@ -3653,6 +3653,15 @@
    not stored."
   1000)
 
+(defonce tool-call-counts
+  ;; Verb-diversity metric (reliability sprint D4, 2026-09-19): how many
+  ;; `tools/call` dispatches each canonical verb received since this process
+  ;; started.  In memory only, reset on restart, read over nREPL; not a
+  ;; database row and not a digest verb, per Dan's retention-review ruling
+  ;; of 2026-09-19.  Unknown verbs and read-only denials are not dispatches
+  ;; and are not counted.
+  (atom {}))
+
 (defn handle-call
   "MCP `tools/call` — dispatch a named verb from the catalog and project
    its result.
@@ -3713,6 +3722,7 @@
                         ;; Keyed by the CANONICAL dotted name so the registry-
                         ;; exempt set stays coherent under the wire rename.
                         (assert-read-plane-call! canonical arguments)
+                        (swap! tool-call-counts update canonical (fnil inc 0))
                         (let [t0 (System/nanoTime)
                               r  ((:handler verb) arguments)
                               ms (quot (- (System/nanoTime) t0) 1000000)]

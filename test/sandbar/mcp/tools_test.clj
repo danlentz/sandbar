@@ -267,6 +267,27 @@
     (is (some? (-> response :error :data :available-tools)))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Verb-diversity counter (reliability sprint D4, 2026-09-19) — in memory,
+;; per process; read over nREPL.  No DB required: tools.describe reads the
+;; in-process catalog.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(deftest tool-call-counts-count-dispatches-per-canonical-verb
+  (let [before @tools/tool-call-counts
+        key-of (fn [wire-name] (:canonical (#'tools/resolve-tool-name wire-name)))
+        k      (key-of "sandbar_tools_describe")]
+    (is (some? k) "the wire name resolves to a canonical verb")
+    (tools/handle-call 1 {:name "sandbar_tools_describe" :arguments {"verb" "sandbar.aggregate.count"}})
+    (tools/handle-call 2 {:name "sandbar.tools.describe" :arguments {"verb" "sandbar.aggregate.count"}})
+    (tools/handle-call 3 {:name "nonexistent.tool" :arguments {}})
+    (let [after @tools/tool-call-counts]
+      (testing "the underscore wire name and the dotted alias count under one canonical key"
+        (is (= 2 (- (get after k 0) (get before k 0)))))
+      (testing "an unknown verb is not a dispatch and adds no key"
+        (is (not (contains? after (key-of "nonexistent.tool"))))
+        (is (= (set (keys after)) (set (keys (merge before {k 0})))))))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Datomic-type → JSON Schema mapping (carried over from prior tests)
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
