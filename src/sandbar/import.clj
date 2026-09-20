@@ -27,7 +27,11 @@
   #{:mm.memory/created :mm.memory/last-touched :mm.memory/created-by
     :mm.memory/owning-project :mm.memory/visibility
     :mm/id :mm.memory/identity :mm.memory/rel-path :mm.memory/first-section
-    :mm.memory/frontmatter :db/ident :db/id :dt/type})
+    :mm.memory/frontmatter :db/ident :db/id :dt/type
+    ;; the display tier of the identifier hierarchy: a migration copied the
+    ;; name into it on 1,736 memorials no file ever declared, so a file that
+    ;; omits it is not retracting it (D7 2c, 2026-09-20; the ownership census)
+    :mm/pref-label})
 
 (def ^:private section-link-slots
   #{:mm.section/next-sibling :mm.section/previous-sibling})
@@ -168,16 +172,19 @@
   (let [m     (first specs)
         ident (:db/ident m)
         eid   (when ident (d/entid db ident))
-        stored (when eid (d/entity db eid))]
+        stored (when eid (d/entity db eid))
+        ;; the basis the plan is good for: `apply-plan!` guards its
+        ;; transaction with it (D7-R3, Astra 2026-09-20)
+        basis (d/basis-t db)]
     (cond
       ;; new to the store — or an ident whose entity was retracted: Datomic
       ;; keeps resolving the ident to its old eid, and the assert repopulates
       ;; that eid, so there is nothing to reconcile against
       (or (nil? eid) (nil? (:dt/type stored)))
-      {:mode :insert :specs specs :ops [] :conflicts []}
+      {:mode :insert :specs specs :ops [] :conflicts [] :basis basis}
 
       (= mode :additive)
-      {:mode :additive :specs specs :ops [] :conflicts []}
+      {:mode :additive :specs specs :ops [] :conflicts [] :basis basis}
 
       :else
       (let [class-ident    (:dt/type m)
@@ -198,6 +205,7 @@
                              [:db/retract eid :mm.memory/first-section (stored-value db :mm.memory/first-section old-first)])
             conflicts      (vec (concat (keep identity [class-conflict id-conflict]) (:conflicts sections)))]
         {:mode               :replace
+         :basis              basis
          :specs              specs
          :ops                (vec (concat (:ops sections) slots (keep identity [carrier-op first-op])))
          :conflicts          conflicts
@@ -213,4 +221,18 @@
   (when (seq (:conflicts plan))
     (throw (ex-info "import plan carries conflicts; refusing to apply"
                     {:reasons #{:import/conflicts} :conflicts (:conflicts plan)})))
-  (dt/make-all-with-retractions* (md/entity-specs->tx-data (:specs plan)) (:ops plan)))
+  ;; D7-R3 (Astra, 2026-09-20): the transaction carries `[:assert-basis basis]`
+  ;; for the database value the plan was computed against, so a change that
+  ;; landed since — a citation added to a section this plan retracts — aborts
+  ;; the commit on the transactor.  The refusal is reported as a conflict of
+  ;; the unit, never silently replanned: an attended preview stays attended.
+  (try
+    (dt/make-all-with-retractions* (md/entity-specs->tx-data (:specs plan)) (:ops plan) (:basis plan))
+    (catch Throwable ex
+      (if (dt/basis-moved? ex)
+        (throw (ex-info "import plan applied against a moved database; the unit is refused, not replanned"
+                        {:reasons   #{:import/basis-moved-during-apply}
+                         :expected  (:basis plan)
+                         :conflicts [{:reason :basis-moved-during-apply :expected-basis (:basis plan)}]}
+                        ex))
+        (throw ex)))))

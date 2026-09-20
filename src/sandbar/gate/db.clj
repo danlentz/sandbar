@@ -18,6 +18,7 @@
    → load-required-schema → finally reset+delete)."
   (:require [datomic.api        :as d]
             [sandbar.db.datomic :as db]
+            [sandbar.db.fn      :as dbfn]
             [sandbar.test-util  :as tu]))
 
 (defn with-fresh-db*
@@ -42,6 +43,9 @@
          (tu/load-required-schema conn)
          (when extra-schema
            (tu/load-schema conn extra-schema))
+         ;; the transactor-side functions boot installs after the schema
+         ;; (`:assert-basis` guards every replacement import unit; D7 2c)
+         (dbfn/load-all-dbfn uri)
          (body-fn)
          (finally
            (reset! db/**conn* prior-conn)

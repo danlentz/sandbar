@@ -170,6 +170,24 @@
   (entity-uuid (ident->namespace-name ident) (name ident)))
 
 
+(defn rel-path-uuid
+  "Derive the entity-UUID from a corpus rel-path (e.g.
+   \"sessions/2026-05-26T0400_pickup.md\"): the namespace-name is the directory
+   path with `/` as `.` (\"libraries/clojure\" → \"libraries.clojure\"), the slug
+   the basename without `.md`.  The SAME value as `ident-uuid` for every ident
+   whose name is its slug; for a digit-leading slug the codec prefixes the
+   ident (`session-…`) and `ident-uuid` would drift, while the file's declared
+   `id:` derives from the slug — so the create path mints from here (D7 2c,
+   2026-09-20; Astra's answer: a readability prefix must not create a new
+   identity; the authority and namespace derivation are unchanged)."
+  [rel-path]
+  {:pre [(string? rel-path) (str/includes? rel-path "/")]}
+  (let [path (str/replace rel-path #"\.md$" "")
+        i    (str/last-index-of path "/")
+        ns   (str/replace (subs path 0 i) "/" ".")
+        slug (subs path (inc i))]
+    (entity-uuid ns slug)))
+
 (comment
   ;; REPL demonstrations
   (str +authority+)

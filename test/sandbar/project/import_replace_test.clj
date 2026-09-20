@@ -37,6 +37,7 @@
             [sandbar.codec.markdown :as md]
             [sandbar.db.datatype    :as dt]
             [sandbar.db.datomic     :as db]
+            [sandbar.import         :as import]
             [sandbar.mcp.tools      :as tools]
             [sandbar.projection     :as pg]
             [sandbar.test-util      :as tu]))
@@ -288,4 +289,110 @@
               report (import! dir {"expect-basis" (:basis fresh)})]
           (is (= 1 (:persisted-count report)))
           (is (= #{"One"} (section-headings)))))
+      (finally (rm-rf! dir)))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Astra's review of increment 2 (2026-09-20 12:51Z): D7-R3, D7-R4, D7-R5, and
+;; the ownership of the display label
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(deftest a-citation-added-between-planning-and-apply-refuses-the-unit
+  ;; D7-R3: the plan was conflict-free; between the plan and its apply another
+  ;; record cites the section the plan retracts.  The transaction carries the
+  ;; plan's basis, the transactor aborts it, and the unit is reported as a
+  ;; conflict; both the document and the late citer keep every fact.
+  (let [dir (fresh-tmp-dir "late-citation")]
+    (try
+      (write! dir rel-path (doc {:sections [["One" "One body."] ["Two" "Two body."]]}))
+      (import! dir)
+      (write! dir rel-path (doc {:sections [["One" "One body."]]}))
+      (let [two      (d/entid (d/db (db/conn)) :memory.decisions/replace_probe__two)
+            original @#'import/apply-plan!]
+        (with-redefs-fn
+          {#'import/apply-plan!
+           (fn [plan]
+             @(d/transact (db/conn) [{:db/id "late" :dt/type :mm/Observation :db/ident :memory.observations/late_citer
+                                      :mm.memory/rel-path "observations/late_citer.md" :mm.memory/name "late citer"
+                                      :mm.memory/memory-type :observation :mm.memory/cites two}])
+             (original plan))}
+          (fn []
+            (let [report (import! dir)]
+              (is (= 1 (:conflict-count report)) (pr-str report))
+              (is (= "basis-moved-during-apply" (-> report :conflicts first :conflicts first :reason)))
+              (is (zero? (:persisted-count report)))
+              (is (true? (:reconciled? report)))
+              (is (= #{"One" "Two"} (section-headings)) "nothing about the document changed")
+              (let [db*   (d/db (db/conn))
+                    citer (d/entity db* :memory.observations/late_citer)]
+                (is (some? (:dt/type citer)) "the late citer's facts are preserved")
+                (is (= two (d/q '[:find ?c . :in $ ?e :where [?e :mm.memory/cites ?c]] db* (:db/id citer)))
+                    "its citation stands"))))))
+      (finally (rm-rf! dir)))))
+
+(deftest an-unreadable-file-is-its-own-failure-and-the-rest-persists
+  ;; D7-R4: one file the process cannot read is reported as a parse failure
+  ;; with its source and error; the readable file persists; the totals
+  ;; reconcile.  (Increment 2 had moved the read outside the unit boundary.)
+  (let [dir (fresh-tmp-dir "unreadable")
+        bad (io/file dir "decisions/unreadable_probe.md")]
+    (try
+      (write! dir rel-path (doc {}))
+      (write! dir "decisions/unreadable_probe.md" (doc {}))
+      (.setReadable bad false)
+      (let [report (import! dir)]
+        (is (= 2 (:attempted report)) (pr-str report))
+        (is (= 1 (:parse-failed-count report)))
+        (is (= "decisions/unreadable_probe.md" (-> report :parse-failed first :source)))
+        (is (string? (-> report :parse-failed first :error)))
+        (is (= 1 (:persisted-count report)))
+        (is (true? (:reconciled? report))))
+      (finally (.setReadable bad true) (rm-rf! dir)))))
+
+(deftest a-file-edited-after-the-preview-refuses-the-persist-before-anything-applies
+  ;; D7-R5: the preview reports each source's hash and one token over them
+  ;; all; a persist pinned to either is refused, before any transaction, when
+  ;; a file changed since — the map form names the file.
+  (let [dir (fresh-tmp-dir "sources-pin")]
+    (try
+      (write! dir rel-path (doc {:sections [["One" "One body."] ["Two" "Two body."]]}))
+      (import! dir)
+      (let [preview (dry-run dir)]
+        (is (string? (:sources-sha256 preview)))
+        (is (= (-> preview :units first :source-sha256) (get (:sources preview) (keyword rel-path)))
+            "the preview lists each source's hash")
+        (write! dir rel-path (doc {:sections [["One" "One body."]]}))
+        (let [response (tools/handle-call 1 {:name "sandbar.project.import"
+                                             :arguments {"from" (.getPath dir) "persist" true
+                                                         "expect-sources" (:sources-sha256 preview)}})]
+          (is (true? (-> response :result :isError)) "the token refuses")
+          (is (str/includes? (-> response :result :content first :text) "changed since the preview")))
+        (let [hashes   (into {} (map (fn [[k v]] [(name k) v])) (:sources preview))
+              response (tools/handle-call 1 {:name "sandbar.project.import"
+                                             :arguments {"from" (.getPath dir) "persist" true
+                                                         "expect-source-hashes" hashes}})]
+          (is (true? (-> response :result :isError)) "the map refuses")
+          (is (str/includes? (-> response :result :content first :text) "replace_probe.md") "and names the file"))
+        (is (= #{"One" "Two"} (section-headings)) "nothing applied")
+        (let [fresh  (dry-run dir)
+              report (import! dir {"expect-sources" (:sources-sha256 fresh)})]
+          (is (= 1 (:persisted-count report)) "a fresh preview's pin persists")
+          (is (= #{"One"} (section-headings)))))
+      (finally (rm-rf! dir)))))
+
+(deftest the-display-label-is-derived-kept-on-omission-and-written-only-when-it-differs
+  ;; the ownership census: mm/pref-label is the display tier a migration
+  ;; copied from the name; a file that omits it is not retracting it, and the
+  ;; emitter writes it only when it says something the name does not
+  (let [dir (fresh-tmp-dir "pref-label")]
+    (try
+      (write! dir rel-path (doc {}))
+      (import! dir)
+      (let [eid (d/entid (d/db (db/conn)) ident)]
+        @(d/transact (db/conn) [{:db/id eid :mm/pref-label "Replacement probe"}])
+        (is (= "Replacement probe" (:mm/pref-label (entity))))
+        (import! dir)
+        (is (= "Replacement probe" (:mm/pref-label (entity))) "a re-import does not retract the derived label")
+        (is (not (str/includes? (rendered) "pref-label:")) "a label equal to the name is not written")
+        @(d/transact (db/conn) [{:db/id eid :mm/pref-label "A different display label"}])
+        (is (str/includes? (rendered) "pref-label: A different display label") "a label that differs is written"))
       (finally (rm-rf! dir)))))

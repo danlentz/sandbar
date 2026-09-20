@@ -8,6 +8,7 @@
             [sandbar.config :as cfg]
             [sandbar.db.datomic :as db]
             [sandbar.db.datatype :as dt]
+            [sandbar.db.fn :as dbfn]
             [sandbar.service.config :as config]
             [sandbar.util.auth :as auth]
             [sandbar.util.edn :as edn])
@@ -145,6 +146,12 @@
            (load-required-schema conn)
            (when extra-schema
              (load-schema conn extra-schema))
+           ;; Boot installs the transactor-side functions (`:assert-basis`
+           ;; among them) right after the schema; the fixture mirrors that so
+           ;; every test store can run a guarded write — the replacement
+           ;; import guards each unit's transaction with the plan's basis
+           ;; (D7 2c, 2026-09-20).  Idempotent: Datomic upserts on :db/ident.
+           (dbfn/load-all-dbfn test-uri)
            ;; Create test user and session if auth is enabled
            (if auth?
              (binding [*test-session-id* (get-test-session!)]

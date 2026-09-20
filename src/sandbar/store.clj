@@ -382,5 +382,12 @@
              (assert-corpus-rel-path-safe! class rel-path the-id))
          props    (cond-> props
                     (and memory? the-id (not (:mm/id props)))
-                    (assoc :mm/id (ident/ident-uuid the-id)))]
+                    ;; D7 2c (2026-09-20): minted from the rel-path slug when there is
+                    ;; one — the same value as the ident derivation for every plain
+                    ;; name, and the file's own derivation for a digit-leading name
+                    ;; whose ident the codec prefixes (Astra: a readability prefix
+                    ;; must not create a new identity)
+                    (assoc :mm/id (if (and rel-path (clojure.string/includes? rel-path "/"))
+                                    (ident/rel-path-uuid rel-path)
+                                    (ident/ident-uuid the-id))))]
      (dt/make class props opts))))

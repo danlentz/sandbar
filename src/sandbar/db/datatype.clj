@@ -193,7 +193,7 @@
       (throw (ex-info (str "basis moved between preflight and commit: expected " expected-t ", found " actual)
                       {:type :basis-moved :expected expected-t :actual actual})))))
 
-(defn- basis-moved?
+(defn basis-moved?
   "True when `ex`, or any cause beneath it, is the `:assert-basis` guard's
    refusal — the transactor wraps a transaction function's throw, so the
    marker is looked for down the whole chain, by ex-data and by message."
@@ -374,11 +374,18 @@
    vectors the planner derived from the store) transact with them, so a
    file's re-import replaces its source-owned representation atomically.
    Firewall-only, like `make-all*`.  Returns the transaction result map."
-  [entity-specs ops]
-  (firewall-batch-guard! entity-specs (fw-enforce/index-specs-by-ident entity-specs))
-  (let [result @(d/transact (db/conn) (into (vec ops) entity-specs))]
-    (log/debug :DT/MAKE-ALL-WITH-RETRACTIONS {:entities (count entity-specs) :retractions (count ops)})
-    result))
+  ([entity-specs ops] (make-all-with-retractions* entity-specs ops nil))
+  ([entity-specs ops expected-basis]
+   ;; D7-R3 (Astra, 2026-09-20): the plan was computed against a database
+   ;; value; `[:assert-basis t]` in the SAME transaction aborts the commit if
+   ;; anything landed since, so a citation added between planning and apply
+   ;; can never be erased with the section it cites.  Nil = unguarded.
+   (firewall-batch-guard! entity-specs (fw-enforce/index-specs-by-ident entity-specs))
+   (let [guard  (when expected-basis [[:assert-basis expected-basis]])
+         result @(d/transact (db/conn) (-> (vec guard) (into ops) (into entity-specs)))]
+     (log/debug :DT/MAKE-ALL-WITH-RETRACTIONS {:entities (count entity-specs) :retractions (count ops)
+                                               :expected-basis expected-basis})
+     result)))
 
 (declare validate-data)          ;; forward declaration
 (declare type-isa?)              ;; forward reference; defined later in this ns

@@ -640,7 +640,7 @@
     :else
     []))
 
-(defn- sha256-hex
+(defn sha256-hex
   "The SHA-256 of `text` as lowercase hex — the source fingerprint a unit
    carries so a preview and its apply can be told apart (D7, 2026-09-20)."
   [^String text]
@@ -669,20 +669,29 @@
   [^java.io.File file source filter-spec]
   (if-not (str/ends-with? (.getName file) ".md")
     {:source source :status :skipped :entities []}
-    (let [text (slurp file)
-          sha  (sha256-hex text)
-          [parsed error] (try
-                           [(vec (md/parse-document text source)) nil]
-                           (catch Throwable ex
-                             ;; Per-file parse failures don't abort the whole
-                             ;; walk — e.g., a section-ident slug collision in
-                             ;; ONE file shouldn't poison the entire corpus
-                             ;; ingest.  Log, and REPORT through the unit.
-                             (log/warn :SANDBAR/INGEST-PARSE-SKIP
-                                       {:rel-path source
-                                        :file     (.getPath file)
-                                        :error    (.getMessage ex)})
-                             [nil (or (.getMessage ex) (str (class ex)))]))]
+    (let [;; D7-R4 (Astra, 2026-09-20): the read and the hash sit INSIDE the
+          ;; unit boundary — one unreadable file is its own parse failure and
+          ;; never aborts the walk (increment 2 had moved them outside the try;
+          ;; this restores the D6 contract: every file's fate reported)
+          [text sha read-error] (try (let [t (slurp file)] [t (sha256-hex t) nil])
+                                     (catch Throwable ex
+                                       (log/warn :SANDBAR/INGEST-READ-SKIP
+                                                 {:rel-path source :file (.getPath file) :error (.getMessage ex)})
+                                       [nil nil (or (.getMessage ex) (str (class ex)))]))
+          [parsed error] (if read-error
+                           [nil read-error]
+                           (try
+                             [(vec (md/parse-document text source)) nil]
+                             (catch Throwable ex
+                               ;; Per-file parse failures don't abort the whole
+                               ;; walk — e.g., a section-ident slug collision in
+                               ;; ONE file shouldn't poison the entire corpus
+                               ;; ingest.  Log, and REPORT through the unit.
+                               (log/warn :SANDBAR/INGEST-PARSE-SKIP
+                                         {:rel-path source
+                                          :file     (.getPath file)
+                                          :error    (.getMessage ex)})
+                               [nil (or (.getMessage ex) (str (class ex)))])))]
       (if error
         {:source source :status :parse-failed :entities [] :error error :source-sha256 sha}
         (let [root (first parsed)

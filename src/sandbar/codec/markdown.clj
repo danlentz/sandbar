@@ -1724,12 +1724,17 @@
           ;; Source the id: line from either; strip both below.
           identity-uuid (or (:mm.memory/identity entity) (:mm/id entity))
           fm-slots      (-> (into {}
-                                   (remove (fn [[k _]]
+                                   (remove (fn [[k v]]
                                              (or (= :dt/type k)
                                                  (= body-slot k)
                                                  (= :mm.memory/frontmatter k)
                                                  (= :mm.memory/identity k)
                                                  (= :mm/id k)
+                                                 ;; the display label is derived: a migration copied the
+                                                 ;; name into it on 1,736 memorials no file ever declared;
+                                                 ;; written only when it says something the name does not
+                                                 ;; (D7 2c, 2026-09-20; the ownership census)
+                                                 (and (= :mm/pref-label k) (= v (:mm.memory/name entity)))
                                                  (and (keyword? k)
                                                       (when-let [ns (namespace k)]
                                                         (or (= "db" ns)
