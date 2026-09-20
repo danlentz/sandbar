@@ -430,13 +430,13 @@ Compositional grounding workflow — tag lookup + meta-vocab + suggested next-st
 **WHEN:** use BEFORE introspection / planning / authoring / research to anchor the concept in the substrate's vocabulary.  The 5th retrieval axis (formal-semantic vocabulary) per observations/tags_as_5th_retrieval_axis_with_formal_semantics_2026_05_20.md.  Composes with the other four retrieval axes (search / aggregation / orientation / navigation).  When NOT to use: the concept is already grounded (e.g., you have a concrete tag / class / predicate ident); skip to the specific verb.
 
 **HOW:** `:concept` is the concept-string to ground.  Returns:
-  `:step-1-tag-lookup` — sandbar.tag.lookup result (canonical / alt-label / scope-note matching)
+  `:step-1-tag-lookup` — the sandbar.tag.lookup result: exact label matches over every value carrier first, then conceptual matches, with `:match-reason` per candidate and the `:population` searched
   `:step-2-meta-vocab` — classes + predicates whose name aligns with the concept
-  `:step-3-suggested-next` — vec of suggested next MCP calls based on what step-1 and step-2 surfaced
+  `:step-3-suggested-next` — CALLABLE suggestions, each `{:verb :args :why}` naming a catalog verb with arguments that can be passed as written: `sandbar.search.bm25f` over `:mm/Memory` for the concept in content; from the best match, `sandbar.navigate.inbound-edges` with `[":mm.memory/tags" ":mm.memory/themes"]` for the records it classifies and `sandbar.tag.lookup` for its meaning view
 
-**ORDER:** typically the FIRST call when an LLM consumer encounters a new concept in user input.  After this verb, the consumer either (a) calls sandbar.tag.define if step-1 reported `:gap? true`, (b) calls sandbar.search.bm25f informed by a selected tag's scope-note, or (c) calls sandbar.navigate.outbound to explore typed-edge context from a matched tag.
+**ORDER:** typically the FIRST call when an LLM consumer encounters a new concept in user input.  A step-1 miss states its population and is not proof the concept is absent — content search decides before a tag is authored; a search or read-barrier failure surfaces as an error, never as an empty vocabulary.
 
-**COMBINATION:** anchor for tag.* operations.  Stage 7.D MVP scope — Stage 7.F+ refinement integrates sandbar.search.bm25f + sandbar.navigate.path-via for true compositional workflow.
+**COMBINATION:** anchor for tag.* operations; composes with `sandbar.search.bm25f` (content) and `sandbar.navigate.inbound-edges` (membership).  D7b, RT-14 item 3 (2026-09-20).
 
 ## namespace (1)
 
@@ -464,9 +464,9 @@ COMPOSES with sandbar.resolve (the resolution path for federation-shaped referen
 Typed-edges pointing AT an entity (who references it).  `[safe]` — wire name `sandbar_navigate_inbound-edges`.
 
 **Args** (`*` = required):
-- `entity`\* (string) — Anchor entity ident or eid
+- `entity`\* (string) — Anchor entity ident or eid (an identless entity anchors by eid)
 - `limit` (integer) — Max edges (default 0 = no cap)
-- `predicate` (string) — Single predicate ident OR JSON array of idents.  Bare forms auto-resolve to slot-idents on the entity's class.
+- `predicate` — Single predicate ident OR JSON array of idents.  Membership: pass `:mm.memory/tags` and `:mm.memory/themes` fully qualified.  Bare forms resolve against `source-type` when given, else schema-wide by local name.
 - `projection` (string) — Per-edge source projection: 'metadata-only' (default; lightweight) or 'full' (complete source entity-map)
 - `source-type` (string) — Class ident restricting source-instance-of
 
@@ -474,22 +474,22 @@ Typed-edges pointing AT an entity (who references it).  `[safe]` — wire name `
 
 **WHEN:** use for backlink discovery — 'which decisions cite this ADR?'.  Underpins /memory-xref + library-card inverse-axes.  When NOT to use: (a) sources-only without predicate label — use Datalog directly; (b) bounded-depth backlink walk — use `sandbar.navigate.walk` with `:inbound` flag; (c) Kleene closure — use `sandbar.navigate.path-via` with `:INV`.
 
-**HOW:** `:entity` is the target entity (ident or eid).  Optional `:predicate` is a single keyword-string OR vec to restrict to specific edge-predicates; BARE forms (no namespace) like `:cites` auto-resolve to the slot-ident `:mm.memory/cites` on the entity's class.  Optional `:source-type` is a class-ident-string restricting sources to instances-of.  Optional `:limit` caps returned edges.  Optional `:projection` controls per-edge source shape — `:metadata-only` (DEFAULT) returns just `:db/id`/`:db/ident`/`:dt/type` per source; `:full` returns the complete source entity-map.
+**HOW:** `:entity` is the target entity (ident or eid; an identless entity — a bare tag value carrier — is a valid anchor by eid).  Optional `:predicate` is a single ident string OR an array of ident strings restricting the edge predicates.  Pass membership predicates FULLY QUALIFIED: `:mm.memory/tags` and `:mm.memory/themes` (one call covers both).  A BARE form (no namespace) resolves against `:source-type`'s class when given, else against EVERY ref-typed property in the schema with that local name — `:tags` covers memories, rules, actors and contexts at once, each edge reporting the qualified predicate it was found through; a name no ref property carries is refused.  Optional `:source-type` is a class-ident-string restricting sources to instances-of.  Optional `:limit` caps returned edges.  Optional `:projection` controls per-edge source shape — `:metadata-only` (DEFAULT) returns just `:db/id`/`:db/ident`/`:dt/type` per source; `:full` returns the complete source entity-map.
 
-**ORDER:** leaf-call shape.
+**ORDER:** leaf-call shape.  For a vocabulary journey: `sandbar.tag.lookup` (the identity), this verb from its eid with both membership predicates (the records), `sandbar.entity.find` on a selected record.
 
 **COMBINATION:** pairs with `sandbar.navigate.outbound-edges` (the dual).  Composes with `sandbar.orient.library-card` (`:inverse` axes use the inbound shape).
 
-Result: `{:edges [{:predicate <pred-ident> :source <entity-map>} ...] :total <int> :returned <int>}`.
+Result: `{:edges [{:predicate <pred-ident> :source <entity-map>} ...] :total <edges before the limit> :distinct-total <distinct sources before the limit> :returned <int> :limit <int> :truncated? <bool>}` — clients deduplicate sources by `:db/id` without losing which relationship found them; edge totals and distinct-record totals stay distinguishable (D7b, RT-14 item 4, 2026-09-20).
 
 ### `sandbar.navigate.outbound-edges`
 
 Typed-edges originating FROM an entity.  `[safe]` — wire name `sandbar_navigate_outbound-edges`.
 
 **Args** (`*` = required):
-- `entity`\* (string) — Anchor entity ident or eid
+- `entity`\* (string) — Anchor entity ident or eid (an identless entity anchors by eid)
 - `limit` (integer) — Max edges (default 0 = no cap)
-- `predicate` (string) — Single predicate ident OR JSON array of idents.  Bare forms (`:cites`) auto-resolve to slot-idents (`:mm.memory/cites`) on the entity's class.
+- `predicate` — Single predicate ident OR JSON array of idents.  Bare forms (`:cites`) resolve to slot-idents (`:mm.memory/cites`) on the entity's class, or schema-wide when the anchor has no class.
 - `projection` (string) — Per-edge target projection: 'metadata-only' (default; lightweight) or 'full' (complete target entity-map)
 - `target-type` (string) — Class ident restricting target-instance-of
 
@@ -497,13 +497,13 @@ Typed-edges originating FROM an entity.  `[safe]` — wire name `sandbar_navigat
 
 **WHEN:** use for one-hop forward navigation when you need the predicate-and-target shape (not just the targets).  Underpins /memory-xref + /memory-show.  When NOT to use: (a) targets-only (no predicate label) — use a Datalog query directly; (b) recursive / Kleene-closure traversal — use `sandbar.navigate.path-via`; (c) bounded-depth BFS — use `sandbar.navigate.walk`.
 
-**HOW:** `:entity` is the seed entity (ident or eid).  Optional `:predicate` is a single keyword-string OR vec to restrict to specific edge-predicates; BARE forms (no namespace) like `:cites` auto-resolve to the slot-ident `:mm.memory/cites` on the entity's class (Gap 7 fix — silent zero-hit on slot-form mismatch is replaced with loud error suggesting the canonical slot ident).  Optional `:target-type` is a class-ident-string restricting targets to instances-of.  Optional `:limit` caps returned edges (default 0 = no cap).  Optional `:projection` controls per-edge target shape — `:metadata-only` (DEFAULT) returns just `:db/id`/`:db/ident`/`:dt/type` per target (10-300x smaller payload than `:full`); `:full` returns the complete target entity-map.
+**HOW:** `:entity` is the seed entity (ident or eid; an identless entity is a valid anchor by eid).  Optional `:predicate` is a single ident string OR an array of ident strings restricting the edge predicates; BARE forms (no namespace) like `:cites` resolve to the slot-ident `:mm.memory/cites` on the entity's class (one match used; none or several refused with a hint), or schema-wide when the anchor has no class.  Optional `:target-type` is a class-ident-string restricting targets to instances-of.  Optional `:limit` caps returned edges (default 0 = no cap).  Optional `:projection` controls per-edge target shape — `:metadata-only` (DEFAULT) returns just `:db/id`/`:db/ident`/`:dt/type` per target (10-300x smaller payload than `:full`); `:full` returns the complete target entity-map.
 
 **ORDER:** leaf-call shape.  Discover candidate predicates first via `sandbar.class.slots` on the entity's class if uncertain.
 
 **COMBINATION:** pairs with `sandbar.navigate.inbound-edges` (the dual; who references this entity).  Composes with `sandbar.orient.library-card` (one-call multi-axis breakdown).  Pre-step for `sandbar.navigate.path-via` (discover predicate vocab before authoring path expressions).
 
-Result: `{:edges [{:predicate <pred-ident> :target <entity-map>} ...] :total <int> :returned <int>}`.
+Result: `{:edges [{:predicate <pred-ident> :target <entity-map>} ...] :total <edges before the limit> :distinct-total <distinct targets before the limit> :returned <int> :limit <int> :truncated? <bool>}` — each edge keeps its `:predicate` as the role; a target reached through two predicates is two edges and one distinct record (D7b, 2026-09-20).
 
 ### `sandbar.navigate.path-via`
 
@@ -1232,18 +1232,20 @@ Tag-vocabulary primitive — find canonical tags aligned with a concept.  `[safe
 
 **Args** (`*` = required):
 - `concept`\* (string) — Concept-string to look up
-- `limit` (integer) — Max matches returned (default 10)
-- `projection` (string) — Per-match shape — 'full' (default; curated tag-summary with broader/narrower context) or 'metadata-only' (lightweight; :db/id + :db/ident + :dt/type + :score).  Opt to 'metadata-only' for bulk traversal (e.g., walking thousands of audit-flagged tags).
+- `limit` (integer) — Max conceptual matches returned (default 10); exact matches are always returned
+- `projection` (string) — Per-match shape — 'full' (default; the meaning view with identity, lifecycle, successor, scheme, mapping and broader/related context) or 'metadata-only' (lightweight; :db/id + :db/ident + :dt/type + :eid + :value + :match-reason).  Opt to 'metadata-only' for bulk traversal (e.g., walking thousands of audit-flagged tags).
 
-**WHICH:** surfaces tags whose canonical-form / alt-label / hidden-label / definition / scope-note / example align with the query concept.  Step 1 of the sandbar.ground compositional workflow.  Returns ranked candidates with broader/narrower context.
+**WHICH:** finds EXISTING vocabulary identities for a concept before any new vocabulary is proposed.  Two passes: an exact pass over every entity carrying `:mm.tag/value` (typed `:mm/Tag` instances AND bare value carriers alike) comparing the concept with the value, alt-label and hidden-label; then a conceptual pass, BM25F over typed `:mm/Tag` instances (value / alt-label / definition / scope-note / hidden-label / example).  Step 1 of the sandbar.ground compositional workflow.
 
-**WHEN:** use to discover whether the corpus's tag vocabulary already has a concept covered before authoring a new tag.  Disambiguation primitive — if scope-notes differ across candidates, the right tag becomes obvious.  When NOT to use: (a) the concept is corpus-wide (try sandbar.search.bm25f over body content instead); (b) you already have a specific tag-value (use sandbar.entity.find or read directly).
+**WHEN:** use to learn whether the vocabulary already has a concept, under which identity, and what it means — before authoring a tag, before a membership traversal.  Disambiguation primitive — collisions (two concepts sharing an alternative label) stay distinct candidates with their match reasons.  When NOT to use: (a) the concept is corpus-wide (try sandbar.search.bm25f over body content instead); (b) you already have the tag's eid or ident (use sandbar.entity.find).
 
-**HOW:** `:concept` is the concept-string; `:limit` (optional) caps returned matches (default 10).  Optional `:projection` — `full` (default; curated tag-summary with :value + :alt-label + :definition + :scope-note + broader/narrower context) or `metadata-only` (lightweight; :db/id + :db/ident + :dt/type per match for bulk traversal).  Returns `:concept`, `:matches` (vec of match-maps with `:score`), `:gap?` (true when no tag matches), `:gap-hint` (suggested sandbar.tag.define invocation when gap).
+**HOW:** `:concept` is the concept-string; `:limit` (optional) caps the conceptual pass (default 10).  Optional `:projection` — `full` (default; the MEANING VIEW: `:eid`, `:ident` when interned, `:value`, `:typed?`, definition, scope-note, example, alt/hidden labels, `:canonical?` present when asserted true OR false and absent when missing, `:lifecycle-status`, `:superseded-by` (the successor's identity), `:in-scheme`, the SKOS mapping slots, broader/related context) or `metadata-only` (lightweight; :db/id + :db/ident + :dt/type + `:eid` + `:value` per match — every projection supplies a usable identity).  Every match carries `:match-reason` (`:exact-value` / `:exact-alt-label` / `:exact-hidden-label` / `:conceptual`; an entity both passes found lists both) and conceptual matches carry `:score`; exact matches come first.  Returns `:concept`, `:matches`, `:returned`, `:match-total`, `:population` (`:value-carriers`, `:typed-tags`, `:untyped-carriers`, counted at read time), `:method`, `:gap?` (true when NEITHER pass matched) and `:gap-hint`.
 
-**ORDER:** step 1 of sandbar.ground.  Called directly when you want JUST the tag-vocabulary primitive (no meta-vocab / suggested-next).
+ERROR VERSUS ABSENCE: a read-barrier timeout or a search failure is an error through the tool envelope, never an empty result; a miss means no match in the stated population and is NOT proof the concept is absent from the corpus (untyped carriers are matched by exact value only) — the hint points at sandbar.search.bm25f over :mm/Memory, not at authoring a tag.
 
-**COMBINATION:** pairs with sandbar.tag.define (when `:gap? true` — author the canonical), sandbar.tag.consolidate (when matches show drift), sandbar.tag.audit (which tags' lifecycle-status is healthy?).
+**ORDER:** step 1 of sandbar.ground.  The vocabulary journey: this verb (identity + meaning) → sandbar.navigate.inbound-edges from the match's eid with `[":mm.memory/tags" ":mm.memory/themes"]` (the records) → sandbar.entity.find on a selected record.
+
+**COMBINATION:** pairs with sandbar.navigate.inbound-edges (membership), sandbar.search.bm25f (content), sandbar.tag.consolidate (when matches show drift), sandbar.tag.audit (lifecycle health).  D7b, RT-14 items 1 to 3 (2026-09-20).
 
 ### `sandbar.tag.rename`
 

@@ -18,7 +18,8 @@
   wrappers route through `sandbar.db.datatype/*-edges-of` primitives,
   never raw `datomic.api`."
   (:require [sandbar.api.projection :as projection]
-            [sandbar.db.datatype :as dt]))
+            [sandbar.db.datatype :as dt]
+            [sandbar.db.datomic :as db]))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Predicate resolution (Gap 7 — surfaced via MCP cutover exercise 2026-05-22)
@@ -64,40 +65,88 @@
                 :matching-slots matches
                 :resolution     :ambiguous})))))
 
+(defn- resolve-bare-predicate-schema-wide
+  "Resolve a bare predicate keyword to EVERY ref-typed property in the
+  metamodel that carries its local name — the rule for an INBOUND
+  predicate, whose slot belongs to the source's class and not to the
+  anchor's, and for an anchor that has no class (an identless value
+  carrier).  Returns the vec of qualified idents; each edge then reports
+  the qualified predicate it was found through, so a name shared by
+  several classes (`:tags` on memories, rules, actors, contexts) yields
+  the union of those relations with the role visible per edge rather
+  than a silent resolution against the wrong class.  Throws ex-info
+  when no ref-typed property carries the name.  D7b, RT-14 item 4
+  (2026-09-20)."
+  [pred]
+  (let [candidates (->> (dt/all-properties)
+                        (filter #(= (name pred) (name %)))
+                        (filter #(= :db.type/ref (:db/valueType (db/entity %))))
+                        (sort)
+                        (vec))]
+    (if (seq candidates)
+      candidates
+      (throw (ex-info
+               (str "Bare predicate `:" (name pred)
+                    "` matches no ref-typed property in the schema.  Use "
+                    "the fully-qualified slot ident (membership: "
+                    ":mm.memory/tags, :mm.memory/themes).")
+               {:bare-predicate  pred
+                :resolution      :no-match
+                :available-slots []})))))
+
 (defn resolve-predicates
   "Resolve a predicate spec (single keyword OR collection) to a vec of
-  slot-idents suitable for dt/*-edges-of comparison.  Bare keywords
-  (no namespace) are resolved against the entity's class slots;
-  namespaced keywords pass through unchanged.  When `entity-ident`
-  doesn't resolve to an entity (no `:dt/type`), resolution is skipped
-  and the input is returned as-is — the dt/* layer will return its
-  usual empty result and the missing-entity surfaces there.
+  slot-idents suitable for dt/*-edges-of comparison.  Namespaced
+  keywords pass through unchanged.  Bare keywords (no namespace)
+  resolve by `direction`:
 
-  Returns nil when `predicate` is nil (preserves dt/*'s no-filter
-  semantic).
+    :outbound — against the anchor's class slots (the anchor owns an
+                outbound slot); one match is used, none or several
+                are refused with a hint.  An anchor without a class
+                (an identless value carrier) resolves schema-wide.
+    :inbound  — against `owner-class` (the caller's source-type) when
+                given, else schema-wide: every ref-typed property with
+                that local name, so each edge reports the qualified
+                predicate it was found through.  None is refused.
 
-  Public so consumer-wrapper namespaces (e.g., `sandbar.orient` for
-  library-card per-axis resolution) can apply the same Gap 7 fix.
+  The two-arity form keeps the outbound rule for callers that predate
+  the direction (the library-card's per-axis resolution).  Returns nil
+  when `predicate` is nil (preserves dt/*'s no-filter semantic).
+
   Per inbox capture
-  memory/inbox/2026-05-22_mcp_cutover_exercise_substrate_verb_authoring_queue_10_gaps_surfaced_via_orientation_of_sandbar_as_mcp_server_arc.md."
-  [entity-ident predicate]
-  (when (some? predicate)
-    (let [preds   (if (sequential? predicate) predicate [predicate])
-          bare?   (fn [p] (and (keyword? p) (nil? (namespace p))))
-          needs-resolution? (some bare? preds)]
-      (if-not needs-resolution?
-        (vec preds)
-        (let [klass (dt/class-ident-of entity-ident)
-              slots (when klass (dt/slots-of klass))]
-          (if (or (nil? klass) (empty? slots))
-            ;; Entity doesn't resolve or class has no slots — pass through;
-            ;; dt/* will return empty and the missing-entity surfaces there.
-            (vec preds)
-            (mapv (fn [p]
-                    (if (bare? p)
-                      (resolve-bare-predicate p klass slots)
-                      p))
-                  preds)))))))
+  memory/inbox/2026-05-22_mcp_cutover_exercise_substrate_verb_authoring_queue_10_gaps_surfaced_via_orientation_of_sandbar_as_mcp_server_arc.md
+  (Gap 7) and D7b, RT-14 item 4 (2026-09-20)."
+  ([entity-ident predicate]
+   (resolve-predicates entity-ident predicate :outbound nil))
+  ([entity-ident predicate direction]
+   (resolve-predicates entity-ident predicate direction nil))
+  ([entity-ident predicate direction owner-class]
+   (when (some? predicate)
+     (let [preds   (if (sequential? predicate) predicate [predicate])
+           bare?   (fn [p] (and (keyword? p) (nil? (namespace p))))
+           needs-resolution? (some bare? preds)]
+       (if-not needs-resolution?
+         (vec preds)
+         (let [klass (if (= direction :inbound)
+                       owner-class
+                       (dt/class-ident-of entity-ident))
+               slots (when klass (dt/slots-of klass))]
+           (into []
+                 (mapcat (fn [p]
+                           (cond
+                             (not (bare? p)) [p]
+                             (seq slots)     [(resolve-bare-predicate p klass slots)]
+                             :else           (resolve-bare-predicate-schema-wide p))))
+                 preds)))))))
+
+(defn- distinct-total
+  "The number of distinct entities at `role` (`:source` or `:target`)
+  across ALL edges before any limit — the record count a client gets
+  after deduplicating by id, kept distinguishable from the edge count
+  (a record reached through two predicates is two edges and one
+  record).  Blocked edges carry no entity and are not counted."
+  [edges role]
+  (count (distinct (keep (comp :db/id role) edges))))
 
 ;; Projection helpers lifted to `sandbar.api.projection` per Task #12 —
 ;; navigate/edges uses the shared `project-edge` which dispatches on
@@ -129,18 +178,24 @@
                     `:full` returns the complete source entity-map
 
   Returns:
-    {:edges    [{:predicate <pred-ident> :source <entity-map>} ...]
-     :total    <int>
-     :returned <int>}
+    {:edges          [{:predicate <pred-ident> :source <entity-map>} ...]
+     :total          <int>   ; edges, before the limit
+     :distinct-total <int>   ; distinct sources, before the limit
+     :returned       <int>
+     :limit          <int>
+     :truncated?     <bool>}
 
-  Per fulltext arc Stage 16; `:projection` opt per Gap 3 of MCP cutover
-  exercise 2026-05-22."
+  Bare predicates resolve against `:source-type` when given, else
+  schema-wide (see `resolve-predicates`): pass `:mm.memory/tags` /
+  `:mm.memory/themes` qualified for membership.  Per fulltext arc Stage
+  16; `:projection` opt per Gap 3 of MCP cutover exercise 2026-05-22;
+  the totals and the inbound resolution rule per D7b (2026-09-20)."
   [{:keys [entity predicate source-type limit projection]
     :or   {limit      0
            projection :metadata-only}}]
   {:pre [(some? entity)
          (or (nil? limit) (and (integer? limit) (>= limit 0)))]}
-  (let [resolved-pred (resolve-predicates entity predicate)
+  (let [resolved-pred (resolve-predicates entity predicate :inbound source-type)
         edges   (dt/inbound-edges-of
                   entity
                   (cond-> {}
@@ -149,9 +204,12 @@
         total   (count edges)
         limited (if (zero? limit) edges (take limit edges))
         edges-v (mapv #(projection/project-edge % projection) limited)]
-    {:edges    edges-v
-     :total    total
-     :returned (count edges-v)}))
+    {:edges          edges-v
+     :total          total
+     :distinct-total (distinct-total edges :source)
+     :returned       (count edges-v)
+     :limit          limit
+     :truncated?     (< (count edges-v) total)}))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; outbound-edges — edges originating FROM the entity
@@ -177,18 +235,21 @@
                     `:full` returns the complete target entity-map
 
   Returns:
-    {:edges    [{:predicate <pred-ident> :target <entity-map>} ...]
-     :total    <int>
-     :returned <int>}
+    {:edges          [{:predicate <pred-ident> :target <entity-map>} ...]
+     :total          <int>   ; edges, before the limit
+     :distinct-total <int>   ; distinct targets, before the limit
+     :returned       <int>
+     :limit          <int>
+     :truncated?     <bool>}
 
   Per fulltext arc Stage 16; `:projection` opt per Gap 3 of MCP cutover
-  exercise 2026-05-22."
+  exercise 2026-05-22; the totals per D7b (2026-09-20)."
   [{:keys [entity predicate target-type limit projection]
     :or   {limit      0
            projection :metadata-only}}]
   {:pre [(some? entity)
          (or (nil? limit) (and (integer? limit) (>= limit 0)))]}
-  (let [resolved-pred (resolve-predicates entity predicate)
+  (let [resolved-pred (resolve-predicates entity predicate :outbound)
         edges   (dt/outbound-edges-of
                   entity
                   (cond-> {}
@@ -197,6 +258,9 @@
         total   (count edges)
         limited (if (zero? limit) edges (take limit edges))
         edges-v (mapv #(projection/project-edge % projection) limited)]
-    {:edges    edges-v
-     :total    total
-     :returned (count edges-v)}))
+    {:edges          edges-v
+     :total          total
+     :distinct-total (distinct-total edges :target)
+     :returned       (count edges-v)
+     :limit          limit
+     :truncated?     (< (count edges-v) total)}))

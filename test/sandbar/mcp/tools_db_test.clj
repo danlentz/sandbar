@@ -29,6 +29,7 @@
             [sandbar.db.datatype :as dt]
             [sandbar.db.datomic :as db]
             [sandbar.mcp.tools  :as tools]
+            [sandbar.search     :as search]
             [sandbar.store      :as store]
             [sandbar.test-util  :as tu]))
 
@@ -623,7 +624,10 @@
     (let [payload (result-content-edn response)]
       (is (true? (:gap? payload)))
       (is (zero? (count (:matches payload))))
-      (is (re-find #"sandbar.tag.define" (str (:gap-hint payload)))))))
+      ;; D7b (RT-14 item 3): a miss names its population and no longer
+      ;; advises authoring a tag on that evidence alone.
+      (is (re-find #"not proof" (str (:gap-hint payload))))
+      (is (not (re-find #"tag\.define" (str (:gap-hint payload))))))))
 
 (deftest tag-lookup-finds-via-scope-note
   (call "sandbar.tag.define"
@@ -817,3 +821,176 @@
         (is (true? (:degraded? payload)))
         (is (= [] (:transition-applied payload))
             "No transitions successfully applied (all degraded)")))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; ---------- D7b: the read contract (Astra's RT-14 items 1–4, 2026-09-20) ----------
+;;
+;; The acceptance rows of the RT-14 proposal that belong to the four repairs:
+;; an existing lightweight value, alias collisions, an identless concept and
+;; member, tag-only / theme-only / both, missing versus false canonical and
+;; a recorded successor, error versus no match, identity in every view, and
+;; callable ground suggestions.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defn- transact! [tx] @(d/transact (db/conn) tx))
+
+(defn- resolved [{:keys [db-after tempids]} tempid]
+  (get tempids tempid))
+
+(defn- lookup-match [concept value]
+  (->> (:matches (result-content-edn (call "sandbar.tag.lookup" {"concept" concept})))
+       (filter #(= value (:value %)))
+       first))
+
+(deftest d7b-lookup-exact-value-finds-an-untyped-carrier-with-identity
+  (let [tx       (transact! [{:db/id "c" :mm.tag/value "carrier-probe"}])
+        eid      (resolved tx "c")
+        response (call "sandbar.tag.lookup" {"concept" "Carrier-Probe"})]
+    (is (success? response))
+    (let [payload (result-content-edn response)
+          match   (first (filter #(= "carrier-probe" (:value %)) (:matches payload)))]
+      (is (some? match) "a bare value carrier is found by its exact value, case-insensitively")
+      (is (= eid (:eid match)) "the match carries a usable eid")
+      (is (false? (:typed? match)))
+      (is (= ["exact-value"] (:match-reason match)))
+      (is (= match (first (:matches payload))) "exact matches precede conceptual ones")
+      (is (false? (:gap? payload)))
+      (is (pos? (get-in payload [:population :untyped-carriers])))
+      (is (every? #(contains? (:population payload) %)
+                  [:value-carriers :typed-tags :untyped-carriers])))))
+
+(deftest d7b-lookup-shared-alt-label-keeps-both-candidates-with-reasons
+  (transact! [{:mm.tag/value "alias-alpha" :dt/type :mm/Tag
+               :mm.tag/definition "First meaning." :mm.tag/alt-label #{"shared-alias"}}
+              {:mm.tag/value "alias-beta" :dt/type :mm/Tag
+               :mm.tag/definition "Second meaning." :mm.tag/alt-label #{"shared-alias"}}])
+  (let [payload (result-content-edn (call "sandbar.tag.lookup" {"concept" "shared-alias"}))
+        exact   (filter #(some #{"exact-alt-label"} (:match-reason %)) (:matches payload))]
+    (is (= #{"alias-alpha" "alias-beta"} (set (map :value exact)))
+        "two concepts sharing an alternative label stay two candidates")
+    (is (= 2 (count (distinct (map :eid exact)))))
+    (is (every? :definition exact) "enough meaning travels with each to choose")))
+
+(deftest d7b-lookup-keeps-false-and-missing-canonical-apart
+  (transact! [{:mm.tag/value "canon-yes"    :dt/type :mm/Tag :mm.tag/canonical? true}
+              {:mm.tag/value "canon-no"     :dt/type :mm/Tag :mm.tag/canonical? false}
+              {:mm.tag/value "canon-unsaid" :dt/type :mm/Tag}])
+  (is (true?  (:canonical? (lookup-match "canon-yes" "canon-yes"))))
+  (is (false? (:canonical? (lookup-match "canon-no" "canon-no")))
+      "an explicit false is reported, not dropped")
+  (is (not (contains? (lookup-match "canon-unsaid" "canon-unsaid") :canonical?))
+      "a missing assertion stays missing")
+  (is (true? (:typed? (lookup-match "canon-yes" "canon-yes")))))
+
+(deftest d7b-lookup-superseded-tag-reports-its-successor-and-keeps-its-identity
+  (let [tx      (transact! [{:db/id "new" :mm.tag/value "label-new" :dt/type :mm/Tag}
+                            {:db/id "old" :mm.tag/value "label-old" :dt/type :mm/Tag
+                             :mm.tag/superseded-by "new"}])
+        old-eid (resolved tx "old")
+        new-eid (resolved tx "new")
+        match   (lookup-match "label-old" "label-old")]
+    (is (= old-eid (:eid match)) "the superseded label keeps its own identity")
+    (is (= new-eid (:eid (:superseded-by match))) "the successor's identity travels with it")
+    (is (= "label-new" (:value (:superseded-by match))))))
+
+(deftest d7b-lookup-search-failure-is-an-error-not-a-gap
+  (with-redefs [search/search-bm25f (fn [& _] (throw (ex-info "injected search failure" {:injected true})))]
+    (let [response (call "sandbar.tag.lookup" {"concept" "anything"})]
+      (is (user-error? response) "a failing search propagates as an error through the envelope")
+      (is (re-find #"injected search failure" (error-text response))))))
+
+(deftest d7b-lookup-miss-states-its-population-without-define-advice
+  (let [payload (result-content-edn (call "sandbar.tag.lookup" {"concept" "totally-unknown-concept-xyz"}))]
+    (is (true? (:gap? payload)))
+    (is (every? #(contains? (:population payload) %) [:value-carriers :typed-tags :untyped-carriers]))
+    (is (re-find #"not proof" (str (:gap-hint payload))))
+    (is (not (re-find #"tag\.define" (str (:gap-hint payload))))
+        "a miss no longer advises authoring a tag")
+    (is (string? (:method payload)))))
+
+(deftest d7b-lookup-metadata-only-carries-identity
+  (transact! [{:mm.tag/value "meta-probe" :dt/type :mm/Tag}])
+  (let [match (first (:matches (result-content-edn
+                                 (call "sandbar.tag.lookup"
+                                       {"concept" "meta-probe" "projection" "metadata-only"}))))]
+    (is (pos-int? (:eid match)))
+    (is (= "meta-probe" (:value match)))
+    (is (some #{"exact-value"} (:match-reason match))
+        "a typed tag both passes find lists the exact reason beside the conceptual one")))
+
+(deftest d7b-ground-suggestions-name-catalog-verbs-with-arguments
+  (transact! [{:mm.tag/value "ground-probe" :dt/type :mm/Tag :mm.tag/definition "A probe."}])
+  (let [names   (set (map :name tools/verb-catalog))
+        payload (result-content-edn (call "sandbar.ground" {"concept" "ground-probe"}))
+        steps   (:step-3-suggested-next payload)]
+    (is (seq steps))
+    (doseq [s steps]
+      (is (contains? names (:verb s)) (str "suggested verb exists in the catalog: " (:verb s)))
+      (is (map? (:args s)))
+      (is (string? (:why s))))
+    (is (some #(= "sandbar.navigate.inbound-edges" (:verb %)) steps)
+        "a match yields the membership traversal from its identity")
+    (let [miss (result-content-edn (call "sandbar.ground" {"concept" "no-such-concept-zzz"}))]
+      (is (true? (get-in miss [:step-1-tag-lookup :gap?])))
+      (is (not-any? #(= "sandbar.tag.define" (:verb %)) (:step-3-suggested-next miss))
+          "a miss never suggests authoring a tag on that evidence alone")
+      (is (some #(= "sandbar.search.bm25f" (:verb %)) (:step-3-suggested-next miss))))))
+
+(defn- membership-fixture!
+  "A bare value carrier (no :dt/type, no ident) with two identless memories
+   pointing at it: m1 by tags AND themes, m2 by tags only."
+  []
+  (let [tx  (transact! [{:db/id "t" :mm.tag/value "member-probe"}])
+        tag (resolved tx "t")
+        mtx (transact! [{:db/id "m1" :dt/type :mm/Observation
+                         :mm.memory/rel-path "observations/d7b_member_one.md"
+                         :mm.memory/name "member one"
+                         :mm.memory/tags [tag] :mm.memory/themes [tag]}
+                        {:db/id "m2" :dt/type :mm/Observation
+                         :mm.memory/rel-path "observations/d7b_member_two.md"
+                         :mm.memory/name "member two"
+                         :mm.memory/tags [tag]}])]
+    {:tag tag :m1 (resolved mtx "m1") :m2 (resolved mtx "m2")}))
+
+(deftest d7b-inbound-edges-anchor-on-an-identless-carrier-by-eid-with-both-membership-roles
+  (let [{:keys [tag m1 m2]} (membership-fixture!)
+        response (call "sandbar.navigate.inbound-edges"
+                       {"entity" (str tag) "predicate" [":mm.memory/tags" ":mm.memory/themes"]})]
+    (is (success? response) "an identless entity is a valid anchor by eid, with an array predicate")
+    (let [payload (result-content-edn response)]
+      (is (= 3 (:total payload)) "two roles on m1 plus one on m2 are three edges")
+      (is (= 2 (:distinct-total payload)) "and two distinct records")
+      (is (= 3 (:returned payload)))
+      (is (false? (:truncated? payload)))
+      (is (= #{"mm.memory/tags" "mm.memory/themes"} (set (map :predicate (:edges payload))))
+          "each edge keeps its predicate as the role")
+      (is (= #{m1 m2} (set (map (comp :db/id :source) (:edges payload))))
+          "an identless member is included by eid"))
+    (let [limited (result-content-edn (call "sandbar.navigate.inbound-edges"
+                                            {"entity" tag "predicate" ":mm.memory/tags" "limit" 1}))]
+      (is (= 1 (:returned limited)))
+      (is (= 2 (:total limited)) "the limit never changes the totals")
+      (is (= 1 (:limit limited)))
+      (is (true? (:truncated? limited))))))
+
+(deftest d7b-inbound-bare-predicate-resolves-schema-wide-with-the-role-per-edge
+  (let [{:keys [tag]} (membership-fixture!)
+        themes (result-content-edn (call "sandbar.navigate.inbound-edges" {"entity" (str tag) "predicate" ":themes"}))
+        tags   (result-content-edn (call "sandbar.navigate.inbound-edges" {"entity" (str tag) "predicate" ":tags"}))
+        nope   (call "sandbar.navigate.inbound-edges" {"entity" (str tag) "predicate" ":no-such-relation"})]
+    (is (= ["mm.memory/themes"] (distinct (map :predicate (:edges themes))))
+        "a bare name carried by one ref property resolves to it")
+    (is (= 1 (:total themes)))
+    (is (= 2 (:total tags))
+        "a bare name carried by several ref properties is their union; only memory tags point here")
+    (is (= #{"mm.memory/tags"} (set (map :predicate (:edges tags)))))
+    (is (user-error? nope) "a bare name no ref property carries is refused")
+    (is (re-find #"no ref-typed property" (error-text nope)))))
+
+(deftest d7b-outbound-edges-accepts-an-eid-anchor-and-reports-distinct-totals
+  (let [{:keys [m1 tag]} (membership-fixture!)
+        payload (result-content-edn (call "sandbar.navigate.outbound-edges"
+                                          {"entity" m1 "predicate" [":mm.memory/tags" ":mm.memory/themes"]}))]
+    (is (= 2 (:total payload)) "m1 reaches the carrier by two roles")
+    (is (= 1 (:distinct-total payload)) "and it is one distinct record")
+    (is (= #{tag} (set (map (comp :db/id :target) (:edges payload)))))))

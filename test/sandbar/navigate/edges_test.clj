@@ -290,3 +290,45 @@
       (is (= (map :predicate (:edges metadata))
              (map :predicate (:edges full)))
           ":predicate sequence is projection-independent"))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; D7b — honest totals, eid anchors, schema-wide inbound resolution
+;; (Astra's RT-14 item 4, 2026-09-20)
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(deftest d7b-wrappers-report-distinct-total-limit-and-truncation
+  (testing "edge totals and distinct-record totals stay distinguishable; the limit never changes them"
+    (let [all (nav-edges/inbound-edges {:entity :dt/Resource})
+          one (nav-edges/inbound-edges {:entity :dt/Resource :limit 1})]
+      (is (pos? (:distinct-total all)))
+      (is (<= (:distinct-total all) (:total all)))
+      (is (= 0 (:limit all)))
+      (is (false? (:truncated? all)))
+      (is (= 1 (:returned one)))
+      (is (= 1 (:limit one)))
+      (is (true? (:truncated? one)))
+      (is (= (:total all) (:total one)))
+      (is (= (:distinct-total all) (:distinct-total one)))))
+  (testing "outbound carries the same shape"
+    (let [out (nav-edges/outbound-edges {:entity :dt/Property})]
+      (is (<= (:distinct-total out) (:total out)))
+      (is (contains? out :truncated?)))))
+
+(deftest d7b-inbound-bare-predicate-resolves-schema-wide
+  (testing "an inbound bare predicate resolves against every ref property with that local name"
+    (let [result (nav-edges/inbound-edges {:entity :dt/Resource :predicate :subclass-of})]
+      (is (pos? (:total result)))
+      (is (= #{:dt/subclass-of} (set (map :predicate (:edges result)))))))
+  (testing "the four-arity resolver: inbound with an owner class resolves against that class"
+    (is (= [:dt/subclass-of]
+           (nav-edges/resolve-predicates :dt/Resource :subclass-of :inbound :dt/Class))))
+  (testing "the two-arity form keeps the outbound rule"
+    (is (= [:dt/subclass-of] (nav-edges/resolve-predicates :dt/Property :subclass-of)))))
+
+(deftest d7b-eid-anchor-is-accepted-by-the-wrappers
+  (let [eid      (:db/id (sandbar.db.datomic/entity :dt/Resource))
+        by-ident (nav-edges/inbound-edges {:entity :dt/Resource :predicate :dt/subclass-of})
+        by-eid   (nav-edges/inbound-edges {:entity eid :predicate :dt/subclass-of})]
+    (is (pos? (:total by-ident)))
+    (is (= (:total by-ident) (:total by-eid)))
+    (is (= (:distinct-total by-ident) (:distinct-total by-eid)))))

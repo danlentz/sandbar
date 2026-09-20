@@ -1384,14 +1384,18 @@
         projection-raw   (or (get args "projection") (get args :projection))]
     (when (nil? entity-raw)
       (throw (ex-info "Missing required argument: entity" {:args args})))
-    (let [anchor     (eref/resolve-ident entity-raw)
+    ;; D7b (RT-14 item 4, 2026-09-20): the anchor resolves through
+    ;; `eref/resolve` and travels as its eid, so an identless entity (a bare
+    ;; tag value carrier) is a valid anchor; the read-plane class check is
+    ;; unchanged.
+    (let [anchor     (eref/resolve entity-raw)
           ;; SECURITY (read-plane namespace firewall): deny traversing FROM a
           ;; firewalled-class anchor (:auth/* etc.) or filtering TO a firewalled
           ;; target-type.  Guard by the entity's CLASS (:dt/type), never its
           ;; ident (corpus idents are :memory.*, not :mm.*).
-          _          (secq/assert-entity-allowed! (db/entity anchor))
+          _          (secq/assert-entity-allowed! anchor)
           projection (projection/->projection-mode projection-raw)
-          opts (cond-> {:entity anchor}
+          opts (cond-> {:entity (:db/id anchor)}
                  predicate-raw    (assoc :predicate (parse-predicate-arg predicate-raw))
                  target-type-raw  (assoc :target-type (secq/assert-class-allowed! (eref/resolve-ident target-type-raw)))
                  (some? limit-arg) (assoc :limit limit-arg)
@@ -1406,12 +1410,16 @@
         projection-raw   (or (get args "projection") (get args :projection))]
     (when (nil? entity-raw)
       (throw (ex-info "Missing required argument: entity" {:args args})))
-    (let [anchor     (eref/resolve-ident entity-raw)
+    ;; D7b (RT-14 item 4, 2026-09-20): the anchor resolves through
+    ;; `eref/resolve` and travels as its eid — an identless entity is a valid
+    ;; anchor — and bare predicates resolve against the source-type when
+    ;; given, else schema-wide (see `nav-edges/resolve-predicates`).
+    (let [anchor     (eref/resolve entity-raw)
           ;; SECURITY (read-plane namespace firewall): deny traversing INTO a
           ;; firewalled-class anchor or filtering by a firewalled source-type.
-          _          (secq/assert-entity-allowed! (db/entity anchor))
+          _          (secq/assert-entity-allowed! anchor)
           projection (projection/->projection-mode projection-raw)
-          opts (cond-> {:entity anchor}
+          opts (cond-> {:entity (:db/id anchor)}
                  predicate-raw    (assoc :predicate (parse-predicate-arg predicate-raw))
                  source-type-raw  (assoc :source-type (secq/assert-class-allowed! (eref/resolve-ident source-type-raw)))
                  (some? limit-arg) (assoc :limit limit-arg)
@@ -2084,93 +2092,182 @@
   (and (string? haystack) (string? needle)
        (str/includes? (str/lower-case haystack) (str/lower-case needle))))
 
+(defn- ref-identity
+  "The identity of a tag-side reference for the meaning view: eid, ident
+   when interned, value when it carries one — enough to read or traverse
+   from without a second lookup.  A string mapping target passes through
+   (D7b, RT-14 item 2, 2026-09-20)."
+  [x]
+  (cond
+    (string? x)  x
+    (keyword? x) (str x)
+    (and (associative? x) (:db/id x))
+    (cond-> {:eid (:db/id x)}
+      (:db/ident x)     (assoc :ident (str (:db/ident x)))
+      (:mm.tag/value x) (assoc :value (:mm.tag/value x)))
+    :else        (str x)))
+
+(defn- ref-identities
+  "`ref-identity` over a cardinality-one value or a cardinality-many set."
+  [xs]
+  (if (or (set? xs) (sequential? xs))
+    (mapv ref-identity xs)
+    (ref-identity xs)))
+
 (defn- tag-summary
-  "Project a tag entity-map to a JSON-friendly summary map carrying the
-   canonical value + key documentation slots + broader/narrower context."
+  "Project a tag entity-map to the meaning view: identity (eid, ident when
+   interned, value, whether it is a typed :mm/Tag) together with the
+   documentation slots, the lifecycle (`:canonical?` present when asserted
+   — true OR false — and absent when missing; `:lifecycle-status`; the
+   successor under `:superseded-by`), the scheme, the SKOS mapping slots
+   and the broader/related context — enough to identify, read and
+   traverse from one result (D7b, RT-14 item 2, 2026-09-20)."
   [tag]
-  (let [project-ref (fn [x] (some-> x :mm.tag/value))
-        project-refs (fn [xs] (vec (keep project-ref xs)))]
-    (cond-> {:value (:mm.tag/value tag)}
-      (:db/ident tag)              (assoc :ident (str (:db/ident tag)))
+  (let [vals      (fn [xs] (vec (keep #(some-> % :mm.tag/value) xs)))
+        canonical (get tag :mm.tag/canonical?)]
+    (cond-> {:eid    (:db/id tag)
+             :value  (:mm.tag/value tag)
+             :typed? (some? (:dt/type tag))}
+      (:db/ident tag)                  (assoc :ident (str (:db/ident tag)))
       (seq (:mm.tag/alt-label tag))    (assoc :alt-label    (vec (:mm.tag/alt-label tag)))
       (seq (:mm.tag/hidden-label tag)) (assoc :hidden-label (vec (:mm.tag/hidden-label tag)))
-      (:mm.tag/definition tag)     (assoc :definition (:mm.tag/definition tag))
-      (:mm.tag/scope-note tag)     (assoc :scope-note (:mm.tag/scope-note tag))
-      (:mm.tag/example tag)        (assoc :example    (:mm.tag/example tag))
-      (:mm.tag/canonical? tag)     (assoc :canonical? (:mm.tag/canonical? tag))
-      (:mm.tag/lifecycle-status tag) (assoc :lifecycle-status (:mm.tag/lifecycle-status tag))
-      (seq (:mm.tag/broader-generic tag))    (assoc :broader-generic    (project-refs (:mm.tag/broader-generic tag)))
-      (seq (:mm.tag/broader-instantial tag)) (assoc :broader-instantial (project-refs (:mm.tag/broader-instantial tag)))
-      (seq (:mm.tag/broader-partitive tag))  (assoc :broader-partitive  (project-refs (:mm.tag/broader-partitive tag)))
-      (seq (:mm.tag/related tag))            (assoc :related            (project-refs (:mm.tag/related tag))))))
+      (:mm.tag/definition tag)         (assoc :definition (:mm.tag/definition tag))
+      (:mm.tag/scope-note tag)         (assoc :scope-note (:mm.tag/scope-note tag))
+      (:mm.tag/example tag)            (assoc :example    (:mm.tag/example tag))
+      (some? canonical)                (assoc :canonical? (boolean canonical))
+      (:mm.tag/lifecycle-status tag)   (assoc :lifecycle-status (:mm.tag/lifecycle-status tag))
+      (:mm.tag/superseded-by tag)      (assoc :superseded-by (ref-identities (:mm.tag/superseded-by tag)))
+      (:mm.tag/in-scheme tag)          (assoc :in-scheme     (ref-identities (:mm.tag/in-scheme tag)))
+      (seq (:mm.tag/exact-match tag))    (assoc :exact-match    (ref-identities (:mm.tag/exact-match tag)))
+      (seq (:mm.tag/close-match tag))    (assoc :close-match    (ref-identities (:mm.tag/close-match tag)))
+      (seq (:mm.tag/broader-match tag))  (assoc :broader-match  (ref-identities (:mm.tag/broader-match tag)))
+      (seq (:mm.tag/narrower-match tag)) (assoc :narrower-match (ref-identities (:mm.tag/narrower-match tag)))
+      (seq (:mm.tag/related-match tag))  (assoc :related-match  (ref-identities (:mm.tag/related-match tag)))
+      (seq (:mm.tag/broader-generic tag))    (assoc :broader-generic    (vals (:mm.tag/broader-generic tag)))
+      (seq (:mm.tag/broader-instantial tag)) (assoc :broader-instantial (vals (:mm.tag/broader-instantial tag)))
+      (seq (:mm.tag/broader-partitive tag))  (assoc :broader-partitive  (vals (:mm.tag/broader-partitive tag)))
+      (seq (:mm.tag/related tag))            (assoc :related            (vals (:mm.tag/related tag))))))
+
+(defn- tag-identity-projection
+  "The metadata-only lookup projection still carries a usable identity:
+   the substrate-universal metadata plus `:eid` and `:value` (D7b, RT-14
+   item 2 — no second call to connect a meaning to an ID)."
+  [tag]
+  (assoc (projection/metadata-projection tag)
+         :eid   (:db/id tag)
+         :value (:mm.tag/value tag)))
+
+(def ^:private +exact-label-attributes+
+  "The label attributes the exact pass compares, with the match reason each
+   one reports."
+  {:mm.tag/value        :exact-value
+   :mm.tag/alt-label    :exact-alt-label
+   :mm.tag/hidden-label :exact-hidden-label})
+
+(defn- exact-tag-matches
+  "The exact pass of tag.lookup: every entity carrying `:mm.tag/value`
+   whose value, alt-label or hidden-label equals `concept` (case-
+   insensitive, trimmed) — typed `:mm/Tag` instances and the bare value
+   carriers the class-scoped BM25F index cannot see alike.  Returns
+   `[{:entity <entity-map> :reasons [<reason> ...]}]` in eid order; two
+   concepts sharing an alternative label stay two candidates, each with
+   its reason (D7b, RT-14 item 1, 2026-09-20)."
+  [concept]
+  (let [needle (str/lower-case (str/trim (str concept)))
+        db-now (db/db)]
+    (->> (for [[attr reason] +exact-label-attributes+
+               datom         (d/datoms db-now :aevt attr)
+               :when (= needle (str/lower-case (str (:v datom))))]
+           [(:e datom) reason])
+         (group-by first)
+         (sort-by key)
+         (mapv (fn [[e hits]]
+                 {:entity  (db/entity e)
+                  :reasons (vec (distinct (map second hits)))})))))
+
+(defn- tag-population
+  "The population a lookup searched, counted at read time: every entity
+   carrying `:mm.tag/value`, the typed `:mm/Tag` instances among them, and
+   the untyped carriers the exact pass alone can reach."
+  [db-now]
+  (let [carriers (count (d/q '[:find [?e ...] :where [?e :mm.tag/value]] db-now))
+        typed    (count (d/q '[:find [?e ...] :where [?e :dt/type :mm/Tag]] db-now))
+        untyped  (count (d/q '[:find [?e ...]
+                               :where [?e :mm.tag/value]
+                                      (not [?e :dt/type :mm/Tag])]
+                             db-now))]
+    {:value-carriers   carriers
+     :typed-tags       typed
+     :untyped-carriers untyped}))
 
 (defn- tag-lookup-handler
-  "Step 1 of the sandbar.ground compositional workflow: tag-vocabulary
-   primitive.  Surfaces tags whose canonical-form / alt-label / hidden-label
-   / definition / scope-note / example align with the query concept; returns
-   ranked candidates with broader/narrower context.  When no canonical tag
-   scores positive, reports the gap suggesting a sandbar.tag.define call.
+  "Step 1 of the sandbar.ground compositional workflow: find an EXISTING
+   vocabulary identity before proposing a new one.  Two passes: the exact
+   pass compares the concept with every `:mm.tag/value` carrier's value,
+   alt-label and hidden-label (typed or not); the conceptual pass is
+   `sandbar.search/search-bm25f` over typed `:mm/Tag` instances with the
+   Stage 7.A `:dt/bm25f-weights` (value 12, alt-label 8, definition 6,
+   scope-note 4, hidden-label 2, example 1).  Exact hits come first, each
+   with its `:match-reason`; an entity both passes found appears once with
+   both reasons.  The response states the population it searched.
 
-   Uses `sandbar.search/search-bm25f` against `:mm/Tag` — leverages the
-   `:dt/bm25f-weights` declaration shipped at Stage 7.A:
-     :mm.tag/value         12.0
-     :mm.tag/alt-label      8.0
-     :mm.tag/definition     6.0
-     :mm.tag/scope-note     4.0
-     :mm.tag/hidden-label   2.0
-     :mm.tag/example        1.0
-
-   Note: search-bm25f operates over `:dt/type :mm/Tag` instances.  F#18
-   anonymous-upsert entities (pre-Stage-7.A; lack :dt/type) won't appear
-   in lookup results — they surface in `sandbar.tag.audit` as
-   `:undefined-used` violations + migrate to canonical via Stage 8 M.2."
+   A read-barrier timeout or a search failure is an ERROR and propagates
+   through the tool envelope; it is never reported as an empty vocabulary.
+   A miss is `:gap? true` with the population named — a lexical miss in
+   that population is not proof the concept is absent, and the hint no
+   longer advises authoring a tag on that evidence alone.  D7b, RT-14
+   items 1 to 3 (2026-09-20)."
   [args]
   (let [concept        (or (get args "concept") (get args :concept))
         limit          (or (get args "limit")   (get args :limit) 10)
         projection-raw (or (get args "projection") (get args :projection))]
     (when (str/blank? (str concept))
       (throw (ex-info "Missing required argument: concept" {:args args})))
-    (let [;; B.3 — :projection opt.  Default :full ships the curated
-          ;; tag-summary shape (broader/narrower context — tag.lookup's
-          ;; primary semantic).  Consumers opt to :metadata-only for
-          ;; lightweight match-set traversal (e.g., walking thousands of
-          ;; audit-flagged tags without per-tag body).
-          ;;
-          ;; NOTE: tag.lookup's :full mode is NOT generic full-projection;
-          ;; it's the domain-specific tag-summary shape (:value + :ident +
-          ;; :alt-label + :definition + :scope-note + broader/narrower
-          ;; idents).  :metadata-only mode falls back to substrate-universal
-          ;; projection/metadata-projection.
+    (let [;; :projection — `:full` is the meaning view (`tag-summary`), NOT the
+          ;; generic full projection; `:metadata-only` still carries eid +
+          ;; value so every projection supplies a usable identity.
           projection-mode (or (projection/->projection-mode projection-raw) :full)
           summarize       (case projection-mode
                             :full          tag-summary
-                            :metadata-only projection/metadata-projection)
-          {:keys [hits total]}
-          (try
-            ;; Read barrier — preserves the Gap-27 tag.define→tag.lookup
-            ;; read-your-writes contract now that the define-side refresh
-            ;; is async (see entity-changed-async! + the equivalent
-            ;; barrier in search-bm25f-handler).
-            (search/await-bm25f-quiescent! +bm25f-read-barrier-timeout-ms+)
-            (search/search-bm25f {:query concept
-                                  :class :mm/Tag
-                                  :limit limit})
-            (catch Exception e
-              ;; Defensive — surface the gap rather than crash if BM25F
-              ;; isn't ready (e.g., no :mm/Tag instances yet).
-              {:hits [] :total 0 :error (.getMessage e)}))]
+                            :metadata-only tag-identity-projection)
+          exact           (exact-tag-matches concept)
+          ;; Read barrier — preserves the Gap-27 tag.define→tag.lookup
+          ;; read-your-writes contract (the define-side refresh is async).
+          ;; No catch: a failure here is an error, not a gap (RT-14 item 3).
+          _               (search/await-bm25f-quiescent! +bm25f-read-barrier-timeout-ms+)
+          {:keys [hits total]} (search/search-bm25f {:query concept
+                                                     :class :mm/Tag
+                                                     :limit limit})
+          hit-by-eid      (into {} (map (fn [h] [(:db/id (:entity h)) h]) hits))
+          exact-eids      (set (map (comp :db/id :entity) exact))
+          matches         (-> []
+                              (into (for [{:keys [entity reasons]} exact
+                                          :let [hit (get hit-by-eid (:db/id entity))]]
+                                      (cond-> (assoc (summarize entity)
+                                                     :match-reason (cond-> reasons hit (conj :conceptual)))
+                                        hit (assoc :score (:score hit)))))
+                              (into (for [hit hits
+                                          :when (not (exact-eids (:db/id (:entity hit))))]
+                                      (assoc (summarize (:entity hit))
+                                             :match-reason [:conceptual]
+                                             :score        (:score hit)))))
+          overlap         (count (filter exact-eids (map (comp :db/id :entity) hits)))
+          population      (tag-population (db/db))]
       {:concept     concept
-       :matches     (vec (for [hit hits]
-                           (assoc (summarize (:entity hit))
-                                  :score (:score hit))))
-       :match-total total
-       :gap?        (zero? (count hits))
-       :gap-hint    (when (zero? (count hits))
-                      (str "No tag in the corpus aligns with \"" concept
-                           "\".  Consider sandbar.tag.define :name \"" concept
-                           "\" :slots {:definition \"...\" :scope-note \"...\"}.  "
-                           "F#18 anonymous tags (if any) surface in sandbar.tag.audit's "
-                           ":undefined-used invariant."))})))
+       :matches     matches
+       :returned    (count matches)
+       :match-total (+ (count exact) (max 0 (- (or total 0) overlap)))
+       :population  population
+       :method      (str "exact value, alt-label and hidden-label over every :mm.tag/value carrier "
+                         "(typed or not), then BM25F over typed :mm/Tag instances")
+       :gap?        (empty? matches)
+       :gap-hint    (when (empty? matches)
+                      (str "No exact label or conceptual match for \"" concept "\" among "
+                           (:typed-tags population) " typed tags and "
+                           (:untyped-carriers population) " untyped value carriers (a carrier is "
+                           "matched by exact value only).  A miss in this population is not proof "
+                           "the concept is absent from the corpus: search content with "
+                           "sandbar.search.bm25f over :mm/Memory before treating the concept as new."))})))
 
 (defn- tag-define-handler
   "Author a new canonical tag OR upgrade an existing undefined tag.
@@ -2584,17 +2681,28 @@
        :step-1-tag-lookup    tag-result
        :step-2-meta-vocab    {:classes-matching    class-matches
                               :predicates-matching pred-matches}
+       ;; D7b (RT-14 item 3, 2026-09-20): every suggestion is a CALLABLE
+       ;; operation — a catalog verb name with arguments that can be passed
+       ;; as written — and a miss in step 1 never recommends authoring a tag
+       ;; on that evidence alone.
        :step-3-suggested-next
-       (cond
-         (:gap? tag-result)
-         ["sandbar.tag.define — author the canonical tag with definition + scope-note"
-          "sandbar.search.bm25f — try a fulltext sweep over corpus body content"]
-
-         (seq (:matches tag-result))
-         ["sandbar.tag.lookup — inspect specific candidate tags"
-          "sandbar.search.bm25f — fulltext sweep informed by selected tag's scope-note"
-          "sandbar.navigate.outbound :from <tag> — explore broader/narrower context"])
-       :note "Stage 7.D MVP — full BM25F + path-grammar integration follows in 7.F."})))
+       (let [top    (first (:matches tag-result))
+             anchor (when top (or (:ident top) (str (:eid top))))]
+         (cond-> [{:verb "sandbar.search.bm25f"
+                   :args {"class" ":mm/Memory" "query" concept}
+                   :why  (if (:gap? tag-result)
+                           "no label or concept matched in the stated population; content search decides whether the concept is present before it is treated as new"
+                           "records whose content carries the concept, whatever their tags")}]
+           top (conj {:verb "sandbar.navigate.inbound-edges"
+                      :args {"entity"    anchor
+                             "predicate" [":mm.memory/tags" ":mm.memory/themes"]}
+                      :why  (str "the records the best match (" (:value top)
+                                 ") classifies, by both membership relations; deduplicate sources by :db/id and keep :predicate as the role")})
+           top (conj {:verb "sandbar.tag.lookup"
+                      :args {"concept" (:value top) "projection" "full"}
+                      :why  "the meaning view of the best match: definition, scope note, alternatives, scheme, lifecycle and successor"})))
+       :note (str "Step 1 states the population it searched; step 3 names catalog verbs with "
+                  "arguments that can be passed as written (D7b, 2026-09-20).")})))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Shape operations — SHACL arc Stage F (2026-05-23)
@@ -3325,12 +3433,13 @@
    ;; Navigation — outbound + inbound edges (Stage 5.B-pre #2 — 0.1.1 co-evolution arc)
    {:name "sandbar.navigate.outbound-edges"
     :title "Typed-edges originating FROM an entity"
-    :description "WHICH: returns typed-edges originating from `:entity` — what does this entity reference, via which predicate, to which target.  Foundational outbound traversal primitive.\n\nWHEN: use for one-hop forward navigation when you need the predicate-and-target shape (not just the targets).  Underpins /memory-xref + /memory-show.  When NOT to use: (a) targets-only (no predicate label) — use a Datalog query directly; (b) recursive / Kleene-closure traversal — use `sandbar.navigate.path-via`; (c) bounded-depth BFS — use `sandbar.navigate.walk`.\n\nHOW: `:entity` is the seed entity (ident or eid).  Optional `:predicate` is a single keyword-string OR vec to restrict to specific edge-predicates; BARE forms (no namespace) like `:cites` auto-resolve to the slot-ident `:mm.memory/cites` on the entity's class (Gap 7 fix — silent zero-hit on slot-form mismatch is replaced with loud error suggesting the canonical slot ident).  Optional `:target-type` is a class-ident-string restricting targets to instances-of.  Optional `:limit` caps returned edges (default 0 = no cap).  Optional `:projection` controls per-edge target shape — `:metadata-only` (DEFAULT) returns just `:db/id`/`:db/ident`/`:dt/type` per target (10-300x smaller payload than `:full`); `:full` returns the complete target entity-map.\n\nORDER: leaf-call shape.  Discover candidate predicates first via `sandbar.class.slots` on the entity's class if uncertain.\n\nCOMBINATION: pairs with `sandbar.navigate.inbound-edges` (the dual; who references this entity).  Composes with `sandbar.orient.library-card` (one-call multi-axis breakdown).  Pre-step for `sandbar.navigate.path-via` (discover predicate vocab before authoring path expressions).\n\nResult: `{:edges [{:predicate <pred-ident> :target <entity-map>} ...] :total <int> :returned <int>}`."
+    :description "WHICH: returns typed-edges originating from `:entity` — what does this entity reference, via which predicate, to which target.  Foundational outbound traversal primitive.\n\nWHEN: use for one-hop forward navigation when you need the predicate-and-target shape (not just the targets).  Underpins /memory-xref + /memory-show.  When NOT to use: (a) targets-only (no predicate label) — use a Datalog query directly; (b) recursive / Kleene-closure traversal — use `sandbar.navigate.path-via`; (c) bounded-depth BFS — use `sandbar.navigate.walk`.\n\nHOW: `:entity` is the seed entity (ident or eid; an identless entity is a valid anchor by eid).  Optional `:predicate` is a single ident string OR an array of ident strings restricting the edge predicates; BARE forms (no namespace) like `:cites` resolve to the slot-ident `:mm.memory/cites` on the entity's class (one match used; none or several refused with a hint), or schema-wide when the anchor has no class.  Optional `:target-type` is a class-ident-string restricting targets to instances-of.  Optional `:limit` caps returned edges (default 0 = no cap).  Optional `:projection` controls per-edge target shape — `:metadata-only` (DEFAULT) returns just `:db/id`/`:db/ident`/`:dt/type` per target (10-300x smaller payload than `:full`); `:full` returns the complete target entity-map.\n\nORDER: leaf-call shape.  Discover candidate predicates first via `sandbar.class.slots` on the entity's class if uncertain.\n\nCOMBINATION: pairs with `sandbar.navigate.inbound-edges` (the dual; who references this entity).  Composes with `sandbar.orient.library-card` (one-call multi-axis breakdown).  Pre-step for `sandbar.navigate.path-via` (discover predicate vocab before authoring path expressions).\n\nResult: `{:edges [{:predicate <pred-ident> :target <entity-map>} ...] :total <edges before the limit> :distinct-total <distinct targets before the limit> :returned <int> :limit <int> :truncated? <bool>}` — each edge keeps its `:predicate` as the role; a target reached through two predicates is two edges and one distinct record (D7b, 2026-09-20)."
     :inputSchema (one-required
                    {:entity      {:type "string"
-                                  :description "Anchor entity ident or eid"}
-                    :predicate   {:type "string"
-                                  :description "Single predicate ident OR JSON array of idents.  Bare forms (`:cites`) auto-resolve to slot-idents (`:mm.memory/cites`) on the entity's class."}
+                                  :description "Anchor entity ident or eid (an identless entity anchors by eid)"}
+                    :predicate   {:oneOf [{:type "string"}
+                                          {:type "array" :items {:type "string"}}]
+                                  :description "Single predicate ident OR JSON array of idents.  Bare forms (`:cites`) resolve to slot-idents (`:mm.memory/cites`) on the entity's class, or schema-wide when the anchor has no class."}
                     :target-type {:type "string"
                                   :description "Class ident restricting target-instance-of"}
                     :limit       {:type "integer"
@@ -3342,12 +3451,13 @@
 
    {:name "sandbar.navigate.inbound-edges"
     :title "Typed-edges pointing AT an entity (who references it)"
-    :description "WHICH: returns typed-edges pointing at `:entity` — who references this entity, via which predicate, from which source.  Foundational inbound traversal primitive (dual of `sandbar.navigate.outbound-edges`).\n\nWHEN: use for backlink discovery — 'which decisions cite this ADR?'.  Underpins /memory-xref + library-card inverse-axes.  When NOT to use: (a) sources-only without predicate label — use Datalog directly; (b) bounded-depth backlink walk — use `sandbar.navigate.walk` with `:inbound` flag; (c) Kleene closure — use `sandbar.navigate.path-via` with `:INV`.\n\nHOW: `:entity` is the target entity (ident or eid).  Optional `:predicate` is a single keyword-string OR vec to restrict to specific edge-predicates; BARE forms (no namespace) like `:cites` auto-resolve to the slot-ident `:mm.memory/cites` on the entity's class.  Optional `:source-type` is a class-ident-string restricting sources to instances-of.  Optional `:limit` caps returned edges.  Optional `:projection` controls per-edge source shape — `:metadata-only` (DEFAULT) returns just `:db/id`/`:db/ident`/`:dt/type` per source; `:full` returns the complete source entity-map.\n\nORDER: leaf-call shape.\n\nCOMBINATION: pairs with `sandbar.navigate.outbound-edges` (the dual).  Composes with `sandbar.orient.library-card` (`:inverse` axes use the inbound shape).\n\nResult: `{:edges [{:predicate <pred-ident> :source <entity-map>} ...] :total <int> :returned <int>}`."
+    :description "WHICH: returns typed-edges pointing at `:entity` — who references this entity, via which predicate, from which source.  Foundational inbound traversal primitive (dual of `sandbar.navigate.outbound-edges`).\n\nWHEN: use for backlink discovery — 'which decisions cite this ADR?'.  Underpins /memory-xref + library-card inverse-axes.  When NOT to use: (a) sources-only without predicate label — use Datalog directly; (b) bounded-depth backlink walk — use `sandbar.navigate.walk` with `:inbound` flag; (c) Kleene closure — use `sandbar.navigate.path-via` with `:INV`.\n\nHOW: `:entity` is the target entity (ident or eid; an identless entity — a bare tag value carrier — is a valid anchor by eid).  Optional `:predicate` is a single ident string OR an array of ident strings restricting the edge predicates.  Pass membership predicates FULLY QUALIFIED: `:mm.memory/tags` and `:mm.memory/themes` (one call covers both).  A BARE form (no namespace) resolves against `:source-type`'s class when given, else against EVERY ref-typed property in the schema with that local name — `:tags` covers memories, rules, actors and contexts at once, each edge reporting the qualified predicate it was found through; a name no ref property carries is refused.  Optional `:source-type` is a class-ident-string restricting sources to instances-of.  Optional `:limit` caps returned edges.  Optional `:projection` controls per-edge source shape — `:metadata-only` (DEFAULT) returns just `:db/id`/`:db/ident`/`:dt/type` per source; `:full` returns the complete source entity-map.\n\nORDER: leaf-call shape.  For a vocabulary journey: `sandbar.tag.lookup` (the identity), this verb from its eid with both membership predicates (the records), `sandbar.entity.find` on a selected record.\n\nCOMBINATION: pairs with `sandbar.navigate.outbound-edges` (the dual).  Composes with `sandbar.orient.library-card` (`:inverse` axes use the inbound shape).\n\nResult: `{:edges [{:predicate <pred-ident> :source <entity-map>} ...] :total <edges before the limit> :distinct-total <distinct sources before the limit> :returned <int> :limit <int> :truncated? <bool>}` — clients deduplicate sources by `:db/id` without losing which relationship found them; edge totals and distinct-record totals stay distinguishable (D7b, RT-14 item 4, 2026-09-20)."
     :inputSchema (one-required
                    {:entity      {:type "string"
-                                  :description "Anchor entity ident or eid"}
-                    :predicate   {:type "string"
-                                  :description "Single predicate ident OR JSON array of idents.  Bare forms auto-resolve to slot-idents on the entity's class."}
+                                  :description "Anchor entity ident or eid (an identless entity anchors by eid)"}
+                    :predicate   {:oneOf [{:type "string"}
+                                          {:type "array" :items {:type "string"}}]
+                                  :description "Single predicate ident OR JSON array of idents.  Membership: pass `:mm.memory/tags` and `:mm.memory/themes` fully qualified.  Bare forms resolve against `source-type` when given, else schema-wide by local name."}
                     :source-type {:type "string"
                                   :description "Class ident restricting source-instance-of"}
                     :limit       {:type "integer"
@@ -3393,17 +3503,17 @@
    ;; Tag-vocabulary operations — Stage 7.D of decisions/tag_as_first_class_introspectable_type_in_metamodel_2026_05_20.md
    {:name "sandbar.ground"
     :title "Compositional grounding workflow — tag lookup + meta-vocab + suggested next-step"
-    :description "WHICH: load-bearing entry point for grounding-before-action.  Composes tag-vocabulary examination (step 1) + meta-vocabulary discovery (step 2; classes / predicates aligned with concept) + suggested-next-step routing (step 3).  Per observations/grounding_is_compositional_mcp_workflow_thin_client_2026_05_20.md — grounding is a multi-step MCP workflow, NOT a single primitive verb.\n\nWHEN: use BEFORE introspection / planning / authoring / research to anchor the concept in the substrate's vocabulary.  The 5th retrieval axis (formal-semantic vocabulary) per observations/tags_as_5th_retrieval_axis_with_formal_semantics_2026_05_20.md.  Composes with the other four retrieval axes (search / aggregation / orientation / navigation).  When NOT to use: the concept is already grounded (e.g., you have a concrete tag / class / predicate ident); skip to the specific verb.\n\nHOW: `:concept` is the concept-string to ground.  Returns:\n  `:step-1-tag-lookup` — sandbar.tag.lookup result (canonical / alt-label / scope-note matching)\n  `:step-2-meta-vocab` — classes + predicates whose name aligns with the concept\n  `:step-3-suggested-next` — vec of suggested next MCP calls based on what step-1 and step-2 surfaced\n\nORDER: typically the FIRST call when an LLM consumer encounters a new concept in user input.  After this verb, the consumer either (a) calls sandbar.tag.define if step-1 reported `:gap? true`, (b) calls sandbar.search.bm25f informed by a selected tag's scope-note, or (c) calls sandbar.navigate.outbound to explore typed-edge context from a matched tag.\n\nCOMBINATION: anchor for tag.* operations.  Stage 7.D MVP scope — Stage 7.F+ refinement integrates sandbar.search.bm25f + sandbar.navigate.path-via for true compositional workflow."
+    :description "WHICH: load-bearing entry point for grounding-before-action.  Composes tag-vocabulary examination (step 1) + meta-vocabulary discovery (step 2; classes / predicates aligned with concept) + suggested-next-step routing (step 3).  Per observations/grounding_is_compositional_mcp_workflow_thin_client_2026_05_20.md — grounding is a multi-step MCP workflow, NOT a single primitive verb.\n\nWHEN: use BEFORE introspection / planning / authoring / research to anchor the concept in the substrate's vocabulary.  The 5th retrieval axis (formal-semantic vocabulary) per observations/tags_as_5th_retrieval_axis_with_formal_semantics_2026_05_20.md.  Composes with the other four retrieval axes (search / aggregation / orientation / navigation).  When NOT to use: the concept is already grounded (e.g., you have a concrete tag / class / predicate ident); skip to the specific verb.\n\nHOW: `:concept` is the concept-string to ground.  Returns:\n  `:step-1-tag-lookup` — the sandbar.tag.lookup result: exact label matches over every value carrier first, then conceptual matches, with `:match-reason` per candidate and the `:population` searched\n  `:step-2-meta-vocab` — classes + predicates whose name aligns with the concept\n  `:step-3-suggested-next` — CALLABLE suggestions, each `{:verb :args :why}` naming a catalog verb with arguments that can be passed as written: `sandbar.search.bm25f` over `:mm/Memory` for the concept in content; from the best match, `sandbar.navigate.inbound-edges` with `[\":mm.memory/tags\" \":mm.memory/themes\"]` for the records it classifies and `sandbar.tag.lookup` for its meaning view\n\nORDER: typically the FIRST call when an LLM consumer encounters a new concept in user input.  A step-1 miss states its population and is not proof the concept is absent — content search decides before a tag is authored; a search or read-barrier failure surfaces as an error, never as an empty vocabulary.\n\nCOMBINATION: anchor for tag.* operations; composes with `sandbar.search.bm25f` (content) and `sandbar.navigate.inbound-edges` (membership).  D7b, RT-14 item 3 (2026-09-20)."
     :inputSchema (one-required {:concept {:type "string" :description "Concept-string to ground"}}
                                [:concept])
     :handler ground-handler}
    {:name "sandbar.tag.lookup"
     :title "Tag-vocabulary primitive — find canonical tags aligned with a concept"
-    :description "WHICH: surfaces tags whose canonical-form / alt-label / hidden-label / definition / scope-note / example align with the query concept.  Step 1 of the sandbar.ground compositional workflow.  Returns ranked candidates with broader/narrower context.\n\nWHEN: use to discover whether the corpus's tag vocabulary already has a concept covered before authoring a new tag.  Disambiguation primitive — if scope-notes differ across candidates, the right tag becomes obvious.  When NOT to use: (a) the concept is corpus-wide (try sandbar.search.bm25f over body content instead); (b) you already have a specific tag-value (use sandbar.entity.find or read directly).\n\nHOW: `:concept` is the concept-string; `:limit` (optional) caps returned matches (default 10).  Optional `:projection` — `full` (default; curated tag-summary with :value + :alt-label + :definition + :scope-note + broader/narrower context) or `metadata-only` (lightweight; :db/id + :db/ident + :dt/type per match for bulk traversal).  Returns `:concept`, `:matches` (vec of match-maps with `:score`), `:gap?` (true when no tag matches), `:gap-hint` (suggested sandbar.tag.define invocation when gap).\n\nORDER: step 1 of sandbar.ground.  Called directly when you want JUST the tag-vocabulary primitive (no meta-vocab / suggested-next).\n\nCOMBINATION: pairs with sandbar.tag.define (when `:gap? true` — author the canonical), sandbar.tag.consolidate (when matches show drift), sandbar.tag.audit (which tags' lifecycle-status is healthy?)."
+    :description "WHICH: finds EXISTING vocabulary identities for a concept before any new vocabulary is proposed.  Two passes: an exact pass over every entity carrying `:mm.tag/value` (typed `:mm/Tag` instances AND bare value carriers alike) comparing the concept with the value, alt-label and hidden-label; then a conceptual pass, BM25F over typed `:mm/Tag` instances (value / alt-label / definition / scope-note / hidden-label / example).  Step 1 of the sandbar.ground compositional workflow.\n\nWHEN: use to learn whether the vocabulary already has a concept, under which identity, and what it means — before authoring a tag, before a membership traversal.  Disambiguation primitive — collisions (two concepts sharing an alternative label) stay distinct candidates with their match reasons.  When NOT to use: (a) the concept is corpus-wide (try sandbar.search.bm25f over body content instead); (b) you already have the tag's eid or ident (use sandbar.entity.find).\n\nHOW: `:concept` is the concept-string; `:limit` (optional) caps the conceptual pass (default 10).  Optional `:projection` — `full` (default; the MEANING VIEW: `:eid`, `:ident` when interned, `:value`, `:typed?`, definition, scope-note, example, alt/hidden labels, `:canonical?` present when asserted true OR false and absent when missing, `:lifecycle-status`, `:superseded-by` (the successor's identity), `:in-scheme`, the SKOS mapping slots, broader/related context) or `metadata-only` (lightweight; :db/id + :db/ident + :dt/type + `:eid` + `:value` per match — every projection supplies a usable identity).  Every match carries `:match-reason` (`:exact-value` / `:exact-alt-label` / `:exact-hidden-label` / `:conceptual`; an entity both passes found lists both) and conceptual matches carry `:score`; exact matches come first.  Returns `:concept`, `:matches`, `:returned`, `:match-total`, `:population` (`:value-carriers`, `:typed-tags`, `:untyped-carriers`, counted at read time), `:method`, `:gap?` (true when NEITHER pass matched) and `:gap-hint`.\n\nERROR VERSUS ABSENCE: a read-barrier timeout or a search failure is an error through the tool envelope, never an empty result; a miss means no match in the stated population and is NOT proof the concept is absent from the corpus (untyped carriers are matched by exact value only) — the hint points at sandbar.search.bm25f over :mm/Memory, not at authoring a tag.\n\nORDER: step 1 of sandbar.ground.  The vocabulary journey: this verb (identity + meaning) → sandbar.navigate.inbound-edges from the match's eid with `[\":mm.memory/tags\" \":mm.memory/themes\"]` (the records) → sandbar.entity.find on a selected record.\n\nCOMBINATION: pairs with sandbar.navigate.inbound-edges (membership), sandbar.search.bm25f (content), sandbar.tag.consolidate (when matches show drift), sandbar.tag.audit (lifecycle health).  D7b, RT-14 items 1 to 3 (2026-09-20)."
     :inputSchema (one-required {:concept    {:type "string" :description "Concept-string to look up"}
-                                :limit      {:type "integer" :description "Max matches returned (default 10)"}
+                                :limit      {:type "integer" :description "Max conceptual matches returned (default 10); exact matches are always returned"}
                                 :projection {:type "string"
-                                             :description "Per-match shape — 'full' (default; curated tag-summary with broader/narrower context) or 'metadata-only' (lightweight; :db/id + :db/ident + :dt/type + :score).  Opt to 'metadata-only' for bulk traversal (e.g., walking thousands of audit-flagged tags)."}}
+                                             :description "Per-match shape — 'full' (default; the meaning view with identity, lifecycle, successor, scheme, mapping and broader/related context) or 'metadata-only' (lightweight; :db/id + :db/ident + :dt/type + :eid + :value + :match-reason).  Opt to 'metadata-only' for bulk traversal (e.g., walking thousands of audit-flagged tags)."}}
                                [:concept])
     :handler tag-lookup-handler}
    {:name "sandbar.tag.define"

@@ -354,3 +354,13 @@
   ;; update (2026-06-29).
   (is (instance? java.util.Date
                  (#'tools/coerce-value "2026-06-29" :db.type/instant false))))
+
+;; D7b (RT-14 item 4, 2026-09-20): the predicate-array capability the
+;; handlers already accept is advertised by the schema.
+(deftest d7b-navigate-predicate-schema-accepts-a-string-or-an-array
+  (doseq [verb ["sandbar.navigate.inbound-edges" "sandbar.navigate.outbound-edges"]]
+    (let [schema (:inputSchema (nav-verb verb))
+          one-of (get-in schema [:properties :predicate :oneOf])]
+      (is (= #{"string" "array"} (set (map :type one-of)))
+          (str verb " advertises a string OR an array of strings"))
+      (is (= "string" (get-in (first (filter #(= "array" (:type %)) one-of)) [:items :type]))))))

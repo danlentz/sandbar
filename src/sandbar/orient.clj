@@ -70,11 +70,18 @@
   ;; still on the silent-zero-hit footing for bare predicate forms.
   ;; Per inbox capture
   ;; memory/inbox/2026-05-22_mcp_cutover_exercise_substrate_verb_authoring_queue_10_gaps_surfaced_via_orientation_of_sandbar_as_mcp_server_arc.md.
+  ;; D7b (2026-09-20): an inverse axis resolves bare predicates the inbound
+  ;; way — against its `:source-type` when given, else schema-wide — since
+  ;; the slot behind an inbound edge belongs to the source's class, not the
+  ;; anchor's.
   (let [resolved-axes
-        (mapv (fn [{:keys [predicates] :as axis-spec}]
+        (mapv (fn [{:keys [predicates direction source-type] :as axis-spec}]
                 (cond-> axis-spec
                   predicates
-                  (assoc :predicates (nav-edges/resolve-predicates entity predicates))))
+                  (assoc :predicates
+                         (if (= (keyword direction) :inverse)
+                           (nav-edges/resolve-predicates entity predicates :inbound source-type)
+                           (nav-edges/resolve-predicates entity predicates :outbound)))))
               axes)
         {raw-entity :entity raw-axes :axes}
         (dt/library-card-of entity resolved-axes)
