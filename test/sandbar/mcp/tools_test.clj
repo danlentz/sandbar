@@ -364,3 +364,17 @@
       (is (= #{"string" "array"} (set (map :type one-of)))
           (str verb " advertises a string OR an array of strings"))
       (is (= "string" (get-in (first (filter #(= "array" (:type %)) one-of)) [:items :type]))))))
+
+;; D7b (2026-09-20): a stringified array (a client on a stale schema) parses
+;; as the array it carries, never as one bogus keyword.
+(deftest d7b-predicate-arg-accepts-a-stringified-array
+  (let [parse #'tools/parse-predicate-arg]
+    (is (= [:mm.memory/tags :mm.memory/themes]
+           (parse "[\":mm.memory/tags\", \":mm.memory/themes\"]")))
+    (is (= [:mm.memory/tags :mm.memory/themes]
+           (parse [":mm.memory/tags" ":mm.memory/themes"])))
+    (is (= :mm.memory/tags (parse ":mm.memory/tags")))
+    (is (= :cites (parse "cites")))
+    (is (nil? (parse nil)))
+    (is (thrown? clojure.lang.ExceptionInfo (parse "[not json")))
+    (is (thrown? clojure.lang.ExceptionInfo (parse "[1, 2]")))))

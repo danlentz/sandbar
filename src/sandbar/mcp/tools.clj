@@ -1372,8 +1372,26 @@
    slot-idents downstream by the navigate/library-card layer."
   [raw]
   (when (some? raw)
-    (if (sequential? raw)
+    (cond
+      (sequential? raw)
       (mapv ->predicate-keyword raw)
+
+      ;; D7b (2026-09-20): a client whose cached tool schema predates the
+      ;; `oneOf` string-or-array declaration stringifies an array argument
+      ;; into "[\":a/b\", \":c/d\"]".  Keywordizing that whole string would
+      ;; match no attribute and answer a silent zero — the very failure the
+      ;; Gap 7 resolver exists to prevent — so a JSON-array-shaped string is
+      ;; parsed as the array it carries.
+      (and (string? raw) (str/starts-with? (str/trim raw) "["))
+      (let [parsed (try (json/parse-string (str/trim raw))
+                        (catch Exception e
+                          (throw (ex-info (str "Predicate array could not be parsed: " raw)
+                                          {:value raw :error (.getMessage e)}))))]
+        (when-not (and (sequential? parsed) (every? string? parsed))
+          (throw (ex-info (str "Predicate array must hold ident strings: " raw) {:value raw})))
+        (mapv ->predicate-keyword parsed))
+
+      :else
       (->predicate-keyword raw))))
 
 (defn- navigate-outbound-edges-handler [args]
