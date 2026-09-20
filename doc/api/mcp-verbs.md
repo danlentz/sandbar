@@ -642,7 +642,7 @@ Project entities from DB to a filesystem hierarchy via native-format codecs.  `[
 
 **WHEN:** use to materialize the current substrate state as a filesystem hierarchy — for backup, git versioning, manual editing, or hybrid FS/DB experimentation.  The filesystem format is the CANONICAL ground-truth; any backend must comply with it.  When NOT to use: (a) you want a single entity's representation — `sandbar.entity.find` returns the entity-map directly; (b) you want a subset — use `:filter` opt; (c) you want to read FROM filesystem — `sandbar.project.import`.
 
-**HOW:** `:to` is the output directory path (REQUIRED).  `:filter` (optional) restricts which entities project; keys: `:class` (single class-ident — only that class's instances), `:classes` (array — multiple classes), `:tree-filter` (string — rel-path prefix restriction).  Returns `{:to :filter :exported <count> :files [<rel-path>...]}`.
+**HOW:** `:to` is the output directory path (REQUIRED).  `:filter` (optional) restricts which entities project; keys: `:class` (single class-ident — only that class's instances), `:classes` (array — multiple classes), `:tree-filter` (string — rel-path prefix restriction).  Returns `{:to :filter :attempted :exported <count> :files [<rel-path>...] :failed-count :failed [{:rel-path :error}...]}` — a unit whose emit or write failed (a name over the filesystem's limit, an I/O error) is named under `:failed` and never aborts the rest (D7, 2026-09-20); a registry-strip refusal still aborts the export.
 
 **ORDER:** idempotent; safe to run repeatedly (overwrites).  For round-trip verification, follow with `sandbar.project.import` against the output directory and compare results.
 

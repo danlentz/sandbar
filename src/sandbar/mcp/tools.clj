@@ -783,16 +783,26 @@
           ;; record to a private audit sink keyed by the run's `:mm/id`
           ;; (= `:manifest/audit-ref`) is the DEFERRED E/F/G seam (W1.H produces
           ;; the real exclusions; no-new-schema this round).
-          {:to         to
-           :filter     filter-spec
-           :exported   (count written)
-           :files      (mapv :rel-path written)
-           :provenance manifest})
-        (let [result (export-thunk)]
-          {:to       to
-           :filter   filter-spec
-           :exported (count result)
-           :files    (mapv :rel-path result)})))))
+          (let [failed (:failed (meta written))]
+            {:to           to
+             :filter       filter-spec
+             :attempted    (+ (count written) (count failed))
+             :exported     (count written)
+             :files        (mapv :rel-path written)
+             :failed-count (count failed)
+             :failed       (mapv #(select-keys % [:rel-path :error]) failed)
+             :provenance   manifest}))
+        (let [result (export-thunk)
+              failed (:failed (meta result))]
+          {:to           to
+           :filter       filter-spec
+           :attempted    (+ (count result) (count failed))
+           :exported     (count result)
+           :files        (mapv :rel-path result)
+           ;; every unit's fate (D7, 2026-09-20): a unit whose emit or write
+           ;; failed is named here and never aborts the rest
+           :failed-count (count failed)
+           :failed       (mapv #(select-keys % [:rel-path :error]) failed)})))))
 
 ;; F#17 transact-boundary helpers (group-by-source + tempid-translation) moved
 ;; to `sandbar.codec.markdown/group-by-source` + `entity-specs->tx-data` per
@@ -3034,7 +3044,7 @@
     :handler reactive-health-handler}
    {:name "sandbar.project.export"
     :title "Project entities from DB to a filesystem hierarchy via native-format codecs"
-    :description "WHICH: projects entities from the Datomic substrate to a filesystem hierarchy under `:to` — each entity emits as a file in its class's `:dt/native-codec` format.  The bidirectional half of the Anderson `de.setf.rdf:project-graph` boundary-layer primitive (see `doc/concepts/projection.md`).  Bidirectionally inverse of `sandbar.project.import`.\n\nWHEN: use to materialize the current substrate state as a filesystem hierarchy — for backup, git versioning, manual editing, or hybrid FS/DB experimentation.  The filesystem format is the CANONICAL ground-truth; any backend must comply with it.  When NOT to use: (a) you want a single entity's representation — `sandbar.entity.find` returns the entity-map directly; (b) you want a subset — use `:filter` opt; (c) you want to read FROM filesystem — `sandbar.project.import`.\n\nHOW: `:to` is the output directory path (REQUIRED).  `:filter` (optional) restricts which entities project; keys: `:class` (single class-ident — only that class's instances), `:classes` (array — multiple classes), `:tree-filter` (string — rel-path prefix restriction).  Returns `{:to :filter :exported <count> :files [<rel-path>...]}`.\n\nORDER: idempotent; safe to run repeatedly (overwrites).  For round-trip verification, follow with `sandbar.project.import` against the output directory and compare results.\n\nCOMBINATION: inverse of `sandbar.project.import`.  For hybrid-backend experimentation, use `:filter` to project subsets selectively (per `ideas/sandbar_project_export_filtering_for_hybrid_backend_experimentation_2026_05_13.md`).  Codec selection driven by `sandbar.class.describe` `:dt/native-codec` per class."
+    :description "WHICH: projects entities from the Datomic substrate to a filesystem hierarchy under `:to` — each entity emits as a file in its class's `:dt/native-codec` format.  The bidirectional half of the Anderson `de.setf.rdf:project-graph` boundary-layer primitive (see `doc/concepts/projection.md`).  Bidirectionally inverse of `sandbar.project.import`.\n\nWHEN: use to materialize the current substrate state as a filesystem hierarchy — for backup, git versioning, manual editing, or hybrid FS/DB experimentation.  The filesystem format is the CANONICAL ground-truth; any backend must comply with it.  When NOT to use: (a) you want a single entity's representation — `sandbar.entity.find` returns the entity-map directly; (b) you want a subset — use `:filter` opt; (c) you want to read FROM filesystem — `sandbar.project.import`.\n\nHOW: `:to` is the output directory path (REQUIRED).  `:filter` (optional) restricts which entities project; keys: `:class` (single class-ident — only that class's instances), `:classes` (array — multiple classes), `:tree-filter` (string — rel-path prefix restriction).  Returns `{:to :filter :attempted :exported <count> :files [<rel-path>...] :failed-count :failed [{:rel-path :error}...]}` — a unit whose emit or write failed (a name over the filesystem's limit, an I/O error) is named under `:failed` and never aborts the rest (D7, 2026-09-20); a registry-strip refusal still aborts the export.\n\nORDER: idempotent; safe to run repeatedly (overwrites).  For round-trip verification, follow with `sandbar.project.import` against the output directory and compare results.\n\nCOMBINATION: inverse of `sandbar.project.import`.  For hybrid-backend experimentation, use `:filter` to project subsets selectively (per `ideas/sandbar_project_export_filtering_for_hybrid_backend_experimentation_2026_05_13.md`).  Codec selection driven by `sandbar.class.describe` `:dt/native-codec` per class."
     :inputSchema (one-required
                    {:to     {:type "string" :description "Output directory path"}
                     :filter {:type "object"

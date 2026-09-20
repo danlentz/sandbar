@@ -424,7 +424,10 @@
                         disk.  Sections under a matching mm/Memory always
                         accompany the memory regardless of filter.
 
-   Returns: vector of `{:rel-path \"...\" :written true}` records.
+   Returns: vector of `{:rel-path \"...\" :written true}` records.  The
+   vector's METADATA carries `{:failed [{:rel-path :written false :error
+   :entity} …]}` — the units whose emit or write failed (D7, 2026-09-20);
+   the export continues past them, so every unit's fate is knowable.
 
    Idempotence: re-projecting the same entities to the same dir yields
    byte-identical files (per the markdown codec's normalization
@@ -463,30 +466,52 @@
                      (into pass-memories pass-sections))
                    entities)]
     (.mkdirs out-dir)
-    (vec
-      (for [{:keys [memory sections]} (group-entities-by-memory filtered)
-            :let [rel-path (hierarchy-fn memory)]
-            :when rel-path]
-        (let [target-file (io/file out-dir rel-path)
-              flat        (into [memory] sections)
-              content     (md/emit-document flat)]
-          (.mkdirs (.getParentFile target-file))
-          ;; Pre-write registry guard (IP-3 call-site 2).  Inert for fresh
-          ;; scratch/temp dirs (no existing file → no-op); engages only when
-          ;; exporting over an existing corpus, where a degraded emit would
-          ;; otherwise strip a registry-critical key in-place.  A refusal
-          ;; ex-info aborts the export; the MCP handler reports it.
-          (guard-registry-critical-write! (.getPath target-file) content)
-          (spit target-file content)
-          (log/debug :PROJECT-GRAPH/wrote {:rel-path rel-path})
-          ;; `:entity` carries the SOURCE entity's identity claim so the W1.E
-          ;; provenance manifest gate can verify it against the DB and route the
-          ;; ACTUAL projected entity, never re-resolving the rel-path (which
-          ;; fails open under a rel-path collision) and never trusting the
-          ;; descriptor's own slots (r4).  Additive key; downstream consumers
-          ;; read only :rel-path.
-          {:rel-path rel-path :written true
-           :entity   (source-descriptor memory)})))))
+    ;; Every unit's fate is reported (D7, 2026-09-20): a unit whose emit or
+    ;; write fails — a name over the filesystem's limit, an I/O error — is
+    ;; collected under the result's `:failed` metadata and the export goes
+    ;; on, so one bad name never aborts a corpus-wide projection (the dry run
+    ;; against the live corpus stopped at file 66 of 2,700 on a 291-byte
+    ;; name).  A registry-strip refusal is a fidelity refusal, not an I/O
+    ;; failure: it still aborts the export, as before.
+    (let [failed  (atom [])
+          written (vec
+                    (for [{:keys [memory sections]} (group-entities-by-memory filtered)
+                          :let [rel-path (hierarchy-fn memory)]
+                          :when rel-path
+                          :let [record
+                                (try
+                                  (let [target-file (io/file out-dir rel-path)
+                                        flat        (into [memory] sections)
+                                        content     (md/emit-document flat)]
+                                    (.mkdirs (.getParentFile target-file))
+                                    ;; Pre-write registry guard (IP-3 call-site 2).  Inert for fresh
+                                    ;; scratch/temp dirs (no existing file → no-op); engages only when
+                                    ;; exporting over an existing corpus, where a degraded emit would
+                                    ;; otherwise strip a registry-critical key in-place.  A refusal
+                                    ;; ex-info aborts the export; the MCP handler reports it.
+                                    (guard-registry-critical-write! (.getPath target-file) content)
+                                    (spit target-file content)
+                                    (log/debug :PROJECT-GRAPH/wrote {:rel-path rel-path})
+                                    ;; `:entity` carries the SOURCE entity's identity claim so the W1.E
+                                    ;; provenance manifest gate can verify it against the DB and route the
+                                    ;; ACTUAL projected entity, never re-resolving the rel-path (which
+                                    ;; fails open under a rel-path collision) and never trusting the
+                                    ;; descriptor's own slots (r4).  Additive key; downstream consumers
+                                    ;; read only :rel-path.
+                                    {:rel-path rel-path :written true
+                                     :entity   (source-descriptor memory)})
+                                  (catch Throwable t
+                                    (if (= :registry-strip-refusal (:sandbar/error (ex-data t)))
+                                      (throw t)
+                                      (do (log/warn t :PROJECT-GRAPH/write-failed
+                                                    {:rel-path rel-path :error (.getMessage t)})
+                                          (swap! failed conj {:rel-path rel-path :written false
+                                                              :error    (.getMessage t)
+                                                              :entity   (source-descriptor memory)})
+                                          nil))))]
+                          :when record]
+                      record))]
+      (with-meta written {:failed @failed}))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; ingest-graph — filesystem → entities
