@@ -94,6 +94,41 @@ The corpus filesystem is canonical, but the DB can mutate during a session.  To 
 
 **Warning**: the FIRST canonical export rewrites every file with normalization differences from source (description single-quoting, cardinality-many list shape, slot-order canonicalization).  This is by design per the round-trip-stability ADR — but it causes a large one-time git diff.  Subsequent exports produce zero diff (fixed-point stability).
 
+## Maintenance import (quiescent — the 0.2.0 import contract)
+
+Imports into the live store run as a **maintenance operation**: the server stopped, no other writer, fixed input files, a receipt for every step.  This is the reliability sprint's declared contract (corpus `decisions/reliability_sprint_scope_narrowed_to_serialized_correctness_maintenance_imports_and_explicit_deferrals_…_2026_09_20.md`); the `sandbar_project_import` verb stays for read-only previews and for attended imports.  First live run: D7 pass 1, 2026-09-20, receipts at the corpus's `codex/to-astra/d7-pass1-2026-09-20/README.md`.
+
+**Prerequisites**
+
+- The Datomic transactor is up.  `bin/sandbar stop` has run and `bin/sandbar status` reports not running; the command refuses while the port answers.  No other JVM writes to the store (nREPL sessions, admin scripts).
+- A **staging root** holding exactly the files to import at `<root>/memory/<rel-path>`, byte-identical to the canonical files (record `shasum -a 256` of both).  The walker takes every `.md` under the root; a root mixing `memory/` with other directories is a project root by accident and is refused before any transaction.  Never point it at the corpus root.
+- Before-images: `bin/sandbar backup <label>`; a git tag on the corpus; `bin/sandbar export <dir>` for the store's rendering.
+
+**Run**
+
+```sh
+~/src/sandbar/bin/sandbar stop
+~/src/sandbar/bin/sandbar maintenance-import --from /path/to/staging             # dry run: preview receipt only
+~/src/sandbar/bin/sandbar maintenance-import --from /path/to/staging --persist   # preview, then the persist pinned to it
+~/src/sandbar/bin/sandbar start
+```
+
+Options: `--exclude-file f` (rel-paths, one per line: walked and fingerprinted, not transacted), `--retract-file f` (idents or eids retracted first, dry run then persist, cascade with dangling acknowledged), `--receipts dir` (default `.sandbar/receipts/maintenance-import-<ts>/`), `--mode replace|additive` (replace by default: the file's declared slots win, omitted source-owned slots are retracted, sections the file no longer carries are retracted, substrate-owned slots are kept).
+
+**Read the receipts, not the exit code alone**
+
+- `import-preview.edn`: `:units` with `:mode`, `:retracted-sections`, `:retracted-slots`, `:retracted-slot-attrs` (the attributes behind the count), `:retracted-carrier?`, `:conflicts`; the `:basis` and `:sources-sha256` the persist is pinned to.
+- `import-persist.edn`: `:persisted`, `:conflicts`, `:failed`, `:refused`, `:final-basis`, `:reconciled?`.
+- `retract-dry-run.edn` / `retract-persist.edn` when a retract list was given.
+- Exit 0 only when the preview has no parse failure or conflict and every previewed unit persisted (`complete?`); 1 when a report is incomplete; 3 when the run was refused before any transaction (server up, mixed root).  A dry run transacts nothing and installs nothing; the transactor-side functions are installed only on `--persist`.
+
+**After**
+
+- Run the drift audit while still stopped (`lein run -m clojure.main` calling `sandbar.audit.fs-substrate-drift/audit-all {:from <corpus-root>}` after `sandbar.codec.markdown/register!`), or `sandbar_audit_fs-substrate-drift` once restarted.  Every remaining row should carry a named reason; the done-when is zero unexplained changes, not a numerical zero.
+- `bin/sandbar start`; wire checks (count, the imported entities read back, search, `sandbar_reactive_health`); commit the corpus with the receipts.
+
+**Recovery**: `git checkout <tag> -- memory/` for the files; `bin/sandbar restore <backup-dir>` for the store, server stopped.
+
 ## Status snapshot
 
 ```sh

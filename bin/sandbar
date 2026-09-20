@@ -277,11 +277,17 @@ EOF
       echo "WARNING: exporting to CANONICAL ${out_dir}/memory/ (overwrites canonical files)"
     else
       out_dir="${2:-/tmp/sandbar-export-$(date +%Y%m%d-%H%M%S)}"
-      mkdir -p "$out_dir"
     fi
+    # The export verb writes each file at <to>/<rel-path>; the corpus
+    # convention (the audit's walk root, the import's staging root) is
+    # <root>/memory/<rel-path>, so the verb gets <out_dir>/memory.  Until
+    # 2026-09-20 the bare <out_dir> was passed and the files landed flat,
+    # against this message (and --canonical would have written into the
+    # corpus root).
+    mkdir -p "${out_dir}/memory"
     echo "exporting DB → ${out_dir}/memory/ ..."
     export_body=$(cat <<EOF
-{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"sandbar.project.export","arguments":{"to":"${out_dir}"}}}
+{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"sandbar_project_export","arguments":{"to":"${out_dir}/memory"}}}
 EOF
 )
     result=$(curl -s -X POST "http://localhost:$SANDBAR_PORT/mcp" \
@@ -417,6 +423,31 @@ EOF
     exec lein list-dbs
     ;;
 
+  maintenance-import)
+    # The quiescent maintenance import (D7, 2026-09-20): runs
+    # sandbar.scripts.maintenance-import in an admin JVM against the
+    # configured store with the server STOPPED — no MCP caller, reactive
+    # worker or scheduler can write.  Refuses while the server runs.
+    # Point --from at a STAGING ROOT holding exactly the files to import
+    # at <root>/memory/<rel-path>: the walker takes every .md under the
+    # root, and a root mixing memory/ with other directories is refused.
+    # Dry run without --persist.  Receipts default to
+    # .sandbar/receipts/maintenance-import-<ts>/.  Exit 0 only when every
+    # step finished whole.  Procedure: doc/operations.md § Maintenance import.
+    shift
+    pid=$(running_pid || true)
+    if [ -n "$pid" ]; then
+      echo "sandbar is running (PID $pid) — stop it first ('sandbar stop'); the maintenance import runs only on a quiescent store" >&2
+      exit 1
+    fi
+    case " $* " in
+      *" --receipts "*) ;;
+      *) set -- "$@" --receipts "${SANDBAR_CONFIG}/receipts/maintenance-import-$(date +%Y%m%d-%H%M%S)" ;;
+    esac
+    cd "$SANDBAR_HOME"
+    exec lein maintenance-import -- --port "$SANDBAR_PORT" "$@"
+    ;;
+
   *)
     cat >&2 <<EOF
 Usage: sandbar <command>
@@ -454,6 +485,12 @@ Commands:
                                    <SANDBAR_CLIENT_DIR>/.sandbar/config.edn + env vars).
   list-dbs                       — enumerate Datomic databases on the configured transactor;
                                    reveals all consumers' DBs (F2 cohabitability model).
+  maintenance-import [opts]      — quiescent import into the live store with the server STOPPED
+                                   (refuses otherwise).  --from <staging-root> [--persist]
+                                   [--exclude-file f] [--retract-file f] [--receipts dir]
+                                   [--mode replace|additive].  Dry run without --persist.
+                                   Receipts default to .sandbar/receipts/maintenance-import-<ts>/.
+                                   Exit 0 only when every step finished whole.  doc/operations.md.
 
 Config (env):
   SANDBAR_HOME=$SANDBAR_HOME

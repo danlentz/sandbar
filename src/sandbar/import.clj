@@ -211,6 +211,11 @@
          :conflicts          conflicts
          :retracted-sections (:retracted-sections sections)
          :retracted-slots    (count slots)
+         ;; the attributes behind the count, so a reviewer can tell a
+         ;; source-owned slot the file dropped from a slot it never carried
+         ;; (pass 1 finding, 2026-09-20: counts alone left 303 planned
+         ;; retractions unexplained)
+         :retracted-slot-attrs (vec (distinct (map #(nth % 2) slots)))
          :retracted-carrier? (boolean carrier-op)}))))
 
 (defn apply-plan!

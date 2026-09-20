@@ -946,6 +946,7 @@
                                     (cond-> (assoc (import-unit-summary u) :mode (:mode p))
                                       (= :replace (:mode p)) (assoc :retracted-sections (:retracted-sections p)
                                                                    :retracted-slots (:retracted-slots p)
+                                                                   :retracted-slot-attrs (:retracted-slot-attrs p)
                                                                    :retracted-carrier? (:retracted-carrier? p))
                                       (seq (:conflicts p)) (assoc :conflicts (:conflicts p)))))
                                 parsed)]
@@ -1003,6 +1004,7 @@
                                         (= :replace (:mode plan))
                                         (assoc :retracted-sections (:retracted-sections plan)
                                                :retracted-slots (:retracted-slots plan)
+                                               :retracted-slot-attrs (:retracted-slot-attrs plan)
                                                :retracted-carrier? (:retracted-carrier? plan)))]
                            (try
                              (if (seq (:conflicts plan))

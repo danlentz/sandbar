@@ -63,3 +63,40 @@
         (let [persisted (edn/read-string (slurp (io/file receipts "import-persist.edn")))]
           (is (= 1 (:persisted-count persisted)) "the receipt is the report")))
       (finally (rm-rf! dir) (rm-rf! receipts)))))
+
+(deftest a-root-mixing-memory-and-other-files-is-refused-before-any-transaction
+  (let [dir (tmp-dir "mixed") receipts (tmp-dir "receipts3")]
+    (try
+      (write! dir "memory/decisions/mi_c.md" (doc "MI C" [["One" "One body."]]))
+      (write! dir "codex/not_a_memory.md" (doc "Not a memory" [["X" "x body."]]))
+      (is (thrown-with-msg? clojure.lang.ExceptionInfo #"mixes files under memory/"
+            (mi/run! {:from (.getPath dir) :persist? true :receipts (.getPath receipts) :port nil})))
+      (is (nil? (d/entid (d/db (db/conn)) :memory.decisions/mi_c)) "nothing transacted")
+      (is (nil? (d/entid (d/db (db/conn)) :memory.codex/not_a_memory)) "nothing transacted")
+      (is (= #{"refused.edn"} (set (.list receipts))) "the refusal leaves its receipt naming what was walked; nothing else ran")
+      (is (= 1 (:outside-memory (edn/read-string (slurp (io/file receipts "refused.edn"))))))
+      (finally (rm-rf! dir) (rm-rf! receipts)))))
+
+(deftest a-staging-root-with-everything-under-memory-passes-the-mixed-root-guard
+  (let [dir (tmp-dir "staged") receipts (tmp-dir "receipts4")]
+    (try
+      (write! dir "memory/decisions/mi_d.md" (doc "MI D" [["One" "One body."]]))
+      (let [result (mi/run! {:from (.getPath dir) :persist? true :receipts (.getPath receipts) :port nil})]
+        (is (= 1 (:persisted-count (:persist result))))
+        (is (some? (d/entid (d/db (db/conn)) :memory.decisions/mi_d)) "the staged unit imported under its memory ident")
+        (is (true? (mi/complete? result))))
+      (finally (rm-rf! dir) (rm-rf! receipts)))))
+
+(deftest complete-means-every-step-finished-whole
+  (is (true? (mi/complete? {:preview {:parse-failed-count 0 :conflict-count 0 :units [1 2]}
+                            :persist {:reconciled? true :conflict-count 0 :failed-count 0 :refused-count 0 :persisted-count 2}})))
+  (is (true? (mi/complete? {:preview {:parse-failed-count 0 :conflict-count 0 :units [1]}})) "a clean dry run is complete")
+  (is (false? (mi/complete? {:preview {:parse-failed-count 0 :conflict-count 1 :units [1]}})) "a preview conflict is incomplete")
+  (is (false? (mi/complete? {:preview {:parse-failed-count 1 :conflict-count 0 :units []}})) "a parse failure is incomplete")
+  (is (false? (mi/complete? {:preview {:parse-failed-count 0 :conflict-count 0 :units [1 2]}
+                             :persist {:reconciled? true :conflict-count 0 :failed-count 1 :refused-count 0 :persisted-count 1}}))
+      "a failed unit is incomplete")
+  (is (false? (mi/complete? {:preview {:parse-failed-count 0 :conflict-count 0 :units [1 2]}
+                             :persist {:reconciled? false :conflict-count 0 :failed-count 0 :refused-count 1 :persisted-count 1}}))
+      "a refused remainder is incomplete")
+  (is (false? (mi/complete? {})) "no preview, nothing finished"))

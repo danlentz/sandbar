@@ -171,7 +171,9 @@
           (is (nil? (:mm.memory/importance e)) "the omitted authored slot is retracted")
           (is (some? (:mm.memory/last-touched e)) "the substrate-owned stamp is kept")
           (is (= created-by (:mm.memory/created-by e)) "provenance is kept")
-          (is (pos? (-> report :persisted first :retracted-slots)))))
+          (is (pos? (-> report :persisted first :retracted-slots)))
+          (is (= ["mm.memory/importance"] (-> report :persisted first :retracted-slot-attrs))
+              "the report names the attribute behind the count (keywords cross the wire as strings)")))
       (finally (rm-rf! dir)))))
 
 (deftest a-headingless-replacement-retracts-every-section
