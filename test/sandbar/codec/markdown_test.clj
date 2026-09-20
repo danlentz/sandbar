@@ -878,3 +878,27 @@
     ;; regex (which requires `^memory\.`), so it parses as a path.
     (is (= :memory.auth.X/foo
            (md/rel-path->memory-ident "auth.X/foo")))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Raw key occurrences — a repeated key is visible here and nowhere in the
+;; parsed map (D7-R2, Astra 2026-09-20)
+
+(deftest frontmatter-key-occurrences-see-a-repeated-key-the-parsed-map-collapses
+  (let [fm (str "id: '00000000-0000-4000-8000-000000000000'\n"
+                "name: Foo\n"
+                "tags:\n- a\n- b: not a key\n"
+                "description: |-\n  a block: with a colon\n  id: inside the block\n"
+                "id: '11111111-1111-4111-8111-111111111111'\n")]
+    (is (= [[:id "'00000000-0000-4000-8000-000000000000'"]
+            [:name "Foo"]
+            [:tags ""]
+            [:description "|-"]
+            [:id "'11111111-1111-4111-8111-111111111111'"]]
+           (md/frontmatter-key-occurrences fm))
+        "list items and block-scalar lines are not key declarations; every top-level key is, in order")
+    (is (= #{:id} (md/duplicate-frontmatter-keys fm)))
+    (is (= "11111111-1111-4111-8111-111111111111"
+           (str (get (md/parse-frontmatter-text fm) :id)))
+        "the parsed map keeps only the last id — the collapse the sink must not trust")
+    (is (= #{} (md/duplicate-frontmatter-keys "name: Foo\ntype: decision\n")))
+    (is (= [] (md/frontmatter-key-occurrences nil)))))

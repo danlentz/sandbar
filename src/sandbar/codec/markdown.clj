@@ -314,6 +314,39 @@
         :else
         (recur rest cur-key cur-buf)))))
 
+(defn frontmatter-key-occurrences
+  "Every top-level key declaration in `fm-text` (the text between the
+   `---` fences, as `split-frontmatter` returns it), in document order, as
+   `[key raw-value]` pairs — `key` a keyword, `raw-value` the trimmed text
+   after the first colon (quotes and block-scalar markers left as written).
+
+   Uses the SAME key-recognition rule as `parse-frontmatter-text` (a line
+   that does not start with whitespace, is not a `-` list item, and
+   contains a colon) but WITHOUT the parser's last-wins collapse: the parsed
+   map holds one value per key, so a file whose front matter declares a key
+   twice looks unambiguous to anyone reading the map.  The retraction sink
+   reads the raw occurrences of `id` before it treats a file's identity as
+   settled (D7-R2, Astra's finding of 2026-09-20)."
+  [fm-text]
+  (->> (str/split-lines (str/trim (or fm-text "")))
+       (keep (fn [line]
+               (when (and (not (str/starts-with? line " "))
+                          (not (str/starts-with? (str/triml line) "-"))
+                          (str/includes? line ":"))
+                 (let [[k v] (str/split line #":" 2)]
+                   [(keyword (str/trim k)) (str/trim v)]))))
+       vec))
+
+(defn duplicate-frontmatter-keys
+  "The set of top-level keys `fm-text` declares more than once (see
+   `frontmatter-key-occurrences`); empty when every key is declared once."
+  [fm-text]
+  (->> (frontmatter-key-occurrences fm-text)
+       (map first)
+       frequencies
+       (keep (fn [[k n]] (when (> n 1) k)))
+       set))
+
 (defn- strip-trailing-non-hardbreak-whitespace
   "Strip trailing whitespace from each line UNLESS it's a markdown
    hard-break (line ending with 2+ trailing spaces per CommonMark §4.2.6).

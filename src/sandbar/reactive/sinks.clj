@@ -320,17 +320,53 @@
   [^java.io.File f]
   (java.nio.file.Files/delete (.toPath f)))
 
-(defn projected-file-id
-  "The `id` in `file`'s front matter, decoded through the codec's own
-   front-matter parser (the canonical trailing `id: '<uuid>'` line the
-   emitter writes), as a string; nil when the file has no front matter or
-   no id.  Reads the front matter only, never the body."
+(defn- unquote-scalar
+  "A raw front-matter scalar with one layer of surrounding quotes removed
+   and trimmed; nil when nothing is left."
+  [raw]
+  (some-> raw str str/trim (str/replace #"^['\"]|['\"]$" "") str/trim not-empty))
+
+(defn projected-file-identity
+  "What `file`'s front matter claims as its identity, read from the raw
+   top-level `id` declarations (`md/frontmatter-key-occurrences`), never
+   from the parsed map — the parser keeps the last of a repeated key, which
+   is how a file carrying a foreign `id` above the emitter's own looked
+   unambiguous to the ownership check (D7-R2, Astra's finding of
+   2026-09-20).  Returns `{:id <string>}` when exactly one `id` is declared
+   with a value; `{:ambiguous? true :ids [<string-or-nil> …]}` when `id`
+   is declared more than once, whatever the values (a repeated identity is
+   a file to keep for disposition, not one to decide about); nil when the
+   file has no front matter or no `id`.  Reads the front matter only,
+   never the body."
   [^java.io.File file]
   (let [[fm _] (md/split-frontmatter (slurp file))]
     (when fm
-      (some-> (get (md/parse-frontmatter-text fm) :id) str str/trim
-              (str/replace #"^['\"]|['\"]$" "")
-              not-empty))))
+      (let [ids (->> (md/frontmatter-key-occurrences fm)
+                     (filter #(= :id (first %)))
+                     (mapv (comp unquote-scalar second)))]
+        (cond
+          (empty? ids)       nil
+          (> (count ids) 1)  {:ambiguous? true :ids ids}
+          (nil? (first ids)) nil
+          :else              {:id (first ids)})))))
+
+(defn projected-file-id
+  "The single unambiguous `id` in `file`'s front matter as a string (the
+   canonical trailing `id: '<uuid>'` line the emitter writes); nil when the
+   file has no front matter, no `id`, or more than one `id` (see
+   `projected-file-identity`, which tells those apart)."
+  [^java.io.File file]
+  (:id (projected-file-identity file)))
+
+(defn- claimed-by-another?
+  "`other-claimant?` as `remove-projected-file!` receives it: a boolean (the
+   dry run's planning view against one database value) or a zero-arg fn,
+   evaluated HERE — under the path's monitor — so the persisted path decides
+   on the database as it is at the removal boundary, not on a snapshot taken
+   before the monitor was held (the second half of D7-R1, Astra's finding of
+   2026-09-20)."
+  [other-claimant?]
+  (boolean (if (fn? other-claimant?) (other-claimant?) other-claimant?)))
 
 (defn remove-projected-file!
   "Remove the corpus file a retracted entity OWNED — the retraction half of
@@ -339,41 +375,45 @@
    what it knew of the target beforehand, after a successful persist (or,
    with `:dry-run?`, before anything, to report what a persist would do).
    The file goes only when `corpus-document?` (the class projects), no
-   other live entity claims the rel-path (`other-claimant?`, decided by the
-   caller at the post-retraction basis), the file exists under the
-   contained corpus root, and its front-matter id equals the retracted
-   entity's `mm/id` — so an identless twin never removes the identful
-   entity's file, a reused path is never removed for its earlier owner, an
-   entity without an id removes nothing, and a file without an id is left
-   for the operator.  The check and the removal run under the path's
-   monitor (`+path-locks+`), the same one the write takes, so nothing
-   interleaves between them.  Returns `{:rel-path :outcome}` with
-   `:outcome` one of `:removed`, `:absent`, `:kept` (with `:reason`) or
-   `:failed` (with `:error`); in dry-run mode `:would-remove` /
-   `:would-keep` / `:absent`.  An I/O failure is reported, never swallowed
-   into a false settled result; the report is not a durable retry — after
-   a failure the file stays and the next drift audit names it."
+   other live entity claims the rel-path (`other-claimant?` — a boolean for
+   the dry run's planning view, or a zero-arg fn the persisted path supplies
+   so the claim is decided under the monitor on the current database), the
+   file exists under the contained corpus root, and its front matter
+   declares exactly one id equal to the retracted entity's `mm/id` — so an
+   identless twin never removes the identful entity's file, a reused path
+   is never removed for its earlier owner, an entity without an id removes
+   nothing, a file without an id is left for the operator, and a file
+   declaring more than one id is kept for disposition (D7-R2).  Every
+   decision and the removal run under the path's monitor (`+path-locks+`),
+   the same one the write holds through its own liveness decision and its
+   write (D7-R1), so nothing interleaves between a decision and the effect
+   it permits.  Returns `{:rel-path :outcome}` with `:outcome` one of
+   `:removed`, `:absent`, `:kept` (with `:reason`) or `:failed` (with
+   `:error`); in dry-run mode `:would-remove` / `:would-keep` / `:absent`.
+   An I/O failure is reported, never swallowed into a false settled result;
+   the report is not a durable retry — after a failure the file stays and
+   the next drift audit names it."
   [{:keys [rel-path mm-id other-claimant? corpus-document? dry-run?]}]
   (let [kept    (fn [reason & [extra]]
                   (merge {:rel-path rel-path :outcome (if dry-run? :would-keep :kept) :reason reason} extra))
         removed (fn [] {:rel-path rel-path :outcome (if dry-run? :would-remove :removed)})]
     (try
-      (cond
-        (not corpus-document?) (kept :not-a-corpus-document)
-        other-claimant?        (kept :another-entity-claims-the-path)
-        :else
+      (if-not corpus-document?
+        (kept :not-a-corpus-document)
         (let [target-path (contained-target-path rel-path)
               target      (io/file target-path)]
           (locking (path-lock target-path)
             (cond
-              (not (.exists target)) {:rel-path rel-path :outcome :absent}
-              (nil? mm-id)           (kept :retracted-entity-had-no-id)
+              (claimed-by-another? other-claimant?) (kept :another-entity-claims-the-path)
+              (not (.exists target))                {:rel-path rel-path :outcome :absent}
+              (nil? mm-id)                          (kept :retracted-entity-had-no-id)
               :else
-              (let [file-id (projected-file-id target)]
+              (let [{:keys [id ambiguous? ids] :as claim} (projected-file-identity target)]
                 (cond
-                  (nil? file-id)             (kept :file-has-no-id)
-                  (not= (str mm-id) file-id) (kept :file-id-differs {:file-id file-id})
-                  dry-run?                   (removed)
+                  (nil? claim)          (kept :file-has-no-id)
+                  ambiguous?            (kept :file-id-ambiguous {:file-ids ids})
+                  (not= (str mm-id) id) (kept :file-id-differs {:file-id id})
+                  dry-run?              (removed)
                   :else
                   (do (delete-file! target)
                       (log/info :REACTIVE/fs-remove-done {:rel-path rel-path :mm-id (str mm-id)})
@@ -484,31 +524,39 @@
             ;; fail-closed) BEFORE emitting the :REACTIVE/fs-write start log or
             ;; touching the filesystem.  A refusal throws :rel-path-traversal-
             ;; refusal, caught+rethrown below (symmetric with registry-strip).
-            (let [target-path (contained-target-path rel-path)
-                  ;; D7 (2026-09-20), Astra's interleaving case: the slots this
-                  ;; drain carries are a snapshot.  If the entity has since been
-                  ;; retracted, or has moved to another rel-path, this write would
-                  ;; resurrect a file the retraction removed (or leave a stale
-                  ;; one), so it is skipped; the newer state has its own enqueue.
-                  live        (db/entity eid)
-                  live?       (cond
-                                (db/entity-retracted? eid)          false
-                                (nil? (:dt/type live))              true   ; never in this store: a fixture's eid
-                                :else (= rel-path (:mm.memory/rel-path live)))]
-              (if-not live?
-                (log/info :REACTIVE/fs-write-skipped
-                          {:ident ident :eid eid :class class-ident :rel-path rel-path
-                           :reason :entity-retracted-or-moved
-                           :live-rel-path (:mm.memory/rel-path live)})
-                (let [_       (log/debug :REACTIVE/fs-write
-                                         {:ident ident :eid eid :class class-ident
-                                          :rel-path rel-path :phase :start})
-                      _       (atomic-write! target-path content)
-                      done-ms (- (System/currentTimeMillis) start-ms)
-                      bytes   (count content)]
-                  (log/info :REACTIVE/fs-write-done
-                            {:ident ident :eid eid :class class-ident :rel-path rel-path
-                             :duration-ms done-ms :bytes bytes}))))))
+            (let [target-path (contained-target-path rel-path)]
+              ;; D7 (2026-09-20), Astra's interleaving cases: the slots this
+              ;; drain carries are a snapshot.  If the entity has since been
+              ;; retracted, or has moved to another rel-path, this write would
+              ;; resurrect a file the retraction removed (or leave a stale
+              ;; one), so it is skipped; the newer state has its own enqueue.
+              ;; The decision and the write it permits run under the path's
+              ;; monitor, the one the removal takes (D7-R1): a writer that has
+              ;; passed its check cannot pause, let a retraction remove the
+              ;; file, and then write — either it holds the monitor first and
+              ;; the removal follows its write, or the removal holds it first
+              ;; and the writer finds the entity gone.  `atomic-write!` takes
+              ;; the same monitor; it is reentrant.
+              (locking (path-lock target-path)
+                (let [live  (db/entity eid)
+                      live? (cond
+                              (db/entity-retracted? eid)          false
+                              (nil? (:dt/type live))              true   ; never in this store: a fixture's eid
+                              :else (= rel-path (:mm.memory/rel-path live)))]
+                  (if-not live?
+                    (log/info :REACTIVE/fs-write-skipped
+                              {:ident ident :eid eid :class class-ident :rel-path rel-path
+                               :reason :entity-retracted-or-moved
+                               :live-rel-path (:mm.memory/rel-path live)})
+                    (let [_       (log/debug :REACTIVE/fs-write
+                                             {:ident ident :eid eid :class class-ident
+                                              :rel-path rel-path :phase :start})
+                          _       (atomic-write! target-path content)
+                          done-ms (- (System/currentTimeMillis) start-ms)
+                          bytes   (count content)]
+                      (log/info :REACTIVE/fs-write-done
+                                {:ident ident :eid eid :class class-ident :rel-path rel-path
+                                 :duration-ms done-ms :bytes bytes}))))))))
         (catch Throwable t
           ;; Companion rethrow: a SECURITY refusal must ESCAPE the sink so
           ;; `dispatch-sinks!` increments :sink-error-total and the refusal

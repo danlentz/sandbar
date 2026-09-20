@@ -488,18 +488,21 @@
                                  reason actor-ent))
                               proceed))
                 ;; The retraction half of the bijection (D7, 2026-09-20): the
-                ;; file each retracted target owned goes with it, decided at the
-                ;; post-retraction basis so a surviving claimant of the same
-                ;; rel-path keeps the file; every outcome is reported.
-                db-after (db/db)
+                ;; file each retracted target owned goes with it; every outcome
+                ;; is reported.  Whether a surviving entity claims the same
+                ;; rel-path is decided by the sink UNDER the path's monitor, on
+                ;; the database as it is at that moment (the thunk reads `db/db`
+                ;; when called) — not on a snapshot taken here, before the
+                ;; monitor is held (D7-R1, Astra 2026-09-20).
                 files  (vec (for [t proceed :when (:rel-path t)]
                               (sinks/remove-projected-file!
                                {:rel-path         (:rel-path t)
                                 :mm-id            (:mm-id t)
                                 :corpus-document? (:corpus-document? t)
-                                :other-claimant?  (some? (d/q '[:find ?e . :in $ ?rp
-                                                                :where [?e :mm.memory/rel-path ?rp]]
-                                                              db-after (:rel-path t)))})))]
+                                :other-claimant?  (fn []
+                                                    (some? (d/q '[:find ?e . :in $ ?rp
+                                                                  :where [?e :mm.memory/rel-path ?rp]]
+                                                                (db/db) (:rel-path t))))})))]
             (-> report
                 (assoc :persist         true
                        :reason          reason

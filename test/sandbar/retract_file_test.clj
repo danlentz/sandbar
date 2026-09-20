@@ -22,7 +22,17 @@
      - a dry run lists each target's rel-path and the file effect a persist
        would have, and removes nothing;
      - an older queued projection that drains after the retraction does not
-       resurrect the file (Astra's interleaving case)."
+       resurrect the file (Astra's interleaving case);
+     - a projection IN FLIGHT when the retraction commits — its content
+       emitted, about to take the path's monitor — writes nothing, because
+       the liveness decision is taken under that monitor (D7-R1, Astra
+       2026-09-20);
+     - a file whose front matter declares two ids is kept for disposition,
+       never removed on the strength of the last one (D7-R2, Astra
+       2026-09-20);
+     - the claimant decision is taken under the monitor on the current
+       database, so a claimant that arrives after the retraction committed
+       but before the removal keeps the file (the second half of D7-R1)."
   (:require [clojure.java.io        :as io]
             [clojure.string         :as str]
             [clojure.test           :refer [deftest is testing use-fixtures]]
@@ -170,3 +180,108 @@
     (let [report (retract! (:db/ident e))]
       (is (= [{:rel-path rel-path :outcome :kept :reason :file-has-no-id}] (:files report)))
       (is (.exists f)))))
+
+(deftest an-in-flight-write-that-passed-its-check-cannot-recreate-a-removed-file
+  ;; D7-R1 (Astra, 2026-09-20).  The writer has emitted its content and is
+  ;; about to take the path's monitor when the retraction commits and removes
+  ;; the file.  Before the fix the liveness decision was taken before the
+  ;; monitor, so the resumed writer wrote its stale content over the removal;
+  ;; now the decision is taken under the monitor and finds the entity gone.
+  ;; The seam is `path-lock` itself: the first arrival is the writer.  Only
+  ;; scheduling is controlled; the database check, retraction, parser, lock
+  ;; and write are the real implementation.
+  (let [rel-path      "observations/in_flight_probe.md"
+        e             (create-and-project! rel-path)
+        eid           (:db/id e)
+        old-slots     (into {:db/id eid} (db/entity eid))
+        f             (corpus-file rel-path)
+        at-monitor    (promise)
+        release       (promise)
+        original-lock @#'sinks/path-lock
+        paused?       (atom false)]
+    (with-redefs-fn
+      {#'sinks/path-lock
+       (fn [path]
+         (when (compare-and-set! paused? false true)
+           (deliver at-monitor true)
+           (assert (= true (deref release 10000 ::timeout)) "release timeout"))
+         (original-lock path))}
+      (fn []
+        (let [writer (future (sinks/fs-projection-sink eid old-slots))]
+          (try
+            (is (= true (deref at-monitor 10000 ::timeout))
+                "the writer is in flight: content emitted, about to take the monitor")
+            (let [report (retract! (:db/ident e))]
+              (is (= [{:rel-path rel-path :outcome :removed}] (:files report)))
+              (is (not (.exists f)) "the removal completed while the writer waited")
+              (is (db/entity-retracted? eid)))
+            (deliver release true)
+            (is (not= ::timeout (deref writer 10000 ::timeout)) "the writer finished")
+            (is (not (.exists f)) "the resumed writer found the entity gone and wrote nothing")
+            (finally
+              (deliver release true)
+              (deref writer 10000 ::timeout))))))))
+
+(deftest conflicting-duplicate-file-identities-keep-the-file-for-disposition
+  ;; D7-R2 (Astra, 2026-09-20).  A foreign id is declared above the
+  ;; emitter's own; the parsed map would show only the last one.  Ownership
+  ;; is read from the raw declarations, so the file is ambiguous and kept.
+  (let [rel-path   "observations/duplicate_id_probe.md"
+        e          (create-and-project! rel-path)
+        f          (corpus-file rel-path)
+        own-id     (str (:mm/id e))
+        foreign-id "00000000-0000-4000-8000-000000000000"]
+    (spit f (str/replace-first (slurp f) "---\n" (str "---\nid: '" foreign-id "'\n")))
+    (is (= 2 (count (re-seq #"(?m)^id:" (slurp f)))) "the file declares two ids")
+    (is (= {:ambiguous? true :ids [foreign-id own-id]} (sinks/projected-file-identity f)))
+    (is (nil? (sinks/projected-file-id f)) "no single id can be read off an ambiguous file")
+    (let [report (retract! (:db/ident e))]
+      (is (= 1 (:retracted-count report)) "the retraction itself committed")
+      (is (= [{:rel-path rel-path :outcome :kept :reason :file-id-ambiguous
+               :file-ids [foreign-id own-id]}]
+             (:files report)))
+      (is (zero? (:files-removed report)))
+      (is (.exists f) "ambiguous ownership keeps the file for disposition"))))
+
+(deftest the-claimant-decision-is-taken-under-the-monitor-on-the-current-database
+  ;; The second half of D7-R1 (Astra, 2026-09-20): a claimant that arrives
+  ;; after the retraction committed but before the removal takes the monitor
+  ;; must keep the file.  The seam is the removal's own arrival at
+  ;; `path-lock` (the first call made once the entity is retracted; the dry
+  ;; run's earlier call passes through); while it waits, a new entity takes
+  ;; the rel-path.
+  (let [rel-path      "observations/late_claimant_probe.md"
+        e             (create-and-project! rel-path)
+        eid           (:db/id e)
+        f             (corpus-file rel-path)
+        at-monitor    (promise)
+        release       (promise)
+        original-lock @#'sinks/path-lock
+        paused?       (atom false)]
+    (with-redefs-fn
+      {#'sinks/path-lock
+       (fn [path]
+         (when (and (db/entity-retracted? eid) (compare-and-set! paused? false true))
+           (deliver at-monitor true)
+           (assert (= true (deref release 10000 ::timeout)) "release timeout"))
+         (original-lock path))}
+      (fn []
+        (let [retraction (future (retract! (:db/ident e)))]
+          (try
+            (is (= true (deref at-monitor 10000 ::timeout))
+                "the retraction committed and its removal is about to take the monitor")
+            @(d/transact (db/conn)
+                         [{:db/id "late" :dt/type :mm/Observation
+                           :mm.memory/rel-path rel-path
+                           :mm.memory/name "a claimant that arrived after the retraction committed"
+                           :mm.memory/memory-type :observation}])
+            (deliver release true)
+            (let [report (deref retraction 10000 ::timeout)]
+              (is (not= ::timeout report) "the retraction finished")
+              (is (= 1 (:retracted-count report)))
+              (is (= [{:rel-path rel-path :outcome :kept :reason :another-entity-claims-the-path}]
+                     (:files report)))
+              (is (.exists f) "the file is kept for the entity that now claims the path"))
+            (finally
+              (deliver release true)
+              (deref retraction 10000 ::timeout))))))))
