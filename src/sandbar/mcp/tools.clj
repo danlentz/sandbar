@@ -484,6 +484,18 @@
    memorial-defaults fix."
   (delay (try (cfg/config-value :default-actor) (catch Throwable _ nil))))
 
+(defn- format-keyword
+  "The codec format a client named, as the keyword the mediator registers.
+   The verb card advertises the keyword spelling (`:markdown`) and clients
+   send it as a string; `(keyword \":markdown\")` would yield `::markdown`,
+   which no codec registers (found 2026-09-20 on the first write of the
+   onboarding wave).  A leading colon is stripped; an already-bare name
+   passes through unchanged."
+  [format-arg]
+  (if (keyword? format-arg)
+    format-arg
+    (keyword (str/replace (str format-arg) #"^:" ""))))
+
 (defn- entity-create-handler [args]
   (let [class-arg   (or (get args "class") (get args :class))
         slots       (or (get args "slots") (get args :slots) {})
@@ -516,7 +528,7 @@
             strict-results  (atom nil)
             make-opts    (cond-> {}
                            (and format-arg source-arg)
-                           (assoc :format (keyword format-arg)
+                           (assoc :format (format-keyword format-arg)
                                   :source source-arg
                                   :strict? (not allow-unknown?))
                            (= :strict validation-mode)
@@ -534,7 +546,7 @@
         (log/info :MCP/entity-create
                   {:class  class-ident
                    :entity-id (:db/id new-entity)
-                   :format (when format-arg (keyword format-arg))})
+                   :format (when format-arg (format-keyword format-arg))})
         ;; Per ADR B.1.4: a new dt/Class or dt/Property changes the
         ;; schema surface (visible to schema.* + class.* verbs).
         ;; tools/list itself doesn't change (verb catalog is stable),

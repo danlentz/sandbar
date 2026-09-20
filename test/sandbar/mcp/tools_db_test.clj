@@ -28,6 +28,7 @@
             [datomic.api        :as d]
             [sandbar.db.datatype :as dt]
             [sandbar.db.datomic :as db]
+            [sandbar.codec.markdown :as codec-md]
             [sandbar.mcp.tools  :as tools]
             [sandbar.search     :as search]
             [sandbar.store      :as store]
@@ -994,3 +995,50 @@
     (is (= 2 (:total payload)) "m1 reaches the carrier by two roles")
     (is (= 1 (:distinct-total payload)) "and it is one distinct record")
     (is (= #{tag} (set (map (comp :db/id :target) (:edges payload)))))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; The format a client names on entity.create (2026-09-20, the onboarding
+;; wave's first write): the verb card advertises the keyword spelling
+;; (`:markdown`), the mediator registers the bare keyword, and a client that
+;; followed the card was refused with "No codec registered for format
+;; ::markdown".  Contract: both spellings reach the same codec; an
+;; unregistered format is refused with the known formats named and nothing
+;; transacted.  The pattern for the whole-surface contract cases: the
+;; accepted call, its documented alternative, and the refusal branch.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defn- format-md-source
+  "A minimal corpus-shaped markdown document named `name`."
+  [name]
+  (str "---\nname: " name "\ntype: observation\nscope: global\n---\n# " name "\n\nBody.\n"))
+
+(defn- format-eid-by-name [name]
+  (d/q '[:find ?e . :in $ ?n :where [?e :mm.memory/name ?n]] (d/db (db/conn)) name))
+
+(deftest entity-create-format-spelling-contract
+  (codec-md/register!)
+  (testing "the keyword spelling the verb card advertises"
+    (let [resp (call "sandbar.entity.create"
+                     {"class"  ":mm/Memory"
+                      "slots"  {"mm.memory/rel-path" "test/format_spelling_colon.md"}
+                      "format" ":markdown"
+                      "source" (format-md-source "format spelling colon")})]
+      (is (success? resp) (str "expected success, got: " (pr-str resp)))
+      (is (some? (format-eid-by-name "format spelling colon")))))
+  (testing "the bare spelling the mediator registers"
+    (let [resp (call "sandbar.entity.create"
+                     {"class"  ":mm/Memory"
+                      "slots"  {"mm.memory/rel-path" "test/format_spelling_bare.md"}
+                      "format" "markdown"
+                      "source" (format-md-source "format spelling bare")})]
+      (is (success? resp) (str "expected success, got: " (pr-str resp)))
+      (is (some? (format-eid-by-name "format spelling bare")))))
+  (testing "an unregistered format is refused with the known formats named and nothing transacted"
+    (let [resp (call "sandbar.entity.create"
+                     {"class"  ":mm/Memory"
+                      "slots"  {"mm.memory/rel-path" "test/format_spelling_yaml.md"}
+                      "format" ":yaml"
+                      "source" (format-md-source "format spelling yaml")})]
+      (is (user-error? resp) (str "expected isError, got: " (pr-str resp)))
+      (is (re-find #"No codec registered for format :yaml" (error-text resp)))
+      (is (nil? (format-eid-by-name "format spelling yaml")) "nothing was transacted"))))
