@@ -156,4 +156,12 @@
                     :mm.namespace/first-issued]
    :db/doc "Per-namespace policy commitment statement (ARK-inspired).  Declares identity-stability + content-stability + service-stability covenants for entities minted under the namespace, plus the per-deployment authority-UUID + first-issued date.  One CommitmentStatement per active namespace.  Subclass of :mm/Memory so commitment statements ARE memorialized + searchable + persistent like other corpus content.  Per ζ Scope B ADR 2026-05-26 §2.1 + Q.ζ.B.2 ratification (RATIFIED 2026-05-26)."}]
 
+;; D6 (2026-09-19): :mm/id, :mm/pref-label and :mm/alt-label, declared above with
+;; domain :mm/Memory, join :mm/Memory's :dt/slots from here because mm.edn loads
+;; BEFORE this file and cannot name them.  Same mechanics as the tail of
+;; mm-temporal.edn: the class vector is set-replaced at mm.edn's load, and
+;; these datoms re-add the members right after in every full load.
+ [[:db/add :mm/Memory :dt/slots :mm/id]
+  [:db/add :mm/Memory :dt/slots :mm/pref-label]
+  [:db/add :mm/Memory :dt/slots :mm/alt-label]]
 ]

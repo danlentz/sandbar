@@ -1292,4 +1292,27 @@
    :mm.shape/severity        :violation
    :mm.shape/xor-constraints [#db/id[:db.part/user -102]]}]
 
+;; D6 (2026-09-19): declared-but-unlisted properties, listed on their classes.
+;; The classes live in files that load BEFORE this one (mm-artifact.edn, mm-meta.edn),
+;; so their :dt/slots vectors cannot name attributes declared here; these plain
+;; :db/add datoms join the vectors instead.  A class map's :dt/slots is
+;; set-replaced at every load of ITS file, and this file re-adds these members
+;; right after in every full load (load-all-schema! runs the files in the
+;; :required-schema order), so the end state is stable; a lone reload of an
+;; earlier file drops them until this file loads again.
+ [[:db/add :mm/Run      :dt/slots :mm.run/job]
+  [:db/add :mm/Run      :dt/slots :mm.run/status]
+  [:db/add :mm/Run      :dt/slots :mm.run/phenomenon-time]
+  [:db/add :mm/Run      :dt/slots :mm.run/result]
+  [:db/add :mm/Run      :dt/slots :mm.run/error]
+  [:db/add :mm/Activity :dt/slots :mm.activity/spec]
+  [:db/add :mm/Activity :dt/slots :mm.activity/event-kind]
+  [:db/add :mm/Activity :dt/slots :mm.activity/spans-interval]
+  [:db/add :mm/Event    :dt/slots :mm.event/at-time]
+  [:db/add :mm/Event    :dt/slots :mm.event/at-place]
+  [:db/add :mm/Event    :dt/slots :mm.event/at-interval]
+  [:db/add :mm/Event    :dt/slots :mm.event/involved]
+  [:db/add :mm/Event    :dt/slots :mm.event/involved-agent]
+  [:db/add :mm/Event    :dt/slots :mm.event/observes]
+  [:db/add :mm/Event    :dt/slots :mm.event/sub-event]]
 ]

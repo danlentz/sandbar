@@ -432,6 +432,10 @@
                       :mm.event/applicable-actor-classes
                       :mm.event/triggered-by-hook
                       :mm.event/substrate-correctness-criticality]
+                      ;; D6 (2026-09-19): the occurrence slots (:mm.event/at-time, at-place,
+                      ;; at-interval, involved, involved-agent, observes, sub-event) are
+                      ;; declared in mm-temporal.edn, which loads AFTER this file; they
+                      ;; join this vector from there (see its tail).
    :dt/abstract?     false
    :db/doc "First-class lifecycle / dispatch event — typed-edge graph citizen that hooks fire and rules trigger from.  Per memory/types/event.md.  Introduced-in: 0.8.0."}
 

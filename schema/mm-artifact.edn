@@ -424,7 +424,10 @@
    :dt/native-codec      :markdown
    :dt/slots             [:mm.example/origin
                           :mm.example/audience
-                          :mm.example/length]
+                          :mm.example/length
+                          ;; D6 (2026-09-19): the example's first-class edge (types/example.md;
+                          ;; predicates/demonstrates.md); the inverse rides on :mm/Memory
+                          :mm.memory/demonstrates]
    :dt/abstract?         false
    :db/doc "Reusable, self-contained illustration of a concept — answers 'Here is a clear, memorable way to show what X is.'  Per memory/types/example.md.  REQUIRED :mm.memory/demonstrates (≥ 1 — first-class typed-edge already substrate; audit `example-names-concept` ERROR if missing).  Captureable: mid-conversation-captureable: true; inject-trigger: 'that was useful', 'good example'; inject-class: 'Reusable output'; audit-class: 'reusable-output'.  Tier: expanding-periphery.  Introduced-in: 0.5.17."}
 
@@ -632,6 +635,9 @@
                       :mm.activity/activity-type
                       :mm.activity/visibility-from
                       :mm.activity/visibility-to]
+                      ;; D6 (2026-09-19): :mm.activity/spec, event-kind and spans-interval
+                      ;; are declared in mm-temporal.edn, which loads AFTER this file;
+                      ;; they join this vector from there (see its tail).
    :db/doc "Abstract supertype for memorial types that RECORD an activity (something that happened) with W3C PROV-O alignment.  Concrete subtypes: :mm/Log (session-handoff chronicle), :mm/EventLog (per-event-firing memorial wrapping a :dt/Event runtime instance), :mm/Run (scheduler-job execution record).  Slot vocabulary mirrors PROV-O Activity-shape (:mm.activity/started-at = prov:startedAtTime, :mm.activity/agent = prov:wasAssociatedWith, etc.).  Per decisions/mm_activity_prov_o_lift_cross_arc_unification_log_eventlog_run_2026_05_23.md.  Not instantiated directly.  Composes with: scheduler arc (Allen's-13 relations over Activity intervals); event-substrate keystone D.4 (memorial-face for runtime :dt/Event firings is :mm/EventLog under this hierarchy); rules arc Layer 0 (RDFS-entailment Activity-aware queries)."}
 
   ;; Re-parent :mm/Log from :mm/Artifact to :mm/Activity (single-attribute mutation;
@@ -665,6 +671,9 @@
    :dt/slots         [:mm.run/attempt-number
                       :mm.run/output
                       :mm.run/parent-run]
+                      ;; D6 (2026-09-19): :mm.run/job, status, phenomenon-time, result and
+                      ;; error are declared in mm-temporal.edn, which loads AFTER this
+                      ;; file; they join this vector from there (see its tail).
    :dt/abstract?     false
    :dt/memorial-policy :db-only            ;; high-volume operational runs — covered by DB-dump arc, NOT FS-projected.  The :db/doc declared this default but the slot was never asserted (fixed 2026-05-29 per bugs/mm_run_eventlog_memorial_policy_declared_in_doc_prose_not_as_slot_2026_05_29); narrative runs may still opt :first-class via per-instance override.
    :db/doc "Scheduler-job execution record.  Materialized by sandbar.schedule.dispatcher when a :mm/Schedule fires + a :mm/Job handler runs (scheduler arc Stage F).  Default :dt/memorial-policy :db-only — high-volume operational runs covered by the DB-dump arc.  Narrative runs may opt to :first-class via per-instance override.  Per decisions/mm_activity_prov_o_lift_cross_arc_unification_log_eventlog_run_2026_05_23.md.  Additional :mm.run/* slots (:mm.run/job ref to :mm/Job, :mm.run/triggered-by ref to :mm/Schedule, :mm.run/workflow-process ref to :workflow/Process) land when scheduler arc Stage B authors :mm/Schedule + :mm/Job."}]

@@ -148,6 +148,15 @@
 ;; Authorization carries the slot set declared above.
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
+ ;; D6 (2026-09-19): confidence for patterns as a double (the corpus writes 0.93 to 0.97 on eleven pattern files).
+ [{:db/ident       :mm.pattern/confidence
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Pattern
+   :dt/range       :db.type/double
+   :db/valueType   :db.type/double
+   :db/cardinality :db.cardinality/one
+   :db/doc "Confidence that the pattern holds, 0.0 to 1.0.  Declared D6 (2026-09-19)."}]
+
  [{:db/ident             :mm/Pattern
    :dt/type              :dt/Class
    :dt/subclass-of       :mm/Guidance
@@ -155,6 +164,7 @@
    :dt/label             "Pattern"
    :dt/native-codec      :markdown
    :dt/abstract?         false
+   :dt/slots             [:mm.pattern/confidence]   ;; D6 (2026-09-19)
    :db/doc "Named, reusable architectural or process convention — a rule + rationale + canonical example.  Answers: 'When you face X, do Y because Z.'  Per memory/types/pattern.md.  Audit invariant: 'pattern cites at least one libraries/* canonical example' (warning).  Captureable: mid-conversation-captureable: true; inject-trigger: 'same shape as', 'this keeps happening'; inject-class: 'Cross-cutting pattern'; audit-class: 'cross-cutting-pattern'.  Tier: stable-core."}
 
   {:db/ident             :mm/AntiPattern

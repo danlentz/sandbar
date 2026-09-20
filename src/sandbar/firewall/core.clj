@@ -102,6 +102,13 @@
     :mm.memory/documents
     :mm.memory/triggered-by
     :mm.memory/touches
+    ;; demonstrates / demonstrated-by (D6, 2026-09-19): the example-of-
+    ;; concept pair, listed on :mm/Example and :mm/Memory when the codec
+    ;; strictness work declared the unlisted properties — an intellectual-
+    ;; dependence edge like evidences / evidenced-by, governed in the
+    ;; direction WRITTEN.
+    :mm.memory/demonstrates
+    :mm.memory/demonstrated-by
     ;; owning-project (ref → :mm/Project): governed; the only refusable
     ;; case is an EXPLICIT :public-visibility memory owned into an
     ;; effectively-:private project (§8-R8, composed 4-way per CA-4).
@@ -153,6 +160,14 @@
     :mm.memory/tags
     :mm.memory/themes
     :mm.memory/created-by
+    ;; bootstrap-source (ref → :mm/BootstrapSource, a :dt/Resource, NOT
+    ;; memory-shaped): provenance ATTRIBUTION like created-by — where a
+    ;; bootstrap memorial was rendered from, not a dependence on another
+    ;; memorial's content.  Its target carries no label, so governing this
+    ;; leg would resolve it fail-closed :private and refuse every public
+    ;; bootstrap memorial's provenance (the R9 code-repo situation).  Listed
+    ;; on :mm/Memory by D6 (2026-09-19).
+    :mm.memory/bootstrap-source
     ;; :mm/Context structural / vocabulary carriers
     :mm.context/tags
     :mm.context/first-section

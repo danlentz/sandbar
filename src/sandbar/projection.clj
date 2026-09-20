@@ -580,38 +580,158 @@
           :else
           (recur (cond-> out include? (conj e)) include? rst))))))
 
-(defn- ingest-single-file
-  "Parse ONE `.md` file directly (bypassing the directory walk + skip-set)
-   and return its entity-spec vector, filtered per `filter-spec`.
+(defn- unit-entities
+  "Apply `filter-spec` to ONE source unit's parsed entities.  A memory-rooted
+   unit keeps the memory and its trailing sections when the memory passes
+   (`filter-ingested-entities`); a unit rooted in any other class (a Tag
+   document) passes or drops WHOLE on its root.  The filter decision is by
+   source (REP-06, D6 2026-09-19) — never carried over from the previous
+   file, as the flat walk once did.  A nil/empty filter-spec keeps everything."
+  [entities filter-spec]
+  (cond
+    (or (nil? filter-spec) (empty? filter-spec))
+    entities
 
-   The rel-path handed to `md/parse-document` is the file's BASENAME — a
-   bare file carries no corpus anchor from which a subtree prefix could be
-   recovered, so basename is the honest path-derivation source.  For the
+    (dt/type-isa? :mm/Memory (:dt/type (first entities)))
+    (filter-ingested-entities entities filter-spec)
+
+    (entity-passes-filter? (first entities) filter-spec)
+    entities
+
+    :else
+    []))
+
+(defn- parse-unit
+  "Parse ONE `.md` file into a SOURCE UNIT — `{:source :status :entities
+   :class :ident :unknown-keys}`, plus `:error` when the parse threw.  The
+   unit carries what the flat entity vector cannot (REP-06, D6 2026-09-19):
+   which file each entity came from, which files failed to parse and why,
+   and which front-matter keys the lenient parse could only carry.  Status
+   `:parsed` (entities after the filter), `:parse-failed` (no entities;
+   `:error` names the cause), `:filtered` (parsed, every entity dropped by
+   the filter) or `:skipped` (not a `.md` file).  A parse failure is logged
+   AND reported — it never aborts the walk, and it never reads as success.
+
+   `source` is the rel-path handed to `md/parse-document` as the
+   path-derivation source: the walk-relative path, or the BASENAME for a
+   file the caller pointed at directly — a bare file carries no corpus
+   anchor from which a subtree prefix could be recovered, and for the
    corpus ROOT files (MEMORY.md / README.md) the basename IS the corpus
-   rel-path, so this is the sanctioned heal path for the two root stubs
-   that the walk's `+default-skip-basenames+` unconditionally excludes
-   (bugs/project_import_cannot_select_root_files_memory_md_readme_bare_-
-   ident_stubs_2026_07_02).  Non-.md input yields `[]`.
+   rel-path (bugs/project_import_cannot_select_root_files_memory_md_readme_-
+   bare_ident_stubs_2026_07_02).  An explicitly-named file is ALWAYS
+   parsed — the skip-set governs the walk, not a file the caller named."
+  [^java.io.File file source filter-spec]
+  (if-not (str/ends-with? (.getName file) ".md")
+    {:source source :status :skipped :entities []}
+    (let [[parsed error] (try
+                           [(vec (md/parse-document (slurp file) source)) nil]
+                           (catch Throwable ex
+                             ;; Per-file parse failures don't abort the whole
+                             ;; walk — e.g., a section-ident slug collision in
+                             ;; ONE file shouldn't poison the entire corpus
+                             ;; ingest.  Log, and REPORT through the unit.
+                             (log/warn :SANDBAR/INGEST-PARSE-SKIP
+                                       {:rel-path source
+                                        :file     (.getPath file)
+                                        :error    (.getMessage ex)})
+                             [nil (or (.getMessage ex) (str (class ex)))]))]
+      (if error
+        {:source source :status :parse-failed :entities [] :error error}
+        (let [root (first parsed)
+              kept (unit-entities parsed filter-spec)]
+          {:source       source
+           :status       (if (and (seq parsed) (empty? kept)) :filtered :parsed)
+           :entities     (vec kept)
+           :class        (:dt/type root)
+           :ident        (:db/ident root)
+           :unknown-keys (md/unknown-frontmatter-keys root)})))))
 
-   An explicitly-named file is ALWAYS ingested — the skip-set governs
-   enumeration during a directory walk, not a file the caller pointed at."
-  [^java.io.File file filter-spec]
-  (let [basename (.getName file)]
-    (if-not (str/ends-with? basename ".md")
-      []
-      (let [parsed (try
-                     (md/parse-document (slurp file) basename)
-                     (catch Throwable ex
-                       (log/warn :SANDBAR/INGEST-PARSE-SKIP
-                                 {:file (.getPath file)
-                                  :error (.getMessage ex)})
-                       nil))]
-        (filter-ingested-entities (vec parsed) filter-spec)))))
+(defn ingest-units
+  "Walk `from-dir` (a directory, or ONE `.md` file) and return a vector of
+   SOURCE UNITS, one per file in walk order — `parse-unit` gives the unit
+   shape.  The unit is the import's transaction unit: `project.import`
+   transacts each `:parsed` unit on its own, names each `:parse-failed`
+   unit with its error, and counts the `:filtered` / `:skipped` units, so
+   the report's totals reconcile with the files walked (REP-06 of Astra's
+   representation review, folded into D6 2026-09-19).  `ingest-graph` is
+   this walk flattened.
+
+   `opts` as for `ingest-graph` — `:filter` (applied per unit AFTER the
+   parse), `:skip-basenames`, `:skip-rel-prefixes`.  A `:tree-filter` that
+   cannot match a file's STORED-form rel-path skips the parse (`:skipped`)
+   — tested via `md/walk-rel->stored-rel-path` so this parse-skip fork and
+   `entity-passes-filter?` (the stored-slot fork) compare the SAME target
+   (bugs/project_import_tree_filter_double_fork_walk_rel_vs_stored_rel_-
+   path_2026_07_02).  A single file is parsed under its basename, bypassing
+   the walk and its skip-set (the MEMORY.md / README.md heal path).
+   Throws ex-info when `from-dir` is neither a directory nor a file."
+  ([from-dir] (ingest-units from-dir {}))
+  ([from-dir {filter-spec       :filter
+              skip-basenames    :skip-basenames
+              skip-rel-prefixes :skip-rel-prefixes
+              :or               {skip-basenames +default-skip-basenames+}}]
+   (let [root (io/file from-dir)]
+     (cond
+       (.isFile root)
+       [(parse-unit root (.getName root) filter-spec)]
+
+       (not (.isDirectory root))
+       (throw (ex-info "ingest-graph requires a directory or file input"
+                       {:from-dir (str from-dir)}))
+
+       :else
+       (let [t-files-start (System/currentTimeMillis)
+             files         (vec (walk-markdown-files root skip-basenames skip-rel-prefixes))
+             t-files-end   (System/currentTimeMillis)
+             _ (log/info :INGEST/FILES-WALKED
+                         {:from-dir   (str from-dir)
+                          :file-count (count files)
+                          :ms         (- t-files-end t-files-start)})
+             tree-filter   (:tree-filter filter-spec)
+             processed     (atom 0)
+             units         (mapv (fn [rel-path]
+                                   (let [n (swap! processed inc)]
+                                     (when (zero? (mod n 100))
+                                       (log/info :INGEST/PARSE-PROGRESS
+                                                 {:processed n :total (count files)
+                                                  :ms (- (System/currentTimeMillis) t-files-end)})))
+                                   (if (and (some? tree-filter)
+                                            (not (str/starts-with?
+                                                   (md/walk-rel->stored-rel-path rel-path)
+                                                   tree-filter)))
+                                     {:source rel-path :status :skipped :entities []}
+                                     (parse-unit (io/file root rel-path) rel-path filter-spec)))
+                                 files)
+             by-status     (frequencies (map :status units))]
+         (log/info :INGEST/PARSE-COMPLETE
+                   {:files-walked      (count files)
+                    :entities-produced (transduce (map (comp count :entities)) + 0 units)
+                    :parse-failed      (get by-status :parse-failed 0)
+                    :filtered          (get by-status :filtered 0)
+                    :skipped           (get by-status :skipped 0)
+                    :filter-active?    (boolean (and filter-spec (seq filter-spec)))
+                    :ms                (- (System/currentTimeMillis) t-files-end)})
+         ;; F12 LOUD-empty: a non-nil :tree-filter that selects NOTHING is the
+         ;; double-fork's silent-zero symptom.  Warn rather than return an
+         ;; entity-less walk mutely so a mis-anchored or mis-prefixed filter
+         ;; is visible to the caller instead of masquerading as "nothing to
+         ;; import" (bugs/project_import_tree_filter_double_fork_walk_rel_vs_-
+         ;; stored_rel_path_2026_07_02 §Notes, F12 fail-silent lens).
+         (when (and (some? tree-filter)
+                    (pos? (count files))
+                    (every? #(empty? (:entities %)) units))
+           (log/warn :INGEST/TREE-FILTER-SELECTED-NONE
+                     {:tree-filter  tree-filter
+                      :files-walked (count files)
+                      :from-dir     (str from-dir)
+                      :hint "tree-filter matches the UNPREFIXED stored rel-path (e.g. \"decisions/\" not \"memory/decisions/\")"}))
+         units)))))
 
 (defn ingest-graph
-  "Walk a filesystem hierarchy + return a coll of entity-spec maps.
-   For each `.md` file, parses via sandbar.codec.markdown/parse-document
-   using the file's rel-path as the path-derivation source.
+  "Walk a filesystem hierarchy + return a flat coll of entity-spec maps —
+   the `:entities` of `ingest-units` concatenated in walk order.  For each
+   `.md` file, parses via sandbar.codec.markdown/parse-document using the
+   file's rel-path as the path-derivation source.
 
    Inputs:
      from-dir — input directory OR a single `.md` file (java.io.File or
@@ -622,9 +742,9 @@
                 corpus root files the walk cannot enumerate.
      opts     — map; supported keys:
        :filter — filter spec per `entity-passes-filter?`; applied
-                 AFTER per-file parse.  Memories that fail :class /
-                 :pred / :tree-filter drop; sections under dropped
-                 memories drop too (consistency invariant).
+                 per source unit AFTER the parse.  Memories that fail
+                 :class / :pred / :tree-filter drop; sections under
+                 dropped memories drop too (consistency invariant).
        :skip-basenames — basename skip-set for the walk (default
                  `+default-skip-basenames+`).
        :skip-rel-prefixes — coll of walk-relative path prefixes to
@@ -638,99 +758,13 @@
 
    Returns: flat vector of entity-spec maps; for each .md file, the
    memory entity + its section entities in chain order are appended.
-   Throws ex-info when `from-dir` is neither a directory nor a file."
+   A file that failed to parse contributes NOTHING here — the flat shape
+   cannot carry the failure; `ingest-units` names it (REP-06, D6
+   2026-09-19).  Throws ex-info when `from-dir` is neither a directory nor
+   a file."
   ([from-dir] (ingest-graph from-dir {}))
-  ([from-dir {filter-spec       :filter
-              skip-basenames    :skip-basenames
-              skip-rel-prefixes :skip-rel-prefixes
-              :or               {skip-basenames +default-skip-basenames+}}]
-   (let [root (io/file from-dir)]
-     (cond
-       ;; Single-file :from short-circuits before the walk — the explicit
-       ;; MEMORY.md/README.md heal path (blocker #2, root-file bug): the
-       ;; walk's +default-skip-basenames+ can never enumerate the two root
-       ;; files, so a file the caller points at is parsed directly.
-       (.isFile root)
-       (ingest-single-file root filter-spec)
-
-       (not (.isDirectory root))
-       (throw (ex-info "ingest-graph requires a directory or file input"
-                       {:from-dir (str from-dir)}))
-
-       :else
-       (let [t-files-start (System/currentTimeMillis)
-             files (vec (walk-markdown-files root skip-basenames skip-rel-prefixes))
-             t-files-end (System/currentTimeMillis)
-             _ (log/info :INGEST/FILES-WALKED
-                         {:from-dir (str from-dir)
-                          :file-count (count files)
-                          :ms (- t-files-end t-files-start)})
-             tree-filter (:tree-filter filter-spec)
-             processed-counter (atom 0)
-             all-entities
-             (vec
-               (mapcat (fn [rel-path]
-                         (let [n (swap! processed-counter inc)]
-                           (when (zero? (mod n 100))
-                             (log/info :INGEST/PARSE-PROGRESS
-                                       {:processed n :total (count files)
-                                        :ms (- (System/currentTimeMillis) t-files-end)})))
-                         ;; Tree-filter optimization — skip parse if the file
-                         ;; can't pass the :tree-filter prefix anyway.  Test the
-                         ;; STORED-form rel-path (via md/walk-rel->stored-rel-path)
-                         ;; so this parse-skip fork and entity-passes-filter? (the
-                         ;; stored-slot fork) compare the SAME target; matching the
-                         ;; raw walk-rel here made the two forks disagree under a
-                         ;; corpus-root anchor — silent imported=0 (bugs/project_-
-                         ;; import_tree_filter_double_fork_walk_rel_vs_stored_rel_-
-                         ;; path_2026_07_02).
-                         (when (or (nil? tree-filter)
-                                   (str/starts-with?
-                                     (md/walk-rel->stored-rel-path rel-path)
-                                     tree-filter))
-                           (try
-                             (let [source (slurp (io/file root rel-path))]
-                               (md/parse-document source rel-path))
-                             (catch Throwable ex
-                               ;; Per-file parse failures don't abort the whole
-                               ;; walk — e.g., a section-ident slug collision
-                               ;; in ONE file shouldn't poison the entire corpus
-                               ;; ingest.  Log + skip.  Consumers downstream
-                               ;; (project-import-handler) report per-group
-                               ;; failures explicitly.
-                               (log/warn :SANDBAR/INGEST-PARSE-SKIP
-                                         {:rel-path rel-path
-                                          :error    (.getMessage ex)})
-                               nil))))
-                       files))
-             t-parse-end (System/currentTimeMillis)
-             _ (log/info :INGEST/PARSE-COMPLETE
-                         {:files-walked (count files)
-                          :entities-produced (count all-entities)
-                          :ms (- t-parse-end t-files-end)})
-             filter-active? (and filter-spec (seq filter-spec))
-             _ (log/info :INGEST/FILTER-DECISION
-                         {:filter-active? filter-active?
-                          :filter-spec filter-spec})
-             t-filter-start (System/currentTimeMillis)
-             _ (log/info :INGEST/FILTER-START {:entities (count all-entities)})
-             result (filter-ingested-entities all-entities filter-spec)
-             _ (log/info :INGEST/FILTER-DONE
-                         {:entities (count result)
-                          :ms (- (System/currentTimeMillis) t-filter-start)})]
-         ;; F12 LOUD-empty: a non-nil :tree-filter that selects NOTHING is the
-         ;; double-fork's silent-zero symptom.  Warn rather than return [] mutely
-         ;; so a mis-anchored or mis-prefixed filter is visible to the caller
-         ;; instead of masquerading as "nothing to import" (bugs/project_import_-
-         ;; tree_filter_double_fork_walk_rel_vs_stored_rel_path_2026_07_02 §Notes,
-         ;; F12 fail-silent lens).
-         (when (and (some? tree-filter) (empty? result) (pos? (count files)))
-           (log/warn :INGEST/TREE-FILTER-SELECTED-NONE
-                     {:tree-filter tree-filter
-                      :files-walked (count files)
-                      :from-dir (str from-dir)
-                      :hint "tree-filter matches the UNPREFIXED stored rel-path (e.g. \"decisions/\" not \"memory/decisions/\")"}))
-         result)))))
+  ([from-dir opts]
+   (into [] (mapcat :entities) (ingest-units from-dir opts))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Round-trip-test convenience

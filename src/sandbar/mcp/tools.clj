@@ -490,7 +490,12 @@
         ;; plans/sandbar_codec_layer_arc_2026-05-12.md — optional
         ;; :format + :source opts for codec-driven entity construction.
         format-arg  (or (get args "format") (get args :format))
-        source-arg  (or (get args "source") (get args :source))]
+        source-arg  (or (get args "source") (get args :source))
+        ;; D6 (2026-09-19): the interactive create is STRICT by default — an
+        ;; unknown front-matter key, a dropped value or a wrong-typed value is
+        ;; refused with a verdict before anything is built.  allow-unknown-keys
+        ;; opts out into the lenient carrier behaviour of the bulk import.
+        allow-unknown? (boolean (or (get args "allow-unknown-keys") (get args :allow-unknown-keys)))]
     (when (nil? class-arg)
       (throw (ex-info "Missing required argument: class" {:args args})))
     (let [class-ident (eref/resolve-ident class-arg)]
@@ -500,10 +505,22 @@
       (let [props-raw    (coerce-slot-map class-ident slots)
             ;; When format + source provided, dt/make's :format opt
             ;; parses via codec mediator; explicit slots override.
+            ;; SHACL strict mode (RT-01, D6 2026-09-19): the mode is read BEFORE
+            ;; the write so `:strict` validates on the SPECULATIVE database and
+            ;; refuses with nothing committed, enqueued or notified; the results
+            ;; are kept for the response.  `:audit` (the default) still commits
+            ;; and reports afterwards; `:disabled` skips the shapes.
+            mode-arg        (or (get args "validation-mode") (get args :validation-mode))
+            validation-mode (or (some-> mode-arg keyword) :audit)
+            strict-results  (atom nil)
             make-opts    (cond-> {}
                            (and format-arg source-arg)
                            (assoc :format (keyword format-arg)
-                                  :source source-arg))
+                                  :source source-arg
+                                  :strict? (not allow-unknown?))
+                           (= :strict validation-mode)
+                           (assoc :pre-commit (fn [db eid]
+                                                (reset! strict-results (shape/validate db eid :strict)))))
             ;; Unified create path (2026-05-29 lifecycle-hardening arc):
             ;; sandbar.store/create-memory! derives an EDN-safe :db/ident from
             ;; :mm.memory/rel-path (when absent; :mm/Memory only — the Gap-17
@@ -546,24 +563,21 @@
           (catch Exception e
             (log/warn e :MCP/entity-create-cache-failed
                       {:class class-ident :entity-id (:db/id new-entity)})))
-        ;; SHACL arc Stage E (2026-05-23) — post-commit shape validation.
-        ;; Default :audit (logs + returns report; does NOT throw); opt
-        ;; :strict via {"validation-mode": "strict"} args to reject (throws
-        ;; ex-info; entity remains committed in v1, caller can react).
-        ;; :disabled skips entirely.  Per plans/shacl_deeply_incorporated_-
-        ;; capstone_activation_arc_2026_05_23.md §4.5.  Pre-commit
-        ;; rejection via entity-pred + d/with is deferred to v2.
-        (let [mode-arg       (or (get args "validation-mode") (get args :validation-mode))
-              validation-mode (or (some-> mode-arg keyword) :audit)
-              shape-results   (try
-                                (shape/validate (db/db) (:db/id new-entity) validation-mode)
-                                (catch clojure.lang.ExceptionInfo e
-                                  ;; :strict mode threw — propagate up to MCP envelope
-                                  (throw e))
-                                (catch Throwable t
-                                  (log/warn t :MCP/entity-create-shape-validation-error
-                                            {:class class-ident :entity-id (:db/id new-entity)})
-                                  []))]
+        ;; SHACL arc Stage E (2026-05-23) — shape validation.  `:strict`
+        ;; already ran on the speculative database BEFORE the commit (the
+        ;; :pre-commit above; a violation threw there and nothing was
+        ;; committed — RT-01, D6 2026-09-19); its results are echoed here.
+        ;; `:audit` (the default) runs post-commit: logs + returns the report,
+        ;; never throws.  `:disabled` skips entirely.  Per plans/shacl_deeply_-
+        ;; incorporated_capstone_activation_arc_2026_05_23.md §4.5.
+        (let [shape-results   (if (= :strict validation-mode)
+                                (or @strict-results [])
+                                (try
+                                  (shape/validate (db/db) (:db/id new-entity) validation-mode)
+                                  (catch Throwable t
+                                    (log/warn t :MCP/entity-create-shape-validation-error
+                                              {:class class-ident :entity-id (:db/id new-entity)})
+                                    [])))]
           (when (seq shape-results)
             (log/info :MCP/entity-create-shape-validated
                       {:class class-ident
@@ -785,7 +799,30 @@
 ;; decisions/sandbar_codec_layer_owns_wire_format_concerns_consumer_native_representation_2026_05_12.md.
 ;; Callers below delegate to the codec helpers.
 
-(defn- project-import-handler [args]
+(defn- import-unit-summary
+  "The wire shape of one source unit in the import report — the file, its
+   status, its root's class and ident, the front-matter keys the lenient
+   parse could only carry, and the parse error when there was one (D6,
+   2026-09-19)."
+  [unit]
+  (cond-> {:source (:source unit) :status (:status unit)}
+    (:class unit)              (assoc :dt/type (:class unit) :ident (:ident unit))
+    (seq (:unknown-keys unit)) (assoc :unknown-keys (:unknown-keys unit))
+    (:error unit)              (assoc :error (:error unit))))
+
+(defn- project-import-handler
+  "Import a filesystem tree as SOURCE UNITS — one per file, one transaction
+   per parsed file — and report every file's fate so the totals reconcile
+   (REP-06 of Astra's representation review, folded into D6 2026-09-19):
+   `:attempted` files walked = `:persisted-count` + `:failed-count` +
+   `:refused-count` + `:parse-failed-count` + `:skipped-count`.  A file
+   whose parse threw is named in `:parse-failed` with its error (before D6
+   the walk logged and dropped it, so one broken file read as success); a
+   file whose front matter carried keys its class does not declare is named
+   in `:unknown-keys` — the lenient carrier keeps them (the bulk path
+   REPORTS where the interactive `entity.create` REFUSES).  A dry run (no
+   `persist`) returns the same accounting without transacting."
+  [args]
   (let [t-start     (System/currentTimeMillis)
         from        (or (get args "from") (get args :from))
         filter-spec (->filter-spec (or (get args "filter") (get args :filter)))
@@ -799,59 +836,69 @@
     (log/info :IMPORT/START {:from from :filter filter-spec :persist? persist?})
     (let [t-walk-start (System/currentTimeMillis)
           _ (log/info :IMPORT/WALK-START {:from from})
-          entities (pg/ingest-graph from (cond-> {}
-                                            filter-spec (assoc :filter filter-spec)))
-          t-walk-end (System/currentTimeMillis)
-          _ (log/info :IMPORT/WALK-DONE {:entities (count entities)
-                                          :ms (- t-walk-end t-walk-start)})]
+          units        (pg/ingest-units from (cond-> {}
+                                                filter-spec (assoc :filter filter-spec)))
+          entities     (into [] (mapcat :entities) units)
+          parsed       (filterv #(= :parsed (:status %)) units)
+          parse-failed (into [] (comp (filter #(= :parse-failed (:status %)))
+                                      (map import-unit-summary))
+                             units)
+          unknown      (into [] (comp (filter #(seq (:unknown-keys %)))
+                                      (map import-unit-summary))
+                             units)
+          skipped      (count (filter #(contains? #{:filtered :skipped} (:status %)) units))
+          accounting   {:attempted          (count units)
+                        :imported           (count entities)
+                        :parse-failed-count (count parse-failed)
+                        :parse-failed       parse-failed
+                        :unknown-keys-count (count unknown)
+                        :unknown-keys       unknown
+                        :skipped-count      skipped}
+          t-walk-end   (System/currentTimeMillis)
+          _ (log/info :IMPORT/WALK-DONE (assoc (dissoc accounting :parse-failed :unknown-keys)
+                                               :units (count parsed)
+                                               :ms (- t-walk-end t-walk-start)))]
       (if-not persist?
-        ;; Dry-run: return summaries only
+        ;; Dry-run: the same accounting, entity summaries, nothing transacted.
         (do (log/info :IMPORT/DRY-RUN-COMPLETE {:entities (count entities)
+                                                 :parse-failed (count parse-failed)
                                                  :ms (- (System/currentTimeMillis) t-start)})
-            {:from     from
-             :filter   filter-spec
-             :persist? false
-             :imported (count entities)
-             :entities (mapv (fn [e]
-                               {:dt/type (:dt/type e)
-                                :ident   (:db/ident e)})
-                             entities)})
-        ;; Persist: group by source file; one atomic transact per group.
-        ;; Cross-entity refs (Memory ↔ Section) resolve via :db/ident
-        ;; upsert within the single tx.  Per-group failures isolated;
-        ;; one bad file does NOT abort the whole import.
-        (let [t-group-start (System/currentTimeMillis)
-              _ (log/info :IMPORT/GROUP-START {:entities (count entities)})
-              groups  (codec-md/group-by-source entities)
-              total   (count groups)
-              _ (log/info :IMPORT/GROUP-DONE {:groups total
-                                               :ms (- (System/currentTimeMillis) t-group-start)})
+            (merge {:from     from
+                    :filter   filter-spec
+                    :persist? false
+                    :entities (mapv (fn [e]
+                                      {:dt/type (:dt/type e)
+                                       :ident   (:db/ident e)})
+                                    entities)}
+                   accounting))
+        ;; Persist: ONE atomic transact per parsed source unit (per file).
+        ;; Cross-entity refs (Memory ↔ Section) resolve via :db/ident upsert
+        ;; within the single tx.  Per-unit failures isolated; one bad file
+        ;; does NOT abort the whole import, and never rolls back a neighbour.
+        (let [total   (count parsed)
               t-transact-start (System/currentTimeMillis)
-              _ (log/info :IMPORT/TRANSACT-START {:groups total})
+              _ (log/info :IMPORT/TRANSACT-START {:units total})
               results (reduce
-                       (fn [acc [idx group]]
+                       (fn [acc [idx unit]]
                          (when (zero? (mod idx 100))
                            (log/info :IMPORT/TRANSACT-PROGRESS
                                      {:idx idx :total total
                                       :persisted (count (:persisted acc))
                                       :failed (count (:failed acc))
                                       :ms (- (System/currentTimeMillis) t-transact-start)}))
-                         (let [memory     (first group)
-                               ident      (:db/ident memory)
-                               class-ident (:dt/type memory)
+                         (let [group   (:entities unit)
+                               rec     {:dt/type     (:class unit)
+                                        :ident       (:ident unit)
+                                        :source      (:source unit)
+                                        :tx-entities (count group)}
                                ;; Bug fix 2026-05-21: do NOT dissoc :dt/type
                                ;; before transact.  Without :dt/type the entity
                                ;; has no class, and class.instances / aggregate.count
-                               ;; can't find it.  The earlier dissoc was scope
-                               ;; creep at boundary code that prevented the ingest
-                               ;; from yielding queryable entities.
-                               tx-data    (codec-md/entity-specs->tx-data group)]
+                               ;; can't find it.
+                               tx-data (codec-md/entity-specs->tx-data group)]
                            (try
                              (dt/make-all* tx-data)
-                             (update acc :persisted conj
-                                     {:dt/type     class-ident
-                                      :ident       ident
-                                      :tx-entities (count group)})
+                             (update acc :persisted conj rec)
                              (catch Throwable ex
                                ;; T-4: a FIREWALL refusal is shaped as :refused
                                ;; (a governed edge the import floor forbade),
@@ -861,36 +908,44 @@
                                (let [firewall? (and (instance? clojure.lang.ExceptionInfo ex)
                                                     (some #(= :firewall-violation (:type %))
                                                           (:errors (ex-data ex))))
-                                     bucket    (if firewall? :refused :failed)
-                                     rec       {:dt/type     class-ident
-                                                :ident       ident
-                                                :tx-entities (count group)
-                                                :error       (.getMessage ex)}]
+                                     bucket    (if firewall? :refused :failed)]
                                  (log/warn ex (if firewall? :IMPORT/GROUP-REFUSED
                                                   :IMPORT/GROUP-FAILED)
-                                           {:idx idx :ident ident :class class-ident})
-                                 (update acc bucket conj rec))))))
+                                           {:idx idx :source (:source unit)
+                                            :ident (:ident unit) :class (:class unit)})
+                                 (update acc bucket conj (assoc rec :error (.getMessage ex))))))))
                        {:persisted [] :failed [] :refused []}
-                       (map-indexed vector groups))
-              t-end (System/currentTimeMillis)]
-          (log/info :IMPORT/COMPLETE {:imported (count entities)
-                                       :groups total
-                                       :persisted-count (count (:persisted results))
-                                       :failed-count (count (:failed results))
-                                       :total-ms (- t-end t-start)
-                                       :transact-ms (- t-end t-transact-start)})
-          {:from           from
-           :filter         filter-spec
-           :persist?       true
-           :imported       (count entities)
-           :groups         total
-           :persisted-count (count (:persisted results))
-           :failed-count   (count (:failed results))
-           :failed         (:failed results)
-           ;; T-4: firewall-refused groups surface separately from generic
-           ;; failures (a governed edge the import floor forbade).
-           :refused-count  (count (:refused results))
-           :refused        (:refused results)})))))
+                       (map-indexed vector parsed))
+              t-end   (System/currentTimeMillis)
+              totals  {:attempted    (count units)
+                       :persisted    (count (:persisted results))
+                       :failed       (count (:failed results))
+                       :refused      (count (:refused results))
+                       :parse-failed (count parse-failed)
+                       :skipped      skipped}
+              reconciled? (= (:attempted totals)
+                             (+ (:persisted totals) (:failed totals) (:refused totals)
+                                (:parse-failed totals) (:skipped totals)))]
+          (log/info :IMPORT/COMPLETE (assoc totals
+                                            :imported    (count entities)
+                                            :reconciled? reconciled?
+                                            :total-ms    (- t-end t-start)
+                                            :transact-ms (- t-end t-transact-start)))
+          (merge {:from            from
+                  :filter          filter-spec
+                  :persist?        true
+                  ;; one transaction unit per parsed file
+                  :groups          total
+                  :persisted-count (count (:persisted results))
+                  :failed-count    (count (:failed results))
+                  :failed          (:failed results)
+                  ;; T-4: firewall-refused units surface separately from generic
+                  ;; failures (a governed edge the import floor forbade).
+                  :refused-count   (count (:refused results))
+                  :refused         (:refused results)
+                  :totals          totals
+                  :reconciled?     reconciled?}
+                 accounting))))))
 
 ;; ---------- Aggregation operations (Stage 14 — fulltext arc Phase G) ----------
 ;;
@@ -1482,7 +1537,19 @@
           ;; wire name is bare and maps to the in-process :additive? opt).
           ;; Per decisions/entity_update_card_many_replace_by_default_opt_in_additive_2026_06_30.
           additive?       (boolean (or (get args "additive") (get args :additive)))
-          updated         (dt/update-entity! entity-current slot-map {:additive? additive?})
+          ;; SHACL strict mode (RT-01, D6 2026-09-19): the mode is read BEFORE the
+          ;; write so `:strict` validates on the SPECULATIVE database and refuses
+          ;; with nothing committed or enqueued; the results are kept for the
+          ;; response.  `:audit` (the default) commits and reports afterwards.
+          mode-arg        (or (get args "validation-mode") (get args :validation-mode))
+          validation-mode (or (some-> mode-arg keyword) :audit)
+          strict-results  (atom nil)
+          updated         (dt/update-entity! entity-current slot-map
+                                             (cond-> {:additive? additive?}
+                                               (= :strict validation-mode)
+                                               (assoc :pre-commit
+                                                      (fn [db eid]
+                                                        (reset! strict-results (shape/validate db eid :strict))))))
           projection-mode (or (projection/->projection-mode projection-raw)
                               :metadata-only)]
       ;; Stage 5 D5 — invalidate/refresh the BM25F search cache.
@@ -1495,23 +1562,22 @@
         (catch Exception e
           (log/warn e :MCP/entity-update-cache-failed
                     {:class class-ident :entity-id (:db/id updated)})))
-      ;; SHACL arc Stage E (2026-05-23) — post-commit shape validation
-      ;; mirror of the entity-create-handler hook.  Per Dan-directive
-      ;; 2026-05-23: 'wire up entity-update too while we're here to
-      ;; surface friction early' — captures update-path violations
-      ;; same as create-path.  Mode read from :validation-mode arg;
-      ;; defaults to :audit; :strict throws ex-info post-commit; :disabled skips.
-      (let [mode-arg        (or (get args "validation-mode") (get args :validation-mode))
-            validation-mode (or (some-> mode-arg keyword) :audit)
-            shape-results   (try
-                              (shape/validate (db/db) (:db/id updated) validation-mode)
-                              (catch clojure.lang.ExceptionInfo e
-                                ;; :strict mode threw — propagate up to MCP envelope
-                                (throw e))
-                              (catch Throwable t
-                                (log/warn t :MCP/entity-update-shape-validation-error
-                                          {:class class-ident :entity-id (:db/id updated)})
-                                []))]
+      ;; SHACL arc Stage E (2026-05-23) — shape validation, the mirror of the
+      ;; entity-create-handler hook (Dan-directive 2026-05-23: 'wire up
+      ;; entity-update too while we're here to surface friction early').
+      ;; `:strict` already ran on the speculative database BEFORE the commit
+      ;; (the :pre-commit above; a violation threw there and nothing was
+      ;; committed — RT-01, D6 2026-09-19); its results are echoed here.
+      ;; `:audit` (the default) runs post-commit and never throws; `:disabled`
+      ;; skips entirely.
+      (let [shape-results   (if (= :strict validation-mode)
+                              (or @strict-results [])
+                              (try
+                                (shape/validate (db/db) (:db/id updated) validation-mode)
+                                (catch Throwable t
+                                  (log/warn t :MCP/entity-update-shape-validation-error
+                                            {:class class-ident :entity-id (:db/id updated)})
+                                  [])))]
         (when (seq shape-results)
           (log/info :MCP/entity-update-shape-validated
                     {:class class-ident
@@ -2763,12 +2829,14 @@
    ;; Entity operations
    {:name "sandbar.entity.create"
     :title "Create a new validated entity of a class (with optional codec parsing)"
-    :description "WHICH: creates a new entity of `:class` from a slot map (or from a raw wire-format source via the codec mediator), validates it against the class's declared constraints, and transacts it into the substrate.  The primary mutation verb.\n\nWHEN: use to bring a new entity into the substrate — whether constructing from explicit slot values (programmatic) or from a raw representation (e.g., markdown source for `:mm/Memory`, JSON for any class).  When NOT to use: (a) updating an EXISTING entity — `sandbar.entity.update`; (b) you want to validate without committing — `sandbar.entity.validate` (pre-transaction); (c) entity already exists and you want to read it back — `sandbar.entity.find`.\n\nHOW: `:class` is the target class ident (REQUIRED; abstract classes rejected).  `:slots` is a slot-ident-string → value map (optional if `:source` is provided).  `:format` + `:source` (both optional, must come together) invoke the codec mediator: `:source` is parsed as the named wire format (e.g., `:markdown`), parsed slots merge with explicit `:slots` (explicit wins on conflict).  Validates required slots, type-conformance, custom validators before transacting; raises ex-info on validation failure.\n\nORDER: prerequisites — discover `:class` via `sandbar.schema.classes`; understand required slots via `sandbar.class.required-slots`; understand slot value types via `sandbar.property.range`.  Optional pre-check: `sandbar.entity.validate` (validates a slot map WITHOUT committing).\n\nCOMBINATION: paired with `sandbar.entity.validate` (pre-check), `sandbar.entity.find` (read back), `sandbar.entity.update` (subsequent mutations).  For codec-driven creation, ensure the codec is registered via `sandbar.codec.list`.  Per codec arc Stage F.3a of plans/sandbar_codec_layer_arc_2026-05-12.md."
+    :description "WHICH: creates a new entity of `:class` from a slot map (or from a raw wire-format source via the codec mediator), validates it against the class's declared constraints, and transacts it into the substrate.  The primary mutation verb.\n\nWHEN: use to bring a new entity into the substrate — whether constructing from explicit slot values (programmatic) or from a raw representation (e.g., markdown source for `:mm/Memory`, JSON for any class).  When NOT to use: (a) updating an EXISTING entity — `sandbar.entity.update`; (b) you want to validate without committing — `sandbar.entity.validate` (pre-transaction); (c) entity already exists and you want to read it back — `sandbar.entity.find`.\n\nHOW: `:class` is the target class ident (REQUIRED; abstract classes rejected).  `:slots` is a slot-ident-string → value map (optional if `:source` is provided).  `:format` + `:source` (both optional, must come together) invoke the codec mediator: `:source` is parsed as the named wire format (e.g., `:markdown`), parsed slots merge with explicit `:slots` (explicit wins on conflict).  Validates required slots, type-conformance, custom validators before transacting; raises ex-info on validation failure.  SHAPES (`:validation-mode`, D6 2026-09-19): `audit` (default) commits and returns the shape report; `strict` validates against the class's shapes on a SPECULATIVE database BEFORE the transaction and refuses a violation with nothing committed, enqueued or notified — a change accepted between the check and the commit is caught by a transactor-side basis guard and the check re-runs; `disabled` skips the shapes.  Bulk `sandbar.project.import` runs no shape validation (the firewall floor only) — validate afterwards with `sandbar.class.validate-all-instances`.  STRICT FRONT MATTER (D6, 2026-09-19): with `:format` markdown, an unknown front-matter key, an empty or mis-shaped value, or a value of the wrong primitive type is REFUSED before anything is built, with a verdict naming each refused key and its reason, the class's accepted keys, and the opt-out; nothing is committed, enqueued or notified.  `:allow-unknown-keys` true opts out: unknown keys ride in the front-matter carrier instead (the bulk-import behaviour).\n\nORDER: prerequisites — discover `:class` via `sandbar.schema.classes`; understand required slots via `sandbar.class.required-slots`; understand slot value types via `sandbar.property.range`.  Optional pre-check: `sandbar.entity.validate` (validates a slot map WITHOUT committing).\n\nCOMBINATION: paired with `sandbar.entity.validate` (pre-check), `sandbar.entity.find` (read back), `sandbar.entity.update` (subsequent mutations).  For codec-driven creation, ensure the codec is registered via `sandbar.codec.list`.  Per codec arc Stage F.3a of plans/sandbar_codec_layer_arc_2026-05-12.md."
     :inputSchema (one-required
                    {:class  {:type "string" :description "Class ident (concrete, not abstract)"}
                     :slots  {:type "object" :description "Slot map (slot-ident-string → value); optional when :source is provided"}
                     :format {:type "string" :description "Optional codec format keyword (e.g., :markdown / :json); requires :source"}
-                    :source {:type "string" :description "Optional raw native-representation string parsed via :format codec"}}
+                    :source {:type "string" :description "Optional raw native-representation string parsed via :format codec"}
+                    :allow-unknown-keys {:type "boolean" :description "Opt out of strict front matter: carry unknown keys in the front-matter carrier instead of refusing them (D6, 2026-09-19).  Default false."}
+                    :validation-mode {:type "string" :description "Shape validation: 'audit' (default) commits and returns the shape report; 'strict' validates against the class's shapes on a SPECULATIVE database BEFORE the transaction and refuses a violation with nothing committed, enqueued or notified (D6, 2026-09-19); 'disabled' skips the shapes."}}
                    [:class])
     :handler entity-create-handler}
    {:name "sandbar.entity.find"
@@ -2790,12 +2858,13 @@
     :handler entity-find-by-rel-path-handler}
    {:name "sandbar.entity.update"
     :title "Update slots on an existing entity"
-    :description "WHICH: applies slot-value updates to an existing entity.  Validates the updated slot map against the entity's class constraints before transacting.  Accepts identful AND identless entities (per Gap #6 fix 2026-05-23 — identless entities resolved by eid are now updatable; previously rejected with `:entity-ref/no-ident`).\n\nWHEN: use to MUTATE an existing entity — change a slot value, set a previously-empty slot, etc.  When NOT to use: (a) creating a new entity — `sandbar.entity.create`; (b) you want to validate proposed updates WITHOUT committing — `sandbar.entity.validate` (against the class with the merged slot map); (c) you want to fully retract a cardinality-ONE slot — Datomic full-retraction is not exposed via MCP (note: cardinality-MANY members ARE removable now by passing a smaller set under the default replace semantics, or pass `additive: true` to only append).\n\nHOW: `:entity` is the target entity ident or eid (REQUIRED).  `:slots` is a slot-ident-string → new-value map (REQUIRED; non-map values rejected).  Substrate auto-coerces JSON-shaped values via `dt/range-of` (e.g., `:db.type/keyword` slots accept either keyword strings or already-coerced keywords).  Cardinality-many slots accept either a single value (wrapped to vec) or a vec / array, and by DEFAULT the supplied value REPLACES the slot's prior set — members absent from your value are retracted in the same tx, so you can now shrink or clear a card-many slot.  Pass `additive: true` to keep the legacy additive UNION (append without retracting).  Card-one slots are unaffected.  Per W0.found decision 2026-06-30.  Optional `:projection` — `metadata-only` (DEFAULT per Gap #7 fix 2026-05-23 — lightweight :db/id/:db/ident/:dt/type echo; avoids MCP wire-limit overflow on large entities) or `full` (complete entity-map; opt in when you want the body echo).\n\nORDER: prerequisite — `sandbar.entity.find` to confirm the entity exists.  Optional pre-check: `sandbar.entity.validate` against the FULL merged slot map (current slots ∪ updates).\n\nCOMBINATION: pairs with `sandbar.entity.find` (pre-confirm + post-read-back).  For bulk class-wide updates, no single-call alternative; iterate `sandbar.class.instances` and apply per-entity.  Per Stage I of plans/sandbar_codex_review_remediation_arc_2026_05_13.md (`dt/update-entity!` substrate primitive)."
+    :description "WHICH: applies slot-value updates to an existing entity.  Validates the updated slot map against the entity's class constraints before transacting.  SHAPES (`:validation-mode`, D6 2026-09-19): `audit` (default) commits and returns the shape report; `strict` validates the updated entity against its class's shapes on a SPECULATIVE database BEFORE the transaction and refuses a violation with the entity unchanged and nothing enqueued — a change accepted between the check and the commit is caught by a transactor-side basis guard and the check re-runs; `disabled` skips the shapes.  Accepts identful AND identless entities (per Gap #6 fix 2026-05-23 — identless entities resolved by eid are now updatable; previously rejected with `:entity-ref/no-ident`).\n\nWHEN: use to MUTATE an existing entity — change a slot value, set a previously-empty slot, etc.  When NOT to use: (a) creating a new entity — `sandbar.entity.create`; (b) you want to validate proposed updates WITHOUT committing — `sandbar.entity.validate` (against the class with the merged slot map); (c) you want to fully retract a cardinality-ONE slot — Datomic full-retraction is not exposed via MCP (note: cardinality-MANY members ARE removable now by passing a smaller set under the default replace semantics, or pass `additive: true` to only append).\n\nHOW: `:entity` is the target entity ident or eid (REQUIRED).  `:slots` is a slot-ident-string → new-value map (REQUIRED; non-map values rejected).  Substrate auto-coerces JSON-shaped values via `dt/range-of` (e.g., `:db.type/keyword` slots accept either keyword strings or already-coerced keywords).  Cardinality-many slots accept either a single value (wrapped to vec) or a vec / array, and by DEFAULT the supplied value REPLACES the slot's prior set — members absent from your value are retracted in the same tx, so you can now shrink or clear a card-many slot.  Pass `additive: true` to keep the legacy additive UNION (append without retracting).  Card-one slots are unaffected.  Per W0.found decision 2026-06-30.  Optional `:projection` — `metadata-only` (DEFAULT per Gap #7 fix 2026-05-23 — lightweight :db/id/:db/ident/:dt/type echo; avoids MCP wire-limit overflow on large entities) or `full` (complete entity-map; opt in when you want the body echo).\n\nORDER: prerequisite — `sandbar.entity.find` to confirm the entity exists.  Optional pre-check: `sandbar.entity.validate` against the FULL merged slot map (current slots ∪ updates).\n\nCOMBINATION: pairs with `sandbar.entity.find` (pre-confirm + post-read-back).  For bulk class-wide updates, no single-call alternative; iterate `sandbar.class.instances` and apply per-entity.  Per Stage I of plans/sandbar_codex_review_remediation_arc_2026_05_13.md (`dt/update-entity!` substrate primitive)."
     :inputSchema (one-required
                    {:entity     {:type "string" :description "Entity ident (keyword string) or eid (numeric).  Identless entities accepted by eid per Gap #6 fix."}
                     :slots      {:type "object" :description "Slot-ident-string → new-value map"}
                     :projection {:type "string" :description "Response :result entity shape — 'metadata-only' (default; :db/id + :db/ident + :dt/type) or 'full' (complete entity-map; ~10-300x larger; risks wire-limit overflow on large bodies per Gap #7).  Per Gap #7 fix 2026-05-23."}
-                    :additive   {:type "boolean" :description "Cardinality-many semantics.  DEFAULT false ⇒ the supplied value REPLACES the slot's prior set (members you omit are retracted).  true ⇒ legacy additive UNION (append the supplied value without retracting).  No effect on cardinality-one slots.  Per W0.found 2026-06-30."}}
+                    :additive   {:type "boolean" :description "Cardinality-many semantics.  DEFAULT false ⇒ the supplied value REPLACES the slot's prior set (members you omit are retracted).  true ⇒ legacy additive UNION (append the supplied value without retracting).  No effect on cardinality-one slots.  Per W0.found 2026-06-30."}
+                    :validation-mode {:type "string" :description "Shape validation: 'audit' (default) commits and returns the shape report; 'strict' validates the updated entity against its class's shapes on a SPECULATIVE database BEFORE the transaction and refuses a violation with the entity unchanged and nothing enqueued (D6, 2026-09-19); 'disabled' skips the shapes."}}
                    [:entity :slots])
     :handler entity-update-handler}
    {:name "sandbar.entity.validate"
@@ -2936,13 +3005,13 @@
     :handler project-export-handler}
    {:name "sandbar.project.import"
     :title "Ingest entities from a filesystem hierarchy (inverse of project.export)"
-    :description "WHICH: walks the `:from` directory, parses each file via the appropriate codec (per file extension / declared format), and returns the parsed entity-spec maps.  The ingestion half of the Anderson `de.setf.rdf:project-graph` boundary-layer primitive — inverse of `sandbar.project.export`.\n\nWHEN: use to load filesystem-canonical entity state into the substrate — restore from a project-export, ingest external content, or round-trip-validate after editing files manually.  When NOT to use: (a) you want to create entities programmatically — `sandbar.entity.create`; (b) you want to write TO filesystem — `sandbar.project.export`.\n\nHOW: `:from` is the input directory path (REQUIRED).  `:filter` (optional) restricts which entities ingest; same shape as `sandbar.project.export`'s filter — `:class`, `:classes`, `:tree-filter`.  Returns `{:from :filter :imported <count> :entities [<entity-summary>...]}`.\n\nORDER: idempotent on the same filesystem state.  Note: ingestion validates against schema; failures raise.  Pre-check schema compatibility via `sandbar.entity.validate` for sample inputs if uncertain.\n\nCOMBINATION: inverse of `sandbar.project.export`.  Round-trip property: `ingest-graph(project-graph(entities)) = entities` — verify via dual export + import + comparison.  Codec selection by file extension; registered codecs visible via `sandbar.codec.list`."
+    :description "WHICH: walks the `:from` directory, parses each `.md` file via the markdown codec into ONE SOURCE UNIT per file (a memory with its sections, or a Tag / other native-codec document), and — with `:persist` — transacts each parsed unit on its own, reporting every file's fate.  The ingestion half of the Anderson `de.setf.rdf:project-graph` boundary-layer primitive — inverse of `sandbar.project.export`.\n\nWHEN: use to load filesystem-canonical entity state into the substrate — restore from a project-export, ingest external content, or round-trip-validate after editing files manually.  When NOT to use: (a) you want to create ONE entity programmatically — `sandbar.entity.create` (STRICT on front matter: an unknown key is refused; this bulk verb is LENIENT: unknown keys ride in the front-matter carrier and are REPORTED per file); (b) you want to write TO the filesystem — `sandbar.project.export`.\n\nHOW: `:from` is the input directory path (REQUIRED; a single `.md` file is accepted too — the MEMORY.md / README.md heal path).  `:filter` (optional) restricts which units ingest — `:class`, `:classes`, `:tree-filter` (same shape as `sandbar.project.export`); the decision is made per source file.  `:persist` (optional, default false) — WITHOUT it the verb is a DRY RUN: it parses and reports but transacts nothing.  ACCOUNTING (D6, 2026-09-19) — every response carries `:attempted` (files walked), `:imported` (entities parsed), `:parse-failed-count` + `:parse-failed [{:source :error}]` (files whose parse threw — named, never silently dropped), `:unknown-keys-count` + `:unknown-keys [{:source :dt/type :ident :unknown-keys [...]}]` (files whose front matter carried keys the class does not declare), and `:skipped-count` (files the filter excluded, or that could not match the tree filter).  With `:persist` the response adds `:persisted-count`, `:failed-count` + `:failed [...]` (a unit whose transaction failed — a schema or transactor error, with `:source`, `:ident`, `:error`), `:refused-count` + `:refused [...]` (a unit the import firewall refused — a governed edge the floor forbade), `:groups` (the transaction units), and `:totals` + `:reconciled?` — attempted = persisted + failed + refused + parse-failed + skipped.  ONE transaction per file: a failing file never rolls back its neighbours.  (Wire-format key MUST be `persist` — no `?` suffix — to comply with the MCP tool-schema property-key regex `^[a-zA-Z0-9_.-]{1,64}$`; the handler accepts legacy `persist?` too.)\n\nORDER: idempotent on the same filesystem state (a re-import upserts by ident).  Run once WITHOUT `:persist` to read the accounting, then WITH it.  Pre-check a doubtful document via `sandbar.entity.validate`.\n\nCOMBINATION: inverse of `sandbar.project.export`.  Round-trip property: `ingest-graph(project-graph(entities)) = entities` — verify via export + import + comparison.  Codec selection by file extension; registered codecs visible via `sandbar.codec.list`."
     :inputSchema (one-required
-                   {:from     {:type "string" :description "Input directory path"}
+                   {:from     {:type "string" :description "Input directory path (or a single .md file)"}
                     :filter   {:type "object"
-                               :description "Optional filter spec (same shape as project.export)"}
+                               :description "Optional filter spec (same shape as project.export): class / classes / tree-filter; decided per source file"}
                     :persist  {:type        "boolean"
-                               :description "When true, dt/make each parsed entity-spec into the Datomic substrate after import (one-shot ingest).  When false / omitted, this verb is a DRY-RUN that returns entity summaries without persisting.  Per Friction Item #11 of the 0.1.1 co-evolution arc — gives clients a single-call bootstrap path instead of N+1 round-trips (import + entity.create per).  On persist failure for any individual entity, the per-entity failure is captured in the response's `:failed` list (does NOT abort the whole ingest).  Returns `{:persisted-count :failed-count :failed [...]}` when :persist true.  (Wire-format key MUST be `persist` — no `?` suffix — to comply with Anthropic MCP tool-schema property-key regex `^[a-zA-Z0-9_.-]{1,64}$`.  Handler accepts both `persist` and legacy `persist?` for back-compat.)"}}
+                               :description "When true, transact each parsed source unit (ONE transaction per file) into the substrate.  When false / omitted, DRY RUN: parse + report, transact nothing.  Either way the response accounts for every file walked — attempted = persisted + failed + refused + parse-failed + skipped — and names every file whose parse failed.  (Wire-format key MUST be `persist` — no `?` suffix — to comply with the MCP tool-schema property-key regex; the handler accepts legacy `persist?` too.)"}}
                    [:from])
     :handler project-import-handler}
 
@@ -2950,7 +3019,7 @@
    ;; Per decisions/mcp_retraction_verb_substrate_first_over_nrepl_toolchain_workaround_2026_07_02.
    {:name "sandbar.entity.retract"
     :title "Retract explicit entities with a dry-run-by-default safety layer"
-    :description "WHICH: retracts an EXPLICIT set of entities (`:targets` — idents or eids, 1..100) via `:db.fn/retractEntity` in ONE atomic transaction, wrapped in the ratified safety layer: dry-run-by-default, per-target blast-radius report, protected-namespace/class guard, cascade opt-in, required audit reason.  The first-class MCP retraction verb — replaces the nREPL-toolchain workaround.  Substrate half is `sandbar.db.datomic/retract-entity`; this verb is the MCP surface + safety layer.\n\nWHEN: use to remove named entities from the substrate — cleanup packages (bulk-retract, bare-ident dups, orphan sections, anonymous carriers).  When NOT to use: (a) predicate/query-based MASS retraction — NOT supported in v1 (explicit targets only; enumerate first via `sandbar.class.instances` / `sandbar.search.bm25f`, then pass the eids); (b) you want to EDIT an entity — `sandbar.entity.update`; (c) you want to physically excise history — out of scope (this is logical retraction).\n\nHOW: `:targets` (REQUIRED) is an array of idents (keyword-strings like `\":memory.decisions/foo\"`) or numeric eids; 1..100 (over-cap ⇒ loud error).  `:persist` (bool, default FALSE) — WITHOUT it the verb is a DRY-RUN returning the full report and transacting NOTHING (same convention as `sandbar.project.import`; wire key is `persist`, no `?`).  `:cascade` (bool, default false) — when true, the enumerated dependents (the target's `:mm/Section` tree + `:mm.memory/frontmatter` carrier) are INCLUDED in the retraction; refs are not `:db/isComponent` so without cascade they survive as ORPHANS (the report says so).  `:reason` (string) — REQUIRED when `:persist` (carried into the `:mm.event/EntityRetracted` audit event; persist without it ⇒ loud error).  `:actor` (optional ref) — recorded on the audit event.  `:acknowledge-dangling` (bool, default false) — the report's `:inbound-refs`/`:inbound-count` per target enumerate the INBOUND citation edges (`:mm.memory/cites` / `:mm.memory/motivated-by` / any ref) that would be left DANGLING by the retraction; a `:persist` over a target with nonzero inbound refs is REFUSED unless you pass `:acknowledge-dangling true` (or repoint those inbound edges first).  Protected targets (namespace `dt`/`db`/`workflow`/`mm.event`, plus `:mm/Actor` instances + `:mm/Workflow` definitions) are SKIPPED with a reason, NOT retracted, and do NOT abort the batch.\n\nORDER: run once WITHOUT `:persist` to inspect the blast-radius report (datom-counts + outbound dependents + INBOUND refs + protected flags), then re-run WITH `:persist true` + `:reason` (and `:acknowledge-dangling true` if inbound refs exist and you accept the dangle) to commit.  Discover target eids first via `sandbar.class.instances` / `sandbar.search.bm25f` / `sandbar.entity.find`.\n\nCOMBINATION: pairs with `sandbar.entity.find` (confirm a target exists first); the inbound-citation check `sandbar.navigate.inbound-edges` once needed before orphaning is now BUILT IN as the report's `:inbound-refs` section.  Result: the dry-run report `{:targets [{:target :resolved-eid :exists? :ident :dt-type :datom-count :dependents :inbound-refs :inbound-count :protected? :protection-reason} ...] :cascade :dependents-note}`, augmented on `:persist` with `:retracted-eids :retracted-count :skipped :events-emitted`."
+    :description "WHICH: retracts an EXPLICIT set of entities (`:targets` — idents or eids, 1..100) via `:db.fn/retractEntity` in ONE atomic transaction, wrapped in the ratified safety layer: dry-run-by-default, per-target blast-radius report, protected-namespace/class guard, cascade opt-in, required audit reason.  The first-class MCP retraction verb — replaces the nREPL-toolchain workaround.  Substrate half is `sandbar.db.datomic/retract-entity`; this verb is the MCP surface + safety layer.\n\nWHEN: use to remove named entities from the substrate — cleanup packages (bulk-retract, bare-ident dups, orphan sections, anonymous carriers).  When NOT to use: (a) predicate/query-based MASS retraction — NOT supported in v1 (explicit targets only; enumerate first via `sandbar.class.instances` / `sandbar.search.bm25f`, then pass the eids); (b) you want to EDIT an entity — `sandbar.entity.update`; (c) you want to physically excise history — out of scope (this is logical retraction).\n\nHOW: `:targets` (REQUIRED) is an array of idents (keyword-strings like `\":memory.decisions/foo\"`) or numeric eids; 1..100 (over-cap ⇒ loud error).  `:persist` (bool, default FALSE) — WITHOUT it the verb is a DRY-RUN returning the full report and transacting NOTHING (same convention as `sandbar.project.import`; wire key is `persist`, no `?`).  `:cascade` (bool, default false) — when true, the enumerated dependents (the target's `:mm/Section` tree + `:mm.memory/frontmatter` carrier) are INCLUDED in the retraction; the section refs are not `:db/isComponent` so without cascade the tree survives as ORPHANS (the report says so), while the frontmatter carrier is a component (D6, 2026-09-19) and retracts with its host either way.  `:reason` (string) — REQUIRED when `:persist` (carried into the `:mm.event/EntityRetracted` audit event; persist without it ⇒ loud error).  `:actor` (optional ref) — recorded on the audit event.  `:acknowledge-dangling` (bool, default false) — the report's `:inbound-refs`/`:inbound-count` per target enumerate the INBOUND citation edges (`:mm.memory/cites` / `:mm.memory/motivated-by` / any ref) that would be left DANGLING by the retraction; a `:persist` over a target with nonzero inbound refs is REFUSED unless you pass `:acknowledge-dangling true` (or repoint those inbound edges first).  Protected targets (namespace `dt`/`db`/`workflow`/`mm.event`, plus `:mm/Actor` instances + `:mm/Workflow` definitions) are SKIPPED with a reason, NOT retracted, and do NOT abort the batch.\n\nORDER: run once WITHOUT `:persist` to inspect the blast-radius report (datom-counts + outbound dependents + INBOUND refs + protected flags), then re-run WITH `:persist true` + `:reason` (and `:acknowledge-dangling true` if inbound refs exist and you accept the dangle) to commit.  Discover target eids first via `sandbar.class.instances` / `sandbar.search.bm25f` / `sandbar.entity.find`.\n\nCOMBINATION: pairs with `sandbar.entity.find` (confirm a target exists first); the inbound-citation check `sandbar.navigate.inbound-edges` once needed before orphaning is now BUILT IN as the report's `:inbound-refs` section.  Result: the dry-run report `{:targets [{:target :resolved-eid :exists? :ident :dt-type :datom-count :dependents :inbound-refs :inbound-count :protected? :protection-reason} ...] :cascade :dependents-note}`, augmented on `:persist` with `:retracted-eids :retracted-count :skipped :events-emitted`."
     :inputSchema (one-required
                    {:targets {:type "array"
                               :items {:type "string"}

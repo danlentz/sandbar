@@ -37,9 +37,20 @@
   (swap! *fn-base* conj dbfn)
   dbfn)
 
-(defn load-all-dbfn [uri]
-  (log/info :DB/FN "Loading" (count (all-dbfn)) "db/fn" )
-  (d/transact (d/connect uri) (all-dbfn)))
+(defn load-all-dbfn
+  "Transact every queued `:db/fn` definition into the store at `uri`; the
+   transaction is DEREFERENCED so a definition the transactor refuses fails
+   the boot loudly instead of leaving the function silently uninstalled —
+   before D6 (2026-09-19) the future was dropped, and every definition
+   carried the legacy `:dt/dt :fn` tag whose attribute no schema declares,
+   so no transactor-side function had ever been installed.  Idempotent:
+   Datomic upserts on `:db/ident`.  Returns the transaction result, or nil
+   when nothing is queued."
+  [uri]
+  (let [fns (all-dbfn)]
+    (log/info :DB/FN "Loading" (count fns) "db/fn")
+    (when (seq fns)
+      @(d/transact (d/connect uri) fns))))
 
 (defn read-fnbase [f]
   (set-fnbase (slurp f)))
@@ -66,11 +77,15 @@
 ;; (dbfn [x y] (+ x (inc y)))
 
 
-(defn build-dbfn [name args body]
+(defn build-dbfn
+  "The `:db/fn` schema entity for a transactor-side function: ident,
+   compiled function, nothing else — the legacy `:dt/dt :fn` tag was
+   dropped in D6 (2026-09-19) because no schema declares the attribute and
+   its presence failed every install."
+  [name args body]
   (into {}
     [[:db/id (d/tempid :db.part/db)]
     [:db/ident (keyword name)]
-    [:dt/dt :fn]
     [:db/fn (d/function
               {:lang :clojure
                :params args

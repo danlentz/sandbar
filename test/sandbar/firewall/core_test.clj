@@ -326,3 +326,16 @@
       (is (= :mm.memory/cites (:slot (first violations))))
       (is (= 1 (count skipped)))
       (is (= :mm.memory/refines (:slot (first skipped)))))))
+
+(deftest d6-declared-refs-are-dispositioned
+  (testing "the refs D6 (2026-09-19) listed on :mm/Memory carry a standing verdict:
+            the demonstrates / demonstrated-by pair is governed flow (an
+            intellectual-dependence edge, both directions written), and
+            bootstrap-source is exempt (provenance attribution to a
+            :mm/BootstrapSource that carries no label — governing it would
+            refuse every public bootstrap memorial)"
+    (is (fw/firewall-governed-ref? :mm.memory/demonstrates))
+    (is (fw/firewall-governed-ref? :mm.memory/demonstrated-by))
+    (is (contains? fw/governed-flow-slots :mm.memory/demonstrated-by))
+    (is (not (fw/firewall-governed-ref? :mm.memory/bootstrap-source)))
+    (is (contains? fw/exempt-slots :mm.memory/bootstrap-source))))

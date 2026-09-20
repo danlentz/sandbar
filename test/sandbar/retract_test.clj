@@ -220,7 +220,7 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (deftest t2-persist-cascade-false-orphans-dependents-test
-  (testing "T2a: persist cascade=false — target GONE, dependents ORPHANED (survive)"
+  (testing "T2a: persist cascade=false — target GONE, the section tree ORPHANED (survives); the carrier, a component since D6 (2026-09-19), GONE with its host"
     (let [{:keys [memory-eid fm-eid sec1-eid]}
           (make-memory-with-dependents! :memory.test/t2a-victim "t2a-victim")
           report (retract/retract! [:memory.test/t2a-victim]
@@ -228,7 +228,7 @@
       (is (true? (:persist report)))
       (is (= 1 (:retracted-count report)) "only the named target retracted")
       (is (false? (exists? memory-eid)) "memory GONE")
-      (is (exists? fm-eid)   "frontmatter ORPHANED (survives — not :db/isComponent)")
+      (is (false? (exists? fm-eid)) "frontmatter GONE (a :db/isComponent carrier retracts with its host)")
       (is (exists? sec1-eid) "section ORPHANED (survives)"))))
 
 (deftest t2-persist-cascade-true-removes-dependents-test

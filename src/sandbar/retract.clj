@@ -149,9 +149,12 @@
    target entity `e` (a `d/entity` map) in `db`: its `:mm/Section` tree
    (every section subtree parented at `e`, walked via next-sibling + child
    recursion) and its `:mm.memory/frontmatter` carrier.  Returns a vec of
-   `{:eid :dt-type :datom-count}` maps.  Refs are NOT `:db/isComponent`,
-   so `:db.fn/retractEntity` will NOT auto-cascade to these — they survive
-   as orphans unless `cascade` is chosen (said so in the report).
+   `{:eid :dt-type :datom-count}` maps.  The section refs are NOT
+   `:db/isComponent`, so `:db.fn/retractEntity` will NOT auto-cascade to
+   the tree — it survives as orphans unless `cascade` is chosen (said so in
+   the report).  The frontmatter carrier IS a component since D6
+   (2026-09-19), so it retracts with its host either way; it stays in this
+   enumeration so the blast-radius report still names it.
 
    The section tree is seeded from the reverse `:mm.section/parent` index
    (`owned-section-eids`), not `:mm.memory/first-section`, so identful
@@ -284,8 +287,9 @@
    :cascade         (boolean cascade)
    :dependents-note (if cascade
                       "cascade=true — enumerated dependents ARE included in the retraction set."
-                      (str "cascade=false — enumerated dependents are NOT retracted; because "
-                           "refs are not :db/isComponent they survive as ORPHANS."))})
+                      (str "cascade=false — the enumerated section tree is NOT retracted; because "
+                           "section refs are not :db/isComponent it survives as ORPHANS.  The "
+                           "frontmatter carrier is a component and retracts with its host."))})
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Retraction set + atomic transaction + audit

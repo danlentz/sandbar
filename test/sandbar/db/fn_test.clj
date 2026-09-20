@@ -79,7 +79,11 @@
           schema-fn  (first (filter #(= :dual-emit-test (:db/ident %)) schemas))
           memorial   (first (filter #(= :dual-emit-test (:db/ident %)) memorials))]
       (is (some? schema-fn) "Schema :db/fn entity should be queued")
-      (is (= :fn (:dt/dt schema-fn)) "Schema entity carries legacy :dt/dt :fn tag")
+      (is (some? (:db/fn schema-fn)) "Schema entity carries the compiled :db/fn")
+      ;; D6 (2026-09-19): the legacy :dt/dt :fn tag is GONE — no schema declares
+      ;; the attribute, so every install carrying it failed (silently, until
+      ;; load-all-dbfn began dereferencing its transaction).
+      (is (not (contains? schema-fn :dt/dt)) "Schema entity carries no undeclared legacy tag")
       (is (some? memorial) ":mm/Fn memorial should be queued")
       (is (= :mm/Fn (:dt/type memorial)) "Memorial carries first-class :dt/type :mm/Fn"))))
 

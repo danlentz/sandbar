@@ -70,12 +70,14 @@
         (tu/load-required-schema conn)
         (println (str "Walking " root " for markdown files..."))
         (let [t0 (System/currentTimeMillis)
-              ;; ingest-graph walks the tree + parses each file (no transact)
-              all-entities (pg/ingest-graph root)
-              entities (cond->> all-entities
-                         (pos? limit) (take (* limit 10))) ; rough section-aware limit
-              groups   (codec-md/group-by-source entities)
+              ;; ingest-units walks the tree + parses each file (no transact);
+              ;; one SOURCE UNIT per parsed file is the transaction unit
+              ;; (REP-06, D6 2026-09-19).
+              groups   (->> (pg/ingest-units root)
+                            (filter #(= :parsed (:status %)))
+                            (map :entities))
               groups   (cond->> groups (pos? limit) (take limit))
+              entities (mapcat identity groups)
               t1 (System/currentTimeMillis)]
           (println (str "Parsed " (count entities) " entities in "
                         (count groups) " groups (" (- t1 t0) "ms)"))

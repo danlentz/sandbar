@@ -37,6 +37,23 @@
 ;; :mm.observation/* Properties
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
+ ;; D6 (2026-09-19): confidence for ideas and bugs as doubles (the corpus writes 0.80 to 0.97 there);
+ ;; observations keep their tentative / likely / certain keyword scale below.
+ [{:db/ident       :mm.idea/confidence
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Idea
+   :dt/range       :db.type/double
+   :db/valueType   :db.type/double
+   :db/cardinality :db.cardinality/one
+   :db/doc "Confidence in the idea, 0.0 to 1.0.  Declared D6 (2026-09-19) after the corpus had carried it undeclared on twenty idea files."}
+  {:db/ident       :mm.bug/confidence
+   :dt/type        :dt/Property
+   :dt/domain      :mm/Bug
+   :dt/range       :db.type/double
+   :db/valueType   :db.type/double
+   :db/cardinality :db.cardinality/one
+   :db/doc "Confidence that the bug report is accurate, 0.0 to 1.0.  Declared D6 (2026-09-19) after the corpus had carried it undeclared on seventeen bug files."}]
+
  [{:db/ident       :mm.observation/confidence
    :dt/type        :dt/Property
    :dt/domain      :mm/Observation
@@ -202,7 +219,8 @@
                           :mm.idea/effort
                           :mm.idea/timeframe
                           :mm.idea/triggered-by
-                          :mm.idea/superseded-by]
+                          :mm.idea/superseded-by
+                          :mm.idea/confidence]        ;; D6 (2026-09-19)
    :dt/abstract?         false
    :db/doc "Speculative future move noticed during current work — something that might compound value later but isn't worth pursuing right now.  Captured so: current work isn't derailed; the thought isn't lost; a future session can find it when context matches; the connection back to original work is preserved.  Per memory/types/idea.md.  Lifecycle: parked → considering → exploring → ready → (sometimes) superseded / dropped."}
 
@@ -229,7 +247,8 @@
                           :mm.bug/affects
                           :mm.bug/observed
                           :mm.bug/reported-by
-                          :mm.bug/fixed-in]
+                          :mm.bug/fixed-in
+                          :mm.bug/confidence]         ;; D6 (2026-09-19)
    :dt/abstract?         false
    :db/doc "Structured defect observation — something that looked wrong during consumption of library X while the session was busy with project Y.  Captures context without derailing current work: drop a bug memory and keep moving; when someone later works on the affected library, the memory is waiting with everything they need (symptom, repro, expected-vs-actual, root cause if known, workaround).  Per memory/types/bug.md.  Lifecycle: open → confirmed → fixed / wontfix / stale."}]
 

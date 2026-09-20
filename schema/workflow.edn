@@ -401,7 +401,11 @@
               :workflow/started-at
               :workflow/completed-at
               :workflow/history
-              :workflow/process-data]}
+              :workflow/process-data
+              ;; D6 (2026-09-19): the session-process slots declared with domain :workflow/Process
+              :mm.session-process/paused-from-state
+              :mm.session-process/failure-reason
+              :mm.session-process/failure-instant]}
 
   {:db/ident :workflow/History
    :dt/type :dt/Class

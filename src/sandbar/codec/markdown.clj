@@ -202,6 +202,39 @@
 
     :else v))
 
+(defn- block-scalar-value
+  "Assemble a YAML block scalar from its `indicator` (`|` literal or `>`
+   folded, with an optional `-` strip / `+` keep chomping) and the indented
+   `lines` that follow it.  Literal keeps the line breaks; folded joins lines
+   with spaces and turns a blank line into a line break; `-` strips the final
+   line break, `+` keeps every trailing one, no suffix keeps one (YAML clip).
+   The block's indentation is the first non-blank line's.  D6 (2026-09-19),
+   REP-04: the emitter's YAML library writes a multiline string as `key: |-`
+   plus indented lines, and the lenient parser read the indicator as the
+   value, so an accepted string came back as \"|-\".  A bounded grammar, not
+   a general YAML parser."
+  [indicator lines]
+  (let [literal? (str/starts-with? indicator "|")
+        chomp    (cond (str/ends-with? indicator "-") :strip
+                       (str/ends-with? indicator "+") :keep
+                       :else                          :clip)
+        indent   (or (some (fn [l] (when-not (str/blank? l) (count (re-find #"^ *" l)))) lines) 0)
+        dedent   (fn [l] (if (str/blank? l) "" (subs l (min indent (count (re-find #"^ *" l))))))
+        content  (mapv dedent lines)
+        trailing (count (take-while str/blank? (reverse content)))
+        body     (subvec content 0 (- (count content) trailing))
+        text     (if literal?
+                   (str/join "\n" body)
+                   (->> (partition-by str/blank? body)
+                        (map (fn [g] (if (str/blank? (first g))
+                                       (apply str (repeat (count g) "\n"))
+                                       (str/join " " g))))
+                        (apply str)))]
+    (case chomp
+      :strip text
+      :clip  (if (empty? body) "" (str text "\n"))
+      :keep  (str text (apply str (repeat (inc trailing) "\n"))))))
+
 (defn parse-frontmatter-text
   "Parse the frontmatter text (already split from `---` delimiters by
    `split-frontmatter`) into a Clojure map with keyword keys.  Lenient
@@ -260,6 +293,13 @@
                               (remove str/blank?)
                               (mapv coerce-scalar)))
                 (recur rest nil []))
+
+            ;; Block scalar — `key: |-` and friends (REP-04, D6): consume the
+            ;; indented (or blank) lines that follow as the value, verbatim.
+            (re-matches #"[|>][+-]?" v)
+            (let [[block remaining] (split-with (fn [l] (or (str/blank? l) (str/starts-with? l " "))) rest)]
+              (om/put! acc k (block-scalar-value v block))
+              (recur remaining nil []))
 
             ;; Inline scalar
             (seq v)
@@ -378,9 +418,13 @@
                 (when (contains? effective-slots candidate)
                   candidate)))
             chain)
-      ;; Else build <leaf-ns>/body (Section convention; sections
-      ;; carry decomposed content under :mm.section/body).
-      (keyword (class-slot-namespace class-ident) "body"))))
+      ;; Else the Section convention `<leaf-ns>/body` — but ONLY when that
+      ;; attribute is declared (REP-05, D6 2026-09-19): a Tag document has no
+      ;; body slot, and the old unconditional fallback minted `:mm.tag/body`, an
+      ;; attribute the schema never installed, so every Tag import failed with
+      ;; `Unable to resolve entity`.  nil means the class carries no body.
+      (let [candidate (keyword (class-slot-namespace class-ident) "body")]
+        (when (some? (dt/range-of candidate)) candidate)))))
 
 (defn frontmatter-key->slot
   "Map a YAML frontmatter key (keyword) to the slot ident for the given
@@ -473,6 +517,34 @@
    `:db.type/boolean`."
   [slot-ident]
   (= :db.type/boolean (dt/range-of slot-ident)))
+
+(defn- double-typed-slot?
+  "Returns true if `slot-ident`'s declared `:dt/range` is a floating-point
+   or decimal type (`:db.type/double` / `:db.type/float` / `:db.type/bigdec`)."
+  [slot-ident]
+  (contains? #{:db.type/double :db.type/float :db.type/bigdec} (dt/range-of slot-ident)))
+
+(defn- coerce-string->double
+  "Coerce a front-matter number to the exact boxed type `slot-ident`'s range
+   declares — Double for `:db.type/double`, Float for `:db.type/float`,
+   BigDecimal for `:db.type/bigdec` — since the transactor accepts nothing
+   looser.  The lenient front-matter parser leaves numbers as strings; an
+   unparseable string passes through untouched so the strict boundary refuses
+   it as the wrong type (RT-11, D6 2026-09-19)."
+  [slot-ident v]
+  (let [range  (dt/range-of slot-ident)
+        as-type (fn [^String s]
+                  (case range
+                    :db.type/float  (Float/parseFloat s)
+                    :db.type/bigdec (BigDecimal. s)
+                    (Double/parseDouble s)))]
+    (cond
+      (number? v)  (case range
+                     :db.type/float  (float v)
+                     :db.type/bigdec (bigdec v)
+                     (double v))
+      (string? v)  (try (as-type (str/trim v)) (catch Exception _ v))
+      :else v)))
 
 (defn- coerce-string->long
   "Parse a string to a Long.  Pass-through for non-string values
@@ -786,7 +858,67 @@
         [safe? _] (edn-safe-val v)]
     (om/put! extras k-str (if safe? {:raw raw :val v} {:raw raw}))))
 
-(declare frontmatter->slots*)
+(declare frontmatter->slots* slot->frontmatter-key)
+
+(defn- drop-reason
+  "Why `landing-slot-value` drops a declared slot's value — mirrors its guards
+   so a strict refusal can name the reason (D6, 2026-09-19)."
+  [slot v]
+  (cond
+    (and (string? v) (= :db.type/uuid (dt/range-of slot)))                     :uuid-as-string
+    (or (and (string? v) (str/blank? v)) (and (sequential? v) (empty? v)))     :empty
+    (and (sequential? v) (not (string? v)) (dt/cardinality-one? slot))         :many-into-one
+    (and (string? v) (= :db.type/instant (dt/range-of slot)))                  :not-a-date
+    :else                                                                      :dropped))
+
+(defn- value-conforms?
+  "True iff coerced value `v` fits `slot`'s declared primitive range — the
+   RT-11 check at the codec boundary (D6, 2026-09-19): a string where a
+   double is declared is refused with the slot named, never handed to the
+   transactor to fail opaquely or coerced into something else.  Ref and class
+   ranges are not checked here (their upsert shapes are the transactor's
+   business); an undeclared range passes."
+  [slot v]
+  (let [range (dt/range-of slot)
+        one?  (fn [x] (case range
+                        :db.type/string  (string? x)
+                        :db.type/long    (integer? x)
+                        :db.type/double  (number? x)
+                        :db.type/float   (number? x)
+                        :db.type/bigdec  (number? x)
+                        :db.type/bigint  (integer? x)
+                        :db.type/boolean (boolean? x)
+                        :db.type/instant (instance? java.util.Date x)
+                        :db.type/keyword (keyword? x)
+                        :db.type/uuid    (uuid? x)
+                        true))]
+    (if (and (sequential? v) (not (string? v))) (every? one? v) (one? v))))
+
+(defn- accepted-keys-for
+  "The front-matter keys a class accepts: its effective slots rendered as
+   wire keys, sorted, for the strict refusal's verdict."
+  [class-ident]
+  (->> (dt/slots-of class-ident)
+       (remove (fn [slot] (contains? #{"db" "dt"} (namespace slot))))
+       (keep (fn [slot] (try (some-> (slot->frontmatter-key class-ident slot) name) (catch Exception _ nil))))
+       distinct sort vec))
+
+(defn- refusal-message
+  "The verdict of a strict refusal: every refused key with its reason, then
+   the accepted keys, then the opt-out."
+  [class-ident refused]
+  (let [by (group-by :reason refused)
+        part (fn [reason label] (when-let [xs (seq (get by reason))] (str label " " (str/join ", " (map :key xs)))))]
+    (str "Front matter refused for " class-ident ": "
+         (str/join "; " (remove nil? [(part :unknown-key "unknown keys")
+                                      (part :wrong-type "wrong type for")
+                                      (part :empty "empty values for")
+                                      (part :many-into-one "a list where one value is declared for")
+                                      (part :not-a-date "not a date for")
+                                      (part :uuid-as-string "a uuid slot given a string for")
+                                      (part :dropped "dropped")]))
+         ". Accepted keys for " class-ident ": " (str/join ", " (accepted-keys-for class-ident))
+         ". Pass allow-unknown-keys to carry unknown keys instead.")))
 
 (defn carrier-ident-for-host
   "Derive the carrier's `:db/ident` from the HOST entity's ident by the
@@ -842,9 +974,11 @@
   ([class-ident frontmatter-map]
    (frontmatter->slots class-ident frontmatter-map nil))
   ([class-ident frontmatter-map raw-fm-text]
-   (frontmatter->slots* class-ident frontmatter-map raw-fm-text nil))
+   (frontmatter->slots* class-ident frontmatter-map raw-fm-text nil {}))
   ([class-ident frontmatter-map raw-fm-text host-ident]
-   (frontmatter->slots* class-ident frontmatter-map raw-fm-text host-ident)))
+   (frontmatter->slots* class-ident frontmatter-map raw-fm-text host-ident {}))
+  ([class-ident frontmatter-map raw-fm-text host-ident opts]
+   (frontmatter->slots* class-ident frontmatter-map raw-fm-text host-ident opts)))
 
 (defn- landing-slot-value
   "Compute the coerced slot value `v'` for a declared, non-guard-dropped
@@ -883,6 +1017,9 @@
 
         (long-typed-slot? slot)
         (coerce-string->long v)
+
+        (double-typed-slot? slot)
+        (coerce-string->double slot v)
 
         (boolean-typed-slot? slot)
         (coerce-string->boolean v)
@@ -923,11 +1060,20 @@
          (catch Exception _ nil))))
 
 (defn- frontmatter->slots*
-  "Implementation of `frontmatter->slots` (see its docstring)."
-  [class-ident frontmatter-map raw-fm-text host-ident]
-  (let [out    (om/create)
-        extras (om/create)
-        order  (mapv (fn [[k _]] (name k)) frontmatter-map)]
+  "Implementation of `frontmatter->slots` (see its docstring).  `opts`
+   `:strict?` (D6, 2026-09-19): an unknown key, a guard-dropped value or a
+   value of the wrong primitive type is REFUSED with an ex-info whose message
+   is the verdict (every refused key with its reason, the accepted keys, the
+   opt-out) and whose data is `{:type :frontmatter-refused :class ... :refused
+   [{:key :reason}] :accepted-keys [...]}`, before anything is built; lenient
+   (the default, the bulk-import path) keeps the carrier behaviour."
+  [class-ident frontmatter-map raw-fm-text host-ident opts]
+  (let [out      (om/create)
+        extras   (om/create)
+        strict?  (boolean (:strict? opts))
+        refused  (atom [])
+        refuse!  (fn [k reason & [more]] (swap! refused conj (merge {:key (name k) :reason reason} more)))
+        order    (mapv (fn [[k _]] (name k)) frontmatter-map)]
     (doseq [[k v] frontmatter-map
             :let [slot    (frontmatter-key->slot class-ident k)
                   id-uuid (when (= identity-frontmatter-key k)
@@ -943,16 +1089,37 @@
         (some? id-uuid)
         (om/put! out :mm/id id-uuid)
 
-        ;; (a) undeclared key → extras
+        ;; (a) undeclared key → extras (strict: refused)
         (not (slot-declared? slot))
-        (capture-extra! extras k v raw-fm-text)
+        (do (refuse! k :unknown-key)
+            (capture-extra! extras k v raw-fm-text))
 
-        ;; (b) declared-but-guard-dropped → extras; else land the slot
+        ;; (b) declared-but-guard-dropped → extras (strict: refused with the
+        ;;     reason); a value of the wrong primitive type → strict: refused,
+        ;;     lenient: landed as before; else land the slot
         :else
-        (let [v' (landing-slot-value slot v)]
-          (if (= ::drop v')
-            (capture-extra! extras k v raw-fm-text)
+        (let [v' (if strict?
+                   (try (landing-slot-value slot v) (catch Exception _ ::bad-coercion))
+                   (landing-slot-value slot v))]
+          (cond
+            (= ::bad-coercion v')
+            (refuse! k :wrong-type {:expected (dt/range-of slot)})
+
+            (= ::drop v')
+            (do (refuse! k (drop-reason slot v))
+                (capture-extra! extras k v raw-fm-text))
+
+            (and strict? (not (value-conforms? slot v')))
+            (refuse! k :wrong-type {:expected (dt/range-of slot)})
+
+            :else
             (om/put! out slot v')))))
+    (when (and strict? (seq @refused))
+      (throw (ex-info (refusal-message class-ident @refused)
+                      {:type          :frontmatter-refused
+                       :class         class-ident
+                       :refused       @refused
+                       :accepted-keys (accepted-keys-for class-ident)})))
     ;; Attach the carrier only when extras is non-empty.  Mint it IDENTFUL
     ;; when the host ident is derivable (`<host-ident>__frontmatter`), so a
     ;; re-import upserts the carrier in place (eid stable) rather than
@@ -967,6 +1134,20 @@
                             carrier-ident (assoc :db/ident carrier-ident))]
         (om/put! out :mm.memory/frontmatter carrier)))
     out))
+
+(defn unknown-frontmatter-keys
+  "The front-matter keys the lenient parse could not land on `entity`'s
+   class — the keys riding in its `:mm.memory/frontmatter` carrier — as a
+   sorted vector of strings; [] when there is no carrier or it is unreadable.
+   The bulk import reports these per source file where the strict
+   interactive create refuses them (D6, 2026-09-19)."
+  [entity]
+  (let [carrier (:mm.memory/frontmatter entity)
+        extra   (when (map? carrier) (:mm.frontmatter/extra carrier))]
+    (if (string? extra)
+      (try (->> (edn/read-string extra) :extras keys (map name) sort vec)
+           (catch Exception _ []))
+      [])))
 
 (defn- coerce-keyword->string
   "Coerce a keyword value to its full-form string for YAML emission
@@ -1422,7 +1603,7 @@
    class-effective but collide with nothing) are preserved verbatim."
   [fm-slots class-ident]
   (let [effective     (dt/slots-of class-ident)
-        body-key      (slot->frontmatter-key class-ident (body-slot-for class-ident))
+        body-key      (some->> (body-slot-for class-ident) (slot->frontmatter-key class-ident))
         ;; yaml-key → seq of slots in fm-slots that emit to it.
         by-key        (group-by #(slot->frontmatter-key class-ident %)
                                 (keys fm-slots))
@@ -1466,14 +1647,22 @@
           ;; place on re-import rather than orphaning the prior carrier
           ;; (carrier-reuse-2026-07-02/SPEC.md).  Absent → anonymous carrier.
           host-ident  (:host-ident opts)
-          slot-map-ordered (frontmatter->slots class-ident fm-map fm-text host-ident)
+          slot-map-ordered (frontmatter->slots class-ident fm-map fm-text host-ident
+                                               (select-keys opts [:strict?]))
           slot-map    (om/->clojure-map slot-map-ordered)
-          normalized  (normalize-body body-text)]
+          normalized  (normalize-body body-text)
+          body-slot   (body-slot-for class-ident)]
+      ;; REP-05 (D6): a class with no declared body slot carries no body.  In
+      ;; strict mode a non-blank body is refused rather than silently lost.
+      (when (and (nil? body-slot) (:strict? opts) (not (str/blank? (or normalized ""))))
+        (throw (ex-info (str "Body refused for " class-ident ": the class declares no body slot, and "
+                             (count normalized) " characters of body would be lost.")
+                        {:type :body-not-supported :class class-ident :body-chars (count normalized)})))
       ;; Slot-order is NOT carried on the entity.  Emit introspects the
       ;; class-declared canonical order via `:dt/codec-slot-order` per
       ;; decisions/slot_order_declared_by_class_introspectable_2026_05_20.md.
-      (merge {:dt/type class-ident
-              (body-slot-for class-ident) (or normalized "")}
+      (merge (cond-> {:dt/type class-ident}
+               body-slot (assoc body-slot (or normalized "")))
              slot-map)))
 
   (emit [_ entity opts]

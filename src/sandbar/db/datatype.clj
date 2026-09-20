@@ -179,6 +179,70 @@
        (throw (ex-info "Firewall violation in batch"
                        (fw-enforce/verdicts->error-envelope violations)))))))
 
+(defdbfn assert-basis [db expected-t]
+  {:dt.fn/purpose      :validate
+   :dt.fn/purity       :pure-total
+   :dt.fn/cost-class   :cheap
+   :dt.fn/installed-as :db-fn
+   :dt.fn/status       :validated
+   :dt.fn/description  "Abort the transaction unless the database it is applied to has basis-t expected-t — the transactor-side half of a preflight-then-commit strict write, so nothing accepted between the preflight and the commit can invalidate what the preflight checked (RT-01, D6 2026-09-19)."
+   :dt.fn/version      "1.0.0"}
+  (let [actual (datomic.api/basis-t db)]
+    (if (= expected-t actual)
+      []
+      (throw (ex-info (str "basis moved between preflight and commit: expected " expected-t ", found " actual)
+                      {:type :basis-moved :expected expected-t :actual actual})))))
+
+(defn- basis-moved?
+  "True when `ex`, or any cause beneath it, is the `:assert-basis` guard's
+   refusal — the transactor wraps a transaction function's throw, so the
+   marker is looked for down the whole chain, by ex-data and by message."
+  [^Throwable ex]
+  (loop [e ex]
+    (cond
+      (nil? e) false
+      (or (= :basis-moved (:type (ex-data e)))
+          (some-> (.getMessage e) (.contains "basis moved between preflight and commit"))) true
+      :else (recur (.getCause e)))))
+
+(defn transact-with-preflight!
+  "Transact `tx-data`, but only after `pre-commit` has accepted it on a
+   SPECULATIVE database (RT-01, D6 2026-09-19).  `pre-commit` is a fn of
+   the `d/with` result's db and the eid that `main-tid` (a string tempid,
+   or an existing eid) resolves to in it; if it throws, NOTHING is
+   transacted, so a strict write refused by its shapes leaves no committed
+   facts, enqueues no projection and notifies nobody.  The real
+   transaction carries `[:assert-basis t]`, the transactor-side guard
+   that aborts the commit if any transaction landed after the basis `t`
+   the preflight examined — a concurrent change to the facts or shapes it
+   checked cannot slip between check and commit.  On that abort the
+   preflight runs again at the moved basis, up to `max-attempts` (3),
+   after which the guard's refusal propagates.  Without `pre-commit` this
+   is a plain transact.  Returns the transaction result map."
+  ([tx-data main-tid pre-commit]
+   (transact-with-preflight! tx-data main-tid pre-commit 3))
+  ([tx-data main-tid pre-commit max-attempts]
+   (if-not pre-commit
+     @(d/transact (db/conn) tx-data)
+     (loop [attempt 1]
+       (let [db    (d/db (db/conn))
+             basis (d/basis-t db)
+             with  (d/with db tx-data)
+             eid   (get (:tempids with) main-tid main-tid)]
+         (pre-commit (:db-after with) eid)
+         (let [outcome (try
+                         @(d/transact (db/conn) (into [[:assert-basis basis]] tx-data))
+                         (catch Throwable ex
+                           (if (basis-moved? ex) ::basis-moved (throw ex))))]
+           (if (not= ::basis-moved outcome)
+             outcome
+             (if (< attempt max-attempts)
+               (do (log/info :DT/PREFLIGHT-RETRY {:attempt attempt :basis basis})
+                   (recur (inc attempt)))
+               (throw (ex-info (str "the database moved under a strict write " attempt
+                                    " times between preflight and commit; refusing")
+                               {:type :basis-moved :attempts attempt}))))))))))
+
 (defn make*
   "Creates a typed instance without validation.
 
@@ -210,15 +274,20 @@
   Named-tempid lookup ensures we always recover the MAIN entity
   regardless of how many secondary tempids the upsert resolution
   produces.  If `props` already declares `:db/id`, that takes
-  precedence (caller-explicit identity wins)."
+  precedence (caller-explicit identity wins).
+
+  `opts` `:pre-commit` (RT-01, D6 2026-09-19): a fn of the speculative db
+  and the new eid, run BEFORE the transaction via `transact-with-preflight!`;
+  when it throws, nothing is transacted."
   ([dt] (make* dt {}))
-  ([dt props]
+  ([dt props] (make* dt props {}))
+  ([dt props {:keys [pre-commit]}]
    ;; S7 CA-1: unconditional firewall floor BEFORE the raw transact.  Throws
    ;; on a forbidden governed edge whether or not the caller ran validation.
    (firewall-guard! dt props)
    (let [main-tid    (or (:db/id props) "main")
          row         (assoc props :dt/type dt :db/id main-tid)
-         result      @(d/transact (db/conn) [row])
+         result      (transact-with-preflight! [row] main-tid pre-commit)
          new-eid     (get (:tempids result) main-tid main-tid)
          new-entity  (entity new-eid)]
      (log/debug :DT/MAKE {:class dt :entity-id (:db/id new-entity)})
@@ -475,6 +544,14 @@
                          keys override parsed slots
             :source    - raw native-representation string to parse via
                          :format codec (e.g., markdown text for :markdown)
+            :strict?   - when true with :source, the codec refuses unknown
+                         front-matter keys, guard-dropped values and wrong-typed
+                         values with a verdict instead of carrying or dropping
+                         them (D6, 2026-09-19)
+            :pre-commit - a fn of the SPECULATIVE db and the new eid, run
+                         before the transaction (`transact-with-preflight!`);
+                         when it throws, nothing is transacted — the strict
+                         shape-validation boundary (RT-01, D6 2026-09-19)
 
   Returns the newly created entity map.
 
@@ -495,7 +572,7 @@
                           :source \"---\\nname: Foo\\n---\\n# Body\\n\"})"
   ([dt] (make dt {} {}))
   ([dt props] (make dt props {}))
-  ([dt props {:keys [validate? format source project?] :or {validate? true}}]
+  ([dt props {:keys [validate? format source project? strict? pre-commit] :or {validate? true}}]
    ;; F.1 codec arc Stage F per
    ;; plans/sandbar_codec_layer_arc_2026-05-12.md — when :format +
    ;; :source supplied, parse via the codec mediator first; explicit
@@ -517,7 +594,12 @@
                                (:dt/native-codec (entity dt))))
          props (if (and resolved-format source)
                  (let [parse-fn (requiring-resolve 'sandbar.codec/parse)
-                       parsed   (parse-fn source {:format resolved-format :class dt})]
+                       ;; :strict? (D6, 2026-09-19): the interactive create passes
+                       ;; true so an unknown key, a dropped value or a wrong-typed
+                       ;; value is refused with a verdict BEFORE anything is built;
+                       ;; absent (the bulk-import path) keeps the lenient carrier.
+                       parsed   (parse-fn source (cond-> {:format resolved-format :class dt}
+                                                   strict? (assoc :strict? true)))]
                    (merge (dissoc parsed :dt/type) props))
                  props)
          ;; Memorial-defaults: AFTER the codec merge (so explicit slots +
@@ -537,12 +619,12 @@
          ;; bugs/dt_make_ref_slots_reject_eids_and_silently_drop_maps_2026_07_02.md.
          props (coerce-ref-slot-values props)
          new-entity (if-not validate?
-                      (make* dt props)
+                      (make* dt props {:pre-commit pre-commit})
                       (if-let [errors (validate-data dt props)]
                         (do
                           (log/debug :DT/VALIDATION-FAILED {:class dt :errors errors})
                           (throw (ex-info "Validation failed" errors)))
-                        (make* dt props)))]
+                        (make* dt props {:pre-commit pre-commit})))]
      (reactive/on-entity-changed! dt new-entity project?)
      new-entity)))
 
@@ -829,6 +911,10 @@
                     :validate? - default true; if false, skips validation
                     :additive? - default false.  When true, cardinality-many
                                  slots UNION (append) instead of REPLACE.
+                    :pre-commit - a fn of the SPECULATIVE db and the eid, run
+                                 before the transaction (`transact-with-preflight!`);
+                                 when it throws, nothing is transacted (RT-01,
+                                 D6 2026-09-19)
 
   Behavior:
   - Resolves entity to its current entity-map shape
@@ -851,7 +937,7 @@
   that gap.  Per the improve-abstraction-not-bypass discipline (the
   prior gap-throw lampshade pointed exactly here)."
   ([entity slot-updates] (update-entity! entity slot-updates {}))
-  ([entity slot-updates {:keys [validate? project? additive?] :or {validate? true}}]
+  ([entity slot-updates {:keys [validate? project? additive? pre-commit] :or {validate? true}}]
    (when-not (map? slot-updates)
      (throw (ex-info "update-entity! requires slot-updates to be a map"
                      {:received slot-updates})))
@@ -906,8 +992,8 @@
        (when (seq retracts)
          (log/info :DT/UPDATE-CARD-MANY-REPLACE
                    {:eid eid :class class-ident :retract-count (count retracts)}))
-       @(d/transact (db/conn)
-                    (into (vec retracts) [(assoc slot-updates :db/id eid)])))
+       (transact-with-preflight! (into (vec retracts) [(assoc slot-updates :db/id eid)])
+                                 eid pre-commit))
      ;; Stage A.5 of SSE-reactive-projection arc (decision eid
      ;; 17592186094347 + plan eid 17592186094359): on successful update,
      ;; fire the reactive-projection hook.  `:project?` participates in

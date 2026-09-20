@@ -875,7 +875,8 @@
    :dt/range       :mm/Frontmatter
    :db/valueType   :db.type/ref
    :db/cardinality :db.cardinality/one
-   :db/doc "Container for long-tail / per-type frontmatter keys."}
+   :db/isComponent true
+   :db/doc "Container for long-tail / per-type frontmatter keys.  A COMPONENT since D6 (2026-09-19): the codec nests the carrier under its host, and a nested map transacts only as a component (the 2026-09-19 14:59Z opaque failure: :db.error/invalid-nested-entity on an anonymous carrier); a component also retracts with its host, which is what a carrier should do."}
 
   {:db/ident       :mm.memory/first-section
    :dt/type        :dt/Property
@@ -1644,7 +1645,8 @@
                         :mm.shape/severity
                         :mm.shape/cardinality-constraints
                         :mm.shape/pattern-constraints
-                        :mm.shape/datatype-constraints]
+                        :mm.shape/datatype-constraints
+                        :mm.shape/xor-constraints]        ;; D6 (2026-09-19): declared-but-unlisted
    :dt/abstract?       false
    :db/doc "SHACL-semantics shape definition for machine-checkable validation of mm/* class instances.  Per ADR §2.2 + Dan-affirmation 2026-05-20 ('shacl has been an early commitment and wise investment as a foundational ontology').  Validated by PoolParty's commercial SHACL adoption (Stage 4.C library study).  REPARENTED 2026-05-23 from :dt/Resource to :mm/Meta per observations/mm_shape_subclass_of_dt_resource_not_mm_memory_inconsistency_2026_05_23.md — restores consistency with first-class-X pattern (sibling of :mm/Rule / :mm/Fn / :mm/Type / etc.); shapes now inherit :mm.memory/* slots from :mm/Memory via :mm/Meta and are FS-projected via reactive-projection sink per :first-class memorial policy.  SHACL arc Stage B 2026-05-23 expanded constraint vocabulary (cardinality / pattern / datatype / scope / closed? / severity)."}
 
@@ -1784,6 +1786,18 @@
                       :mm.memory/triggered-by :mm.memory/touches
                       :mm.memory/parent
                       :mm.memory/informs :mm.memory/informed-by
+                      ;; D6 (2026-09-19): declared-but-unlisted properties listed, so the
+                      ;; codec's resolver finds them and the edge is traversable (MF-1).
+                      ;; :mm/id, :mm/pref-label and :mm/alt-label are declared in
+                      ;; mm-namespace.edn, which loads AFTER this file, so they join
+                      ;; this vector from there (a plain :db/add each) — see its tail.
+                      :mm.memory/bootstrap-source :mm.memory/bootstrap-override
+                      ;; both directions of the example-of-concept pair live here
+                      ;; (their :dt/domain is :mm/Memory); :mm/Example lists
+                      ;; demonstrates again as its own required slot, and the
+                      ;; firewall's flow census governs both (label_test pins the
+                      ;; census ⊆ effective-ref-surface invariant on :mm/Memory).
+                      :mm.memory/demonstrates :mm.memory/demonstrated-by
                       :mm.memory/implements
                       :mm.memory/introduced-in
                       ;; S6 firewall slots (MF-1: owning-project is a REF — MUST be

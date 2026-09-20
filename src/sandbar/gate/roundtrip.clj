@@ -54,13 +54,15 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (defn import-corpus!
-  "FS→DB: mirror the canonical `project.import` persist path (ingest-graph
-   → group-by-source → entity-specs->tx-data → make-all* per group).
-   Returns `{:persisted N :failed [...] :refused [...]}`.  Requires an
-   ambient fresh db (see `sandbar.gate.db/with-fresh-db*`)."
+  "FS→DB: mirror the canonical `project.import` persist path (ingest-units
+   → entity-specs->tx-data → make-all* per SOURCE UNIT, one transaction per
+   parsed file — REP-06, D6 2026-09-19).  Returns `{:persisted N :failed
+   [...] :refused [...]}`.  Requires an ambient fresh db (see
+   `sandbar.gate.db/with-fresh-db*`)."
   [from]
-  (let [entities (pg/ingest-graph from {})
-        groups   (codec-md/group-by-source entities)]
+  (let [groups (->> (pg/ingest-units from {})
+                    (filter #(= :parsed (:status %)))
+                    (map :entities))]
     (reduce
      (fn [acc group]
        (let [ident (:db/ident (first group))]
