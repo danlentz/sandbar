@@ -448,6 +448,27 @@ EOF
     exec lein maintenance-import -- --port "$SANDBAR_PORT" "$@"
     ;;
 
+  drift-audit)
+    # The stopped-server drift audit (D7b/D8, 2026-09-20): runs
+    # sandbar.scripts.drift-audit in an admin JVM against the configured
+    # store with the server STOPPED, so a maintenance import's result is
+    # audited before any restart.  --from defaults to the client dir;
+    # --out <file.json> writes the full report.  Over the wire, while the
+    # server runs, the same audit is sandbar_audit_fs-substrate-drift.
+    shift
+    pid=$(running_pid || true)
+    if [ -n "$pid" ]; then
+      echo "sandbar is running (PID $pid) — stop it first ('sandbar stop'); the stopped-server audit reads a quiescent store (use sandbar_audit_fs-substrate-drift over the wire while it runs)" >&2
+      exit 1
+    fi
+    case " $* " in
+      *" --from "*) ;;
+      *) set -- "$@" --from "$SANDBAR_CLIENT_DIR" ;;
+    esac
+    cd "$SANDBAR_HOME"
+    exec lein drift-audit -- "$@"
+    ;;
+
   *)
     cat >&2 <<EOF
 Usage: sandbar <command>
@@ -490,7 +511,12 @@ Commands:
                                    [--exclude-file f] [--retract-file f] [--receipts dir]
                                    [--mode replace|additive].  Dry run without --persist.
                                    Receipts default to .sandbar/receipts/maintenance-import-<ts>/.
-                                   Exit 0 only when every step finished whole.  doc/operations.md.
+                                   Exit 0 only when every step finished whole; 1 when a report
+                                   is incomplete or the server is running; 3 when the JVM
+                                   preflight refused (mixed root).  doc/operations.md.
+  drift-audit [--from dir] [--out f] — the stopped-server drift audit (refuses while running):
+                                   audit the store in-process after a maintenance import,
+                                   before restarting; --out writes the full JSON report.
 
 Config (env):
   SANDBAR_HOME=$SANDBAR_HOME

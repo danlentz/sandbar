@@ -96,36 +96,54 @@ The corpus filesystem is canonical, but the DB can mutate during a session.  To 
 
 ## Maintenance import (quiescent — the 0.2.0 import contract)
 
-Imports into the live store run as a **maintenance operation**: the server stopped, no other writer, fixed input files, a receipt for every step.  This is the reliability sprint's declared contract (corpus `decisions/reliability_sprint_scope_narrowed_to_serialized_correctness_maintenance_imports_and_explicit_deferrals_…_2026_09_20.md`); the `sandbar_project_import` verb stays for read-only previews and for attended imports.  First live run: D7 pass 1, 2026-09-20, receipts at the corpus's `codex/to-astra/d7-pass1-2026-09-20/README.md`.
+For 0.2.0, an import into the live store is a **maintenance operation**: the server stopped, every writer excluded, fixed input files, a receipt for every step, the audit read before anything restarts.  Ordinary serialized use of the server (the MCP verbs, one caller at a time) needs none of this; the procedure below is for repairing or replacing canonical files in bulk.  The `sandbar_project_import` verb stays available over the wire as a **read-only preview** (no `persist`); persisting through it while the server runs is outside the supported 0.2.0 recipe.
 
-**Prerequisites**
-
-- The Datomic transactor is up.  `bin/sandbar stop` has run and `bin/sandbar status` reports not running; the command refuses while the port answers.  No other JVM writes to the store (nREPL sessions, admin scripts).
-- A **staging root** holding exactly the files to import at `<root>/memory/<rel-path>`, byte-identical to the canonical files (record `shasum -a 256` of both).  The walker takes every `.md` under the root; a root mixing `memory/` with other directories is a project root by accident and is refused before any transaction.  Never point it at the corpus root.
-- Before-images: `bin/sandbar backup <label>`; a git tag on the corpus; `bin/sandbar export <dir>` for the store's rendering.
-
-**Run**
+**One runnable sequence** (`CLIENT` is the client-project root, `STAGING` a scratch directory, `RECEIPTS` the receipts directory):
 
 ```sh
-~/src/sandbar/bin/sandbar stop
-~/src/sandbar/bin/sandbar maintenance-import --from /path/to/staging             # dry run: preview receipt only
-~/src/sandbar/bin/sandbar maintenance-import --from /path/to/staging --persist   # preview, then the persist pinned to it
-~/src/sandbar/bin/sandbar start
+# 0. Before-images, taken while the server is still up.
+~/src/sandbar/bin/sandbar backup pre-maintenance-import-$(date +%Y%m%d)      # the store
+~/src/sandbar/bin/sandbar export /tmp/store-rendering-$(date +%Y%m%d)        # the store's own rendering of every file
+git -C "$CLIENT" tag pre-maintenance-import-$(date +%Y%m%d)               # the canonical files
+
+# 1. Stop and exclude every writer: the server (its projection queue drains on stop),
+#    any nREPL or admin JVM on the store, any editor or agent session touching $CLIENT/memory.
+~/src/sandbar/bin/sandbar stop && ~/src/sandbar/bin/sandbar status          # must report STOPPED
+
+# 2. Edit the selected canonical files under $CLIENT/memory, under git; record each
+#    file's before and after hash in $RECEIPTS.
+
+# 3. Stage byte-identical copies of exactly the files to import, at $STAGING/memory/<rel-path>,
+#    and list deferred rows in an exclusion file (rel-paths, one per line).
+mkdir -p "$STAGING/memory" && (cd "$CLIENT" && shasum -a 256 memory/<rel-path> ...) > "$RECEIPTS/staging-sha256.txt"
+
+# 4. Preview (transacts nothing; installs nothing): read $RECEIPTS/import-preview.edn before going on.
+~/src/sandbar/bin/sandbar maintenance-import --from "$STAGING" --exclude-file "$RECEIPTS/excluded.txt" --receipts "$RECEIPTS"
+
+# 5. Persist into the existing store, pinned to that preview's basis and source hashes.
+~/src/sandbar/bin/sandbar maintenance-import --from "$STAGING" --exclude-file "$RECEIPTS/excluded.txt" --receipts "$RECEIPTS" --persist
+
+# 6. Read the receipts, then audit the store in-process while it is still stopped.
+~/src/sandbar/bin/sandbar drift-audit --from "$CLIENT" --out "$RECEIPTS/audit-after.json"
+
+# 7. Restart and wire-check: the memory count, the imported entities read back,
+#    a search, sandbar_reactive_health; then commit $CLIENT with the receipts.
+~/src/sandbar/bin/sandbar start && ~/src/sandbar/bin/sandbar status
 ```
 
-Options: `--exclude-file f` (rel-paths, one per line: walked and fingerprinted, not transacted), `--retract-file f` (idents or eids retracted first, dry run then persist, cascade with dangling acknowledged), `--receipts dir` (default `.sandbar/receipts/maintenance-import-<ts>/`), `--mode replace|additive` (replace by default: the file's declared slots win, omitted source-owned slots are retracted, sections the file no longer carries are retracted, substrate-owned slots are kept).
+**What the steps guarantee**
+
+- The walker takes every `.md` under `--from`; a root mixing `memory/` with other directories is refused before any transaction (a `refused.edn` receipt).  Never point it at the client-project root.
+- `replace` is the default: the file's declared slots win, an omitted source-owned slot is retracted, sections the file no longer carries are retracted, the substrate-owned slots (identity, timestamps, provenance, incoming references) are kept.  `--mode additive` opts out.  A class change, an identity conflict or a dropped section another record references is refused as a conflict, never guessed.
+- The persist is pinned to the preview: a moved basis or a changed, added or removed source refuses the whole call before any transaction.  Database functions are installed only on `--persist`; a dry run leaves nothing behind.
+- Optional retraction lists (`--retract-file`) and identity handoffs are outside the accepted 0.2.0 subset of this procedure; `complete?` validates the import report, not optional retraction or file effects.
 
 **Read the receipts, not the exit code alone**
 
 - `import-preview.edn`: `:units` with `:mode`, `:retracted-sections`, `:retracted-slots`, `:retracted-slot-attrs` (the attributes behind the count), `:retracted-carrier?`, `:conflicts`; the `:basis` and `:sources-sha256` the persist is pinned to.
 - `import-persist.edn`: `:persisted`, `:conflicts`, `:failed`, `:refused`, `:final-basis`, `:reconciled?`.
-- `retract-dry-run.edn` / `retract-persist.edn` when a retract list was given.
-- Exit 0 only when the preview has no parse failure or conflict and every previewed unit persisted (`complete?`); 1 when a report is incomplete; 3 when the run was refused before any transaction (server up, mixed root).  A dry run transacts nothing and installs nothing; the transactor-side functions are installed only on `--persist`.
-
-**After**
-
-- Run the drift audit while still stopped (`lein run -m clojure.main` calling `sandbar.audit.fs-substrate-drift/audit-all {:from <corpus-root>}` after `sandbar.codec.markdown/register!`), or `sandbar_audit_fs-substrate-drift` once restarted.  Every remaining row should carry a named reason; the done-when is zero unexplained changes, not a numerical zero.
-- `bin/sandbar start`; wire checks (count, the imported entities read back, search, `sandbar_reactive_health`); commit the corpus with the receipts.
+- `audit-after.json`: every remaining drift row; the done-when is zero unexplained rows, each carrying a named reason, not a numerical zero.
+- Exit codes: the shell wrapper exits 1 when the server is running; the JVM exits 3 when its preflight refused the run (a mixed root) before any transaction, 1 when a report is incomplete, and 0 only when the preview had no parse failure or conflict and every previewed unit persisted (`complete?`).
 
 **Recovery**: `git checkout <tag> -- memory/` for the files; `bin/sandbar restore <backup-dir>` for the store, server stopped.
 
