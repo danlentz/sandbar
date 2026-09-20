@@ -929,3 +929,16 @@
 
 
   )
+
+
+(defn entity-retracted?
+  "True when `eid` once carried a `:dt/type` and carries none now — a
+   RETRACTED entity, as opposed to one that never existed (a synthetic
+   fixture eid) or one that is live.  Read from the history index, one eid
+   and one attribute, so the reactive sink can refuse to resurrect the file
+   of an entity retracted after its projection was enqueued (D7,
+   2026-09-20)."
+  [eid]
+  (let [db (db)]
+    (and (nil? (:dt/type (d/entity db eid)))
+         (boolean (seq (d/datoms (d/history db) :eavt eid :dt/type))))))

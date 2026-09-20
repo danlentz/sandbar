@@ -38,6 +38,7 @@
    [sandbar.db.datomic :as db]
    [sandbar.db.datatype :as dt]
    [sandbar.entity-ref :as eref]
+   [sandbar.reactive.sinks :as sinks]
    [sandbar.util.event :as event]))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -216,7 +217,7 @@
 ;; Per-target report — PURE against a db snapshot
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-(defn report-target
+(defn report-target*
   "Build the dry-run report for ONE `target` (an ident keyword-string or a
    numeric eid) against `db`.  Never raises — a missing target yields
    `{:exists? false}`.  Shape:
@@ -276,6 +277,32 @@
          :inbound-count     (count inbound)
          :protected?        protected?
          :protection-reason reason}))))
+
+(defn report-target
+  "`report-target*` plus the facts the retraction half of the bijection
+   needs before the entity is gone (D7, 2026-09-20): `:rel-path`, `:mm-id`
+   (as a string), `:corpus-document?` (whether the class projects a file)
+   and, on a dry run, `:file-effect` — what a persist would do to the file
+   (`sinks/remove-projected-file!` in planning mode).  Absent on a target
+   that does not resolve."
+  [db target]
+  (let [r (report-target* db target)]
+    (if-not (:exists? r)
+      r
+      (let [e        (d/entity db (:resolved-eid r))
+            rel-path (:mm.memory/rel-path e)
+            mm-id    (some-> (:mm/id e) str)
+            doc?     (boolean (some-> (:dt-type r) dt/corpus-document-class?))
+            others   (when rel-path
+                       (d/q '[:find [?o ...] :in $ ?rp ?e
+                              :where [?o :mm.memory/rel-path ?rp] [(not= ?o ?e)]]
+                            db rel-path (:resolved-eid r)))]
+        (cond-> (assoc r :rel-path rel-path :mm-id mm-id :corpus-document? doc?)
+          rel-path (assoc :file-effect
+                          (sinks/remove-projected-file! {:rel-path rel-path :mm-id mm-id
+                                                         :corpus-document? doc?
+                                                         :other-claimant? (boolean (seq others))
+                                                         :dry-run? true})))))))
 
 (defn build-report
   "Build the full dry-run report over `targets` against `db`.  Returns
@@ -389,7 +416,12 @@
 
    Returns the report map.  On :persist the report is augmented with
    `:persist true`, `:retracted-eids`, `:retracted-count`,
-   `:skipped` (protected / missing entries), and `:events-emitted`.
+   `:skipped` (protected / missing entries), `:events-emitted`, and
+   `:files` / `:files-removed` — the projected file each target owned is
+   removed with it (only when no other live entity claims the rel-path and
+   the file's front-matter id matches the entity's `mm/id`) and every
+   outcome is reported; the dry run carries each target's `:file-effect`
+   (D7, 2026-09-20; RT-06).
    Protected + missing targets are SKIPPED (never abort the batch); the
    retraction tx itself is atomic — if it throws, nothing was retracted."
   [targets {:keys [persist cascade reason actor acknowledge-dangling] :as _opts}]
@@ -454,7 +486,20 @@
                                  t
                                  (if cascade (count (:dependents t)) 0)
                                  reason actor-ent))
-                              proceed))]
+                              proceed))
+                ;; The retraction half of the bijection (D7, 2026-09-20): the
+                ;; file each retracted target owned goes with it, decided at the
+                ;; post-retraction basis so a surviving claimant of the same
+                ;; rel-path keeps the file; every outcome is reported.
+                db-after (db/db)
+                files  (vec (for [t proceed :when (:rel-path t)]
+                              (sinks/remove-projected-file!
+                               {:rel-path         (:rel-path t)
+                                :mm-id            (:mm-id t)
+                                :corpus-document? (:corpus-document? t)
+                                :other-claimant?  (some? (d/q '[:find ?e . :in $ ?rp
+                                                                :where [?e :mm.memory/rel-path ?rp]]
+                                                              db-after (:rel-path t)))})))]
             (-> report
                 (assoc :persist         true
                        :reason          reason
@@ -462,4 +507,6 @@
                        :retracted-count (count eids)
                        :skipped         skipped
                        :events-emitted  (count events)
-                       :audit-failures  (- (count proceed) (count events))))))))))
+                       :audit-failures  (- (count proceed) (count events))
+                       :files           files
+                       :files-removed   (count (filter #(= :removed (:outcome %)) files))))))))))

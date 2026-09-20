@@ -40,7 +40,9 @@
             [clojure.string        :as str]
             [clojure.tools.logging :as log]
             [sandbar.codec         :as codec]
+            [sandbar.codec.markdown :as md]
             [sandbar.db.datatype   :as dt]
+            [sandbar.db.datomic    :as db]
             [sandbar.mcp.resources :as resources]
             [sandbar.projection    :as pg]))
 
@@ -250,6 +252,20 @@
 ;; FS-projection sink — codec.emit + atomic fs write
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
+(defonce ^:private +path-locks+
+  ;; One monitor per canonical target path, shared by the write and the
+  ;; removal, so two entities that claim one path (or an old queued write
+  ;; and a removal) never interleave between the ownership check and the
+  ;; filesystem effect (Astra's RT-06 interleaving case, D7 2026-09-20).
+  ;; Never evicted: bounded by the distinct paths this process touches.
+  (java.util.concurrent.ConcurrentHashMap.))
+
+(defn- path-lock
+  "The monitor for `canonical-path` (see `+path-locks+`)."
+  [^String canonical-path]
+  (.computeIfAbsent ^java.util.concurrent.ConcurrentHashMap +path-locks+ canonical-path
+                    (reify java.util.function.Function (apply [_ _] (Object.)))))
+
 (defn- atomic-write!
   "Write `content` to `target-path` atomically (write to .tmp; rename).
    The rename is an OS-level atomic operation on the same filesystem —
@@ -284,15 +300,87 @@
         ;; create-time NAME_MAX guard's `filename-max-bytes` budget reserves
         ;; exactly its byte length, so protocol and guard cannot drift.
         tmp    ^java.io.File (io/file (str target-path atomic-write-tmp-suffix))]
-    (when parent (.mkdirs parent))
-    (pg/guard-registry-critical-write! target-path content)
-    (spit tmp content)
-    (when-not (.renameTo tmp target)
-      (throw (ex-info "atomic write failed: File.renameTo returned false"
-                      {:sandbar/error :atomic-rename-failed
-                       :target-path   target-path
-                       :tmp-path      (str target-path atomic-write-tmp-suffix)})))
+    ;; Under the path's monitor (D7, 2026-09-20): a removal of the same path
+    ;; cannot interleave with this write (see `+path-locks+`).
+    (locking (path-lock target-path)
+      (when parent (.mkdirs parent))
+      (pg/guard-registry-critical-write! target-path content)
+      (spit tmp content)
+      (when-not (.renameTo tmp target)
+        (throw (ex-info "atomic write failed: File.renameTo returned false"
+                        {:sandbar/error :atomic-rename-failed
+                         :target-path   target-path
+                         :tmp-path      (str target-path atomic-write-tmp-suffix)}))))
     nil))
+
+(defn- delete-file!
+  "Delete `f`, throwing the filesystem's own exception on failure (a false
+   `.delete` would be a silent no-op; the retraction report must say what
+   happened)."
+  [^java.io.File f]
+  (java.nio.file.Files/delete (.toPath f)))
+
+(defn projected-file-id
+  "The `id` in `file`'s front matter, decoded through the codec's own
+   front-matter parser (the canonical trailing `id: '<uuid>'` line the
+   emitter writes), as a string; nil when the file has no front matter or
+   no id.  Reads the front matter only, never the body."
+  [^java.io.File file]
+  (let [[fm _] (md/split-frontmatter (slurp file))]
+    (when fm
+      (some-> (get (md/parse-frontmatter-text fm) :id) str str/trim
+              (str/replace #"^['\"]|['\"]$" "")
+              not-empty))))
+
+(defn remove-projected-file!
+  "Remove the corpus file a retracted entity OWNED — the retraction half of
+   the filesystem/database bijection (RT-06 of Astra's review and the D4
+   retraction-path bug; D7 2026-09-20).  Called by the retract verb with
+   what it knew of the target beforehand, after a successful persist (or,
+   with `:dry-run?`, before anything, to report what a persist would do).
+   The file goes only when `corpus-document?` (the class projects), no
+   other live entity claims the rel-path (`other-claimant?`, decided by the
+   caller at the post-retraction basis), the file exists under the
+   contained corpus root, and its front-matter id equals the retracted
+   entity's `mm/id` — so an identless twin never removes the identful
+   entity's file, a reused path is never removed for its earlier owner, an
+   entity without an id removes nothing, and a file without an id is left
+   for the operator.  The check and the removal run under the path's
+   monitor (`+path-locks+`), the same one the write takes, so nothing
+   interleaves between them.  Returns `{:rel-path :outcome}` with
+   `:outcome` one of `:removed`, `:absent`, `:kept` (with `:reason`) or
+   `:failed` (with `:error`); in dry-run mode `:would-remove` /
+   `:would-keep` / `:absent`.  An I/O failure is reported, never swallowed
+   into a false settled result; the report is not a durable retry — after
+   a failure the file stays and the next drift audit names it."
+  [{:keys [rel-path mm-id other-claimant? corpus-document? dry-run?]}]
+  (let [kept    (fn [reason & [extra]]
+                  (merge {:rel-path rel-path :outcome (if dry-run? :would-keep :kept) :reason reason} extra))
+        removed (fn [] {:rel-path rel-path :outcome (if dry-run? :would-remove :removed)})]
+    (try
+      (cond
+        (not corpus-document?) (kept :not-a-corpus-document)
+        other-claimant?        (kept :another-entity-claims-the-path)
+        :else
+        (let [target-path (contained-target-path rel-path)
+              target      (io/file target-path)]
+          (locking (path-lock target-path)
+            (cond
+              (not (.exists target)) {:rel-path rel-path :outcome :absent}
+              (nil? mm-id)           (kept :retracted-entity-had-no-id)
+              :else
+              (let [file-id (projected-file-id target)]
+                (cond
+                  (nil? file-id)             (kept :file-has-no-id)
+                  (not= (str mm-id) file-id) (kept :file-id-differs {:file-id file-id})
+                  dry-run?                   (removed)
+                  :else
+                  (do (delete-file! target)
+                      (log/info :REACTIVE/fs-remove-done {:rel-path rel-path :mm-id (str mm-id)})
+                      (removed))))))))
+      (catch Throwable t
+        (log/warn t :REACTIVE/fs-remove-failed {:rel-path rel-path :error (.getMessage t)})
+        {:rel-path rel-path :outcome :failed :error (.getMessage t)}))))
 
 (defn fs-projection-sink
   "Per-drain sink: reactive forward projection (DB → FS).
@@ -397,15 +485,30 @@
             ;; touching the filesystem.  A refusal throws :rel-path-traversal-
             ;; refusal, caught+rethrown below (symmetric with registry-strip).
             (let [target-path (contained-target-path rel-path)
-                  _           (log/debug :REACTIVE/fs-write
+                  ;; D7 (2026-09-20), Astra's interleaving case: the slots this
+                  ;; drain carries are a snapshot.  If the entity has since been
+                  ;; retracted, or has moved to another rel-path, this write would
+                  ;; resurrect a file the retraction removed (or leave a stale
+                  ;; one), so it is skipped; the newer state has its own enqueue.
+                  live        (db/entity eid)
+                  live?       (cond
+                                (db/entity-retracted? eid)          false
+                                (nil? (:dt/type live))              true   ; never in this store: a fixture's eid
+                                :else (= rel-path (:mm.memory/rel-path live)))]
+              (if-not live?
+                (log/info :REACTIVE/fs-write-skipped
+                          {:ident ident :eid eid :class class-ident :rel-path rel-path
+                           :reason :entity-retracted-or-moved
+                           :live-rel-path (:mm.memory/rel-path live)})
+                (let [_       (log/debug :REACTIVE/fs-write
                                          {:ident ident :eid eid :class class-ident
                                           :rel-path rel-path :phase :start})
-                  _           (atomic-write! target-path content)
-                  done-ms     (- (System/currentTimeMillis) start-ms)
-                  bytes       (count content)]
-              (log/info :REACTIVE/fs-write-done
-                        {:ident ident :eid eid :class class-ident :rel-path rel-path
-                         :duration-ms done-ms :bytes bytes}))))
+                      _       (atomic-write! target-path content)
+                      done-ms (- (System/currentTimeMillis) start-ms)
+                      bytes   (count content)]
+                  (log/info :REACTIVE/fs-write-done
+                            {:ident ident :eid eid :class class-ident :rel-path rel-path
+                             :duration-ms done-ms :bytes bytes}))))))
         (catch Throwable t
           ;; Companion rethrow: a SECURITY refusal must ESCAPE the sink so
           ;; `dispatch-sinks!` increments :sink-error-total and the refusal

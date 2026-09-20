@@ -1,0 +1,287 @@
+(ns sandbar.project.import-replace-test
+  "A re-imported managed file ASSERTS its current content (REP-03 of Astra's
+   0.2.0 representation review, folded into D7 on 2026-09-20, on the terms of
+   her 2026-09-20 answer): the source-owned representation is replaced,
+   obsolete sections, links and carrier contents are retracted in the same
+   per-file transaction, while the host's identity, the refs into it, and the
+   facts the substrate or another owner maintains are kept; additive stays an
+   explicit mode; ambiguity is refused, never guessed.
+
+   Her reproduction at 7fd481f: first import a Decision with tags A and B, an
+   unknown `custom-key` and sections One and Two; edit the file to keep only
+   tag A and section One and drop the key; import reported one persisted
+   group and zero failures, but the rendering still carried B, `custom-key`
+   and section Two; a third import of a headingless replacement kept both old
+   sections.
+
+   What this pins, through the REAL dispatched verb against a fresh store:
+     - her edit-and-remove case: the dropped tag membership, section and
+       carrier are gone after the re-import; the shared tag target survives;
+     - reorder and rename of sections: the new order emits, the renamed
+       section's old entity is retracted, the first-section link follows;
+     - a scalar slot edited replaces, an omitted authored slot is retracted,
+       an omitted substrate-owned slot (created-by) is kept;
+     - a headingless replacement retracts every section;
+     - a section another record references refuses the unit as a conflict,
+       and nothing about it changes;
+     - a file whose `id:` differs from the stored `mm/id` refuses the unit;
+     - repeated unchanged imports change no datom of the entity;
+     - additive mode keeps the pre-D7 behaviour;
+     - the dry run plans each unit and reports the same modes and conflicts;
+     - a persist pinned to a stale basis is refused."
+  (:require [cheshire.core          :as json]
+            [clojure.java.io        :as io]
+            [clojure.string         :as str]
+            [clojure.test           :refer [deftest is testing use-fixtures]]
+            [datomic.api            :as d]
+            [sandbar.codec.markdown :as md]
+            [sandbar.db.datatype    :as dt]
+            [sandbar.db.datomic     :as db]
+            [sandbar.mcp.tools      :as tools]
+            [sandbar.projection     :as pg]
+            [sandbar.test-util      :as tu]))
+
+(use-fixtures :each
+  (fn [f]
+    (md/register!)
+    ((tu/make-test-db-fixture {:test-name "import-replace-test" :auth? false}) f)))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; helpers
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defn- fresh-tmp-dir ^java.io.File [stem]
+  (let [f (java.io.File/createTempFile (str "import-replace-" stem "-") "")]
+    (.delete f) (.mkdirs f) f))
+
+(defn- rm-rf! [^java.io.File f]
+  (when (.isDirectory f)
+    (doseq [c (.listFiles f)] (rm-rf! c)))
+  (.delete f))
+
+(defn- write! [^java.io.File root rel content]
+  (let [f (io/file root rel)] (io/make-parents f) (spit f content) f))
+
+(defn- call-import [arguments]
+  (let [response (tools/handle-call 1 {:name "sandbar.project.import" :arguments arguments})
+        result   (:result response)]
+    (is (map? result) (str "no :result — " (pr-str response)))
+    (is (not (:isError result)) (str "isError — " (-> result :content first :text)))
+    (some-> result :content first :text (json/parse-string true))))
+
+(defn- import! [dir & [extra]]
+  (call-import (merge {"from" (.getPath dir) "persist" true} extra)))
+
+(defn- dry-run [dir & [extra]]
+  (call-import (merge {"from" (.getPath dir)} extra)))
+
+(def ^:private rel-path "decisions/replace_probe.md")
+(def ^:private ident :memory.decisions/replace_probe)
+
+(defn- doc
+  "A decision document from parts: `tags` (vec of strings), `extra` (an
+   unknown key line or nil), `sections` (vec of [heading body]), `slots`
+   (extra front-matter lines)."
+  [{:keys [tags extra sections slots description]
+    :or   {tags ["alpha" "beta"] sections [["One" "One body."] ["Two" "Two body."]] description "the replacement probe"}}]
+  (str "---\ntype: decision\nname: Replacement probe\ndescription: " description "\n"
+       (when (seq tags) (str "tags:\n" (str/join (map #(str "  - " % "\n") tags))))
+       (when extra (str extra "\n"))
+       (when slots (str slots "\n"))
+       "---\n"
+       (str/join "\n" (map (fn [[h b]] (str "## " h "\n\n" b "\n")) sections))))
+
+(defn- entity [] (d/entity (d/db (db/conn)) ident))
+
+(defn- tag-values []
+  (set (map #(:mm.tag/value (d/entity (d/db (db/conn)) (if (keyword? %) (d/entid (d/db (db/conn)) %) (:db/id %))))
+            (:mm.memory/tags (entity)))))
+
+(defn- section-headings []
+  (->> (d/q '[:find [?h ...] :in $ ?m :where [?s :mm.section/parent ?m] [?s :mm.section/heading ?h]]
+            (d/db (db/conn)) ident)
+       set))
+
+(defn- rendered [] (pg/realize-and-emit-entity (entity)))
+
+(defn- emitted-headings [text]
+  (->> (str/split-lines text) (filter #(re-find #"^#{1,6} " %)) vec))
+
+(defn- tag-entity-exists? [value]
+  (some? (d/q '[:find ?t . :in $ ?v :where [?t :mm.tag/value ?v]] (d/db (db/conn)) value)))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; her edit-and-remove case
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(deftest a-re-import-drops-what-the-file-dropped-and-keeps-shared-targets
+  (let [dir (fresh-tmp-dir "edit")]
+    (try
+      (write! dir rel-path (doc {:tags ["alpha" "beta"] :extra "custom-key: kept for now" :sections [["One" "One body."] ["Two" "Two body."]]}))
+      (let [first-report (import! dir)]
+        (is (= "insert" (-> first-report :persisted first :mode)))
+        (is (= #{"alpha" "beta"} (tag-values)))
+        (is (= #{"One" "Two"} (section-headings)))
+        (is (some? (:mm.memory/frontmatter (entity))) "the unknown key rode in the carrier"))
+      (write! dir rel-path (doc {:tags ["alpha"] :sections [["One" "One body."]]}))
+      (let [report (import! dir)
+            rec    (-> report :persisted first)]
+        (is (= 1 (:persisted-count report)) (pr-str report))
+        (is (= "replace" (:mode rec)))
+        (is (= 1 (:retracted-sections rec)))
+        (is (true? (:retracted-carrier? rec)))
+        (is (= #{"alpha"} (tag-values)) "the dropped membership is gone")
+        (is (tag-entity-exists? "beta") "the shared tag target survives")
+        (is (= #{"One"} (section-headings)) "the dropped section is gone")
+        (is (nil? (:mm.memory/frontmatter (entity))) "the carrier is gone with its last key")
+        (is (= ["## One"] (emitted-headings (rendered))) "the rendering shows only what the file holds"))
+      (finally (rm-rf! dir)))))
+
+(deftest reorder-and-rename-follow-the-file
+  (let [dir (fresh-tmp-dir "reorder")]
+    (try
+      (write! dir rel-path (doc {:sections [["One" "One body."] ["Two" "Two body."]]}))
+      (import! dir)
+      (write! dir rel-path (doc {:sections [["Two" "Two body."] ["Three" "Three body."]]}))
+      (let [report (import! dir)]
+        (is (= "replace" (-> report :persisted first :mode)))
+        (is (= 1 (-> report :persisted first :retracted-sections)) "One is gone")
+        (is (= #{"Two" "Three"} (section-headings)))
+        (is (= ["## Two" "## Three"] (emitted-headings (rendered))) "the new order emits")
+        (is (nil? (d/entid (d/db (db/conn)) :memory.decisions/replace_probe__one)) "the retracted section's ident is gone"))
+      (finally (rm-rf! dir)))))
+
+(deftest scalars-replace-authored-omissions-retract-and-substrate-owned-facts-stay
+  (let [dir (fresh-tmp-dir "scalars")]
+    (try
+      (write! dir rel-path (doc {:description "first description" :slots "importance: high"}))
+      (import! dir)
+      (let [created-by (:mm.memory/created-by (entity))]
+        ;; give the entity a substrate-owned fact the file never carries
+        @(d/transact (db/conn) [{:db/id (d/entid (d/db (db/conn)) ident) :mm.memory/last-touched (java.util.Date.)}])
+        (is (= :high (:mm.memory/importance (entity))))
+        (write! dir rel-path (doc {:description "second description"}))
+        (let [report (import! dir)
+              e      (entity)]
+          (is (= "replace" (-> report :persisted first :mode)))
+          (is (= "second description" (:mm.memory/description e)) "the edited scalar replaced")
+          (is (nil? (:mm.memory/importance e)) "the omitted authored slot is retracted")
+          (is (some? (:mm.memory/last-touched e)) "the substrate-owned stamp is kept")
+          (is (= created-by (:mm.memory/created-by e)) "provenance is kept")
+          (is (pos? (-> report :persisted first :retracted-slots)))))
+      (finally (rm-rf! dir)))))
+
+(deftest a-headingless-replacement-retracts-every-section
+  (let [dir (fresh-tmp-dir "headingless")]
+    (try
+      (write! dir rel-path (doc {:sections [["One" "One body."] ["Two" "Two body."]]}))
+      (import! dir)
+      (write! dir rel-path (str "---\ntype: decision\nname: Replacement probe\ndescription: now headingless\ntags:\n  - alpha\n---\nJust a body.\n"))
+      (let [report (import! dir)
+            e      (entity)]
+        (is (= 2 (-> report :persisted first :retracted-sections)))
+        (is (= #{} (section-headings)))
+        (is (nil? (:mm.memory/first-section e)) "the first-section link is gone")
+        (is (str/includes? (rendered) "Just a body.")))
+      (finally (rm-rf! dir)))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; refusals
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(deftest a-section-another-record-references-refuses-the-unit
+  (let [dir (fresh-tmp-dir "referenced")]
+    (try
+      (write! dir rel-path (doc {:sections [["One" "One body."] ["Two" "Two body."]]}))
+      (import! dir)
+      ;; another record cites section Two
+      (let [two (d/entid (d/db (db/conn)) :memory.decisions/replace_probe__two)]
+        (is (some? two))
+        @(d/transact (db/conn) [{:db/id "citer" :dt/type :mm/Observation :db/ident :memory.observations/citer
+                                 :mm.memory/rel-path "observations/citer.md" :mm.memory/name "citer"
+                                 :mm.memory/memory-type :observation :mm.memory/cites two}]))
+      (write! dir rel-path (doc {:sections [["One" "One body."]]}))
+      (let [t0     (d/basis-t (d/db (db/conn)))
+            report (import! dir)]
+        (is (= 1 (:conflict-count report)) (pr-str report))
+        (is (zero? (:persisted-count report)))
+        (is (= "externally-referenced-section" (-> report :conflicts first :conflicts first :reason)))
+        (is (true? (:reconciled? report)))
+        (is (= #{"One" "Two"} (section-headings)) "nothing about the document changed")
+        (is (some? (d/entid (d/db (db/conn)) :memory.decisions/replace_probe__two))))
+      (finally (rm-rf! dir)))))
+
+(deftest a-file-whose-id-differs-from-the-stored-one-refuses-the-unit
+  (let [dir (fresh-tmp-dir "identity")]
+    (try
+      (write! dir rel-path (doc {}))
+      (import! dir)
+      (let [stored-id (:mm/id (entity))]
+        (is (some? stored-id))
+        (write! dir rel-path (doc {:slots "id: '00000000-0000-4000-8000-000000000000'"}))
+        (let [report (import! dir)]
+          (is (= 1 (:conflict-count report)) (pr-str report))
+          (is (= "identity-conflict" (-> report :conflicts first :conflicts first :reason)))
+          (is (= stored-id (:mm/id (entity))) "the stored identity stands")))
+      (finally (rm-rf! dir)))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; idempotence, additive mode, the preview and the basis pin
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defn- entity-snapshot []
+  (let [e (entity)]
+    (into {} (for [[k v] (into {} e)] [k (if (set? v) (set (map #(if (map? %) (:db/id %) %) v)) (if (map? v) (:db/id v) v))]))))
+
+(deftest repeated-unchanged-imports-change-nothing
+  (let [dir (fresh-tmp-dir "idempotent")]
+    (try
+      (write! dir rel-path (doc {}))
+      (import! dir)
+      (let [before (entity-snapshot)
+            report (import! dir)]
+        (is (= "replace" (-> report :persisted first :mode)))
+        (is (zero? (-> report :persisted first :retracted-sections)))
+        (is (zero? (-> report :persisted first :retracted-slots)))
+        (is (= before (entity-snapshot)) "no datom of the entity changed"))
+      (finally (rm-rf! dir)))))
+
+(deftest additive-mode-keeps-the-pre-d7-behaviour
+  (let [dir (fresh-tmp-dir "additive")]
+    (try
+      (write! dir rel-path (doc {:tags ["alpha" "beta"] :sections [["One" "One body."] ["Two" "Two body."]]}))
+      (import! dir)
+      (write! dir rel-path (doc {:tags ["alpha"] :sections [["One" "One body."]]}))
+      (let [report (import! dir {"mode" "additive"})]
+        (is (= "additive" (-> report :persisted first :mode)))
+        (is (= #{"alpha" "beta"} (tag-values)) "additive keeps the old membership")
+        (is (= #{"One" "Two"} (section-headings)) "additive keeps the old section"))
+      (finally (rm-rf! dir)))))
+
+(deftest the-dry-run-plans-each-unit-and-a-stale-basis-is-refused
+  (let [dir (fresh-tmp-dir "preview")]
+    (try
+      (write! dir rel-path (doc {:tags ["alpha" "beta"] :sections [["One" "One body."] ["Two" "Two body."]]}))
+      (let [preview (dry-run dir)]
+        (is (= "insert" (-> preview :units first :mode)))
+        (is (some? (:basis preview)))
+        (is (string? (-> preview :units first :source-sha256))))
+      (import! dir)
+      (write! dir rel-path (doc {:tags ["alpha"] :sections [["One" "One body."]]}))
+      (let [preview (dry-run dir)]
+        (is (= "replace" (-> preview :units first :mode)))
+        (is (= 1 (-> preview :units first :retracted-sections)))
+        (is (zero? (:conflict-count preview)))
+        ;; the database moves between the preview and the persist
+        @(d/transact (db/conn) [{:db/id "bystander" :dt/type :mm/Observation :mm.memory/rel-path "observations/bystander.md"
+                                 :mm.memory/name "bystander" :mm.memory/memory-type :observation}])
+        (let [response (tools/handle-call 1 {:name "sandbar.project.import"
+                                             :arguments {"from" (.getPath dir) "persist" true "expect-basis" (:basis preview)}})]
+          (is (true? (-> response :result :isError)) "a persist pinned to a stale basis is refused")
+          (is (str/includes? (-> response :result :content first :text) "moved since the preview")))
+        (is (= #{"One" "Two"} (section-headings)) "the refused persist changed nothing")
+        (let [fresh (dry-run dir)
+              report (import! dir {"expect-basis" (:basis fresh)})]
+          (is (= 1 (:persisted-count report)))
+          (is (= #{"One"} (section-headings)))))
+      (finally (rm-rf! dir)))))

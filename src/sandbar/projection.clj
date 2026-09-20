@@ -86,11 +86,12 @@
 (defn mm-walker
   "Walker for `dt/realize-with` over mm/Memory + mm/Section trees.
 
-   From mm/Memory: walks to :mm.memory/first-section (top-of-chain).
-   From mm/Section: walks to (1) :mm.section/next-sibling (chain) and
-   (2) the first child via :_mm.section/parent reverse-index filtered
-   by 'no :previous-sibling' (first-child anchor of the children's
-   chain head).  Returns ALREADY-DEDUPLICATED related entities.
+   From mm/Memory: walks to :mm.memory/first-section and to every
+   direct child (the reverse `:mm.section/_parent` index).  From
+   mm/Section: walks to :mm.section/next-sibling and to every child.
+   Order is the emitter's business (`md/ordered-children`); this walker
+   only guarantees that every section of the tree is realized (REP-01,
+   D7 2026-09-20).  Returns ALREADY-DEDUPLICATED related entities.
 
    Lifted from sandbar.mcp.resources/mm-walker so both project.export
    and resources/read share the same walk."
@@ -99,16 +100,22 @@
   ;; per post-2026-05-21 codec slot-inheritance fix.
   (let [t (:dt/type entity)]
     (cond
+      ;; REP-01 (Astra's review; D7 2026-09-20): every child, through the
+      ;; reverse attribute Datomic actually names (`:mm.section/_parent` — the
+      ;; former `:_mm.section/parent` was no attribute at all, so no nested
+      ;; section was ever realized); the emitter orders the children.
+      ;; The reverse index already holds the first section, so it is returned
+      ;; alone (realize-with wants a deduplicated frontier); the first-section
+      ;; link is the fallback for a record whose sections lost their parent.
       (dt/type-isa? :mm/Memory t)
-      (when-let [first-sec (:mm.memory/first-section entity)]
-        [first-sec])
+      (or (seq (:mm.section/_parent entity))
+          (when-let [first-sec (:mm.memory/first-section entity)]
+            [first-sec]))
 
       (dt/type-isa? :mm/Section t)
       (concat (when-let [next-sib (:mm.section/next-sibling entity)]
                 [next-sib])
-              (->> (:_mm.section/parent entity)
-                   (filter #(nil? (:mm.section/previous-sibling %)))
-                   (take 1)))
+              (:mm.section/_parent entity))
 
       :else nil)))
 
@@ -357,8 +364,14 @@
    the same coll), group sections under their host memories.
 
    Returns a vector of `{:memory <mm/Memory entity-spec>
-                          :sections [<mm/Section entity-specs in chain order>...]}`
-   maps.  Memory-only inputs (no sections) yield `{:memory ... :sections []}`."
+                          :sections [<mm/Section entity-specs in document order>...]}`
+   maps.  Memory-only inputs (no sections) yield `{:memory ... :sections []}`.
+
+   The sections are the memory's FULL tree via `md/section-tree` (REP-01 of
+   Astra's review, D7 2026-09-20) — every section whose parent chain reaches
+   the memory, in document order — where the previous grouping followed the
+   top `:first-section` / `:next-sibling` chain only and dropped every
+   nested section from the export."
   [entities]
   (let [by-type        (group-by :dt/type entities)
         ;; Subsumption-aware: gather any entity whose :dt/type is :mm/Memory or
@@ -368,18 +381,10 @@
                                     by-type))
         all-sections   (vec (mapcat (fn [[t es]]
                                       (when (dt/type-isa? :mm/Section t) es))
-                                    by-type))
-        section-by-id  (into {} (for [s all-sections] [(:db/ident s) s]))]
+                                    by-type))]
     (for [memory memories]
-      (let [first-sec-ident (:mm.memory/first-section memory)
-            sections (loop [acc []
-                            cur (get section-by-id first-sec-ident)]
-                       (if cur
-                         (recur (conj acc cur)
-                                (some->> (:mm.section/next-sibling cur)
-                                         (get section-by-id)))
-                         acc))]
-        {:memory memory :sections sections}))))
+      {:memory   memory
+       :sections (md/section-tree all-sections (:db/ident memory) (:mm.memory/first-section memory))})))
 
 (defn- source-descriptor
   "A slim source-entity descriptor of a projected entity — the ADOPTED 3-key
@@ -433,19 +438,28 @@
         ;; Filter applied at the memory level — sections under a matching
         ;; memory always travel with their host
         filtered (if (and filter-spec (seq filter-spec))
-                   ;; Keep all sections; filter memories; drop sections
-                   ;; whose parent didn't pass.
                    (let [memories       (clojure.core/filter (fn [e] (dt/type-isa? :mm/Memory (:dt/type e)))
                                                               entities)
                          pass-memories  (apply-filter memories filter-spec)
                          pass-mem-idents (set (map :db/ident pass-memories))
                          sections       (clojure.core/filter (fn [e] (dt/type-isa? :mm/Section (:dt/type e)))
                                                               entities)
-                         pass-sections  (vec (clojure.core/filter
-                                               (fn [s]
-                                                 (contains? pass-mem-idents
-                                                            (:mm.section/parent s)))
-                                               sections))]
+                         section-by-ident (into {} (keep (fn [s] (when-let [i (:db/ident s)] [i s]))) sections)
+                         ;; A section accompanies its memory when its parent CHAIN
+                         ;; reaches a passing memory — not only when its immediate
+                         ;; parent is one (REP-01, D7 2026-09-20: the old test kept
+                         ;; top-level sections and dropped every nested one).
+                         root-passes?   (fn [s]
+                                          (loop [cur s seen #{}]
+                                            (let [p (:mm.section/parent cur)]
+                                              (cond
+                                                (nil? p)                        false
+                                                (contains? pass-mem-idents p)   true
+                                                (contains? seen p)              false
+                                                :else (if-let [ps (get section-by-ident p)]
+                                                        (recur ps (conj seen p))
+                                                        false)))))
+                         pass-sections  (vec (clojure.core/filter root-passes? sections))]
                      (into pass-memories pass-sections))
                    entities)]
     (.mkdirs out-dir)

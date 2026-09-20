@@ -1894,14 +1894,19 @@
    Returns: vector of section maps; empty when body has no headings.
 
    On slug-collision (two sections at same level under same parent
-   producing the same slug), throws ex-info per B.0 ADR §2.3."
+   producing the same slug), throws ex-info per B.0 ADR §2.3.
+
+   Sibling links are by PARENT, not by parent and heading level (REP-02 of
+   Astra's review, D7 2026-09-20): `# A`, `### B`, `## C` chains B → C
+   under A, and heading level stays presentation, so the emitter reaches
+   every heading exactly once."
   [body memory-ident]
   (when-not memory-ident
     (throw (ex-info "parse-sections requires memory-ident" {})))
   (let [lines             (str/split (or body "") #"\n" -1)
         sections          (atom [])
         path-stack        (atom [])           ; ancestor chain: vec of {:level :ident :title}
-        sibling-tracker   (atom {})           ; {[parent-ident level] → last-sibling-ident}
+        sibling-tracker   (atom {})           ; {parent-ident → last-sibling-ident} (REP-02, D7 2026-09-20: siblings of any heading level under one parent chain in document order)
         body-buf          (atom (StringBuilder.))
         ident->index      (atom {})           ; for O(1) sibling pointer rewrite
         ;; Code-fence tracking — lines inside ``` ... ``` blocks must
@@ -1968,7 +1973,7 @@
                                                   (str (name base-ident) "-" (inc n)))
                                          (inc n))
                                   candidate))
-                tracker-key   [parent level]
+                tracker-key   parent
                 prev-sibling  (get @sibling-tracker tracker-key)]
             (let [section (cond-> {:dt/type           :mm/Section
                                    :db/ident          ident
@@ -1992,6 +1997,91 @@
     ;; Flush final accumulated body to the last section
     (flush-body!)
     @sections))
+
+(defn- section-order-key
+  "A document-order proxy for a section map that carries no ordinal: its
+   `:db/id` when present (the entities of one parse are assigned in
+   document order by their transaction), else Long/MAX_VALUE so a fresh
+   parse keeps its input order."
+  [s]
+  (or (:db/id s) Long/MAX_VALUE))
+
+(defn ordered-children
+  "The children of `parent-ident` among `sections`, in document order — the
+   one ordering rule the emitter, the export grouping and the export filter
+   share (REP-01 and REP-02 of Astra's representation review, D7 2026-09-20).
+   Every sibling chain among the children is followed from its head (a
+   child whose `:previous-sibling` is absent or is not one of these
+   children) through `:next-sibling`; the chains are taken in the order of
+   their heads, `first-ident` (the memory's `:first-section`, when given)
+   first and the rest by `:db/id` when present, else input order; children
+   no chain reaches are appended in input order.  A chain may step into a
+   section that carries no `:parent` at all (the pre-parent legacy shape a
+   fixture or an old record can hold), never into a section of another
+   parent.  Robust to the disconnected chains that documents parsed before
+   D7 carry (siblings of different heading levels were never linked), so
+   nothing a document holds is dropped at emission; a chain that returns to
+   one of its own members is a corrupt record and throws
+   `:section-chain-cycle` (SPEC.md §4.5), while a chain that merges into an
+   earlier chain is cut quietly."
+  [sections parent-ident first-ident]
+  (let [by-ident  (into {} (keep (fn [s] (when-let [i (:db/ident s)] [i s]))) sections)
+        member?   (fn [s] (let [p (:mm.section/parent s)] (or (= parent-ident p) (nil? p))))
+        children  (vec (filter #(= parent-ident (:mm.section/parent %)) sections))
+        child-ids (set (keep :db/ident children))
+        head?     (fn [s]
+                    (let [p (:mm.section/previous-sibling s)]
+                      (or (nil? p) (not (contains? child-ids p)))))
+        heads     (let [hs (sort-by section-order-key (filter head? children))
+                        f  (and first-ident (get by-ident first-ident))]
+                    (if (and f (member? f))
+                      (cons f (remove #(= first-ident (:db/ident %)) hs))
+                      hs))
+        walk      (fn [head seen]
+                    (loop [cur head acc [] chain #{} seen seen]
+                      (cond
+                        (nil? cur) [acc seen]
+                        (contains? chain (:db/ident cur))
+                        (throw (ex-info "sandbar.codec.markdown: section-chain cycle detected during emit"
+                                        {:sandbar/error :section-chain-cycle
+                                         :revisited     (:db/ident cur)
+                                         :cycle-members (conj chain (:db/ident cur))}))
+                        (contains? seen (:db/ident cur)) [acc seen]
+                        :else
+                        (let [nxt (get by-ident (:mm.section/next-sibling cur))]
+                          (recur (when (and nxt (member? nxt)) nxt)
+                                 (conj acc cur)
+                                 (conj chain (:db/ident cur))
+                                 (conj seen (:db/ident cur)))))))
+        [ordered seen] (reduce (fn [[acc seen] h]
+                                 (if (contains? seen (:db/ident h))
+                                   [acc seen]
+                                   (let [[chain seen'] (walk h seen)]
+                                     [(into acc chain) seen'])))
+                               [[] #{}]
+                               heads)
+        unreached (remove #(contains? seen (:db/ident %)) children)]
+    (into ordered unreached)))
+
+(defn section-tree
+  "A memory's full section tree in document order: the `ordered-children`
+   of `memory-ident`, each followed by its own subtree — the ONE walk the
+   export grouping, the export filter and the realized-entity consumers
+   share (REP-01, D7 2026-09-20), so a nested section can no longer be lost
+   at one seam and kept at another.  Sections whose parent chain never
+   reaches `memory-ident` are not in the tree; a parent cycle is cut at the
+   first revisit."
+  [sections memory-ident first-ident]
+  (let [visited (atom #{})]
+    (letfn [(subtree [parent-ident first-id]
+              (reduce (fn [acc s]
+                        (if (contains? @visited (:db/ident s))
+                          acc
+                          (do (swap! visited conj (:db/ident s))
+                              (into (conj acc s) (subtree (:db/ident s) nil)))))
+                      []
+                      (ordered-children sections parent-ident first-id)))]
+      (subtree memory-ident first-ident))))
 
 (defn first-section-of
   "Find the first section in the chain — the section whose :parent is
@@ -2288,11 +2378,12 @@
   ident)
 
 (defn- ^String emit-section-body
-  "Build the section's emitted text — heading line + body + children (via
-   chain walk).  Recursively emits sub-sections in chain order.  `visited`
-   is a shared atom-of-set guarding against `:next-sibling` / `parent`
-   cycles (SPEC.md §4.5)."
-  [section-by-ident memory-ident section sb visited]
+  "Build the section's emitted text — heading line + body + children, the
+   children in `ordered-children` order (every child, whatever its heading
+   level and however its sibling links were recorded — REP-01 and REP-02,
+   D7 2026-09-20).  Recursive.  `visited` is a shared atom-of-set guarding
+   against a `:parent` cycle (SPEC.md §4.5)."
+  [all-sections memory-ident section sb visited]
   (let [^StringBuilder sb sb
         heading-prefix    (apply str (repeat (:mm.section/heading-level section) "#"))
         title             (:mm.section/heading section)
@@ -2307,42 +2398,23 @@
       (.append sb body)
       (when-not (str/ends-with? body "\n")
         (.append sb "\n")))
-    ;; Find first child + walk down via :next-sibling chain
-    (let [this-ident (:db/ident section)]
-      (loop [child (first (filter (fn [s]
-                                    (and (= this-ident (:mm.section/parent s))
-                                         (not (:mm.section/previous-sibling s))))
-                                  (vals section-by-ident)))]
-        (when child
-          (.append sb "\n")
-          (emit-section-body section-by-ident memory-ident child sb visited)
-          (recur (some->> (:mm.section/next-sibling child)
-                          (get section-by-ident))))))
+    (doseq [child (ordered-children all-sections (:db/ident section) nil)]
+      (.append sb "\n")
+      (emit-section-body all-sections memory-ident child sb visited))
     sb))
 
 (defn emit-sections-body
   "Reconstruct the markdown body text from a vector of mm/Section entity-
-   specs + the host memory-ident.  Walks the top-level chain via
-   :first-section + recurses through sibling + parent links.  A shared
-   visited-set (SPEC.md §4.5) fails loud on any `:next-sibling` cycle."
+   specs + the host memory-ident: the memory's children in
+   `ordered-children` order (the `:first-section` chain first, then any
+   chain the links never joined), each with its subtree.  A shared
+   visited-set (SPEC.md §4.5) fails loud on a `:parent` cycle."
   [sections memory-ident first-section-ident]
-  (let [section-by-ident (into {} (for [s sections] [(:db/ident s) s]))
-        sb               (StringBuilder.)
-        visited          (atom #{})]
-    (loop [section (get section-by-ident first-section-ident)
-           first?  true]
-      (when section
-        ;; NB: do NOT visit here — `emit-section-body` records the ident
-        ;; on entry.  Visiting first would false-trip the guard on the
-        ;; first legitimate section.  The top-level `:next-sibling` loop
-        ;; is still guarded: a self/back-edge advances `section` to an
-        ;; already-emitted ident, and `emit-section-body`'s entry visit
-        ;; throws.
-        (when-not first? (.append sb "\n"))
-        (emit-section-body section-by-ident memory-ident section sb visited)
-        (recur (some->> (:mm.section/next-sibling section)
-                        (get section-by-ident))
-               false)))
+  (let [sb      (StringBuilder.)
+        visited (atom #{})]
+    (doseq [[i section] (map-indexed vector (ordered-children sections memory-ident first-section-ident))]
+      (when (pos? i) (.append sb "\n"))
+      (emit-section-body sections memory-ident section sb visited))
     (.toString sb)))
 
 (def ^:private derived-memory-attrs
