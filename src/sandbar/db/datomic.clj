@@ -942,3 +942,9 @@
   (let [db (db)]
     (and (nil? (:dt/type (d/entity db eid)))
          (boolean (seq (d/datoms (d/history db) :eavt eid :dt/type))))))
+
+(defn basis-t
+  "The basis-t of the current database value — the number an import preview
+   reports and a persist pins with `expect-basis` (D7, 2026-09-20)."
+  []
+  (d/basis-t (db)))

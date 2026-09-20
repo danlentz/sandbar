@@ -615,6 +615,13 @@
     :else
     []))
 
+(defn- sha256-hex
+  "The SHA-256 of `text` as lowercase hex — the source fingerprint a unit
+   carries so a preview and its apply can be told apart (D7, 2026-09-20)."
+  [^String text]
+  (let [md (java.security.MessageDigest/getInstance "SHA-256")]
+    (apply str (map #(format "%02x" %) (.digest md (.getBytes text "UTF-8"))))))
+
 (defn- parse-unit
   "Parse ONE `.md` file into a SOURCE UNIT — `{:source :status :entities
    :class :ident :unknown-keys}`, plus `:error` when the parse threw.  The
@@ -637,8 +644,10 @@
   [^java.io.File file source filter-spec]
   (if-not (str/ends-with? (.getName file) ".md")
     {:source source :status :skipped :entities []}
-    (let [[parsed error] (try
-                           [(vec (md/parse-document (slurp file) source)) nil]
+    (let [text (slurp file)
+          sha  (sha256-hex text)
+          [parsed error] (try
+                           [(vec (md/parse-document text source)) nil]
                            (catch Throwable ex
                              ;; Per-file parse failures don't abort the whole
                              ;; walk — e.g., a section-ident slug collision in
@@ -650,10 +659,11 @@
                                         :error    (.getMessage ex)})
                              [nil (or (.getMessage ex) (str (class ex)))]))]
       (if error
-        {:source source :status :parse-failed :entities [] :error error}
+        {:source source :status :parse-failed :entities [] :error error :source-sha256 sha}
         (let [root (first parsed)
               kept (unit-entities parsed filter-spec)]
           {:source       source
+           :source-sha256 sha
            :status       (if (and (seq parsed) (empty? kept)) :filtered :parsed)
            :entities     (vec kept)
            :class        (:dt/type root)

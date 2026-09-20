@@ -143,12 +143,14 @@
       (write! dir rel-path (doc {:sections [["One" "One body."] ["Two" "Two body."]]}))
       (import! dir)
       (write! dir rel-path (doc {:sections [["Two" "Two body."] ["Three" "Three body."]]}))
-      (let [report (import! dir)]
+      (let [one-eid (d/entid (d/db (db/conn)) :memory.decisions/replace_probe__one)
+            report  (import! dir)]
         (is (= "replace" (-> report :persisted first :mode)))
         (is (= 1 (-> report :persisted first :retracted-sections)) "One is gone")
         (is (= #{"Two" "Three"} (section-headings)))
         (is (= ["## Two" "## Three"] (emitted-headings (rendered))) "the new order emits")
-        (is (nil? (d/entid (d/db (db/conn)) :memory.decisions/replace_probe__one)) "the retracted section's ident is gone"))
+        (is (db/entity-retracted? one-eid)
+            "the retracted section's entity is gone (Datomic keeps resolving its ident to the old eid)"))
       (finally (rm-rf! dir)))))
 
 (deftest scalars-replace-authored-omissions-retract-and-substrate-owned-facts-stay
@@ -214,10 +216,12 @@
 (deftest a-file-whose-id-differs-from-the-stored-one-refuses-the-unit
   (let [dir (fresh-tmp-dir "identity")]
     (try
-      (write! dir rel-path (doc {}))
+      ;; a bulk-imported file carries the identity it declares (the interactive
+      ;; create path derives one for a memory without; the import path does not)
+      (write! dir rel-path (doc {:slots "id: '11111111-1111-5111-8111-111111111111'"}))
       (import! dir)
       (let [stored-id (:mm/id (entity))]
-        (is (some? stored-id))
+        (is (= #uuid "11111111-1111-5111-8111-111111111111" stored-id))
         (write! dir rel-path (doc {:slots "id: '00000000-0000-4000-8000-000000000000'"}))
         (let [report (import! dir)]
           (is (= 1 (:conflict-count report)) (pr-str report))

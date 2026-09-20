@@ -231,3 +231,87 @@
                    (:section-count reimport-snapshot))))))
       (finally
         (rm-rf! export-dir)))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; the nested cross-path case (Astra, D7 2026-09-20): two nested levels,
+;; sibling order and body text through the dispatched export and a dispatched
+;; import into a SECOND fresh store, then that store's own export
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(def ^:private nested-rel-path "decisions/nested_roundtrip_probe.md")
+
+(def ^:private nested-headings
+  ["## Parent" "### Child A" "#### Grandchild" "### Child B" "## Second"])
+
+(def ^:private nested-bodies
+  ["Parent body." "Child A body." "Grandchild body." "Child B body." "Second body."])
+
+(def ^:private nested-markdown
+  (str "---\n"
+       "name: Nested Roundtrip Probe\n"
+       "type: decision\n"
+       "scope: project\n"
+       "---\n"
+       "A memorial born in the store with two nested levels.\n"
+       "\n"
+       "## Parent\n\nParent body.\n\n"
+       "### Child A\n\nChild A body.\n\n"
+       "#### Grandchild\n\nGrandchild body.\n\n"
+       "### Child B\n\nChild B body.\n\n"
+       "## Second\n\nSecond body.\n"))
+
+(defn- heading-lines [text]
+  (->> (str/split-lines text) (filter #(re-find #"^#{1,6} " %)) vec))
+
+(deftest nested-sections-survive-a-dispatched-export-and-import-into-a-second-fresh-store
+  ;; Astra's remaining cross-path acceptance case for REP-01 / REP-02 (her
+  ;; D7 increment 1 review, 2026-09-20): the shipped section-tree suite
+  ;; exercises project-graph and reparse; this runs the REAL dispatched verbs
+  ;; end to end — a store-born memorial with two nested levels exported by
+  ;; `project.export`, imported by `project.import` into a SECOND fresh
+  ;; store, and exported again from there — asserting heading depth, sibling
+  ;; order and body text at every hop.
+  (let [export-dir   (fresh-tmp-dir "nested-export")
+        reexport-dir (fresh-tmp-dir "nested-reexport")]
+    (try
+      (let [{:keys [settled source-sections]}
+            (gdb/with-fresh-db* {:name "e2e-nested-source"}
+              (fn []
+                (let [settled (md/emit-document (md/parse-document nested-markdown nested-rel-path))
+                      specs   (md/parse-document settled nested-rel-path)]
+                  (is (= nested-headings (heading-lines settled))
+                      "the settled form keeps every heading at its depth, in order")
+                  (is (= 5 (count (filter #(= :mm/Section (:dt/type %)) specs))))
+                  (dt/make-all* (md/entity-specs->tx-data specs))
+                  (call-verb "sandbar_project_export" {"to" (str export-dir)})
+                  {:settled         settled
+                   :source-sections (:section-count (contract/capture))})))
+            exported (slurp (io/file export-dir nested-rel-path))]
+        (testing "the dispatched export keeps two nested levels, sibling order and body text"
+          (is (= nested-headings (heading-lines exported)))
+          (doseq [b nested-bodies]
+            (is (str/includes? exported b) (str "the exported text lost " b)))
+          (is (= settled exported) "the export reproduces the settled form byte for byte"))
+        (let [{:keys [import-result reimported-sections reexported]}
+              (gdb/with-fresh-db* {:name "e2e-nested-reimport"}
+                (fn []
+                  (let [result (call-verb "sandbar_project_import" {"from" (str export-dir) "persist" true})]
+                    (call-verb "sandbar_project_export" {"to" (str reexport-dir)})
+                    {:import-result       result
+                     :reimported-sections (:section-count (contract/capture))
+                     :reexported          (slurp (io/file reexport-dir nested-rel-path))})))]
+          (testing "the dispatched import into the second store persists the unit"
+            (is (zero? (:failed-count import-result)) (pr-str (:failed import-result)))
+            (is (zero? (:conflict-count import-result)) (pr-str (:conflicts import-result)))
+            (is (some #(= nested-rel-path (:source %)) (:persisted import-result))
+                (pr-str (:persisted import-result))))
+          (testing "the second store holds the whole tree and renders it back identically"
+            (is (= source-sections reimported-sections)
+                "every section, nested or not, is in the second store")
+            (is (= nested-headings (heading-lines reexported)))
+            (doseq [b nested-bodies]
+              (is (str/includes? reexported b) (str "the second store's export lost " b)))
+            (is (= settled reexported) "the second store's export equals the first's"))))
+      (finally
+        (rm-rf! export-dir)
+        (rm-rf! reexport-dir)))))

@@ -32,9 +32,9 @@
 (def ^:private section-link-slots
   #{:mm.section/next-sibling :mm.section/previous-sibling})
 
-(defn- prop [slot] (dt/entity slot))
-(defn- many? [slot] (= :db.cardinality/many (:db/cardinality (prop slot))))
-(defn- ref? [slot]  (= :db.type/ref (:db/valueType (prop slot))))
+(defn- prop [db slot] (d/entity db slot))
+(defn- many? [db slot] (= :db.cardinality/many (:db/cardinality (prop db slot))))
+(defn- ref? [db slot]  (= :db.type/ref (:db/valueType (prop db slot))))
 
 (defn- ->eid
   "The eid an existing entity a parsed ref value names, or nil when it names
@@ -57,10 +57,13 @@
    eid (Datomic hands back an ident keyword for an ident-bearing target, an
    entity map otherwise), a scalar as itself."
   [db slot v]
-  (if (ref? slot)
+  (if (ref? db slot)
     (cond (keyword? v) (d/entid db v)
-          (map? v)     (:db/id v)
-          :else        v)
+          (number? v)  v
+          ;; a Datomic Entity (what `d/entity` hands back for a ref) or a
+          ;; map: its eid — an Entity object is not an identifier tx data
+          ;; accepts (":db.error/not-an-entity #:db{:id …}")
+          :else        (or (:db/id v) v))
     v))
 
 (defn section-tree-eids
@@ -104,12 +107,12 @@
               (nil? prior) nil
 
               (= new-v ::absent)
-              (if (many? slot)
+              (if (many? db slot)
                 (for [p prior] [:db/retract eid slot (stored-value db slot p)])
                 [[:db/retract eid slot (stored-value db slot prior)]])
 
-              (many? slot)
-              (let [new-set (if (ref? slot)
+              (many? db slot)
+              (let [new-set (if (ref? db slot)
                               (set (keep #(->eid db %) (if (sequential? new-v) new-v [new-v])))
                               (set (if (sequential? new-v) new-v [new-v])))]
                 (for [p prior
@@ -167,7 +170,10 @@
         eid   (when ident (d/entid db ident))
         stored (when eid (d/entity db eid))]
     (cond
-      (nil? eid)
+      ;; new to the store — or an ident whose entity was retracted: Datomic
+      ;; keeps resolving the ident to its old eid, and the assert repopulates
+      ;; that eid, so there is nothing to reconcile against
+      (or (nil? eid) (nil? (:dt/type stored)))
       {:mode :insert :specs specs :ops [] :conflicts []}
 
       (= mode :additive)

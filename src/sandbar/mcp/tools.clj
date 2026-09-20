@@ -51,6 +51,7 @@
             [sandbar.navigate.path      :as nav-path]
             [sandbar.navigate.siblings  :as nav-siblings]
             [sandbar.orient             :as orient]
+            [sandbar.import          :as import]
             [sandbar.projection      :as pg]
             [sandbar.project.provenance :as prov]
             [sandbar.reactive.queue     :as reactive-queue]
@@ -806,6 +807,7 @@
    2026-09-19)."
   [unit]
   (cond-> {:source (:source unit) :status (:status unit)}
+    (:source-sha256 unit)      (assoc :source-sha256 (:source-sha256 unit))
     (:class unit)              (assoc :dt/type (:class unit) :ident (:ident unit))
     (seq (:unknown-keys unit)) (assoc :unknown-keys (:unknown-keys unit))
     (:error unit)              (assoc :error (:error unit))))
@@ -829,10 +831,20 @@
         persist?    (boolean (or (get args "persist?")
                                   (get args "persist")
                                   (get args :persist?)
-                                  (get args :persist)))]
+                                  (get args :persist)))
+        ;; REP-03 (D7, 2026-09-20): a file the substrate already holds is
+        ;; REPLACED — its source-owned representation, sections and carrier
+        ;; reconciled in one transaction — unless `mode` is `additive`.
+        mode        (let [m (or (get args "mode") (get args :mode))]
+                      (if (= "additive" (some-> m name)) :additive :replace))
+        expect-basis (or (get args "expect-basis") (get args :expect-basis))]
     (when-not from
       (throw (ex-info "project.import requires :from (input directory path)"
                       {:args args})))
+    (when (and persist? expect-basis (not= (long expect-basis) (db/basis-t)))
+      (throw (ex-info (str "project.import: the database moved since the preview (expected basis "
+                           expect-basis ", now " (db/basis-t) "); preview again")
+                      {:reasons #{:import/basis-moved} :expected expect-basis :actual (db/basis-t)})))
     (log/info :IMPORT/START {:from from :filter filter-spec :persist? persist?})
     (let [t-walk-start (System/currentTimeMillis)
           _ (log/info :IMPORT/WALK-START {:from from})
@@ -863,14 +875,27 @@
         (do (log/info :IMPORT/DRY-RUN-COMPLETE {:entities (count entities)
                                                  :parse-failed (count parse-failed)
                                                  :ms (- (System/currentTimeMillis) t-start)})
-            (merge {:from     from
-                    :filter   filter-spec
-                    :persist? false
-                    :entities (mapv (fn [e]
-                                      {:dt/type (:dt/type e)
-                                       :ident   (:db/ident e)})
-                                    entities)}
-                   accounting))
+            (let [db-now  (db/db)
+                  planned (mapv (fn [u]
+                                  (let [p (import/plan-unit db-now (:entities u) {:mode mode})]
+                                    (cond-> (assoc (import-unit-summary u) :mode (:mode p))
+                                      (= :replace (:mode p)) (assoc :retracted-sections (:retracted-sections p)
+                                                                   :retracted-slots (:retracted-slots p)
+                                                                   :retracted-carrier? (:retracted-carrier? p))
+                                      (seq (:conflicts p)) (assoc :conflicts (:conflicts p)))))
+                                parsed)]
+              (merge {:from     from
+                     :filter   filter-spec
+                     :persist? false
+                     :mode     mode
+                     :basis    (db/basis-t)
+                     :units    planned
+                     :conflict-count (count (filter :conflicts planned))
+                     :entities (mapv (fn [e]
+                                       {:dt/type (:dt/type e)
+                                        :ident   (:db/ident e)})
+                                     entities)}
+                    accounting)))
         ;; Persist: ONE atomic transact per parsed source unit (per file).
         ;; Cross-entity refs (Memory ↔ Section) resolve via :db/ident upsert
         ;; within the single tx.  Per-unit failures isolated; one bad file
@@ -887,18 +912,23 @@
                                       :failed (count (:failed acc))
                                       :ms (- (System/currentTimeMillis) t-transact-start)}))
                          (let [group   (:entities unit)
-                               rec     {:dt/type     (:class unit)
-                                        :ident       (:ident unit)
-                                        :source      (:source unit)
-                                        :tx-entities (count group)}
-                               ;; Bug fix 2026-05-21: do NOT dissoc :dt/type
-                               ;; before transact.  Without :dt/type the entity
-                               ;; has no class, and class.instances / aggregate.count
-                               ;; can't find it.
-                               tx-data (codec-md/entity-specs->tx-data group)]
+                               plan    (import/plan-unit (db/db) group {:mode mode})
+                               rec     (cond-> {:dt/type     (:class unit)
+                                                :ident       (:ident unit)
+                                                :source      (:source unit)
+                                                :source-sha256 (:source-sha256 unit)
+                                                :mode        (:mode plan)
+                                                :tx-entities (count group)}
+                                         (= :replace (:mode plan))
+                                         (assoc :retracted-sections (:retracted-sections plan)
+                                                :retracted-slots (:retracted-slots plan)
+                                                :retracted-carrier? (:retracted-carrier? plan)))]
                            (try
-                             (dt/make-all* tx-data)
-                             (update acc :persisted conj rec)
+                             (if (seq (:conflicts plan))
+                               (do (log/warn :IMPORT/UNIT-CONFLICT {:idx idx :source (:source unit) :conflicts (:conflicts plan)})
+                                   (update acc :conflicts conj (assoc rec :conflicts (:conflicts plan))))
+                               (do (import/apply-plan! plan)
+                                   (update acc :persisted conj rec)))
                              (catch Throwable ex
                                ;; T-4: a FIREWALL refusal is shaped as :refused
                                ;; (a governed edge the import floor forbade),
@@ -914,17 +944,18 @@
                                            {:idx idx :source (:source unit)
                                             :ident (:ident unit) :class (:class unit)})
                                  (update acc bucket conj (assoc rec :error (.getMessage ex))))))))
-                       {:persisted [] :failed [] :refused []}
+                       {:persisted [] :failed [] :refused [] :conflicts []}
                        (map-indexed vector parsed))
               t-end   (System/currentTimeMillis)
               totals  {:attempted    (count units)
                        :persisted    (count (:persisted results))
                        :failed       (count (:failed results))
                        :refused      (count (:refused results))
+                       :conflicts    (count (:conflicts results))
                        :parse-failed (count parse-failed)
                        :skipped      skipped}
               reconciled? (= (:attempted totals)
-                             (+ (:persisted totals) (:failed totals) (:refused totals)
+                             (+ (:persisted totals) (:failed totals) (:refused totals) (:conflicts totals)
                                 (:parse-failed totals) (:skipped totals)))]
           (log/info :IMPORT/COMPLETE (assoc totals
                                             :imported    (count entities)
@@ -934,9 +965,16 @@
           (merge {:from            from
                   :filter          filter-spec
                   :persist?        true
+                  :mode            mode
+                  :basis           (db/basis-t)
                   ;; one transaction unit per parsed file
                   :groups          total
+                  :persisted       (:persisted results)
                   :persisted-count (count (:persisted results))
+                  ;; REP-03: a unit refused for ambiguity (a class change, an
+                  ;; identity conflict, a section another record references)
+                  :conflict-count  (count (:conflicts results))
+                  :conflicts       (:conflicts results)
                   :failed-count    (count (:failed results))
                   :failed          (:failed results)
                   ;; T-4: firewall-refused units surface separately from generic
@@ -3005,11 +3043,13 @@
     :handler project-export-handler}
    {:name "sandbar.project.import"
     :title "Ingest entities from a filesystem hierarchy (inverse of project.export)"
-    :description "WHICH: walks the `:from` directory, parses each `.md` file via the markdown codec into ONE SOURCE UNIT per file (a memory with its sections, or a Tag / other native-codec document), and — with `:persist` — transacts each parsed unit on its own, reporting every file's fate.  The ingestion half of the Anderson `de.setf.rdf:project-graph` boundary-layer primitive — inverse of `sandbar.project.export`.\n\nWHEN: use to load filesystem-canonical entity state into the substrate — restore from a project-export, ingest external content, or round-trip-validate after editing files manually.  When NOT to use: (a) you want to create ONE entity programmatically — `sandbar.entity.create` (STRICT on front matter: an unknown key is refused; this bulk verb is LENIENT: unknown keys ride in the front-matter carrier and are REPORTED per file); (b) you want to write TO the filesystem — `sandbar.project.export`.\n\nHOW: `:from` is the input directory path (REQUIRED; a single `.md` file is accepted too — the MEMORY.md / README.md heal path).  `:filter` (optional) restricts which units ingest — `:class`, `:classes`, `:tree-filter` (same shape as `sandbar.project.export`); the decision is made per source file.  `:persist` (optional, default false) — WITHOUT it the verb is a DRY RUN: it parses and reports but transacts nothing.  ACCOUNTING (D6, 2026-09-19) — every response carries `:attempted` (files walked), `:imported` (entities parsed), `:parse-failed-count` + `:parse-failed [{:source :error}]` (files whose parse threw — named, never silently dropped), `:unknown-keys-count` + `:unknown-keys [{:source :dt/type :ident :unknown-keys [...]}]` (files whose front matter carried keys the class does not declare), and `:skipped-count` (files the filter excluded, or that could not match the tree filter).  With `:persist` the response adds `:persisted-count`, `:failed-count` + `:failed [...]` (a unit whose transaction failed — a schema or transactor error, with `:source`, `:ident`, `:error`), `:refused-count` + `:refused [...]` (a unit the import firewall refused — a governed edge the floor forbade), `:groups` (the transaction units), and `:totals` + `:reconciled?` — attempted = persisted + failed + refused + parse-failed + skipped.  ONE transaction per file: a failing file never rolls back its neighbours.  (Wire-format key MUST be `persist` — no `?` suffix — to comply with the MCP tool-schema property-key regex `^[a-zA-Z0-9_.-]{1,64}$`; the handler accepts legacy `persist?` too.)\n\nORDER: idempotent on the same filesystem state (a re-import upserts by ident).  Run once WITHOUT `:persist` to read the accounting, then WITH it.  Pre-check a doubtful document via `sandbar.entity.validate`.\n\nCOMBINATION: inverse of `sandbar.project.export`.  Round-trip property: `ingest-graph(project-graph(entities)) = entities` — verify via export + import + comparison.  Codec selection by file extension; registered codecs visible via `sandbar.codec.list`."
+    :description "WHICH: walks the `:from` directory, parses each `.md` file via the markdown codec into ONE SOURCE UNIT per file (a memory with its sections, or a Tag / other native-codec document), and — with `:persist` — transacts each parsed unit on its own, reporting every file's fate.  The ingestion half of the Anderson `de.setf.rdf:project-graph` boundary-layer primitive — inverse of `sandbar.project.export`.\n\nWHEN: use to load filesystem-canonical entity state into the substrate — restore from a project-export, ingest external content, or round-trip-validate after editing files manually.  When NOT to use: (a) you want to create ONE entity programmatically — `sandbar.entity.create` (STRICT on front matter: an unknown key is refused; this bulk verb is LENIENT: unknown keys ride in the front-matter carrier and are REPORTED per file); (b) you want to write TO the filesystem — `sandbar.project.export`.\n\nHOW: `:from` is the input directory path (REQUIRED; a single `.md` file is accepted too — the MEMORY.md / README.md heal path).  `:filter` (optional) restricts which units ingest — `:class`, `:classes`, `:tree-filter` (same shape as `sandbar.project.export`); the decision is made per source file.  `:persist` (optional, default false) — WITHOUT it the verb is a DRY RUN: it parses, PLANS every unit and reports, but transacts nothing.  REPLACEMENT (D6/D7, 2026-09-20): a file the substrate already holds is REPLACED — the file's declared slots win, an omitted source-owned slot is retracted, a cardinality-many slot is set-replaced, sections the file no longer carries are retracted with their links, the carrier is replaced or retracted — in ONE transaction per file, while the host's identity, the refs into it, and the facts the substrate or another owner maintains (created, last-touched, created-by, owning-project, visibility, the id) are kept; `:mode` `additive` opts into the pre-D7 additive behaviour.  A unit is REFUSED as a conflict, never guessed, when the file's class differs from the stored one, its `id:` differs from the stored `mm/id`, or a section it drops is referenced by a record outside the document (`:conflicts`, with the reason).  `:expect-basis` (optional) pins a persist to the basis a preview reported: if the database moved, the call is refused and the preview must be repeated; every unit reports its `:source-sha256`.  ACCOUNTING (D6, 2026-09-19) — every response carries `:attempted` (files walked), `:imported` (entities parsed), `:parse-failed-count` + `:parse-failed [{:source :error}]` (files whose parse threw — named, never silently dropped), `:unknown-keys-count` + `:unknown-keys [{:source :dt/type :ident :unknown-keys [...]}]` (files whose front matter carried keys the class does not declare), and `:skipped-count` (files the filter excluded, or that could not match the tree filter); a dry run adds `:units` (each file's planned `:mode` — `insert`, `replace` or `additive` — with the retractions a replace would make and any `:conflicts`) and `:basis`.  With `:persist` the response adds `:persisted-count` and `:persisted` (each unit's mode and retraction counts), `:failed-count` + `:failed [...]` (a unit whose transaction failed — a schema or transactor error, with `:source`, `:ident`, `:error`), `:refused-count` + `:refused [...]` (a unit the import firewall refused — a governed edge the floor forbade), `:conflict-count` + `:conflicts [...]` (a unit refused for ambiguity under replacement), `:groups` (the transaction units), and `:totals` + `:reconciled?` — attempted = persisted + failed + refused + conflicts + parse-failed + skipped.  ONE transaction per file: a failing file never rolls back its neighbours.  (Wire-format key MUST be `persist` — no `?` suffix — to comply with the MCP tool-schema property-key regex `^[a-zA-Z0-9_.-]{1,64}$`; the handler accepts legacy `persist?` too.)\n\nORDER: idempotent on the same filesystem state (a re-import upserts by ident).  Run once WITHOUT `:persist` to read the accounting, then WITH it.  Pre-check a doubtful document via `sandbar.entity.validate`.\n\nCOMBINATION: inverse of `sandbar.project.export`.  Round-trip property: `ingest-graph(project-graph(entities)) = entities` — verify via export + import + comparison.  Codec selection by file extension; registered codecs visible via `sandbar.codec.list`."
     :inputSchema (one-required
                    {:from     {:type "string" :description "Input directory path (or a single .md file)"}
                     :filter   {:type "object"
                                :description "Optional filter spec (same shape as project.export): class / classes / tree-filter; decided per source file"}
+                    :mode     {:type "string" :description "'replace' (default): a file the substrate already holds replaces its source-owned representation in one transaction; 'additive': the pre-D7 behaviour, assertions only (for ingestion from independent sources)."}
+                    :expect-basis {:type "number" :description "Pin a persist to the :basis a dry run reported; refused if the database moved since (preview again)."}
                     :persist  {:type        "boolean"
                                :description "When true, transact each parsed source unit (ONE transaction per file) into the substrate.  When false / omitted, DRY RUN: parse + report, transact nothing.  Either way the response accounts for every file walked — attempted = persisted + failed + refused + parse-failed + skipped — and names every file whose parse failed.  (Wire-format key MUST be `persist` — no `?` suffix — to comply with the MCP tool-schema property-key regex; the handler accepts legacy `persist?` too.)"}}
                    [:from])

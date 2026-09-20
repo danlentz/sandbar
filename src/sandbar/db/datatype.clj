@@ -366,6 +366,20 @@
      (log/debug :DT/MAKE-ALL* {:count (count entity-specs)})
      result)))
 
+(defn make-all-with-retractions*
+  "`make-all*` plus explicit retraction ops in the SAME transaction — the
+   replacement import's per-file unit (REP-03, D7 2026-09-20): the batch
+   firewall floor runs over `entity-specs` (the asserted half, maps with
+   `:dt/type`), and `ops` (`[:db/retract …]` / `[:db.fn/retractEntity …]`
+   vectors the planner derived from the store) transact with them, so a
+   file's re-import replaces its source-owned representation atomically.
+   Firewall-only, like `make-all*`.  Returns the transaction result map."
+  [entity-specs ops]
+  (firewall-batch-guard! entity-specs (fw-enforce/index-specs-by-ident entity-specs))
+  (let [result @(d/transact (db/conn) (into (vec ops) entity-specs))]
+    (log/debug :DT/MAKE-ALL-WITH-RETRACTIONS {:entities (count entity-specs) :retractions (count ops)})
+    result))
+
 (declare validate-data)          ;; forward declaration
 (declare type-isa?)              ;; forward reference; defined later in this ns
 (declare coerce-ref-slot-values) ;; forward reference; defined with ref->eid
