@@ -381,12 +381,16 @@
          _ (when (and memory? rel-path)
              (assert-corpus-rel-path-safe! class rel-path the-id))
          props    (cond-> props
-                    (and memory? the-id (not (:mm/id props)))
-                    ;; D7 2c (2026-09-20): minted from the rel-path slug when there is
-                    ;; one — the same value as the ident derivation for every plain
-                    ;; name, and the file's own derivation for a digit-leading name
-                    ;; whose ident the codec prefixes (Astra: a readability prefix
-                    ;; must not create a new identity)
+                    ;; D7 2c/2d (2026-09-20): an identity is minted ONLY when neither the
+                    ;; incoming properties nor the existing entity carry one — a repeat
+                    ;; create of a row that already holds an assigned UUID preserves it
+                    ;; (Astra's D7-R6: the slug rule must never change a legacy id).  The
+                    ;; mint itself is from the rel-path slug when there is one — the same
+                    ;; value as the ident derivation for every plain name, and the file's
+                    ;; own derivation for a digit-leading name whose ident the codec
+                    ;; prefixes; deterministic, so two concurrent first creates agree.
+                    (and memory? the-id (not (:mm/id props))
+                         (nil? (:mm/id (datomic.api/entity (sandbar.db.datomic/db) the-id))))
                     (assoc :mm/id (if (and rel-path (clojure.string/includes? rel-path "/"))
                                     (ident/rel-path-uuid rel-path)
                                     (ident/ident-uuid the-id))))]

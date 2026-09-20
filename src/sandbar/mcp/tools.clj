@@ -969,24 +969,39 @@
                                       :persisted (count (:persisted acc))
                                       :failed (count (:failed acc))
                                       :ms (- (System/currentTimeMillis) t-transact-start)}))
-                         (let [group   (:entities unit)
-                               plan    (import/plan-unit (db/db) group {:mode mode})
-                               rec     (cond-> {:dt/type     (:class unit)
-                                                :ident       (:ident unit)
-                                                :source      (:source unit)
-                                                :source-sha256 (:source-sha256 unit)
-                                                :mode        (:mode plan)
-                                                :tx-entities (count group)}
-                                         (= :replace (:mode plan))
-                                         (assoc :retracted-sections (:retracted-sections plan)
-                                                :retracted-slots (:retracted-slots plan)
-                                                :retracted-carrier? (:retracted-carrier? plan)))]
+                         (let [group    (:entities unit)
+                               db-now   (db/db)
+                               basis-now (d/basis-t db-now)
+                               expected (:expected-basis acc)
+                               base-rec {:dt/type       (:class unit)
+                                         :ident         (:ident unit)
+                                         :source        (:source unit)
+                                         :source-sha256 (:source-sha256 unit)
+                                         :tx-entities   (count group)}]
+                           ;; An attended run advances its expected basis only through its OWN
+                           ;; transactions (Astra, 2026-09-20): a write that is not ours, landing
+                           ;; between one unit's commit and the next unit's planning, refuses the
+                           ;; rest of the run unit by unit — never silently accepted by planning
+                           ;; against whatever the database happens to be.
+                           (if (and expected (not= basis-now expected))
+                             (do (log/warn :IMPORT/UNIT-BASIS-MOVED-BEFORE-PLAN {:idx idx :source (:source unit) :expected expected :actual basis-now})
+                                 (update acc :conflicts conj
+                                         (assoc base-rec :conflicts [{:reason :basis-moved-before-plan :expected-basis expected :actual-basis basis-now}])))
+                           (let [plan (import/plan-unit db-now group {:mode mode})
+                                 rec  (cond-> (assoc base-rec :mode (:mode plan))
+                                        (= :replace (:mode plan))
+                                        (assoc :retracted-sections (:retracted-sections plan)
+                                               :retracted-slots (:retracted-slots plan)
+                                               :retracted-carrier? (:retracted-carrier? plan)))]
                            (try
                              (if (seq (:conflicts plan))
                                (do (log/warn :IMPORT/UNIT-CONFLICT {:idx idx :source (:source unit) :conflicts (:conflicts plan)})
                                    (update acc :conflicts conj (assoc rec :conflicts (:conflicts plan))))
-                               (do (import/apply-plan! plan)
-                                   (update acc :persisted conj rec)))
+                               (let [result (import/apply-plan! plan)]
+                                 (-> acc
+                                     (update :persisted conj rec)
+                                     ;; our own transaction is the only advance an attended run accepts
+                                     (assoc :expected-basis (d/basis-t (:db-after result))))))
                              (catch Throwable ex
                                ;; T-4: a FIREWALL refusal is shaped as :refused
                                ;; (a governed edge the import floor forbade),
@@ -1010,8 +1025,10 @@
                                  (update acc bucket conj
                                          (if moved?
                                            (assoc rec :conflicts (:conflicts data))
-                                           (assoc rec :error (.getMessage ex)))))))))
-                       {:persisted [] :failed [] :refused [] :conflicts []}
+                                           (assoc rec :error (.getMessage ex)))))))))))
+                       ;; the expected basis starts at the preview's pin when there is one, else
+                       ;; at the first unit's own commit
+                       {:persisted [] :failed [] :refused [] :conflicts [] :expected-basis (some-> expect-basis long)}
                        (map-indexed vector parsed))
               t-end   (System/currentTimeMillis)
               totals  {:attempted    (count units)
@@ -1042,6 +1059,8 @@
                   ;; identity conflict, a section another record references)
                   :conflict-count  (count (:conflicts results))
                   :conflicts       (:conflicts results)
+                  ;; the basis the run's own last commit left (D7 2d, Astra's acceptance case)
+                  :final-basis     (:expected-basis results)
                   :failed-count    (count (:failed results))
                   :failed          (:failed results)
                   ;; T-4: firewall-refused units surface separately from generic
@@ -3110,7 +3129,7 @@
     :handler project-export-handler}
    {:name "sandbar.project.import"
     :title "Ingest entities from a filesystem hierarchy (inverse of project.export)"
-    :description "WHICH: walks the `:from` directory, parses each `.md` file via the markdown codec into ONE SOURCE UNIT per file (a memory with its sections, or a Tag / other native-codec document), and — with `:persist` — transacts each parsed unit on its own, reporting every file's fate.  The ingestion half of the Anderson `de.setf.rdf:project-graph` boundary-layer primitive — inverse of `sandbar.project.export`.\n\nWHEN: use to load filesystem-canonical entity state into the substrate — restore from a project-export, ingest external content, or round-trip-validate after editing files manually.  When NOT to use: (a) you want to create ONE entity programmatically — `sandbar.entity.create` (STRICT on front matter: an unknown key is refused; this bulk verb is LENIENT: unknown keys ride in the front-matter carrier and are REPORTED per file); (b) you want to write TO the filesystem — `sandbar.project.export`.\n\nHOW: `:from` is the input directory path (REQUIRED; a single `.md` file is accepted too — the MEMORY.md / README.md heal path).  `:filter` (optional) restricts which units ingest — `:class`, `:classes`, `:tree-filter` (same shape as `sandbar.project.export`); the decision is made per source file.  `:persist` (optional, default false) — WITHOUT it the verb is a DRY RUN: it parses, PLANS every unit and reports, but transacts nothing.  REPLACEMENT (D6/D7, 2026-09-20): a file the substrate already holds is REPLACED — the file's declared slots win, an omitted source-owned slot is retracted, a cardinality-many slot is set-replaced, sections the file no longer carries are retracted with their links, the carrier is replaced or retracted — in ONE transaction per file, while the host's identity, the refs into it, and the facts the substrate or another owner maintains (created, last-touched, created-by, owning-project, visibility, the id) are kept; `:mode` `additive` opts into the pre-D7 additive behaviour.  A unit is REFUSED as a conflict, never guessed, when the file's class differs from the stored one, its `id:` differs from the stored `mm/id`, or a section it drops is referenced by a record outside the document (`:conflicts`, with the reason).  `:expect-basis` (optional) pins a persist to the basis a preview reported: if the database moved, the call is refused and the preview must be repeated; every unit reports its `:source-sha256`.  THE SOURCE PIN (D7-R5, 2026-09-20): `:expect-sources` (the preview's `:sources-sha256` token) or `:expect-source-hashes` (its `:sources` map) pins the persist to the preview's input set — a file that changed, appeared or disappeared since refuses the WHOLE call before anything is transacted, the map form naming the files.  THE BASIS GUARD (D7-R3): each plan is applied under `[:assert-basis t]` for the database value it was computed against, so a change that landed between planning and apply — a citation added to a section the plan retracts — aborts that unit's commit and is reported as a `:basis-moved-during-apply` conflict, never replanned.  A file that cannot be read is its own `:parse-failed` unit (D7-R4).  ACCOUNTING (D6, 2026-09-19) — every response carries `:attempted` (files walked), `:imported` (entities parsed), `:parse-failed-count` + `:parse-failed [{:source :error}]` (files whose parse threw — named, never silently dropped), `:unknown-keys-count` + `:unknown-keys [{:source :dt/type :ident :unknown-keys [...]}]` (files whose front matter carried keys the class does not declare), and `:skipped-count` (files the filter excluded, or that could not match the tree filter); a dry run adds `:units` (each file's planned `:mode` — `insert`, `replace` or `additive` — with the retractions a replace would make and any `:conflicts`) and `:basis`.  With `:persist` the response adds `:persisted-count` and `:persisted` (each unit's mode and retraction counts), `:failed-count` + `:failed [...]` (a unit whose transaction failed — a schema or transactor error, with `:source`, `:ident`, `:error`), `:refused-count` + `:refused [...]` (a unit the import firewall refused — a governed edge the floor forbade), `:conflict-count` + `:conflicts [...]` (a unit refused for ambiguity under replacement), `:groups` (the transaction units), and `:totals` + `:reconciled?` — attempted = persisted + failed + refused + conflicts + parse-failed + skipped.  ONE transaction per file: a failing file never rolls back its neighbours.  (Wire-format key MUST be `persist` — no `?` suffix — to comply with the MCP tool-schema property-key regex `^[a-zA-Z0-9_.-]{1,64}$`; the handler accepts legacy `persist?` too.)\n\nORDER: idempotent on the same filesystem state (a re-import upserts by ident).  Run once WITHOUT `:persist` to read the accounting, then WITH it.  Pre-check a doubtful document via `sandbar.entity.validate`.\n\nCOMBINATION: inverse of `sandbar.project.export`.  Round-trip property: `ingest-graph(project-graph(entities)) = entities` — verify via export + import + comparison.  Codec selection by file extension; registered codecs visible via `sandbar.codec.list`."
+    :description "WHICH: walks the `:from` directory, parses each `.md` file via the markdown codec into ONE SOURCE UNIT per file (a memory with its sections, or a Tag / other native-codec document), and — with `:persist` — transacts each parsed unit on its own, reporting every file's fate.  The ingestion half of the Anderson `de.setf.rdf:project-graph` boundary-layer primitive — inverse of `sandbar.project.export`.\n\nWHEN: use to load filesystem-canonical entity state into the substrate — restore from a project-export, ingest external content, or round-trip-validate after editing files manually.  When NOT to use: (a) you want to create ONE entity programmatically — `sandbar.entity.create` (STRICT on front matter: an unknown key is refused; this bulk verb is LENIENT: unknown keys ride in the front-matter carrier and are REPORTED per file); (b) you want to write TO the filesystem — `sandbar.project.export`.\n\nHOW: `:from` is the input directory path (REQUIRED; a single `.md` file is accepted too — the MEMORY.md / README.md heal path).  `:filter` (optional) restricts which units ingest — `:class`, `:classes`, `:tree-filter` (same shape as `sandbar.project.export`); the decision is made per source file.  `:persist` (optional, default false) — WITHOUT it the verb is a DRY RUN: it parses, PLANS every unit and reports, but transacts nothing.  REPLACEMENT (D6/D7, 2026-09-20): a file the substrate already holds is REPLACED — the file's declared slots win, an omitted source-owned slot is retracted, a cardinality-many slot is set-replaced, sections the file no longer carries are retracted with their links, the carrier is replaced or retracted — in ONE transaction per file, while the host's identity, the refs into it, and the facts the substrate or another owner maintains (created, last-touched, created-by, owning-project, visibility, the id) are kept; `:mode` `additive` opts into the pre-D7 additive behaviour.  A unit is REFUSED as a conflict, never guessed, when the file's class differs from the stored one, its `id:` differs from the stored `mm/id`, or a section it drops is referenced by a record outside the document (`:conflicts`, with the reason).  `:expect-basis` (optional) pins a persist to the basis a preview reported: if the database moved, the call is refused and the preview must be repeated; every unit reports its `:source-sha256`.  THE SOURCE PIN (D7-R5, 2026-09-20): `:expect-sources` (the preview's `:sources-sha256` token) or `:expect-source-hashes` (its `:sources` map) pins the persist to the preview's input set — a file that changed, appeared or disappeared since refuses the WHOLE call before anything is transacted, the map form naming the files.  THE BASIS GUARD (D7-R3): each plan is applied under `[:assert-basis t]` for the database value it was computed against, so a change that landed between planning and apply — a citation added to a section the plan retracts — aborts that unit's commit and is reported as a `:basis-moved-during-apply` conflict, never replanned.  An attended run advances its expected basis only through its OWN commits: a write that is not its own, landing between two units (or between the preview's pin and the first unit), refuses the remaining units as `:basis-moved-before-plan` conflicts, with the applied units and the refused remainder both reported and `:final-basis` the basis the run's last commit left (D7 2d).  A file that cannot be read is its own `:parse-failed` unit (D7-R4).  ACCOUNTING (D6, 2026-09-19) — every response carries `:attempted` (files walked), `:imported` (entities parsed), `:parse-failed-count` + `:parse-failed [{:source :error}]` (files whose parse threw — named, never silently dropped), `:unknown-keys-count` + `:unknown-keys [{:source :dt/type :ident :unknown-keys [...]}]` (files whose front matter carried keys the class does not declare), and `:skipped-count` (files the filter excluded, or that could not match the tree filter); a dry run adds `:units` (each file's planned `:mode` — `insert`, `replace` or `additive` — with the retractions a replace would make and any `:conflicts`) and `:basis`.  With `:persist` the response adds `:persisted-count` and `:persisted` (each unit's mode and retraction counts), `:failed-count` + `:failed [...]` (a unit whose transaction failed — a schema or transactor error, with `:source`, `:ident`, `:error`), `:refused-count` + `:refused [...]` (a unit the import firewall refused — a governed edge the floor forbade), `:conflict-count` + `:conflicts [...]` (a unit refused for ambiguity under replacement), `:groups` (the transaction units), and `:totals` + `:reconciled?` — attempted = persisted + failed + refused + conflicts + parse-failed + skipped.  ONE transaction per file: a failing file never rolls back its neighbours.  (Wire-format key MUST be `persist` — no `?` suffix — to comply with the MCP tool-schema property-key regex `^[a-zA-Z0-9_.-]{1,64}$`; the handler accepts legacy `persist?` too.)\n\nORDER: idempotent on the same filesystem state (a re-import upserts by ident).  Run once WITHOUT `:persist` to read the accounting, then WITH it.  Pre-check a doubtful document via `sandbar.entity.validate`.\n\nCOMBINATION: inverse of `sandbar.project.export`.  Round-trip property: `ingest-graph(project-graph(entities)) = entities` — verify via export + import + comparison.  Codec selection by file extension; registered codecs visible via `sandbar.codec.list`."
     :inputSchema (one-required
                    {:from     {:type "string" :description "Input directory path (or a single .md file)"}
                     :filter   {:type "object"

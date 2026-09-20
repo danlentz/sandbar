@@ -396,3 +396,35 @@
         @(d/transact (db/conn) [{:db/id eid :mm/pref-label "A different display label"}])
         (is (str/includes? (rendered) "pref-label: A different display label") "a label that differs is written"))
       (finally (rm-rf! dir)))))
+
+(deftest a-write-that-is-not-ours-between-two-units-refuses-the-remainder
+  ;; Astra's acceptance case (2026-09-20 13:49Z): an attended run advances its
+  ;; expected basis only through its own transactions.  A bystander write
+  ;; landing after the first unit commits and before the second is planned
+  ;; refuses the second (and any later) unit, and the report says which units
+  ;; applied and which were refused.
+  (let [dir (fresh-tmp-dir "own-basis")]
+    (try
+      (write! dir "decisions/own_basis_a.md" (str/replace (doc {}) "name: Replacement probe" "name: Own basis A"))
+      (write! dir "decisions/own_basis_b.md" (str/replace (doc {}) "name: Replacement probe" "name: Own basis B"))
+      (let [original @#'import/apply-plan!
+            applied  (atom 0)]
+        (with-redefs-fn
+          {#'import/apply-plan!
+           (fn [plan]
+             (let [result (original plan)]
+               (when (= 1 (swap! applied inc))
+                 ;; a write that is not ours lands right after the first unit's commit
+                 @(d/transact (db/conn) [{:db/id "bystander" :dt/type :mm/Observation :mm.memory/rel-path "observations/own_basis_bystander.md"
+                                          :mm.memory/name "bystander" :mm.memory/memory-type :observation}]))
+               result))}
+          (fn []
+            (let [preview (dry-run dir)
+                  report  (import! dir {"expect-basis" (:basis preview)})]
+              (is (= 1 (:persisted-count report)) (pr-str report))
+              (is (= 1 (:conflict-count report)))
+              (is (= "basis-moved-before-plan" (-> report :conflicts first :conflicts first :reason)))
+              (is (true? (:reconciled? report)))
+              (is (some? (:final-basis report)))
+              (is (= 2 (:attempted report)))))))
+      (finally (rm-rf! dir)))))

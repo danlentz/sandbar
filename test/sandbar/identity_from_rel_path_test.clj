@@ -39,3 +39,24 @@
                                                   :mm.memory/memory-type :observation :mm.memory/scope :project
                                                   :mm/id explicit})]
     (is (= explicit (:mm/id e)) "an explicit id is never overridden")))
+
+(deftest a-repeat-create-preserves-an-assigned-identity-and-a-repeat-first-create-is-stable
+  ;; Astra's D7-R6 (2026-09-20 14:03Z): a legacy row created under the old
+  ;; rule holds an id derived from its prefixed ident; recreating it through
+  ;; the store with the same path and no incoming id must keep that id, not
+  ;; remint from the slug.  A plain repeat create keeps the slug id.
+  (let [rp     "observations/2026-09-20T1200_legacy_probe.md"
+        legacy #uuid "9601d789-1d7f-5aa4-9d83-791dfd49fa09"
+        props  {:mm.memory/rel-path rp :mm.memory/name "legacy probe" :mm.memory/description "created under the old rule"
+                :mm.memory/memory-type :observation :mm.memory/scope :project}
+        first  (store/create-memory! :mm/Observation (assoc props :mm/id legacy))
+        again  (store/create-memory! :mm/Observation props)]
+    (is (= legacy (:mm/id first)))
+    (is (= (:db/id first) (:db/id again)) "the same row")
+    (is (= legacy (:mm/id again)) "the assigned identity is preserved on a repeat create without an incoming id"))
+  (let [rp    "observations/2026-09-20T1200_fresh_probe.md"
+        props {:mm.memory/rel-path rp :mm.memory/name "fresh probe" :mm.memory/description "first created under the slug rule"
+               :mm.memory/memory-type :observation :mm.memory/scope :project}
+        a     (store/create-memory! :mm/Observation props)
+        b     (store/create-memory! :mm/Observation props)]
+    (is (= (ident/rel-path-uuid rp) (:mm/id a) (:mm/id b)) "a repeat first create is stable at the slug id")))
