@@ -428,3 +428,26 @@
               (is (some? (:final-basis report)))
               (is (= 2 (:attempted report)))))))
       (finally (rm-rf! dir)))))
+
+(deftest an-excluded-unit-is-fingerprinted-but-neither-planned-nor-transacted
+  ;; the maintenance import's deferral: a row kept with both versions held is
+  ;; walked (it belongs to the covered input set the source pin binds) but
+  ;; neither planned nor transacted, and the totals reconcile
+  (let [dir (fresh-tmp-dir "exclude")]
+    (try
+      (write! dir rel-path (doc {:sections [["One" "One body."] ["Two" "Two body."]]}))
+      (write! dir "decisions/deferred_probe.md" (str/replace (doc {}) "name: Replacement probe" "name: Deferred probe"))
+      (import! dir)
+      (write! dir "decisions/deferred_probe.md" (str/replace (doc {:sections [["Only" "Only body."]]}) "name: Replacement probe" "name: Deferred probe"))
+      (let [preview (dry-run dir {"exclude" ["decisions/deferred_probe.md"]})]
+        (is (= 1 (:excluded-count preview)) (pr-str preview))
+        (is (= ["decisions/deferred_probe.md"] (:excluded preview)))
+        (is (= 1 (count (:units preview))) "the excluded unit is not planned")
+        (is (contains? (:sources preview) (keyword "decisions/deferred_probe.md")) "but it is in the covered input set")
+        (let [report (import! dir {"exclude" ["decisions/deferred_probe.md"] "expect-sources" (:sources-sha256 preview)})]
+          (is (= 1 (:persisted-count report)))
+          (is (= 1 (:excluded-count report)))
+          (is (true? (:reconciled? report)))
+          (is (= #{"One" "Two"} (set (d/q '[:find [?h ...] :in $ ?m :where [?s :mm.section/parent ?m] [?s :mm.section/heading ?h]] (d/db (db/conn)) :memory.decisions/deferred_probe)))
+              "the deferred row's store version is untouched")))
+      (finally (rm-rf! dir)))))
