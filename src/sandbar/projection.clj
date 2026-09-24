@@ -1,63 +1,14 @@
 (ns sandbar.projection
-  "Bidirectional projection between Sandbar's in-Datomic entity state
-   and a filesystem-organized native-representation hierarchy per
-   decisions/sandbar_project_graph_boundary_layer_primitive_per_anderson_de_setf_resource_2026_05_12.md.
+  "Map memory/section entity specifications to Markdown files and back.
+   project-graph writes selected realized entities beneath a destination,
+   normally using :mm.memory/rel-path. ingest-graph parses a document tree
+   into specifications; persistence and conflict decisions belong to callers.
 
-   ## Anderson lineage
-
-   The shape borrows from James Anderson's
-   `de.setf.rdf:project-graph` (de.setf.resource; Datagraph/Dydra-era
-   CL CLOS-metaclass framework) — *transparent bidirectional
-   projection between CLOS models and linked data repositories*.
-   Sandbar inherits the architectural shape; the new contribution is
-   filesystem-organized native-representation hierarchy as the
-   projection target (markdown for memory-corpus consumer; TTL for
-   RDF consumer; etc.).
-
-   ## Two operations
-
-   `project-graph`  — entities → filesystem hierarchy of native-format
-                      files (e.g., markdown for `:dt/native-codec
-                      :markdown` classes).  Each entity gets a path
-                      derived from a consumer-specified `hierarchy-fn`
-                      + emitted via the class's native codec.
-
-   `ingest-graph`   — filesystem hierarchy → entities.  Walks the
-                      directory; for each file, parses via the
-                      mime-type-matched codec or class-derived codec;
-                      returns a coll of entity-spec maps.
-
-   Round-trip identity: `ingest-graph(project-graph(entities)) =
-   entities` for the entities the consumer's hierarchy-fn can
-   round-trip lossless.
-
-   ## Stage D scope
-
-   Minimum-viable per
-   plans/sandbar_codec_layer_arc_2026-05-12.md Stage D:
-     - mm/Memory entities project to single markdown files per
-       :mm.memory/rel-path
-     - Sections embedded inside their host mm/Memory's file (heading
-       structure) — sections do NOT get their own filesystem files
-     - Default hierarchy-fn: read `:mm.memory/rel-path` directly
-     - Idempotent: project twice → same files; ingest twice → same
-       entity-specs
-     - Codec resolution via class's :dt/native-codec (default
-       :markdown for mm/Memory)
-
-   Deferred (later Stage D substages):
-     - Metadata sidecars (workflows / history / provenance as optional
-       sidecar files)
-     - Filter mechanism (project subset by class/attribute/predicate)
-     - Cross-class hierarchy-fns (multiple classes interleaving in
-       the same directory tree)
-
-   ## Layer-targeting
-
-   Operates over entity-spec MAPS in-memory; never touches Datomic
-   directly.  The DB-aware variant (lifting persisted Datomic
-   entities into entity-spec maps) lives at Stage F (dt/* + MCP
-   integration)."
+   Section trees are embedded in their host documents. Filters select source
+   units, and per-file diagnostics expose failures. The implemented boundary
+   is Markdown document representation, not a universal native-codec backend
+   or a service backup. See doc/concepts/projection.md for preservation,
+   identity, disclosure and maintenance procedures."
   (:require [clojure.java.io        :as io]
             [clojure.set            :as set]
             [clojure.string         :as str]
@@ -131,7 +82,7 @@
     (dt/type-isa? :mm/Section class-ident) mm-walker
     :else nil))
 
-(defn realize-and-emit-entity
+(defn realize-and-emit-entity-representation
   "Realize the bundle of related entities for `entity` (via the
    class's walker) and emit the bundle as a single
    native-representation document via the class's codec.
@@ -142,13 +93,15 @@
    For classes with a `:dt/native-codec` but no walker: emits the
    entity alone via the codec mediator.
 
-   For classes without `:dt/native-codec`: returns nil — caller
-   decides the fallback (e.g., EDN pr-str).
+   Return {:format keyword :text string}, describing the emitter actually
+   used. In particular, a realized section bundle uses Markdown even if
+   its class declares another native codec. Without `:dt/native-codec`,
+   return nil and let the caller choose a fallback (e.g., EDN pr-str).
 
    Codex MUST-FIX #4 — lift the realize-tree-then-emit shape into
    a substrate primitive so resources/read and project.export share
    one implementation."
-  ([entity] (realize-and-emit-entity entity {}))
+  ([entity] (realize-and-emit-entity-representation entity {}))
   ([entity opts]
    (let [class-ident   (:dt/type entity)
          native-codec  (dt/native-codec-of-class class-ident)
@@ -161,7 +114,7 @@
        (let [entity-vec        (dt/realize-with entity walker)
              sections-present? (some #(not= class-ident (:dt/type %)) (rest entity-vec))]
          (if sections-present?
-           (md/emit-document entity-vec)
+           {:format :markdown :text (md/emit-document entity-vec)}
            ;; Belt-and-braces strip parity: the raw codec `emit` excludes
            ;; :db/* + :mm.memory/rel-path but NOT :mm.memory/first-section,
            ;; so a section-less memory whose slot still carries a first-
@@ -170,15 +123,25 @@
            ;; the two notions can never diverge.  Per observations/live_sink_-
            ;; emits_derived_first_section_for_subclass_memorials_regenerating_-
            ;; debris_130_files_2026_07_10.
-           (codec/emit (md/strip-derived-memory-attrs (first entity-vec))
-                       (assoc opts :format native-codec))))
+           {:format native-codec
+            :text (codec/emit (md/strip-derived-memory-attrs (first entity-vec))
+                              (assoc opts :format native-codec))}))
 
        :else
        ;; No walker (native-codec-bearing non-memory class): same strip
        ;; parity as the section-less branch above — defense-in-depth so no
        ;; emit path reachable from here can leak a derived memory attr.
-       (codec/emit (md/strip-derived-memory-attrs entity)
-                   (assoc opts :format native-codec))))))
+       {:format native-codec
+        :text (codec/emit (md/strip-derived-memory-attrs entity)
+                          (assoc opts :format native-codec))}))))
+
+(defn realize-and-emit-entity
+  "Realize and emit a native document as a string, or nil when no native
+   codec is declared. Retains the original projection API; callers needing
+   the actual output format use realize-and-emit-entity-representation."
+  ([entity] (realize-and-emit-entity entity {}))
+  ([entity opts]
+   (:text (realize-and-emit-entity-representation entity opts))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Pre-write registry guard — refuse frontmatter-key strips at the write
@@ -407,32 +370,16 @@
   (select-keys entity [:dt/type :mm.memory/owning-project :db/ident]))
 
 (defn project-graph
-  "Project a coll of entity-spec maps onto a filesystem hierarchy.
+  "Write realized memory/section specifications as Markdown documents.
+   :to is the required output directory. Optional :hierarchy-fn chooses
+   relative paths; :filter selects memories with their associated sections.
 
-   Inputs:
-     entities — coll of entity-spec maps (mm/Memory + mm/Section
-                refs; sections are emitted inside their host memory's
-                markdown file via the section-tree codec).
-     opts     — map; supported keys:
-       :to            — REQUIRED; output directory (java.io.File or string).
-                        Created if absent.
-       :hierarchy-fn  — optional; entity → rel-path-string.  Defaults
-                        to default-hierarchy-fn (reads
-                        :mm.memory/rel-path).
-       :filter        — optional filter spec per `entity-passes-filter?`;
-                        when supplied, only matching entities project to
-                        disk.  Sections under a matching mm/Memory always
-                        accompany the memory regardless of filter.
-
-   Returns: vector of `{:rel-path \"...\" :written true}` records.  The
-   vector's METADATA carries `{:failed [{:rel-path :written false :error
-   :entity} …]}` — the units whose emit or write failed (D7, 2026-09-20);
-   the export continues past them, so every unit's fate is knowable.
-
-   Idempotence: re-projecting the same entities to the same dir yields
-   byte-identical files (per the markdown codec's normalization
-   invariants in
-   decisions/mm_section_schema_path_derived_idents_sibling_chain_navigation_2026_05_13.md §4)."
+   Return successful written-row descriptors. Vector metadata under :failed
+   records units whose emission or write failed; processing continues for
+   those failures. A :registry-strip-refusal aborts the operation instead.
+   Callers must inspect failure metadata as well as successful rows. The same
+   unchanged input normally normalizes to the same output, but this helper
+   does not prove source completeness, disclosure safety or recovery."
   [entities {:keys [to hierarchy-fn] filter-spec :filter
              :or   {hierarchy-fn default-hierarchy-fn}}]
   (when-not to
@@ -517,23 +464,10 @@
 ;; ingest-graph — filesystem → entities
 
 (def ^:const +default-skip-basenames+
-  "Default skip-set for ingest-graph file enumeration.  Subtree-index +
-  root-index filenames that conventionally are NOT memorials in markdown
-  memory-model corpora:
-
-  - README.md — subtree-index / human-readable directory pointer (any depth)
-  - MEMORY.md — root-index of active arcs / curated entries (top-level)
-
-  Per `etc/lib/memory.clj` corpus convention (`+skip-index-basenames+`
-  + `+skip-top-files+`).  Surfacing in BM25F search results would pollute
-  ranked output with non-memorial content (the corpus's parity probe at
-  observations/sandbar_bm25f_parity_probe_5_divergences_2026_05_22.md
-  D1+D2 surfaced README.md as top-ranked sandbar hit for `predicate
-  vocabulary` query because this filter was missing substrate-side).
-
-  Consumers can override via :skip-basenames opt to ingest-graph
-  (empty set #{} disables skipping; their-own-set replaces these
-  defaults)."
+  "Default basename exclusions for directory import: README.md and MEMORY.md.
+   These are commonly collection indexes rather than ordinary knowledge
+   documents. :skip-basenames replaces the set; an empty set disables this
+   exclusion. Importing an explicit file uses its separate file path."
   #{"README.md" "MEMORY.md"})
 
 (defn- walk-markdown-files

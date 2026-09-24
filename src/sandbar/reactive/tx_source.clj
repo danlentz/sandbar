@@ -1,47 +1,12 @@
 (ns sandbar.reactive.tx-source
-  "Boundary primitive wrapping Datomic `d/tx-report-queue` as a typed-event
-   stream.
+  "Wrap a Datomic transaction-report queue as a Manifold event stream.
+   start! polls the connection's report queue; stop! stops polling and closes
+   the stream. tx-report->event translates reports at this boundary.
 
-   ## Thesis (per event-substrate keystone ADR D.1)
-
-   Datomic's tx-report-queue IS the substrate-native reactivity
-   mechanism — every committed transaction surfaces as a TxReport.
-   This namespace wraps it behind a sandbar-typed boundary primitive:
-
-   - Captures EVERY committed tx (not just `dt/make` callsites — gets
-     transactor-side fns, REST API writes, MCP writes, …all sources)
-   - Multi-peer fan-out is Datomic-native (each peer connection gets
-     its own queue)
-   - NO Datomic types leak past the boundary — consumers see
-     sandbar-typed event maps via a Manifold stream
-
-   ## Phase status
-
-   Phase 1 of the event-substrate keystone ADR.  Implements the
-   tx-source boundary primitive itself.  Phase 2 (`sandbar.event/subscribe`
-   + class-hierarchical dispatch cache via `dt/type-isa?`) is the
-   sibling consumer-facing layer.
-
-   ## Not yet implemented (deferred to follow-on phases)
-
-   - Catchup-on-disconnect via `d/tx-range` with last-basis-t checkpoint
-     (Phase 1.5)
-   - Typed `:mm.event/*` subclass classification (Phase 3 — needs the
-     event schema authored)
-   - Buffer-policy slot on subscriptions (Phase 6)
-
-   ## Boundary discipline
-
-   Public surface (this namespace's exports):
-     `start!`      — begin polling the tx-report-queue; returns a stream
-     `stop!`       — stop polling; close the stream; idempotent
-     `stream`      — accessor for the public Manifold stream
-     `tx-report->event` — pure translation (testable independently)
-
-   Datomic types (`datomic.Datom`, `TxReport`, `Connection`) are
-   STRICTLY confined to this namespace.  Consumers never see them.
-
-   Per `memory/decisions/sandbar_event_substrate_architecture_datomic_tx_report_queue_wrapped_behind_dt_star_manifold_transport_class_hierarchical_subscription_2026_05_23.md`."
+   This source sees reports delivered to its connection while active. It
+   does not implement disconnected catch-up from a saved transaction cursor,
+   general typed subclass classification or automatic event-bus wiring.
+   Consumers must define replay and lifecycle requirements explicitly."
   (:require [clojure.tools.logging :as log]
             [datomic.api           :as d]
             [manifold.stream       :as ms]

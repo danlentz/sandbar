@@ -1,23 +1,20 @@
 (ns sandbar.bench.harness
-  "Timing harness primitives for the Sandbar 0.1.0 bench scaffolding
-  (F-DF-1 Phase 1; Phase R Stage R-6 per
-  plans/sandbar_0_1_0_codex_remediation_2026_05_14.md).
+  "Timing and EDN output for repeatable structural benchmarks.
 
   Three concerns:
     1. Multi-iteration timing → median + p95 latency in milliseconds
-    2. Warmup discipline → JVM JIT settles before measurement window
+    2. Warmup invocations before the measurement window
     3. EDN baseline emission → per-axis × per-size records for
        regression comparison
 
-  Scope: Phase 1 (scaffolding only).  Optimization work (Phase 3)
-  is out of scope for 0.1.0 — these harnesses establish the
-  baselines that future optimization passes will regress against."
+  Retains raw samples so comparisons can account for variation. This harness
+  measures elapsed time; callers must establish result correctness separately."
   (:require [clojure.edn        :as edn]
             [clojure.java.io    :as io]
             [clojure.pprint     :as pp]))
 
 (defn- now-ns
-  "Wall-clock nanosecond timestamp via System/nanoTime."
+  "Monotonic nanosecond reading for elapsed-time measurement."
   ^long []
   (System/nanoTime))
 
@@ -27,9 +24,9 @@
   (/ ns 1000000.0))
 
 (defn- percentile
-  "Compute the `p` percentile (0.0–1.0) of `xs` (numeric coll).
-   Uses linear interpolation between the two nearest ranks; matches
-   common p50 / p95 statistical conventions for small N."
+  "Select the floor-based order statistic at `p` (0.0–1.0) from nonempty
+   numeric `xs`: index floor(p * (n - 1)), with no interpolation. For ten
+   samples, p=0.5 and p=0.95 select the fifth and ninth sorted values."
   [p xs]
   (let [sorted (vec (sort xs))
         n      (count sorted)

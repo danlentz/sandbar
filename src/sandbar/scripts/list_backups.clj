@@ -1,16 +1,12 @@
 (ns sandbar.scripts.list-backups
-  "Enumerate Datomic backups under `<backup-root>/`.
+  "List native backup directories and available status.edn metadata.
+   Usage: lein list-backups
 
-   Usage:
-
-       lein list-backups
-
-   For each `sandbar-*/` directory, reads `status.edn` (if present) and
-   prints a row showing `{dir-name, datomic-version, segments, duration,
-   verified?, restore-cmd}`.  Sorted by timestamp descending (newest
-   first).
-
-   Per memory/libraries/datomic/backup_restore.md §12."
+   Set SANDBAR_CLIENT_DIR explicitly to select <client-dir>/.sandbar/backups.
+   Matching names are sorted lexically descending, including their store-id
+   prefixes; the first entry is not necessarily the newest across stores.
+   Rows include the directory, Datomic version, segment count, duration,
+   verification result, and an explicit restore command."
   (:require [clojure.edn    :as edn]
             [clojure.string :as str])
   (:import (java.io File))

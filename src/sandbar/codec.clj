@@ -1,40 +1,9 @@
 (ns sandbar.codec
-  "Codec mediator — consumer-facing API for the codec layer per
-   decisions/sandbar_codec_layer_owns_wire_format_concerns_consumer_native_representation_2026_05_12.md §2.3.
-
-   Wraps the codec registry, format detection (explicit hint vs MIME
-   vs per-class `:dt/native-codec`), and dispatch.
-
-   ## Consumer use
-
-     ;; Explicit format
-     (sandbar.codec/parse \"...markdown...\"
-                          {:format :markdown :class :mm/Memory})
-
-     ;; MIME-driven dispatch (e.g., from REST Content-Type)
-     (sandbar.codec/parse-mime \"text/markdown\" content)
-
-     ;; Class-default codec (mm/Memory → :markdown via :dt/native-codec)
-     (sandbar.codec/emit entity)
-
-     ;; Explicit format on emit
-     (sandbar.codec/emit entity {:format :markdown :pretty? true})
-
-     ;; Codec registry management
-     (sandbar.codec/register! :markdown my-markdown-codec)
-     (sandbar.codec/unregister! :markdown)
-     (sandbar.codec/list-codecs)
-     (sandbar.codec/codec-for :markdown)
-
-   ## Layering discipline
-
-   Codecs operate at the MODEL layer (`:dt/Class`, `:dt/slots`, class
-   hierarchy); never at the Datomic-schema layer.  Per
-   interaction/export_format_must_be_neutral_and_database_agnostic_2026_05_12.md
-   the wire format MUST be portable across model-equivalent backends.
-
-   The mediator targets `sandbar.db.datatype/*` for per-class default-
-   codec lookups — never raw `datomic.api`."
+  "Consumer API for codec registration, selection, parsing and emission.
+   Select by explicit :format, MIME type or class :dt/native-codec metadata.
+   Concrete codecs own their grammar and fidelity contracts. The mediator
+   does not automatically enforce supports? and does not imply a universal
+   default or a portable database backup. See doc/concepts/codec-layer.md."
   (:require [clojure.tools.logging :as log]
             [sandbar.codec.protocol :as proto]
             [sandbar.db.datatype    :as dt]))
@@ -114,20 +83,10 @@
 ;; this when no explicit :format hint is provided + dispatches.
 
 (defn native-codec-for-class
-  "Return the `:dt/native-codec` format keyword declared on `class-ident`
-   (a :dt/Class entity's ident), or nil if no default is declared.
-
-   Delegates to `sandbar.db.datatype/native-codec-of-class` — the
-   purpose-built helper that reads the codec directly off the class
-   entity (NOT via `:dt/type` traversal).  Resolves codex MUST-FIX #1
-   per
-   decisions/sandbar_dt_star_explicit_ident_entity_helper_split_2026_05_13.md.
-
-   The prior implementation called `(dt/class-of class-ident)` which
-   resolved to `:dt/Class` (the meta-class), then read `:dt/native-codec`
-   off it — invariably nil since the meta-class has no native codec.
-   Stage A added the new `dt/native-codec-of-class` primitive precisely
-   to express this lookup correctly."
+  "Return the :dt/native-codec declared on the class entity, or nil.
+   Read the class itself through dt/native-codec-of-class. Looking up the
+   class of that class would instead inspect :dt/Class and lose the
+   requested class's representation choice."
   [class-ident]
   (when class-ident
     (try

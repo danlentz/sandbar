@@ -1,31 +1,15 @@
 (ns sandbar.scripts.verify-backup
-  "Verify the structural integrity of a Datomic backup directory.
+  "Verify a native Datomic backup and update its status.edn sidecar.
+   Usage: lein verify-backup [<backup-dir>]
 
-   Usage:
+   Set SANDBAR_CLIENT_DIR explicitly. Without a directory, the helper selects
+   the lexically last matching name under <client-dir>/.sandbar/backups.
+   Names start with a store id, so this is not chronological selection across
+   stores; pass the exact directory for the intended database.
 
-       lein verify-backup [<backup-dir>]
-
-   `<backup-dir>` defaults to the LATEST backup under `<backup-root>/`
-   (sorted lexicographically by directory name; backup-db's TS-prefix
-   convention makes this chronological).
-
-   Shells out to `bin/datomic list-backups <backup-uri>` to discover
-   the latest `t` value (a backup may contain multiple point-in-time
-   t-values; we verify the latest), then `bin/datomic verify-backup
-   <backup-uri> true <t>` to walk every segment + assert readability.
-
-   The 3-arg form `verify-backup <uri> read-all t` is REQUIRED by the
-   Datomic CLI; passing only `<uri>` returns exit 255 with a usage
-   error.  Discovered 2026-05-24 when the initial scripted invocation
-   failed against the baseline backup; the Datomic CLI's usage line is
-   the only documentation of the arg shape.
-
-   Updates `<backup-dir>/status.edn` with
-   `{:verified-at <inst> :verify-exit-code N}` (merge-style; preserves
-   the original backup-db sidecar fields).
-
-   Per memory/libraries/datomic/backup_restore.md §8 (verify-backup
-   cadence: post-baseline full-read; weekly thereafter)."
+   Discover the latest transaction t with list-backups, then invoke
+   verify-backup <backup-uri> true <t> to read every segment. Merge the
+   verification timestamp and exit code into the existing sidecar."
   (:require [clojure.edn                 :as edn]
             [clojure.java.shell          :as sh]
             [clojure.string              :as str]

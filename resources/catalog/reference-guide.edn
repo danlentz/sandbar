@@ -1,0 +1,73 @@
+;; Editorial introduction for the generated MCP reference.
+;; Wire schemas and per-operation descriptions come from mcp.tools/verb-catalog.
+{:preamble "Sandbar tools describe operations over the model: discover a class, read an entity, search its content, follow relationships, validate data, or change state. The [operation map](../mcp-affordance-map.md) helps choose a tool; this page lists its wire name and arguments.
+
+This reference is generated from this checkout's catalog. Use the running server's `tools/list` response as the authoritative list of advertised names and complete input schemas. A deployment, version, or client's allowed subset may expose a different set. Each operation below includes its complete advertised JSON input schema, including nested items, alternatives, and required fields. A required argument is marked with an asterisk in the summary; conditional requirements and operation outcomes are described in its catalog text. Schema descriptions use Clojure notation for some values: actual call arguments are JSON.
+
+## Naming convention
+
+The catalog name `sandbar.entity.find` becomes the wire name `sandbar_entity_find`. Only dots become underscores: keep hyphens in names such as `sandbar_entity_find-by-rel-path` and `sandbar_aggregate_group-by`. Use the advertised wire name in `tools/call.params.name`.
+
+Some discovery arguments identify a catalog record rather than a callable wire name. For example, call `sandbar_tools_describe` with `{\"verb\":\"sandbar.entity.find\"}` or `{\"verb\":\":sandbar.entity/find\"}`. The dotted name is appropriate **inside that argument**.
+
+## Arguments and identities
+
+Argument names are ordinary JSON keys such as `\"class\"`, `\"rel-path\"`, and `\"persist\"`. Do not add a leading colon or a trailing question mark to these keys. Values identifying classes, properties or interned entities use keyword-shaped strings, for example `\":mm/Decision\"`, `\":mm.memory/name\"`, or `\":dt/Class\"`. Use identifiers returned by discovery.
+
+| Reference | Meaning | Appropriate lookup |
+| --- | --- | --- |
+| `:db/ident` | An entity's interned name; not every entity has one | `entity.find` with `ident` |
+| `:db/id` | Numeric Datomic entity ID within this database | `entity.find` with integer `id` |
+| Relative document path | A document location interpreted by the Markdown identity convention | `entity.find-by-rel-path` with `rel-path` |
+| `urn:uuid:…` | A portable identity reference resolved through `:mm/id` | `resolve` with `reference` |
+
+For a synthetic example, `notes/example.md` resolves to `:memory.notes/example`. A path such as `notes/example.md` is not itself a Datomic ident. `find-by-rel-path` accepts a leading `memory/` and a trailing `.md`, both optional, and applies the `:mm/Memory` document convention. It is not a general filesystem reader or a lookup convention for every class.
+
+JSON types do not express every domain constraint: a class must exist, a property must fit its use, and a mutation must satisfy the relevant accepting boundary.
+
+## Projection and result handling
+
+Set `\"projection\":\"full\"` when a conclusion depends on the entity's body, qualifications, or slots. `entity.find`, `entity.find-by-rel-path`, `class.instances`, search, structural ranking, edge navigation, `path-via` and `library-card` return metadata by default. Metadata identifies entities; it does not establish what they say. Projection defaults are specific to each operation: for example, `workflow.find` returns a full definition by default.
+
+`metadata-only` contains identity/type metadata. `full` includes the entity's slots, with referenced entities represented by bounded metadata projections; it does not recursively fetch an entire graph. BM25F also advertises `frontmatter`, which omits `:mm.memory/body-raw`. Read a referenced entity separately when its content matters. A projection mode controls response shape, not authorization.
+
+Check results in this order:
+
+1. Transport status and whether the response can be decoded.
+2. A JSON-RPC `error` at the envelope level.
+3. Tool `result.isError`.
+4. The decoded operation outcome, such as `missing?`, `valid?`, `failed-count`, or `refused-count`.
+
+Current tool responses carry a JSON-encoded payload in a text item of `result.content`. Use `structuredContent` when supplied; otherwise select the JSON text content and decode it. Preserve error content for diagnosis. An HTTP success, parseable payload, or absent `isError` does not by itself mean an entity was found or every item in a batch succeeded. See [Writing an MCP client](../guides/writing-an-mcp-client.md) for initialization, transport and a tool-result decoder.
+
+Behavioral annotations such as `readOnlyHint`, `destructiveHint` and `idempotentHint` are hints for clients. They do not grant permission or prove the complete side-effect contract. Export writes files; persisted retraction removes entities. Inspect the operation and its result before deciding whether to retry a write.
+
+## Invoke an operation
+
+Initialize the connection as described in [Writing an MCP client](../guides/writing-an-mcp-client.md), then send a JSON-RPC request such as:
+
+```json
+{
+  \"jsonrpc\": \"2.0\",
+  \"id\": 2,
+  \"method\": \"tools/call\",
+  \"params\": {
+    \"name\": \"sandbar_entity_find\",
+    \"arguments\": {\"ident\": \":dt/Class\", \"projection\": \"full\"}
+  }
+}
+```
+
+A successful response has the following envelope shape. The empty entity here illustrates decoding only; it is not a response fixture for the request above.
+
+```json
+{
+  \"jsonrpc\": \"2.0\",
+  \"id\": 2,
+  \"result\": {
+    \"content\": [{\"type\": \"text\", \"text\": \"{\\\"entity\\\":{}}\"}]
+  }
+}
+```
+
+The catalog's `WHICH`, `WHEN`, `HOW`, `ORDER` and `COMBINATION` sections explain use and composition. These descriptions also supply future persisted `:mm/Verb` cards; regenerating this file does not refresh a running server's catalog or seed its database. An advertised schema describes accepted wire input, not proof that every runtime boundary enforces it."}

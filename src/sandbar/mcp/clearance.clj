@@ -147,13 +147,27 @@
    (`subscriber-cleared-for-entity?` for the notify plane: nil = `:public`
    only).  This predicate assumes a non-nil principal; `principal-clears-project?`
    is itself nil-safe (returns false), so a nil principal here would be treated
-   as clearing nothing — but callers should route nil through their own policy."
-  [principal {:keys [visibility project]}]
-  (case visibility
-    :public  true
-    :private (principal-clears-project? principal project)
-    ;; unknown lattice level — fail closed
-    false))
+   as clearing nothing — but callers should route nil through their own policy.
+   The optional database resolves ident-bearing cleared-project refs, just as
+   `entity-compartment` resolves an ident-bearing owning-project ref."
+  ([principal compartment] (cleared-for-compartment? nil principal compartment))
+  ([db principal {:keys [visibility project]}]
+   (case visibility
+     :public  true
+     :private (principal-clears-project? db principal project)
+     ;; unknown lattice level — fail closed
+     false)))
+
+(defn subscriber-cleared-for-compartment?
+  "Delivery-time gate for an already resolved compartment. Ownership-aware
+   callers supply the compartment and the same database used to resolve it;
+   this leaf namespace does not traverse document ownership. Nil subscribers
+   retain the notify plane's public-only policy."
+  [db subscribers compartment subscriber-id]
+  (let [principal (:identity (get subscribers subscriber-id))]
+    (if (nil? principal)
+      (= :public (:visibility compartment))
+      (cleared-for-compartment? db principal compartment))))
 
 (defn subscriber-cleared-for-entity?
   "Delivery-time gate: may the subscriber identified by `subscriber-id` receive
@@ -171,8 +185,5 @@
    so wire nil-identity should be unreachable; this guards against chain-order
    drift.)"
   [subscribers entity subscriber-id]
-  (let [principal   (:identity (get subscribers subscriber-id))
-        compartment (entity-compartment entity)]
-    (if (nil? principal)
-      (= :public (:visibility compartment))
-      (cleared-for-compartment? principal compartment))))
+  (subscriber-cleared-for-compartment?
+    nil subscribers (entity-compartment entity) subscriber-id))

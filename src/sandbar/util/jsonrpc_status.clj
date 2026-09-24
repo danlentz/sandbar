@@ -1,35 +1,10 @@
 (ns sandbar.util.jsonrpc-status
-  "Semantic named constants for JSON-RPC 2.0 + MCP error codes.
-
-   Parallel to `sandbar.util.http-status`.  Eliminates opaque
-   negative-integer literals (`-32603`, `-32602`, etc.) at MCP
-   boundary surfaces in favor of named constants like
-   `jsonrpc-status/internal-error` and `jsonrpc-status/invalid-params`.
-
-   Per `decisions/sandbar_jsonrpc_status_semantic_constants_namespace_2026_05_14.md`.
-
-   ## JSON-RPC 2.0 reserved error code range
-
-   Per JSON-RPC 2.0 §5.1 (https://www.jsonrpc.org/specification#error_object):
-
-   - `-32700` Parse error          — invalid JSON received by the server
-   - `-32600` Invalid Request      — JSON sent is not a valid Request object
-   - `-32601` Method not found     — the method does not exist / is not available
-   - `-32602` Invalid params       — invalid method parameter(s)
-   - `-32603` Internal error       — internal JSON-RPC error
-   - `-32099` to `-32000`          — server error (implementation-defined range)
-   - `0` and positive              — application-defined errors
-
-   ## Usage
-
-     (require '[sandbar.util.jsonrpc-status :as jsonrpc-status])
-
-     (envelope/jsonrpc-error id jsonrpc-status/internal-error
-                             \"Tool execution failed\"
-                             {:tool tool-name})
-
-     (when (server-error? code)
-       ...)")
+  "Named JSON-RPC/MCP error-code constants.
+   Use semantic names such as internal-error and invalid-params instead of
+   opaque integer literals in adapters. JSON-RPC reserves -32700 for parse
+   error, -32600 invalid request, -32601 missing method, -32602 invalid
+   parameters and -32603 internal error; server-error? tests its server-error
+   range. See https://www.jsonrpc.org/specification#error_object.")
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Pre-defined error codes (JSON-RPC 2.0 §5.1)

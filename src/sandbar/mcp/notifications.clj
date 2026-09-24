@@ -1,29 +1,15 @@
 (ns sandbar.mcp.notifications
-  "MCP notifications channel — server → client push messages without
-   request/response correlation (JSON-RPC 2.0 notification semantics:
-   no `:id` field; no response expected).
+  "Server-to-client JSON-RPC notifications and an in-process subscriber
+   registry. Notifications carry no request id and expect no response.
 
-   Per decisions/sandbar_mcp_server_design_2026_05_12.md B.1.4 + B.1.5:
-   - `notifications/tools/list_changed` — emitted when new `:dt/Class`
-     instances land via `dt/make` (Phase 2 schema evolution)
-   - `notifications/resources/updated` — emitted when subscribed entities
-     mutate
-   - `notifications/resources/list_changed` — emitted when the resource
-     catalog changes
-   - `notifications/message` — server log message pushed to client
+   The SSE transport registers a send function and authenticated identity for
+   each connection. `publish!` broadcasts; `publish-to!` targets selected ids.
+   Failed sends evict subscribers, including a falsey return from a closed
+   core.async channel. Disconnect cleanup is therefore lazy until delivery.
 
-   Pure-data subscriber registry: tracks active SSE channels; `publish!`
-   broadcasts to all subscribers. The wire-level transport
-   (sandbar.mcp.transport/sse-handler) registers channels here when
-   clients connect to `GET /mcp/sse` and unregisters them on disconnect.
-
-   Per the layer-targeting discipline
-   (interaction/target_sandbar_introspection_api_layer_not_raw_datomic_2026_05_12.md):
-   this module does NOT directly observe Datomic. Future hooks that
-   listen to `d/tx-report-queue` and forward as `resources/updated`
-   notifications will live in a separate `sandbar.mcp.tx-listener`
-   namespace (Stage C.5+); for now `publish!` is invoked explicitly by
-   callers that know an entity changed."
+   Callers explicitly publish catalog changes, resource updates, or messages;
+   this namespace does not observe database transactions itself. Resource
+   delivery clearance is enforced by `sandbar.mcp.resources/entity-updated!`."
   (:require [clojure.tools.logging :as log]
             [sandbar.mcp.envelope  :as envelope]))
 
@@ -88,23 +74,10 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (defn- deliver-event!
-  "Internal: call a subscriber's `send!` with `event`, returning true on
-   successful delivery + false on any failure shape.  Two failure modes
-   are recognized + treated identically (evict + warn):
-
-   1. **Exception path** — `send!` throws (e.g., transport encountered an
-      I/O error the underlying machinery surfaces as an exception).
-   2. **Falsey-return path** — `send!` returns false / nil.  This is the
-      core.async `async/put!` semantics: put! to a CLOSED channel returns
-      false WITHOUT throwing.  Per ultrareview UR-13 + observation
-      `sandbar_sse_subscriber_async_put_closed_channel_silent_drop_2026_05_14`:
-      treating exceptions as the only failure signal silently drops
-      notifications to disconnected clients + leaks subscriber-registry
-      entries across connect-disconnect cycles.
-
-   On failure: log warn with `:reason` (`:exception` or `:closed-channel`)
-   + `unregister!` the subscriber.  Returns true iff `send!` returned a
-   truthy value AND did not throw."
+  "Call a subscriber's send function; return true only for a truthy result.
+   Both an exception and a falsey return cause a warning and eviction.
+   Checking the return value is necessary because core.async put! returns
+   false on a closed channel without throwing."
   [id send! event method]
   (try
     (let [result (send! event)]
@@ -126,20 +99,10 @@
       false)))
 
 (defn publish!
-  "Broadcast a JSON-RPC notification to all registered subscribers.
-   Failures are detected via two mechanisms (see `deliver-event!`):
-
-   1. `send!` throws (caught + subscriber unregistered)
-   2. `send!` returns falsey (closed core.async channel — `async/put!`
-      returns false to a closed channel WITHOUT throwing; subscriber
-      unregistered, log warn emitted)
-
-   Per ultrareview UR-13: ignoring the falsey return value silently
-   drops notifications + leaks subscriber-registry entries across SSE
-   client connect-disconnect cycles.
-
-   Returns the count of subscribers that received the notification
-   successfully."
+  "Broadcast a JSON-RPC notification to registered subscribers and return
+   the count of truthy, non-throwing send results. Failed sends are logged and
+   evicted by `deliver-event!`. This function does not perform per-resource
+   clearance filtering; resource updates use `entity-updated!` and `publish-to!`."
   [method params]
   (let [event (envelope/jsonrpc-notification method params)]
     (log/debug :MCP/notification-publish
@@ -153,19 +116,9 @@
       @+subscribers+)))
 
 (defn publish-to!
-  "Send a JSON-RPC notification to a specific set of subscriber-ids only.
-   Per-URI / per-subscription routing per F-S-001 resolution; the broadcast
-   shape of `publish!` is the fallback for legacy `::broadcast`-bound
-   subscriptions.
-
-   Failure detection matches `publish!`: both exception + falsey-return
-   from `send!` trigger eviction + a warn log (closed core.async channels
-   manifest as the falsey-return path — see `deliver-event!` docstring +
-   ultrareview UR-13).
-
-   subscriber-ids — collection of subscriber-id strings registered via
-                    `register!`.  Unknown ids are silently skipped.
-   Returns the count of subscribers that received the notification."
+  "Send a JSON-RPC notification to the supplied subscriber-id collection.
+   Unknown ids are skipped. Exceptions and falsey send results are logged and
+   evicted, as in `publish!`. Return the count of successful send results."
   [subscriber-ids method params]
   (let [event (envelope/jsonrpc-notification method params)
         subs  @+subscribers+]
@@ -188,9 +141,8 @@
 ;; notification methods per libraries/mcp_protocol.md §8.
 
 (defn tools-list-changed!
-  "Per the MCP spec: emit `notifications/tools/list_changed` so clients
-   re-fetch tools/list. Fires when new `:dt/Class` instances land via
-   `dt/make` (Phase 2 schema evolution; e.g., a new mm/* class)."
+  "Publish notifications/tools/list_changed so clients can refresh tools/list.
+   This helper is invoked by callers; it does not monitor schema changes."
   []
   (publish! "notifications/tools/list_changed" {}))
 

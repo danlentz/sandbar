@@ -1,45 +1,19 @@
 (ns sandbar.migrations.zeta-sweep
-  "ζ Scope B corpus-wide sweep — backfill `:mm/id` v5 UUID + `:mm/pref-label`
-  on ALL :mm/Memory entities that lack them.
-
-  Strategic pivot rationale (per the empirical finding 2026-05-26T~08:35
-  documented in `memory/observations/phase_b_ref_rewrite_is_no_op_across_all_families_codec_already_resolves_path_strings_to_refs_at_ingest_zeta_sweep_pivot_2026_05_26.md`):
-  the β.2.2 ADR's per-family migration ordering was an OPTIMIZATION
-  (piggyback ζ-backfill on Phase B ref-rewrite per-entity touch). Empirical
-  inspection of substrate state for created-by / related / cites /
-  motivated-by / part-of / evidences / parent ALL report 0 string-valued
-  drift — the codec resolves path-strings to refs at FS→substrate ingest;
-  Phase B ref-rewrite is empirically NO-OP across the corpus.
-
-  With Phase B NO-OP, the per-family commit ordering loses its optimization
-  rationale. The cleaner path: ζ-only sweep over ALL entities lacking
-  :mm/id. One Gate-2 backup-cycle; one migration commit; covers the full
-  remaining 5306+ entities.
-
-  Composes WITH:
-  - `sandbar.migrations.zeta-backfill` (per-entity tx-data helpers; reused)
-  - `sandbar.identifier` (v5 UUID derivation)
-  - The β.2.2 ADR §1.4 Q.B.1 SURFACE-AS-DRIFT diagnostic (recorded as
-    0 across-the-board; clean Phase B state confirmed for the whole corpus)
-  - The 627-entity prior backfill from β.2.3.1 (already-populated entities
-    are no-op skipped via entity-backfill-tx's skip-condition)
-
-  Per the build-prove-promote discipline (Dan-directive 2026-05-26): the
-  PROVE phase happened in β.2.3.1; this sweep is the PROVEN-PATTERN
-  applied broadly (still consuming sandbar.identifier locally; still no
-  clj-uuid library modification)."
+  "Backfill entities carrying a memory rel-path but no durable ID.
+   Reuse zeta-backfill's per-entity transaction-data helpers rather than
+   coupling identity backfill to a particular reference-field migration.
+   The helper also supplies a missing preferred label for that cohort;
+   entities with an ID but no preferred label are not selected. This is a
+   mutating maintenance driver; current cohort inspection, backup and
+   explicit operator authorization are separate prerequisites."
   (:require [datomic.api :as d]
             [sandbar.migrations.zeta-backfill :as zb]))
 
 
 (defn find-unmigrated-entity-eids
-  "Find ALL :mm/Memory-or-subclass entity eids that lack :mm/id (regardless
-   of which slots are populated). The corpus-wide ζ-sweep candidate set.
-
-   Strategy: every :mm/Memory entity carries :mm.memory/rel-path (a slot
-   declared on :mm/Memory + inherited by all subclasses). Filter by
-   rel-path-populated + no-:mm/id. Simpler than transitive class-hierarchy
-   traversal in Datalog (which requires rule syntax)."
+  "Find eids carrying :mm.memory/rel-path and lacking :mm/id.
+   This population is selected by slot presence, not a class-hierarchy query;
+   pathless memories and records already carrying an ID are excluded."
   [db]
   (vec (d/q '[:find [?e ...]
               :where [?e :mm.memory/rel-path _]

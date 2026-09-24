@@ -1,29 +1,15 @@
 (ns sandbar.scripts.memory-open-affordance
-  "Project the verb catalog -> the two machine-owned fragments of the corpus
-   ceremony recipe `.claude/commands/memory-open.md`: the eager-core
-   `ToolSearch select:` block, the `N verbs / M axes` count sentence, and the
-   axis affordance table.
+  "Render a client memory-open recipe's generated catalog fragments:
+   the ToolSearch selection, verb/axis count, and axis affordance table.
 
-   This is the MISSING generator (design §5.5 + §6).  The memory-open table was
-   the most-drifted projection (79/21) precisely because it had NO generator —
-   it was hand-maintained markdown that fell three verbs and one axis behind the
-   82-verb catalog.  This closes that gap: the structural columns (axis, n) come
-   straight from `sandbar.mcp.catalog-model/catalog-summary`; the editorial
-   columns (the 'reach for it when…' prose + EAGER/LAZY tier) come from the
-   `catalog/affordance-editorial.edn` sidecar; the eager-core block is derived
-   by applying the `catalog/eager-core.edn` policy to the model.
+   Structural values come from sandbar.mcp.catalog-model, editorial guidance
+   from catalog/affordance-editorial.edn, and eager selection from
+   catalog/eager-core.edn. Missing editorial rows or unknown policy verbs
+   fail loudly, keeping catalog changes visible to maintainers.
 
-   FAIL-LOUD (design P4): a catalog axis with no editorial row, or an eager-core
-   policy verb absent from the catalog, throws — the forcing function so a new
-   axis/verb cannot slip into the surface undocumented.
-
-   Because memory-open.md is a hand-edited recipe with much non-generated prose,
-   the landed form owns a FENCED region delimited by sentinel comments; this
-   generator emits that region's content.  It renders (it does not splice the
-   live file); the lead splices the region in after review, and the drift gate
-   (sandbar.scripts.catalog-check) diffs the region against the committed file.
-
-   Usage: lein memory-open-affordance    ; prints the generated region to stdout"
+   This script prints the fenced region's content; it does not edit the
+   consumer's recipe. Review and splice it into the intended client file.
+   Usage: lein memory-open-affordance"
   (:require [clojure.string           :as str]
             [clojure.edn              :as edn]
             [clojure.java.io          :as io]
@@ -66,16 +52,15 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (defn count-sentence
-  "The canonical 'N verbs / M axes' fragment from catalog-summary — the single
-   source of every count string in memory-open.md (was hand-written '79/21')."
+  "Render the current verb and axis counts from the shared catalog model."
   [model]
   (let [{:keys [verb-count axis-count]} (model/catalog-summary model)]
     (format "%d verbs / %d axes" verb-count axis-count)))
 
 (defn render-affordance-table
-  "model + editorial sidecar -> the markdown table rows (with header).
-   FAILS LOUD if a catalog axis has no editorial entry, or the editorial :order
-   omits a catalog axis (design P4)."
+  "Render Markdown table rows and header from the catalog model and editorial
+   sidecar. Throw if an axis lacks editorial text or is omitted from the
+   editorial order."
   [model editorial]
   (let [{:keys [by-axis]} (model/catalog-summary model)
         order          (:order editorial)

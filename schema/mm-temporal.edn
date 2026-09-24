@@ -447,7 +447,10 @@
    :dt/range       :db.type/keyword
    :db/valueType   :db.type/keyword
    :db/cardinality :db.cardinality/one
-   :db/doc "Hook lifecycle position — when in the Claude Code lifecycle this hook-event class fires.  Values: :pre-grounding, :pre-tool-use, :post-commit, :post-response, :session-start, :session-end, :user-prompt-submit, :corpus-audit, etc.  Migrated from the legacy :mm.event/lifecycle-position slot per the 2026-05-24 collision-resolution ADR."}
+   :db/doc "Client hook lifecycle position, such as :pre-grounding, :pre-tool-use,
+            :post-commit, :post-response, :session-start, :session-end,
+            :user-prompt-submit, or :corpus-audit. Clients determine when their
+            hook integration emits the corresponding event."}
 
   {:db/ident       :mm.hook-event/default-severity
    :dt/type        :dt/Property
@@ -471,7 +474,10 @@
    :dt/range       :mm/Actor
    :db/valueType   :db.type/ref
    :db/cardinality :db.cardinality/many
-   :db/doc "Actor classes for which rules triggered by this hook-event class apply.  Proper :mm/Actor REF per the Actor-as-first-class hierarchy.  Legacy values on :mm.event/applicable-actor-classes (keyword-of-path form like :actors/foo.md) are NOT yet migrated to refs — that's part of the corpus-wide string-of-path → ref normalization in the metamodel-unification arc (Phase B substrate-quality cleanup).  Per Dan-directive 2026-05-24 stop-tactical-spinning ADR: this slot keeps the principled :db.type/ref declaration; the legacy data migrates UP to ref-form rather than the schema migrating DOWN to match the debt."}
+   :db/doc "Actor entity references selecting where rules for this hook event apply.
+            Values use :db.type/ref with :mm/Actor range. Historical path-shaped
+            keywords require explicit migration to actor references; the schema
+            declaration alone neither migrates them nor verifies completion."}
 
   {:db/ident       :mm.hook-event/substrate-correctness-criticality
    :dt/type        :dt/Property
@@ -522,7 +528,11 @@
    :dt/range       :db.type/keyword
    :db/valueType   :db.type/keyword
    :db/cardinality :db.cardinality/one
-   :db/doc "Keyword classifying WHY the κ P18 bootstrap-robustness fallback engaged.  Canonical value: :transition-not-found (compiled-cache stale per the empirical reproduction in observations/workflow_transition_verb_identless_unreachable_2026_05_26.md).  Future expansion: :substrate-unreachable, etc."}
+   :db/doc "Reason that workflow orchestration returned a degraded fallback.
+            :transition-not-found means the intended transition could not be
+            resolved; it may reflect an unavailable definition or stale derived
+            state. Callers should inspect the result before deciding how to
+            recover rather than assuming the transition succeeded."}
 
   {:db/ident       :mm.workflow-event/failure-reason
    :dt/type        :dt/Property
@@ -597,7 +607,12 @@
                       :mm.hook-event/applicable-actor-classes
                       :mm.hook-event/substrate-correctness-criticality]
    :dt/abstract?     false
-   :db/doc "Concrete subtype of :mm/Event capturing the corpus-hook event taxonomy authored 2026-05-11 (per decisions/event_as_first_class_type_2026_05_11.md).  Receives the 6 existing :mm/Event instances (:memory.events/{session_start, post_commit, pre_grounding, corpus_audit, pre_tool_use, user_prompt_submit}) via the 2026-05-24 collision-resolution migration tx-fn.  Carries :mm.hook-event/* slots (renamed from the legacy :mm.event/{lifecycle-position,default-severity,...} family).  Rules continue to reference instances of this class via :triggered-by typed edges (no rule-side migration needed; only :dt/type of the referenced instances changes from :mm/Event to :mm/HookEvent)."}
+   :db/doc "Concrete :mm/Event subtype describing client hook events and carrying
+            :mm.hook-event/* lifecycle, severity, trigger, actor, and criticality
+            metadata. The dedicated migration can retype legacy direct :mm/Event
+            instances in place and move their slot values, preserving ids and
+            rule references. This declaration does not itself perform that
+            migration or install a client hook."}
 
   ;; :mm.event/WorkflowTransition hierarchy per ι.3 design ratification Q.ι.3.9.
   ;; Abstract umbrella + 5 concrete subtypes covering the phase-completion +
@@ -615,7 +630,11 @@
                       :mm.workflow-event/phase
                       :mm.workflow-event/transition]
    :dt/abstract?     true
-   :db/doc "Abstract umbrella for the workflow.transition event family emitted by the ι.3 substrate orchestrator (sandbar.workflow.orchestrate).  Per the ι.3 design ratification §Q.ι.3.9 (memory/decisions/iota_3_substrate_orchestrator_design_ratification_2026_05_26.md).  Carries the common workflow-process context slots (:mm.workflow-event/process, :phase, :transition) inherited by all concrete subtypes.  STRICT Event Substrate ADR compliance — emitted via sandbar.util.event/log! per Keystone ADR D.4; class-hierarchical subscription via :dt/type-isa? cache.  Concrete subtypes: :mm.event/WorkflowSessionOpened (phase/activate completion), :mm.event/WorkflowSessionHandoffAuthored (phase/author completion), :mm.event/WorkflowSessionClosed (phase/finalize completion), :mm.event/WorkflowSessionDegraded (κ P18 bootstrap-fallback engagement), :mm.event/WorkflowSessionFailed (hard-fail per `hard-fail-criteria`)."}
+   :db/doc "Abstract workflow-transition event category used by sandbar.workflow.orchestrate.
+            Shared fields identify the workflow process, phase, and transition.
+            Concrete events describe session opening, handoff authoring, closing,
+            degraded fallback, or failure. Event emission records orchestration
+            outcomes; consumers must still inspect the returned state and errors."}
 
   {:db/ident         :mm.event/WorkflowSessionOpened
    :dt/type          :dt/Class
@@ -648,7 +667,11 @@
    :dt/label         "WorkflowSessionDegraded"
    :dt/slots         [:mm.workflow-event/degraded-reason]
    :dt/abstract?     false
-   :db/doc "Emitted when the κ P18 bootstrap-robustness fallback engages — typically `:transition-not-found` per compiled-cache-stale (see observations/workflow_transition_verb_identless_unreachable_2026_05_26.md for the empirical reproduction).  The workflow.process does NOT advance to :session/failed; the orchestrator returns `:degraded? true` to the caller which may retry, fall back to text-protocol, or surface to operator.  Per ι.3 design ratification §Q.ι.3.9 + Q.ι.3.2 (detect-and-fallback per Dan-directive 'we don't want to brick')."}
+   :db/doc "Workflow event recording a degraded fallback, commonly :transition-not-found.
+            The orchestrator returns :degraded? true instead of treating that
+            transition as a normal success or moving the process to :session/failed.
+            The caller decides whether to retry, use a documented fallback, or
+            request operator attention."}
 
   {:db/ident         :mm.event/WorkflowSessionFailed
    :dt/type          :dt/Class

@@ -1,47 +1,25 @@
 (ns sandbar.scripts.catalog-check
-  "The catalog single-source DRIFT GATE — regenerate every projection from the
-   ONE source (the `verb-catalog` def in sandbar.mcp.tools) and diff each against
-   its committed copy, exiting non-zero on ANY mismatch.
+  "Check generated documentation against the source catalog without a database.
+   The default gate compares both local Markdown projections and checks catalog
+   shape, classifier coverage and wire-name invariants. It does not verify
+   persisted :mm/Verb cards or running server behavior.
 
-   This is the landed JVM form of the F6 staging `drift_gate.bb`.  It shares the
-   EXACT generator code the `lein affordance-map` / `mcp-verbs-doc` /
-   `verb-edges-map` / `memory-open-affordance` aliases use (it calls their
-   `render` fns), so the
-   check can never diverge from what `lein catalog-regen` produces.  Because the
-   catalog-model is DB-free, this runs in seconds with no Datomic spin-up — fit
-   for a pre-commit hook or a CI job that need not wait on the test matrix.
-
-   The gate compares RENDERED BYTES, not counts: a verb rename with no count
-   change, a safety-class flip, a reordered axis, a changed combines-with edge
-   all produce a non-empty diff and fail.  A count-only check would pass while
-   wrong.  Plus the §5.8 classifier/override completeness invariant fails the
-   build the instant a rename flips a verb's leaf safety class — de-risking the
-   consolidation that renames verbs (this gate lands BEFORE any collapse, per
-   the w45_rescope amendment-5 consolidation-first ruling).
-
-   SCOPE (design open-question #3 / PROPOSED-CI-WIRING option b): by default the
-   gate checks only the sandbar-LOCAL projections (doc/mcp-affordance-map.md +
-   doc/api/mcp-verbs.md + the :mm/Verb parity + §5.8 completeness) so
-   `lein catalog-check` is
-   self-contained — green with no sibling corpus checkout.  The two CORPUS
-   projections (etc/verb-edges.edn, .claude/commands/memory-open.md) are checked
-   only when their paths are supplied (--verb-edges / --memory-open or the
-   F6_VERB_EDGES / F6_MEMORY_OPEN env vars), so the corpus repo can run the same
-   gate over its own files.
-
-   P4 fail-closed: a projection that cannot be generated (parse error, missing
-   editorial row, orphaned eager verb) FAILS rather than skipping.
+   --write renders both local documents first, writes them, then checks them.
+   Optional client projections are checked only when explicit paths or their
+   compatibility environment variables are supplied; --write does not edit them.
 
    Usage:
      lein catalog-check
-       [--affordance PATH]   (default: doc/mcp-affordance-map.md, cwd-relative)
-       [--mcp-verbs PATH]    (default: doc/api/mcp-verbs.md, cwd-relative; F6_MCP_VERBS)
-       [--verb-edges PATH]   (opt-in; F6_VERB_EDGES)
-       [--memory-open PATH]  (opt-in; F6_MEMORY_OPEN)
-       [--editorial PATH]    (default: vendored resources/catalog/affordance-editorial.edn)
-       [--eager-core PATH]   (default: vendored resources/catalog/eager-core.edn)
-       [--report-only]       (print the report but always exit 0 — advisory mode)"
-  (:require [clojure.string                     :as str]
+       [--write]            regenerate the two local Markdown projections
+       [--affordance PATH]  default: doc/mcp-affordance-map.md; F6_AFFORDANCE
+       [--mcp-verbs PATH]   default: doc/api/mcp-verbs.md; F6_MCP_VERBS
+       [--verb-edges PATH]  opt-in client graph; F6_VERB_EDGES
+       [--memory-open PATH] opt-in client guide; F6_MEMORY_OPEN
+       [--editorial PATH]   optional client table labels; F6_EDITORIAL
+       [--eager-core PATH]  optional client loading policy; F6_EAGER_CORE
+       [--report-only]      report drift with exit 0; generation errors still fail"
+  (:require [clojure.java.io                   :as io]
+            [clojure.string                     :as str]
             [sandbar.mcp.tools                  :as tools]
             [sandbar.mcp.catalog-model          :as model]
             [sandbar.scripts.affordance-map     :as aff]
@@ -59,8 +37,8 @@
       m
       (let [[k & more] a]
         (if (str/starts-with? (str k) "--")
-          (if (= k "--report-only")
-            (recur more (assoc m :report-only true))
+          (if (contains? #{"--report-only" "--write"} k)
+            (recur more (assoc m (keyword (subs k 2)) true))
             (recur (rest more) (assoc m (keyword (subs k 2)) (first more))))
           (recur more m))))))
 
@@ -117,12 +95,11 @@
   (->> (re-seq #"\d+ verbs / \d+ axes" mo-text) distinct vec))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; §5.8 classifier / override completeness (catalog-coupled invariants)
+;; Classifier / override completeness (catalog-coupled invariants)
 ;;
 ;; Reads the AUTHORITATIVE private classifier sets from sandbar.mcp.tools via
 ;; var-quote — NOT a re-copy (copying would reintroduce the very drift this gate
-;; exists to catch, and F6 must not touch tools.clj, the ceremony collision
-;; magnet).
+;; exists to catch).
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (def ^:private destructive-verb-leaves  @#'tools/destructive-verb-leaves)
@@ -136,7 +113,7 @@
    if the dots→underscores WIRE rename regresses: a wire name that still carries
    a dot / breaks the Anthropic pattern, a non-injective wire projection, or a
    broken wire↔canonical round-trip (any of which could flip a verb's authz
-   class at dispatch, per the 2026-07-04 underscore ruling).  Reports (INFO,
+   class at dispatch).  Reports (INFO,
    non-failing) verbs whose leaf falls through to deny-by-default mutating — a
    genuinely-new SAFE leaf would be accidentally locked out and should surface
    for review."
@@ -156,7 +133,7 @@
                         {:override o
                          :exists? (contains? catalog-names o)
                          :read-only? (:read-only? hints)})
-        ;; --- wire-name rename invariants (dots→underscores; 2026-07-04) ---
+        ;; Wire-name invariants (dots to underscores).
         wire-pattern    #"^[a-zA-Z0-9_-]{1,64}$"
         bad-wire        (for [n (sort catalog-names)
                               :let [w (tools/wire-name n)]
@@ -197,7 +174,8 @@
 (defn- exists? [p] (and p (.exists (java.io.File. ^String p))))
 
 (defn run
-  "Run the gate. Returns the process exit code (0 sync / 1 drift / 2 error)."
+  "Run the gate, optionally regenerating the local documentation first.
+   Returns 0 for matching files and 1 for drift. Generation errors propagate."
   [args]
   (let [cli (parse-args args)
         affordance-path (resolve-path cli :affordance "F6_AFFORDANCE" "doc/mcp-affordance-map.md")
@@ -210,6 +188,15 @@
         summary (model/catalog-summary m)
         results (atom [])
         record! (fn [nm status detail] (swap! results conj {:name nm :status status :detail detail}))]
+
+    ;; Render both before writing either: a generation error leaves both untouched.
+    (when (:write cli)
+      (let [affordance (aff/render m)
+            reference  (vdoc/render m)]
+        (io/make-parents affordance-path)
+        (io/make-parents mcp-verbs-path)
+        (spit affordance-path affordance)
+        (spit mcp-verbs-path reference)))
 
     (println (str "catalog drift gate — source: sandbar.mcp.tools/verb-catalog (in-process, DB-free)"))
     (println (str "  model: " (:verb-count summary) " verbs / " (:axis-count summary)
@@ -268,17 +255,17 @@
             (record! "memory-open.md :: 'N verbs / M axes' count" (if d :DRIFT :OK) d)))
         (record! "memory-open.md" :MISSING (str "  file not found: " memory-open-path))))
 
-    ;; ---- projection: :mm/Verb seed parity (pure, no DB) ----
+    ;; Model well-formedness only; no persisted catalog is read or written.
     (let [verbs (:verbs m)
           bad   (remove #(and (:name %) (:axis %) (:safety %)) verbs)
           d (cond (seq bad) (str "  " (count bad) " verb(s) missing name/axis/safety: " (pr-str (map :name bad)))
                   (not= (count verbs) (:verb-count summary)) "  count mismatch model vs summary"
                   :else nil)]
-      (record! ":mm/Verb seed parity (model well-formed; no DB)" (if d :DRIFT :OK) d))
+      (record! "catalog model well-formedness (not persisted seed parity)" (if d :DRIFT :OK) d))
 
-    ;; ---- §5.8 classifier / override completeness ----
+    ;; Classifier / override completeness.
     (let [{:keys [fail? report]} (completeness-report m)]
-      (record! "classifier/override completeness (§5.8)"
+      (record! "classifier/override completeness"
                (if fail? :DRIFT :OK)
                (when (seq (str/trim (str report))) report)))
 
@@ -294,7 +281,7 @@
           fails    (filter #{:DRIFT :MISSING} statuses)]
       (if (seq fails)
         (do (println (str "DRIFT GATE: FAIL — " (count fails) " projection(s) out of sync.  "
-                          "Run 'lein catalog-regen' and re-stage the projections."))
+                          "Run 'lein catalog-regen' for the local docs; regenerate explicit client projections separately."))
             (if (:report-only cli) (do (println "(--report-only: exiting 0)") 0) 1))
         (do (println "DRIFT GATE: PASS — all projections in sync with the source catalog.")
             0)))))

@@ -1,52 +1,10 @@
 (ns sandbar.schedule.recurrence
-  "γ.2 Step 3 — lib-recur boundary wrapper for RFC 5545 RRULE iteration.
-
-   Per the γ.1 scheduler ADR §2.3 + the ontology-alignment ADR's R.2(a)
-   layered-discipline: lib-recur (`org.dmfs:lib-recur 0.17.1`; Apache;
-   ~14KB + ~100KB transitive closure via `org.dmfs/rfc5545-datetime` +
-   `org.dmfs/jems2`) is consumed BEHIND this namespace.  NO `org.dmfs.*`
-   types appear in public signatures.  Consumers see Clojure data maps +
-   `java.time.Instant` + IANA TZ-id strings.
-
-   ## Public surface
-
-   - `parse-rrule`     RRULE string → sandbar-internal schedule-data map
-   - `emit-rrule`      schedule-data map → RRULE string (round-trips
-                       to the input string verbatim)
-   - `iterate-from`    schedule-data + from-instant → LAZY seq of
-                       java.time.Instant fire-times (infinite if RRULE
-                       lacks UNTIL / COUNT)
-   - `next-n`          schedule-data + from-instant + n → vec of next N
-                       Instants (bounded even on infinite RRULE)
-   - `until-instant`   schedule-data + from + end → vec of Instants in the
-                       half-open window [from, end)
-
-   ## Schedule-data shape
-
-   Returned by `parse-rrule` and accepted by all consumer fns:
-
-       {:rrule-string  \"FREQ=MINUTELY;INTERVAL=15\"   ;; RFC 5545 RRULE string
-        :dtstart       #inst \"2026-05-27T00:00:00Z\"  ;; java.time.Instant
-        :timezone-id   \"UTC\"}                         ;; IANA TZ id string
-
-   ## Boundary discipline (per γ.1 ADR §2.3 R.2(a))
-
-   Internal types kept off public signatures:
-   - `org.dmfs.rfc5545.recur.RecurrenceRule`
-   - `org.dmfs.rfc5545.recur.RecurrenceRuleIterator`
-   - `org.dmfs.rfc5545.DateTime`
-   - `org.dmfs.rfc5545.recurrenceset.{OfRule,Within,FastForwarded}`
-   - `org.dmfs.rfc5545.InstanceIterator`
-
-   Future iteration may swap lib-recur for an alternative (iCal4j; in-house
-   RRULE iterator) — the swap is internal-only because consumers never
-   import these types.
-
-   ## See also
-
-   - γ.1 ADR: `:memory.decisions/gamma_1_scheduler_path_a_native_min_heap_dispatcher_q_gamma_1_through_6_resolved_2026_05_27`
-   - Ontology-alignment R.2(a): `:memory.decisions/sandbar_ontology_alignment_is_the_goal_implementation_is_replaceable_boundary_pragmatism_when_layered_or_seamless_2026_05_23`
-   - γ implementation plan (Claude-Code plan-mode artifact): `~/.claude/plans/golden-squishing-flamingo.md` Step 3"
+  "RRULE adapter hiding lib-recur types behind Clojure data.
+   parse-rrule produces schedule data with the original rule string,
+   java.time.Instant start and timezone ID. emit-rrule returns that stored
+   spelling. iterate-from supplies lazy fire times; next-n and until-instant
+   bound the requested result. A rule without COUNT or UNTIL can be infinite.
+   Consumers use this adapter rather than depending on its library types."
   (:require [clojure.string :as str])
   (:import [java.time Instant ZoneId]
            [java.util TimeZone]

@@ -1,49 +1,15 @@
 (ns sandbar.navigate.path.ir
-  "Sandbar Path-Grammar — IR + Algebraic-Identity Rewriter (Stage P-2 of
-  comprehensive memory-model MCP arc per
-  plans/sandbar_fulltext_search_substrate_arc_2026_05_13.md).
+  "Normalize parsed path expressions before compilation or evaluation.
 
-  The IR layer sits between the DSL-layer AST (sandbar.navigate.path.ast)
-  and the backend compiler (sandbar.navigate.path.datomic at P-3).  Its
-  role is to NORMALIZE path expressions — apply algebraic identities of
-  Kleene-algebra-over-relations as rewrites until a fixpoint is reached
-  — so the compiler sees a canonical form regardless of input variation.
+  canonicalize applies associative flattening for SEQ and OR, singleton and
+  duplicate-branch collapse, repetition identities, and inverse normalization
+  to a fixed point. Inversion reverses SEQ order and distributes over OR;
+  double inversion cancels. The output retains the AST's :op representation.
 
-  Identities applied per
-  syntheses/sandbar_path_grammar_substrate_design_research_2026_05_13.md
-  §1.3 — Kleene algebra over relations.  Four rewrite categories per
-  §6 P-2 spec:
-
-  1. Associative-flatten
-     - (:SEQ ... (:SEQ a b) ... c)  →  (:SEQ ... a b ... c)
-     - (:OR  ... (:OR  a b) ... c)  →  (:OR  ... a b ... c)
-
-  2. Idempotent-collapse
-     - (:SEQ p)                     →  p           ; degenerate sequence
-     - (:OR p)                      →  p           ; degenerate union
-     - (:OR ... p p ...)            →  (:OR ... p ...)  ; dedupe in n-ary
-     - (:REP* (:REP* p))            →  (:REP* p)   ; closure idempotent
-     - (:REP* (:REP+ p))            →  (:REP* p)   ; closure absorbs +
-     - (:REP+ (:REP+ p))            →  (:REP+ p)
-     - (:REP+ (:REP* p))            →  (:REP* p)   ; (a+)* = a*
-
-  3. Inverse-double-eliminate (push-inv-inward + eliminate-double)
-     - (:INV (:INV p))              →  p
-     - (:INV (:SEQ a b))            →  (:SEQ (:INV b) (:INV a))
-     - (:INV (:OR a b))             →  (:OR (:INV a) (:INV b))
-     - (:INV :SELF)                 →  :SELF
-
-  4. Distributive-rewrite (opt-in via `distribute`; expression-growing)
-     - (:SEQ p (:OR q r))           →  (:OR (:SEQ p q) (:SEQ p r))
-     - (:SEQ (:OR p q) r)           →  (:OR (:SEQ p r) (:SEQ q r))
-
-  `canonicalize` applies (1)+(2)+(3) to fixpoint — all are expression-
-  shrinking or shape-normalizing, safe-by-default.  `distribute`
-  applies (4) — grows expressions; opt-in for downstream optimization
-  scenarios (e.g., NFA construction at deferred P-FSA sub-stage).
-
-  Stage P-2 ships rewriter only; the Datomic compiler at P-3 consumes
-  canonical IR."
+  distribute is a separate opt-in rewrite: SEQ over an OR becomes an OR of
+  sequences. It can enlarge an expression and is not part of default
+  canonicalization. Keeping this separate avoids an automatic expression
+  explosion while preserving a useful transformation for later optimizations."
   (:require [sandbar.navigate.path.ast :as ast]))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;

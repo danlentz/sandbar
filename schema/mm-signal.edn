@@ -31,7 +31,11 @@
    :dt/context       "mm"
    :dt/label         "Signal"
    :dt/abstract?     true
-   :db/doc "Abstract supertype for memorial types that capture state about the world rather than prescribing action (:mm/Guidance) or producing durable artifacts (:mm/Artifact).  Per memory/types/signal.md.  Concrete subtypes: :mm/Observation (a known truth about system / env / corpus), :mm/Question (a known unknown worth preserving), :mm/Idea (a proposed future action, not yet pursued), :mm/Bug (an observed defect in external library or code).  Category-level invariant: every :mm/Guidance instance should cite at least one :mm/Signal that motivated it (empirical grounding for normative rules).  Per decisions/sandbar_memorial_type_substrate_layering_2026_05_21.md D2 + decisions/sandbar_memorial_type_ontology_corrections_round_c_2026_05_21.md R5.  Not instantiated directly."}]
+   :db/doc "Abstract memory category for evidence about the world: observations,
+            questions, ideas, and defects. These record known facts, known unknowns,
+            proposed actions, and failures rather than prescribe behavior.
+            Guidance should cite the signals that motivated it so normative
+            rules retain an inspectable evidential basis."}]
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; :mm.observation/* Properties
@@ -104,7 +108,9 @@
    :dt/range       :db.type/string
    :db/valueType   :db.type/string
    :db/cardinality :db.cardinality/one
-   :db/doc "Free-text naming the origin context that spawned this idea (a Dan-directive, an arc, an inbox promotion, a prior task's completion, a library being studied).  Helps re-contextualize the idea when picked up later.  Per memory/types/idea.md."}
+   :db/doc "Free-text context that prompted the idea, such as a user request, another
+            plan, an Inbox promotion, completed work, or a library study.
+            Preserve enough detail to re-evaluate it later."}
 
   {:db/ident       :mm.idea/superseded-by
    :dt/type        :dt/StrictPartialOrderProperty

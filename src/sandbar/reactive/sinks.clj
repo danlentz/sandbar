@@ -1,41 +1,13 @@
 (ns sandbar.reactive.sinks
-  "Reactive-projection sinks — Stage B.1+ of the SSE-reactive-corpus-
-   projection arc.
+  "Filesystem and notification sinks for the reactive projection queue.
+   fs-projection-sink realizes supported documents and writes their selected
+   paths under the configured collection root. sse-emit-sink notifies
+   resource subscribers. Their effects occur after database acceptance.
 
-   ## What this exists for
-
-   The reactive-projection pipeline (Stages A.5 + A.6) provides the
-   hook + opt-out + bounded queue + worker.  This namespace ships the
-   actual SINKS that get registered with `sandbar.reactive.queue/register-sink!`
-   so the worker invokes them per drained task:
-
-   - `fs-projection-sink`  — codec.emit → atomic fs write at
-                              `:mm.memory/rel-path` under the corpus root
-                              (closes gap #2 — entity.create :format :markdown
-                              one-way ingest)
-   - `sse-emit-sink`       — invokes `resources/entity-updated!` so
-                              subscribed MCP clients receive notifications
-
-   Both sinks ship structured logging per the `:REACTIVE/<event-name>`
-   vocabulary (decision eid 17592186094433).
-
-   ## Decision lineage
-
-   - `plans/sse_reactive_corpus_projection_arc_2026_05_23.md`
-     (eid 17592186094359) — parent arc; Stage B.1 = forward direction
-     DB→FS reactive projection; Stage B.3 = SSE event emit
-   - `decisions/reactive_projection_hook_at_dt_make_boundary_with_opt_out_2026_05_23.md`
-     (eid 17592186094347) — hook attaches at dt/* substrate primitive
-   - `decisions/sandbar_project_graph_boundary_layer_primitive_per_anderson_de_setf_resource_2026_05_12.md`
-     (eid 17592186047059) — codec.emit is the boundary primitive these
-     sinks compose with
-
-   ## Corpus-root resolution
-
-   Reads `SANDBAR_CORPUS_ROOT` env-var; falls back to
-   `$HOME/claude` (matching `bin/sandbar`'s start auto-init logic).
-   Override per-process via env-var; future evolution could route
-   through config/registry."
+   Set SANDBAR_CORPUS_ROOT explicitly for a deployment; see corpus-root for
+   the legacy fallback. File ownership, liveness and deletion ordering use
+   the sink's guards. A notification is neither a full document copy nor a
+   durable replay record. See doc/operations.md for output verification."
   (:require [clojure.java.io       :as io]
             [clojure.string        :as str]
             [clojure.tools.logging :as log]
@@ -44,6 +16,7 @@
             [sandbar.db.datatype   :as dt]
             [sandbar.db.datomic    :as db]
             [sandbar.mcp.resources :as resources]
+            [sandbar.project.destination :as destination]
             [sandbar.projection    :as pg]))
 
 
@@ -56,8 +29,12 @@
    falls back to $HOME/claude.  Matches `bin/sandbar`'s start auto-init
    convention."
   []
-  (or (System/getenv "SANDBAR_CORPUS_ROOT")
-      (str (System/getProperty "user.home") "/claude")))
+  (destination/global-root))
+
+(defn destination-for
+  "Capture the operator-authorized physical root at an explicit database."
+  [database ent]
+  (destination/for-entity database ent (corpus-root)))
 
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -393,14 +370,17 @@
    An I/O failure is reported, never swallowed into a false settled result;
    the report is not a durable retry — after a failure the file stays and
    the next drift audit names it."
-  [{:keys [rel-path mm-id other-claimant? corpus-document? dry-run?]}]
+  [{:keys [rel-path mm-id other-claimant? corpus-document? dry-run? destination]}]
   (let [kept    (fn [reason & [extra]]
                   (merge {:rel-path rel-path :outcome (if dry-run? :would-keep :kept) :reason reason} extra))
         removed (fn [] {:rel-path rel-path :outcome (if dry-run? :would-remove :removed)})]
     (try
       (if-not corpus-document?
         (kept :not-a-corpus-document)
-        (let [target-path (contained-target-path rel-path)
+        (let [target-path (if destination
+                            (destination/target-path
+                             (destination/assert-current! destination (corpus-root)) rel-path)
+                            (contained-target-path rel-path))
               target      (io/file target-path)]
           (locking (path-lock target-path)
             (cond
@@ -422,6 +402,20 @@
         (log/warn t :REACTIVE/fs-remove-failed {:rel-path rel-path :error (.getMessage t)})
         {:rel-path rel-path :outcome :failed :error (.getMessage t)}))))
 
+(defn assert-file-owner!
+  "Refuse an overwrite of an existing file without one matching durable id.
+   Routed persistence uses this before accepting create and again under the
+   sink's path monitor. Unknown/ambiguous identities remain for disposition."
+  [target-path mm-id]
+  (let [file (io/file target-path)]
+    (when (.exists file)
+      (let [{:keys [id ambiguous?]} (projected-file-identity file)]
+        (when (or (nil? mm-id) (nil? id) ambiguous? (not= (str mm-id) id))
+          (throw (ex-info "Projection refused: existing file ownership is absent, ambiguous or different"
+                          {:sandbar/error :project-file-ownership-refusal
+                           :target-path target-path}))))))
+  nil)
+
 (defn fs-projection-sink
   "Per-drain sink: reactive forward projection (DB → FS).
 
@@ -430,7 +424,8 @@
    - Resolves the entity's class native codec
    - Invokes `(sandbar.projection/realize-and-emit-entity entity)` which
      handles section-tree walking + emit-document via the codec mediator
-   - Atomically writes the emitted markdown to `<corpus-root>/<rel-path>`
+   - Atomically writes to `<authorized-root>/memory/<rel-path>`; an operator
+     :project-roots mapping selects the root, otherwise the global root applies
    - Emits structured logs at `:REACTIVE/fs-write` (debug, start/done) +
      `:REACTIVE/fs-write-failed` (warn, on exception) +
      `:REACTIVE/fs-write-skipped` (debug, no-action cases)
@@ -452,9 +447,8 @@
    over-budget entity.  Pre-existing over-budget rows keep today's
    warn+swallow.)
 
-   ONE exception to the swallow: a registry-strip refusal from the
-   pre-write guard (`:sandbar/error :registry-strip-refusal`) is
-   error-logged `:REACTIVE/registry-strip-refused` and RETHROWN, so it
+   Registry-strip, containment, destination and file-ownership refusals are
+   error-logged and RETHROWN, so each refusal
    escapes to `dispatch-sinks!` → increments `:sink-error-total` +
    `:REACTIVE/sink-failed` + `:REACTIVE/projection-partial` and becomes
    visible in `sandbar_reactive_health` (a swallowed refusal would leave
@@ -524,7 +518,10 @@
             ;; fail-closed) BEFORE emitting the :REACTIVE/fs-write start log or
             ;; touching the filesystem.  A refusal throws :rel-path-traversal-
             ;; refusal, caught+rethrown below (symmetric with registry-strip).
-            (let [target-path (contained-target-path rel-path)]
+            (let [routed? (seq (destination/configured-roots))
+                  selected (when routed? (destination-for (db/db) post-tx-slots))
+                  target-path (if selected (destination/target-path selected rel-path)
+                                  (contained-target-path rel-path))]
               ;; D7 (2026-09-20), Astra's interleaving cases: the slots this
               ;; drain carries are a snapshot.  If the entity has since been
               ;; retracted, or has moved to another rel-path, this write would
@@ -542,13 +539,23 @@
                       live? (cond
                               (db/entity-retracted? eid)          false
                               (nil? (:dt/type live))              true   ; never in this store: a fixture's eid
-                              :else (= rel-path (:mm.memory/rel-path live)))]
+                              :else (and (= rel-path (:mm.memory/rel-path live))
+                                         (or (not routed?)
+                                             (= selected (destination-for (db/db) live)))))]
                   (if-not live?
                     (log/info :REACTIVE/fs-write-skipped
                               {:ident ident :eid eid :class class-ident :rel-path rel-path
                                :reason :entity-retracted-or-moved
                                :live-rel-path (:mm.memory/rel-path live)})
-                    (let [_       (log/debug :REACTIVE/fs-write
+                    (let [_       (when selected
+                                    (destination/assert-current! selected (corpus-root))
+                                    (when (seq (destination/other-claimants
+                                                (db/db) eid selected rel-path (corpus-root)))
+                                      (throw (ex-info "Projection refused: another entity claims this destination"
+                                                      {:sandbar/error :project-file-ownership-refusal
+                                                       :target-path target-path})))
+                                    (assert-file-owner! target-path (:mm/id post-tx-slots)))
+                          _       (log/debug :REACTIVE/fs-write
                                              {:ident ident :eid eid :class class-ident
                                               :rel-path rel-path :phase :start})
                           _       (atomic-write! target-path content)
@@ -560,9 +567,11 @@
         (catch Throwable t
           ;; Companion rethrow: a SECURITY refusal must ESCAPE the sink so
           ;; `dispatch-sinks!` increments :sink-error-total and the refusal
-          ;; is visible in sandbar_reactive_health.  Two such refusals:
+          ;; is visible in sandbar_reactive_health. Refusals include:
           ;;   - :registry-strip-refusal    (pre-write registry guard, S2)
           ;;   - :rel-path-traversal-refusal (G2 corpus-root containment)
+          ;;   - :project-destination-refusal (operator mapping / canonical path)
+          ;;   - :project-file-ownership-refusal (physical target or file identity)
           ;; A traversal attempt is a first-class security event, not an
           ;; ordinary IO hiccup — swallowing it would leave the counter at 0
           ;; and log projection-success on a refused write.  Everything else
@@ -570,9 +579,13 @@
           ;; today's warn+swallow.
           (let [err (:sandbar/error (ex-data t))]
             (if (or (= :registry-strip-refusal err)
-                    (= :rel-path-traversal-refusal err))
-              (do (log/error t (if (= :rel-path-traversal-refusal err)
-                                 :REACTIVE/rel-path-traversal-refused
+                    (= :rel-path-traversal-refusal err)
+                    (= :project-destination-refusal err)
+                    (= :project-file-ownership-refusal err))
+              (do (log/error t (case err
+                                 :rel-path-traversal-refusal :REACTIVE/rel-path-traversal-refused
+                                 :project-destination-refusal :REACTIVE/project-destination-refused
+                                 :project-file-ownership-refusal :REACTIVE/project-file-ownership-refused
                                  :REACTIVE/registry-strip-refused)
                              {:ident ident :eid eid :class class-ident :rel-path rel-path
                               :error (.getMessage t) :ex-data (ex-data t)})
@@ -587,21 +600,11 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (defn sse-emit-sink
-  "Per-drain sink: emit MCP resource-update notification.
-
-   Invokes `sandbar.mcp.resources/entity-updated!` which routes the
-   notification per F-S-001 resolution semantics (subscriber-id-targeted
-   when bound; broadcast for ::broadcast subscribers).
-
-   Per `decisions/reactive_projection_structured_logging_required_...` §2.1:
-   - `:REACTIVE/sse-emit`        (debug)
-   - `:REACTIVE/sse-emit-failed` (warn) on exception
-
-   No-op when no subscribers exist for the entity's URI (the
-   `entity-updated!` body handles the no-subscriber branch internally).
-
-   Failure semantics: per-entity try/catch.  A failed emit doesn't
-   propagate; future mutations re-trigger."
+  "Notify MCP resource subscribers after a projection dispatch.
+   entity-updated! resolves the affected subscription route. No subscriber
+   means no notification. Failures are logged rather than propagated, and
+   later mutations may trigger another attempt; there is no durable replay
+   acknowledgment. Logs :REACTIVE/sse-emit or :REACTIVE/sse-emit-failed."
   [eid post-tx-slots]
   (let [ident       (:db/ident post-tx-slots)
         class-ident (:dt/type post-tx-slots)]

@@ -81,15 +81,10 @@
       #{}))
 
 (defn entity-ref-error-handler
-  "Pedestal :error phase projecting `sandbar.entity-ref/*` ex-info reasons
-   to structured HTTP responses:
-     - `:entity-ref/not-found` → HTTP 404
-     - `:entity-ref/malformed-input` /
-       `:entity-ref/lookup-vector-unsupported` /
-       `:entity-ref/no-ident` → HTTP 400
-
-   Non-entity-ref ex-info is re-thrown for upstream handling.
-   Per `decisions/sandbar_entity_ref_abstraction_2026_05_14.md` §D-3.4."
+  "Translate entity-ref exceptions during Pedestal's error phase:
+   :entity-ref/not-found becomes HTTP 404; malformed input, unsupported lookup
+   vectors, and missing idents become HTTP 400. Other exceptions are rethrown
+   for upstream handling."
   [context info]
   (let [reasons (entity-ref-reasons info)
         message (some-> ^Throwable info .getMessage)
@@ -117,13 +112,9 @@
       (throw info))))
 
 (def entity-ref-error-interceptor
-  "Pedestal interceptor projecting `sandbar.entity-ref/*` ex-info reasons
-   to structured HTTP 400 / 404 responses.  Hooked into the `/api`
-   interceptor stack so REST handlers calling `eref/resolve` /
-   `eref/resolve-ident` (throw-on-error) get clean HTTP-error projection
-   without per-handler try/catch boilerplate.
-
-   Per `decisions/sandbar_entity_ref_abstraction_2026_05_14.md` §D-3.4."
+  "Translate entity-ref exceptions to structured HTTP 400 or 404 responses
+   for the REST interceptor stack. Handlers can use the throwing entity-ref
+   resolver API without repeating error-projection try/catch blocks."
   (interceptor/interceptor
     {:name  ::entity-ref-error-interceptor
      :error entity-ref-error-handler}))

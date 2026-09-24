@@ -1,34 +1,12 @@
 (ns sandbar.migrations.zeta-backfill
-  "ζ Scope B per-entity backfill — compute tx-data for `:mm/id` v5 UUID +
-  `:mm/pref-label` (default-source `:mm.memory/name`) population on
-  existing :mm/Memory entities.
+  "Compute transaction data for missing durable IDs and preferred labels.
+   The pure per-entity helpers compose sandbar.identifier with existing
+   memory metadata; calling a helper does not transact. Mutation, cohort
+   selection and backup are the migration driver's responsibility.
 
-  Build-prove-promote sub-stage 0 (per Dan-directive 2026-05-26
-  `interaction/build_protocol_extensions_in_sandbar_first_prove_consume_locally_then_promote_to_public_library_release_dan_directive_2026_05_26.md`):
-  this namespace BUILDS the per-entity backfill computation as pure
-  helper fns (no Datomic side-effects); PROVES via unit-tests +
-  later β.2.3 driver consumption; the live-corpus migration run +
-  Gate-2 backup-cycle is a SEPARATE β.2.3 commit under
-  Dan-supervision (per the `db_preservation_during_cutover`
-  authorization discipline).
-
-  Composes with:
-  - sandbar.identifier (the v5 derivation primitives)
-  - ζ Scope B ADR §7 (migration strategy)
-  - β.2.2 ADR §1 (Phase B per-family migration template; this ns
-    handles the ζ PIGGYBACK portion; created-by ref-rewrite portion
-    handled in a sibling ns per-family)
-  - β.2.3 per-family migration tx-fns (consume these helpers
-    + add their per-family ref-slot rewrite logic)
-
-  Scope (pragmatic per build-prove-promote §3.3):
-  - BUILT: per-entity tx-data computation (pure fn; no DB side-effects)
-  - DEFERRED: defdbfn wrapping; live-corpus driver; Gate-2 backup-cycle
-
-  Per ζ Scope B ADR §7.2 default-source for :mm/pref-label:
-    1. :mm.memory/name if populated
-    2. :mm.memory/description (truncated to ~80 chars) if name empty
-    3. The slug from :db/ident (last-resort fallback)"
+   Preferred-label fallback uses name, a bounded description, then the ident
+   slug. Existing values and identity require their documented preservation
+   rules rather than unconditional re-derivation."
   (:require [clojure.string :as str]
             [sandbar.identifier :as id]))
 
@@ -82,23 +60,10 @@
 
 
 (defn resolve-pref-label
-  "Resolve the :mm/pref-label value for an entity given its current slot map.
-
-   Per ζ Scope B ADR §7.2 default-source cascade:
-   1. :mm.memory/name (preferred)
-   2. :mm.memory/description (truncated to +pref-label-fallback-max-chars+)
-   3. Derived from slug via slug->title
-
-   `entity-map` is a map containing at least :db/ident.  Returns a non-blank
-   string (always; the slug fallback guarantees a result).
-
-   Example:
-     (resolve-pref-label {:db/ident :memory.decisions/foo
-                          :mm.memory/name \"Foo Decision\"})
-     ;; → \"Foo Decision\"
-
-     (resolve-pref-label {:db/ident :memory.decisions/three_tier_identifier_value_hierarchy})
-     ;; → \"Three Tier Identifier Value Hierarchy\""
+  "Choose a preferred label from the current entity map: nonblank memory
+   name, then description truncated to the configured maximum, then the
+   title derived from the ident slug. The map must contain a usable ident
+   for the final fallback. Returns the chosen string."
   [entity-map]
   {:pre [(map? entity-map)]}
   (let [name-value (:mm.memory/name entity-map)

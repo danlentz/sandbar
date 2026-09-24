@@ -1,25 +1,14 @@
 (ns sandbar.api.aggregate
-  "REST API for the aggregation surface — count / group-by / rank-by.
+  "REST adapters for sandbar.aggregate count-by, group-by and rank-by.
 
-  Stage 15 of comprehensive memory-model MCP arc per
-  plans/sandbar_fulltext_search_substrate_arc_2026_05_13.md.  Thin
-  HTTP-layer wrappers around sandbar.aggregate's three public verbs.
+  GET /api/aggregate/count?class=:mm/Memory[&where=<EDN>]
+  GET /api/aggregate/group-by?class=:mm/Memory&group-by=:mm.memory/memory-type[&where=<EDN>]
+  GET /api/aggregate/rank-by?class=:mm/Memory&rank-by=:degree[&limit=20]
 
-  Substrate-quality discipline preserved per
-  interaction/target_sandbar_introspection_api_layer_not_raw_datomic_2026_05_12.md:
-  handlers route through the consumer-facing aggregate namespace,
-  never raw dt/* primitives or datomic.api.
-
-  ## Endpoints
-
-    GET /api/aggregate/count?class=:mm/Memory[&where=<EDN>]
-    GET /api/aggregate/group-by?class=:mm/Memory&group-by=:mm.memory/memory-type[&where=<EDN>]
-    GET /api/aggregate/rank-by?class=:mm/Memory&rank-by=:degree[&limit=20&temporal-slot=:mm.memory/last-touched]
-
-  Query params arrive URL-decoded as strings; idents are coerced via
-  `str->keyword` (accepting both `:foo/bar` and `foo/bar` shapes).
-  `:where` arrives as an EDN string because URL query syntax has no
-  native representation for Datalog symbols (`?e`, `?v`)."
+  Ident parameters arrive as strings and accept a leading colon. where is an
+  EDN clause vector because URL parameters cannot directly represent Datalog
+  symbols. The adapters call the consumer-facing aggregation layer rather
+  than maintaining a second query implementation."
   (:refer-clojure :exclude [count group-by])
   (:require [clojure.edn :as edn]
             [clojure.string :as str]
@@ -109,9 +98,7 @@
                                  (e.g., \"[[?e :mm.memory/memory-type :decision]]\")
 
    Response:
-     {:count <int>}
-
-   Per fulltext arc Stage 15."
+     {:count <int>}"
   [_ _ params]
   (let [class-ident (str->keyword (:class params))]
     (if (nil? class-ident)
@@ -133,9 +120,7 @@
      ?where=<EDN>                                   - Optional Datalog filter
 
    Response:
-     {:groups {value count} :total <int>}
-
-   Per fulltext arc Stage 15."
+     {:groups {value count} :total <int>}"
   [_ _ params]
   (let [class-ident  (str->keyword (:class params))
         group-by-arg (str->keyword (:group-by params))]
@@ -171,9 +156,7 @@
    Response:
      {:hits [{:entity <entity-map> :rank-score <num>} ...]
       :total <int>
-      :returned <int>}
-
-   Per fulltext arc Stage 15."
+      :returned <int>}"
   [_ _ params]
   (let [class-ident   (str->keyword (:class params))
         rank-by-arg   (str->keyword (:rank-by params))

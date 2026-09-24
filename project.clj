@@ -135,7 +135,7 @@
             "memory-open-affordance" ["run" "-m" "sandbar.scripts.memory-open-affordance"]
             "mcp-verbs-doc"       ["run" "-m" "sandbar.scripts.mcp-verbs-doc"]
             "catalog-check"       ["run" "-m" "sandbar.scripts.catalog-check"]
-            "catalog-regen"       ["do" ["affordance-map"] ["verb-edges-map"] ["memory-open-affordance"]]
+            "catalog-regen"       ["run" "-m" "sandbar.scripts.catalog-check" "--write"]
             ;; W1.J standing composed release gate (G1 precondition): CHECK 1
             ;; round-trip §D.5 8-query contract AND CHECK 2 firewall scoreboard.
             ;; Exit 0 iff GREEN — wire this exit into CI as the release gate.

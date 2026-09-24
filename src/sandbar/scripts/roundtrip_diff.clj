@@ -1,7 +1,7 @@
 (ns sandbar.scripts.roundtrip-diff
-  "Print the diff between an original markdown file and its round-trip
-   emitted form.  Used during Stage 4.B fidelity work to identify what
-   normalization changes happen at parse + emit time."
+  "Print differences between one original Markdown file and its parsed,
+   emitted form. This isolates codec normalization changes; it does not
+   exercise database import or reconstruction."
   (:require [clojure.java.io        :as io]
             [clojure.string         :as str]
             [datomic.api            :as d]

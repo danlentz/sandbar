@@ -1,106 +1,17 @@
 (ns sandbar.workflow.orchestrate
-  "ι.3 substrate orchestrator — workflow-driven dispatcher for session lifecycle.
+  "Session-lifecycle orchestration over the workflow API.
+   A caller invokes open or handoff phases sequentially. Phase work combines
+   reads, explicit entity changes and declared workflow transitions; the
+   generic phase-work multimethod has a no-op fallback.
 
-   Authored per the ι.3 substrate orchestrator design ratification:
-   `:memory.decisions/iota_3_substrate_orchestrator_design_ratification_2026_05_26`
-   (12 Q-checkpoints resolved). Composes κ patterns P3 (CAS atomicity) + P4
-   (transition-fns-as-:mm/Fn) + P5 (schema-as-data) + P7 (step/jump/resume
-   verbs) + P8 (hard-fail) + P10 (dual-source history) + P14 (per-phase
-   timeout) + P18 (bootstrap robustness with degraded-path fallback).
+   Results expose completed/next phase, applied transitions, duration,
+   degraded status and phase work output. A transition-not-found outcome can
+   enter a degraded fallback; other workflow errors propagate. A degraded
+   result is not completion of the missing transition.
 
-   ## Phase decomposition
-
-   ### /memory-open ceremony (4 phases)
-   - `:phase/orient`     — pure-read: aggregate.rank-by prior :mm/Session +
-                          entity.find prior handoff log + corpus stats +
-                          workflow.active-processes (no workflow transition)
-   - `:phase/initialize` — entity.create new :mm/Session + workflow.start-process
-                          (creates new workflow.process in :session.state/opening)
-   - `:phase/activate`   — entity.update :mm.session/workflow-process +
-                          workflow.transition :session.transition/start
-                          (:session.state/opening → :session.state/active)
-   - `:phase/imprint`    — banner output + discipline imprint
-                          (no workflow transition; pure write)
-
-   ### /memory-handoff ceremony (4 phases; refined at ι.6)
-   - `:phase/capture`    — workflow.process-history + recent entity.find
-                          snapshots + commits queried (pure read)
-   - `:phase/author`     — entity.create :class :mm/Log with body-raw drafted
-   - `:phase/link`       — entity.update :mm.session/log ONLY (ended-at moved
-                          to :phase/finalize per Bug-1 leak-coupling 2026-05-29)
-   - `:phase/finalize`   — workflow.transition :session.transition/close then
-                          :session.transition/finalize, THEN (only on reaching
-                          a TERMINAL state) entity.update :mm.session/ended-at —
-                          coupling ended-at to a successful close so it can never
-                          be set while the process is non-terminal
-                          (:session.state/active → :session.state/closing →
-                           :session.state/closed)
-
-   ## Hard-fail criteria (κ P8)
-
-   Workflow.process advances to `:session.state/failed` (terminal) on:
-   - `:schema-corrupt`                    — workflow definition load failed
-   - `:substrate-unreachable-persistent`  — ≥3 reconnect attempts failed
-   - `:phase-timeout`                     — per-phase timeout exceeded
-   - `:consecutive-transition-rejects-n`  — N consecutive transition rejections
-                                            (default N=3)
-
-   ## Per-phase timeout policy (κ P14)
-
-   Defaults (operator-configurable via `:workflow.phase/timeout-ms` slot):
-
-   | Phase                 | Default timeout (ms) | Rationale                              |
-   |-----------------------|----------------------|----------------------------------------|
-   | `:phase/orient`       | 90,000  (90s)        | Multi-MCP read; slow corpus tolerated  |
-   | `:phase/initialize`   | 30,000  (30s)        | Single entity.create + start-process   |
-   | `:phase/activate`     | 10,000  (10s)        | Single entity.update + transition      |
-   | `:phase/imprint`      | 60,000  (60s)        | Banner generation; AI-side latency     |
-   | `:phase/capture`      | 90,000  (90s)        | Multi-source delta capture             |
-   | `:phase/author`       | 60,000  (60s)        | Body-raw generation                    |
-   | `:phase/link`         | 10,000  (10s)        | Two entity.updates                     |
-   | `:phase/finalize`     | 10,000  (10s)        | Two workflow.transitions               |
-
-   ## Bootstrap-robustness fallback (κ P18) — empirically grounded
-
-   Per the workflow.transition substrate-gap reproduction (resolved this
-   session via Q.ι.3.11 substrate-code fix in sandbar.util.workflow):
-   `:memory.observations/workflow_transition_verb_identless_unreachable_2026_05_26`.
-   The orchestrator handles 3 failure modes gracefully:
-
-   1. `:transition-not-found`       — compiled-cache stale → degraded text-protocol fallback
-   2. `:substrate-unreachable`      — MCP connection lost → degraded text-protocol fallback
-   3. `:schema-corrupt`             — workflow definition load failed → hard-fail
-
-   ## STRICT Event Substrate compliance (Q.ι.15)
-
-   Every phase transition emits `:mm.event/WorkflowTransition` per the Keystone
-   Event Substrate ADR D.4. NO parallel event bus; NO CQRS; class-hierarchical
-   subscription via `:dt/type-isa?` cache.
-
-   Specific event subclasses introduced in ι.3:
-   - `:mm.event/WorkflowSessionOpened`           — emitted at `:phase/activate` completion
-   - `:mm.event/WorkflowSessionHandoffAuthored`  — emitted at `:phase/author` completion
-   - `:mm.event/WorkflowSessionClosed`           — emitted at `:phase/finalize` completion
-   - `:mm.event/WorkflowSessionDegraded`         — emitted on bootstrap-fallback engagement
-   - `:mm.event/WorkflowSessionFailed`           — emitted on hard-fail
-
-   ## Status: W4.1 dispatcher loop landed 2026-05-26 — orchestrator namespace
-   declared; public signature established; phase vocabulary canonicalized;
-   per-phase workflow.transition application via `phase-transitions` lookup;
-   κ P18 bootstrap-robustness fallback via `safe-transition!` (catches
-   `:reason :transition-not-found` from sandbar.util.workflow/transition! →
-   returns `:degraded? true`); phase-work multimethod (default no-op; per-
-   phase methods extend incrementally as caller-side work migrates).
-   Pending for follow-on commits: per-phase :mm/Fn entry/exit fn lookup
-   (κ P4 — currently caller-side); migration of caller-side phase work into
-   the phase-work multimethod; :mm.event/Workflow* event subclass authoring
-   (`sandbar.util.event/log!` inside `sandbar.util.workflow/transition!`
-   already emits `:workflow/transition` events — sufficient for ι.3 W4.1;
-   the richer subclass hierarchy lands when `:mm.event/Workflow*` schema is
-   authored); hard-fail criteria detection beyond `:transition-not-found`;
-   `audit_fs-substrate-drift` integration in `:phase/orient` (behind
-   `:audit-on-open? false` default per Q.ι.3.5); MCP verb registration as
-   `sandbar.workflow.orchestrate`."
+   The orchestrator does not make workflow acceptance atomic or establish
+   hard termination of arbitrary timed-out work. Inspect the implemented
+   phase methods and doc/concepts/workflow-substrate.md before use."
   (:require [clojure.string :as str]
             [clojure.tools.logging :as log]
             [sandbar.aggregate :as aggregate]
@@ -886,14 +797,9 @@
           first-para)))))
 
 (defn- banner-in-flight-arc-line
-  "Compose the 'In-flight arc' banner block.  Renders a multi-line
-   markdown bullet with sub-bullets for stage / implementation plan /
-   next move.  Returns nil when the in-flight plan is absent — banner
-   composer filters nils.
-
-   Per `:memory.interaction/orientation_must_surface_arc_trajectory_when_
-   mid_flight_not_canned_top_5_lists_dan_correction_2026_05_27` — the
-   core mid-arc-deepening behavior the banner now carries."
+  "Render an in-flight plan banner with stage, implementation plan and next
+   action. Return nil when no in-flight plan is available so the enclosing
+   banner can omit the block."
   [orient-state]
   (when-let [plan (:in-flight-plan orient-state)]
     (let [n     (or (:mm.memory/name plan) (some-> (:db/ident plan) str) "<unnamed>")
@@ -984,23 +890,10 @@
      :process-completed?    (boolean (wf/process-completed? process))}))
 
 (defn- capture-recent-memorials
-  "Return top-N most-recently-touched CURATED (:first-class memorial-policy)
-   :mm/Memory entities, each carrying a resolvable :mm.memory/name.
-
-   Two corrections over the prior impl (2026-05-29 lifecycle-hardening arc,
-   per decisions/filter_curated_memorials_by_lattice_memorial_policy_...):
-
-   1. Lattice-driven curated filter — `:memorial-policy :first-class` on
-      rank-by excludes :db-only runtime telemetry (the :event/* subtree +
-      :mm/Run) via the substrate primitive `dt/effective-memorial-policy-of`,
-      rather than a bespoke :dt/Event check (which would wrongly KEEP :mm/Run).
-      The recency axis is otherwise event-dominated (~1300 recent events),
-      which is why the prior unfiltered capture surfaced telemetry noise.
-   2. Name re-hydration — the metadata-only projection drops
-      :mm.memory/name, so re-fetch each entity (mirroring `orient-top-recent`)
-      and resolve a human-readable name via `entity-name` (never bare-nil).
-      The prior `(mapv :entity hits)` shipped name-less metadata maps, which
-      the MCP wire-view then rendered as {:name null} ×N (the reported bug)."
+  "Return recent first-class memory entities with readable names.
+   Filter using effective memorial policy to exclude runtime-only records,
+   then fetch names omitted by metadata-only ranking results. The selection
+   is a recency view, not evidence that a record governs the current task."
   [limit]
   (let [{:keys [hits]} (aggregate/rank-by {:class           :mm/Memory
                                            :rank-by         :recency
@@ -1229,68 +1122,19 @@
                      :args            args}))))
 
 (defn orchestrate
-  "ι.3 substrate orchestrator entry-point.  Drives a workflow.process through
-   its phases via workflow.transition (one phase per call; caller invokes
-   sequentially across the ceremony's phases per `open-phases` /
-   `handoff-phases`).
+  "Run one orchestration phase for a workflow process.
+   Required args: :workflow and :phase. A numeric :process-id is required
+   except for :phase/orient and :phase/initialize; initialization returns
+   :created-process-id. Optional :context, :actor, :reason and :timeouts
+   configure phase work/transitions.
+   :audit-on-open? is a declared option whose active wiring must be checked
+   in the phase implementation.
 
-   ## Arguments
-     args - map with required keys:
-       :workflow       Workflow definition ident (e.g., `:workflow/session`)
-       :process-id     Numeric workflow.process eid
-       :phase          Phase keyword (one of `open-phases` or `handoff-phases`)
-     Optional:
-       :context        Map of context data passed to phase work + transitions
-       :actor          Entity ref for the workflow.transition history actor slot
-       :reason         Reason string for transitions whose
-                       `:workflow/requires-reason?` is true
-       :timeouts       Per-phase timeout override map (else `default-phase-timeouts-ms`)
-       :audit-on-open? Boolean — invoke `audit_fs-substrate-drift` in :phase/orient
-                       (default false per Q.ι.3.5; not yet wired in W4.1)
-
-   ## Returns
-     Map with keys:
-       :phase-completed     The phase that just completed (= args :phase)
-       :next-phase          The next phase to invoke (nil if at terminal phase
-                            of this ceremony)
-       :transition-applied  Vec of workflow.transition names applied this
-                            phase (empty vec for pure-read / caller-side-
-                            mutation phases; one or more for transition-
-                            bearing phases per `phase-transitions`)
-       :events-emitted      Vec of event eids emitted by THIS orchestrator
-                            invocation.  Empty in W4.1 — events emit
-                            transitively via `sandbar.util.workflow/transition!`
-                            calling `sandbar.util.event/log!` on the
-                            `:workflow/transition` channel.  Richer
-                            `:mm.event/Workflow*` subclass emission lands
-                            when those event classes are authored.
-       :duration-ms         Phase duration in milliseconds
-       :degraded?           True if κ P18 bootstrap-robustness fallback
-                            engaged (i.e., at least one transition was
-                            :reason :transition-not-found and degraded
-                            instead of throwing)
-       :phase-work-result   Whatever the `phase-work` multimethod returned
-                            (often nil for the default no-op method)
-
-   ## Failure modes
-     Throws `ex-info` with `:reason` :missing-required-arg / :unknown-phase
-     for argument-validation failures.  Propagates workflow-semantics
-     exceptions (`:guard-not-met`, `:requires-reason`, `:process-not-found`)
-     from `wf/transition!`.  Catches `:transition-not-found` (κ P18
-     fallback) and surfaces via `:degraded? true` in the result map.
-
-   ## Per κ P18 (bootstrap-robustness)
-     `:transition-not-found` is the canonical recoverable failure shape —
-     resolves via sandbar restart (compiled-cache rebuild).  The orchestrator
-     does NOT brick on this failure; it degrades gracefully so the calling
-     skill (e.g., /memory-open) can fall back to its prior text-protocol
-     behavior.  See `:memory.observations/workflow_transition_verb_identless_unreachable_2026_05_26`
-     for the empirical reproduction this design is grounded in.
-
-   ## See also
-     - ι.3 design ratification ADR: `:memory.decisions/iota_3_substrate_orchestrator_design_ratification_2026_05_26`
-     - κ library synthesis: `:memory.libraries.synthesis/stateful_workflow_substrate_design_foundations_…_2026_05_25`
-     - Wave-2 strategic plan §6.W4.1: `:memory.plans/sandbar_0_2_0_release_comprehensive_strategic_re_plan_wave_2_revision_2026_05_26`"
+   Return :phase-completed, :next-phase, :transition-applied, :events-emitted,
+   :duration-ms, :degraded? and :phase-work-result. Argument validation reports
+   missing-required-arg or unknown-phase. Workflow semantic errors propagate;
+   transition-not-found is represented as a degraded fallback. Inspect that
+   flag rather than treating every returned map as accepted progress."
   [args]
   (validate-args! args)
   (let [{:keys [phase context actor reason timeouts]} args

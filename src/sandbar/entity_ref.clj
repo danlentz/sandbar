@@ -1,80 +1,15 @@
 (ns sandbar.entity-ref
-  "Public boundary abstraction for entity reference coercion + resolution.
+  "Entity-reference coercion and resolution for public boundaries.
+   Accept keyword idents, prefixed/unprefixed ident strings, integer eids,
+   numeric eid strings and entity maps. Lookup vectors are unsupported.
+   resolve returns an entity; resolve-ident requires an interned ident;
+   validate converts structured resolver ExceptionInfo into diagnostics.
+   Other failures, including numeric overflow, may still throw.
 
-   See `decisions/sandbar_entity_ref_abstraction_2026_05_14.md` (Phase R
-   Stage R-1 ADR) in the corpus repo for the full design rationale.
-
-   ## What this exists for
-
-   The MCP / REST / in-process API surfaces all need to accept entity
-   references in multiple forms (keyword ident, integer eid, string,
-   entity map) and produce structured errors for malformed or
-   non-existent references.  Before this namespace, every public boundary
-   re-solved the coercion + error-projection problem locally (split
-   between `->ident` shape-coercion in `sandbar.mcp.tools` and `db/entity`
-   permissive resolution at REST), with inconsistent error behavior
-   (`AssertionError` escapes from `:pre`, `nil`-returns silently
-   propagating, etc.).  `entity-ref` is the single canonical entry point.
-
-   ## Accepted input forms
-
-   - **Keyword** (`:foo/bar`) — entity ident; direct lookup
-   - **Prefixed string** (`\":foo/bar\"`) — string form of ident
-   - **Unprefixed string** (`\"foo/bar\"`) — string form of ident
-   - **Numeric string** (`\"12345\"`) — parsed to integer eid
-   - **Integer** (`12345`) — Datomic eid; direct lookup
-   - **Entity map** — returned as-is (idempotent)
-   - **Lookup vector** (`[:slot value]`) — currently raises
-     `:entity-ref/lookup-vector-unsupported`; deferred to post-0.1.0 per
-     REST audit (no REST callsite uses lookup-vectors today)
-
-   ## Error envelope
-
-   All errors raised as `clojure.lang.ExceptionInfo` with `:reasons` key
-   carrying a SET of namespaced keywords.  See `(entity-ref/error)`
-   constructor.  Reason set semantics: multiple reasons can co-occur
-   (e.g., lookup-vector input is both `:malformed-input` and
-   `:lookup-vector-unsupported`).
-
-   Reason keywords:
-   - `:entity-ref/malformed-input` — input form not in accepted set
-   - `:entity-ref/not-found` — ref shape valid but no entity at that ident/eid
-   - `:entity-ref/lookup-vector-unsupported` — `[:slot value]` deferred
-   - `:entity-ref/no-ident` — `resolve-ident` called on entity without `:db/ident`
-
-   ## Consumer use
-
-     ;; Resolve any form to canonical entity map
-     (entity-ref/resolve :mm/Memory)        ; keyword
-     (entity-ref/resolve \":mm/Memory\")      ; prefixed string
-     (entity-ref/resolve \"mm/Memory\")       ; unprefixed string
-     (entity-ref/resolve 12345)             ; integer eid
-     (entity-ref/resolve \"12345\")           ; numeric string
-
-     ;; Get canonical ident keyword
-     (entity-ref/resolve-ident :mm/Memory)  ; → :mm/Memory
-
-     ;; Predicate-style check (never raises)
-     (entity-ref/validate \"bogus-not-found\")
-     ;; → {:valid? false :reasons #{:entity-ref/not-found} :message \"...\"}
-
-   ## Dispatch on errors
-
-     (try
-       (entity-ref/resolve ref)
-       (catch clojure.lang.ExceptionInfo e
-         (case (first (:reasons (ex-data e)))
-           :entity-ref/malformed-input        (handle-bad-input ...)
-           :entity-ref/not-found              (handle-not-found ...)
-           :entity-ref/lookup-vector-unsupported (handle-unsupported ...)
-           (throw e))))
-
-   For multi-reason fine-grained matching:
-
-     (let [reasons (:reasons (ex-data e))]
-       (cond
-         (contains? reasons :entity-ref/lookup-vector-unsupported) ...
-         (contains? reasons :entity-ref/not-found) ...))"
+   Failures use ExceptionInfo with a :reasons set, including malformed-input,
+   not-found, lookup-vector-unsupported and no-ident in the entity-ref
+   namespace. Inspect membership rather than assuming one reason or stable
+   set order. Callers still enforce their own authorization boundary."
   (:refer-clojure :exclude [resolve])
   (:require
    [clojure.string :as str]

@@ -219,8 +219,8 @@
 (deftest a-file-whose-id-differs-from-the-stored-one-refuses-the-unit
   (let [dir (fresh-tmp-dir "identity")]
     (try
-      ;; a bulk-imported file carries the identity it declares (the interactive
-      ;; create path derives one for a memory without; the import path does not)
+      ;; A supplied identity survives import; only new, unidentified roots
+      ;; receive an absent-only UUID default.
       (write! dir rel-path (doc {:slots "id: '11111111-1111-5111-8111-111111111111'"}))
       (import! dir)
       (let [stored-id (:mm/id (entity))]
@@ -263,6 +263,28 @@
         (is (= "additive" (-> report :persisted first :mode)))
         (is (= #{"alpha" "beta"} (tag-values)) "additive keeps the old membership")
         (is (= #{"One" "Two"} (section-headings)) "additive keeps the old section"))
+      (finally (rm-rf! dir)))))
+
+(deftest additive-mode-cannot-reassign-document-identity-or-class
+  (let [dir (fresh-tmp-dir "additive-identity")
+        original (doc {:slots "id: '11111111-1111-5111-8111-111111111111'"})]
+    (try
+      (write! dir rel-path original)
+      (import! dir)
+      (let [before (entity-snapshot)]
+        (doseq [[changed reason]
+                [[(str/replace original "11111111-1111-5111-8111-111111111111"
+                                        "00000000-0000-4000-8000-000000000000") "identity-conflict"]
+                 [(str/replace original "type: decision" "type: observation") "class-changed"]]]
+          (write! dir rel-path changed)
+          (let [preview (dry-run dir {"mode" "additive"})
+                report (import! dir {"mode" "additive"})]
+            (is (= 1 (:conflict-count preview)) (pr-str preview))
+            (is (= reason (get-in preview [:units 0 :conflicts 0 :reason])))
+            (is (= 1 (:conflict-count report)) (pr-str report))
+            (is (zero? (:persisted-count report)))
+            (is (= reason (get-in report [:conflicts 0 :conflicts 0 :reason])))
+            (is (= before (entity-snapshot)) "refusal preserves every stored root value"))))
       (finally (rm-rf! dir)))))
 
 (deftest the-dry-run-plans-each-unit-and-a-stale-basis-is-refused

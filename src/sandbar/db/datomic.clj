@@ -13,7 +13,12 @@
 ;; Database Connectivity
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-;; (def ^:dynamic *db*   nil)
+(def ^:dynamic *read-snapshot*
+  "Optional immutable basis for a bounded read/render operation. Never bind
+   around writes. Explicit-connection db reads still return that connection's
+   current database. Used by guarded export so codec reference/schema reads
+   share the policy's input basis without global with-redefs."
+  nil)
 
 (def ^:dynamic **conn*   (atom nil))
 
@@ -71,7 +76,7 @@
   (d/create-database uri))
 
 (defn db
-  ([] (d/db (conn)))
+  ([] (or *read-snapshot* (d/db (conn))))
   ([c] (d/db c)))
 
 ;; (defmacro with-db [db-instance & body]

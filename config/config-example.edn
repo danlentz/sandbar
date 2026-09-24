@@ -15,9 +15,26 @@
 {:db      {:url "datomic:dev://localhost:4334/"
            :sid "example"}
 
- ;; Sandbar HTTP port — 8389 (in the unused 8380-8399 range; off the
- ;; universal-dev-default 8080).  Per the deployment-strategy ADR D.E.
+ ;; Sandbar HTTP port. Override per installation when the port is occupied.
  :port 8389
+
+ ;; Operator-owned persistence destinations, keyed by an EXISTING Project's
+ ;; stable :mm.project/ident. Each absolute directory owns its memory/ subtree.
+ ;; Unmapped projects retain SANDBAR_CORPUS_ROOT. Keep roots nonoverlapping.
+ ;; Example after enrollment: {:project/clj-figlet "/absolute/path/to/clj-figlet"}
+ ;; Changing this map requires stopped-writer maintenance and file reconciliation;
+ ;; it neither migrates existing files nor authorizes public export.
+ :project-roots {}
+
+ ;; Guarded export destinations are separate from canonical persistence roots.
+ ;; The stable project key must already be enrolled in :project-roots. Existing
+ ;; absolute staging/audit roots must be outside every source tree; audit roots
+ ;; must be private (0700) and outside every staging root. No default destination.
+ ;; Example (create/review the directories during operator setup):
+ ;; {"figlet-public" {:project :project/clj-figlet :audience :public
+ ;;                   :staging-root "/absolute/private/export-staging"
+ ;;                   :audit-root "/absolute/private/export-audit"}}
+ :export-destinations {}
 
  ;; Schema files loaded at startup, in order.  Each maps to
  ;; schema/<name>.edn under the project resources.  Order matters —
@@ -37,28 +54,28 @@
  ;; :workflow         - state-machine workflow primitives (meta-schema)
  ;; :job              - background-job tracking
  ;; :mm               - memory-model substrate (mm/Memory, mm/Section, etc.)
- ;; :workflow-session - :workflow/session lifecycle definition (ι.2 substrate;
+ ;; :workflow-session - :workflow/session lifecycle definition;
  ;;                     loads AFTER :workflow + :mm-meta — depends on
  ;;                     :workflow/State + :workflow/Transition + :mm/Workflow
  ;;                     classes from :workflow, and :mm.memory/* slots from :mm
- ;;                     family.  Per ι.2 substrate execution 2026-05-25.)
+ ;;                     family.
  :required-schema [:meta :ref :literal :fn :any :context :event :user :twit :auth :audit :workflow :job :mm :mm-artifact :mm-signal :mm-guidance :mm-meta :mm-verb :mm-temporal :mm-namespace :workflow-session]
  ;; :workflow {:stale-session-window-ms 43200000}
  ;;   — inactivity window (ms) for the crashed-session staleness rule of
- ;;     sandbar.util.workflow/close-leaked-sessions! (sprint 3.4).  Absent ⇒
+ ;;     sandbar.util.workflow/close-leaked-sessions!. Absent ⇒
  ;;     the code default of twelve hours.
 
- ;; γ scheduler config.  Per Dan-directive 2026-05-28 the two system jobs
- ;; are scheduled by default (amends the original Q.γ.5 :enabled? false
- ;; opt-in-safety default for the system-jobs case).
+ ;; Scheduler configuration. The bundled defaults enable the scheduler and
+ ;; its two operational system jobs. Override these for a disposable service
+ ;; that should not run scheduled work.
  ;;
  ;; :enabled?     — when true, sandbar.core/start invokes
  ;;                 sandbar.schedule/enable! + start! (handler-pool +
  ;;                 fire-thread + :mm.event/Scheduled subscriber).
  ;; :system-jobs? — when true, boot seeds + schedules 2 system jobs
  ;;                 (idempotent :db/ident upsert; dtstart anchored at boot):
- ;;                   db-stats              FREQ=MINUTELY;INTERVAL=15 → :mm/EventLog substrate counts
- ;;                   reactive-queue-health FREQ=MINUTELY;INTERVAL=10 → :mm/EventLog queue health
+ ;;                   db-stats              FREQ=MINUTELY;INTERVAL=15 → substrate counts
+ ;;                   reactive-queue-health FREQ=MINUTELY;INTERVAL=10 → queue health
  ;;                 Both emit :db-only operational telemetry (→
  ;;                 :event/SystemEvent, NOT corpus :mm/EventLog).
  ;; :jobs         — enumeration slot for additional Schedule idents to
@@ -69,7 +86,7 @@
              :system-jobs? true
              :jobs         []}
 
- ;; Future-timestamp guard (reliability sprint 2026-09-18, item 2.4).
+ ;; Future-timestamp guard.
  ;; dt/make and dt/update-entity! — hence entity.create / entity.update and
  ;; the markdown codec create path — refuse a :mm.memory/created or
  ;; :mm.memory/last-touched value more than this many SECONDS ahead of

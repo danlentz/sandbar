@@ -1,25 +1,17 @@
 (ns sandbar.aggregate
-  "Sandbar Aggregation Namespace — Phase G of comprehensive memory-model
-  MCP arc.
+  "Population summaries over typed entities.
 
-  Consumer-facing wrappers around the dt/* aggregation primitives.
-  Three public verbs:
-
-    count-by  — entity count for a class with optional predicate filter
-    group-by  — group-by-count facet aggregation
-    rank-by   — structural-rank re-ordering across 4 axes
-                (:degree :backlink-density :recency :freshness)
-
-  Higher-level concerns (cross-axis composition with search /
-  navigation / orientation) compose via shared opts-maps + the
-  result-shape contract defined in fulltext arc plan §1.6.
-
-  Per fulltext arc Stage 13 of
-  plans/sandbar_fulltext_search_substrate_arc_2026_05_13.md."
+  count-by counts a subclass-inclusive class population with optional clauses;
+  group-by counts values; rank-by orders by degree, backlink density, recency
+  or freshness; tag-histogram summarizes references to typed Tags. Each wraps
+  model primitives with its own result envelope. Text facets are available
+  separately through sandbar.search. These operations describe graph structure,
+  not the authority or truth of the records being counted."
   (:refer-clojure :exclude [count-by group-by rank-by])
   (:require [sandbar.api.projection :as projection]
             [sandbar.db.datatype    :as dt]
-            [sandbar.security.query :as secq]))
+            [sandbar.security.query :as secq]
+            [sandbar.security.visibility :as visibility]))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; count-by — entity count with optional predicate filter
@@ -36,17 +28,19 @@
     :where  — vec of Datalog clauses (must reference `?e`)
 
   Returns:
-    {:count <int>}
-
-  Per fulltext arc Stage 13."
+    {:count <int>}"
   [{:keys [class where]}]
   {:pre [(keyword? class)
          (or (nil? where) (sequential? where))]}
   ;; SECURITY (read-plane namespace firewall): deny :class / :where in a
   ;; firewalled namespace (:auth/* etc.) BEFORE any query touches the DB.
+  ;; Identity constants in :where (a citation target, an author, an owner, a
+  ;; tag — by ident, eid or lookup ref) are judged by their resolved target's
+  ;; class and readability; every other position keeps the older checks.
+  ;; The counted population itself is not clearance-filtered (S-2).
   (secq/assert-class-allowed! class)
-  (secq/assert-where-namespaces! where)
-  (dt/assert-where-eids-allowed! where)   ; numeric-eid-form firewall (db-aware)
+  (dt/assert-where-identities-allowed!
+    where #(visibility/entity-visible-to? visibility/*principal* %))
   {:count (dt/count-of class where)})
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -66,9 +60,7 @@
 
   Returns:
     {:groups {value count}
-     :total  <int>}
-
-  Per fulltext arc Stage 13."
+     :total  <int>}"
   [{:keys [class group-by where] :as opts}]
   {:pre [(keyword? class)
          (keyword? group-by)
@@ -77,13 +69,19 @@
   ;; :group-by slot (the credential-hash DUMP vector), or :where attribute.
   (secq/assert-class-allowed! class)
   (secq/assert-attribute-allowed! group-by)
-  (secq/assert-where-namespaces! where)
-  (dt/assert-where-eids-allowed! where)   ; numeric-eid-form firewall (db-aware)
+  ;; Identity constants in :where are judged by their resolved target (see
+  ;; count-by); the grouped population itself is not clearance-filtered (S-2).
+  (dt/assert-where-identities-allowed!
+    where #(visibility/entity-visible-to? visibility/*principal* %))
   (let [groups  (dt/group-by-of class group-by where)
         ;; SECURITY (read-plane firewall): drop firewalled-class buckets from a
         ;; :group-by whose slot yields class refs (e.g. :dt/type) — closes the
         ;; eid-keyed per-:auth/*-class instance-cardinality leak.
-        visible (into {} (remove (fn [[k _]] (dt/read-plane-group-key-firewalled? k)) groups))]
+        visible (into {} (remove (fn [[k _]]
+                                   (dt/read-plane-group-key-firewalled?
+                                     group-by k #(visibility/entity-visible-to?
+                                          visibility/*principal* %)))
+                                 groups))]
     {:groups visible
      :total  (reduce + 0 (vals visible))}))
 
@@ -121,9 +119,7 @@
   Returns:
     {:hits     [{:entity <entity-map> :rank-score <number>} ...]
      :total    <int>
-     :returned <int>}
-
-  Per fulltext arc Stage 13."
+     :returned <int>}"
   [{:keys [class rank-by limit temporal-slot projection memorial-policy]
     :or   {limit 20}}]
   {:pre [(keyword? class)
@@ -188,24 +184,15 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (defn tag-histogram
-  "Return a frequency histogram of :mm/Tag usage across the corpus.
-   Each bin = {:tag <identifier>, :value <string>, :count <int>}; count is
-   the number of entities (any class) that reference the tag via any
-   cardinality-many ref slot.  `:tag` is the canonical tag-ref fallback
-   (:db/ident, else :mm.tag/value, else :db/id — mirrors
-   `sandbar.audit.tag/tag-ref`), so it may be a keyword, string, or Long.
+  "Return usage bins for typed :mm/Tag instances, including subclasses.
+  :count is the number of distinct visible source entities referring through
+  any reference property; a source using several properties counts once.
+  This is not a census of untyped value carriers or a tags-only membership set.
 
-   Optional opts:
-     :limit — cap returned bins (default 0 = no cap); sorted descending
-              by count, ascending by the stringified tag identifier as
-              tie-breaker (type-safe across keyword/string/Long)
-
-   Returns:
-     {:histogram [{:tag <ident|value|eid> :value <string> :count <int>} ...]
-      :total <int>}
-
-   Per Stage 5.B-pre #4 of
-   decisions/stage_5_mcp_verb_authoring_sub_arc_2026_05_21.md."
+  Each bin has :tag (ident, else value, else eid), :value and :count.
+  :limit defaults to 0 (no cap). Order is descending count, then the string
+  form of :tag. Returns {:histogram [bin ...] :total n}, where total is the
+  number of bins before limiting."
   [{:keys [limit] :or {limit 0}}]
   {:pre [(integer? limit) (>= limit 0)]}
   ;; Enumerate ALL :mm/Tag instances as entity maps via `dt/all-instances-of`.

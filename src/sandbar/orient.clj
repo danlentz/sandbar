@@ -1,22 +1,11 @@
 (ns sandbar.orient
-  "Sandbar Orientation — entity-neighborhood + session-state views.
+  "Orientation views over typed model and entity relationships.
 
-  Phase O of the comprehensive memory-model MCP arc per
-  plans/sandbar_fulltext_search_substrate_arc_2026_05_13.md.
-
-  Per scope-narrowing ADR
-  decisions/sandbar_phase_o_substrate_quality_scope_library_card_only_2026_05_14.md,
-  Sandbar substrate ships `library-card` as the single substrate-correct
-  orientation verb.  The corpus-specific orientation surfaces (arc-forest /
-  ready-queue / session-state / index-snapshot) live at the corpus
-  orchestration layer where corpus-domain knowledge (`:mm.memory/memory-type
-  :plan`, blocker conventions, MEMORY.md format, git inspection) belongs.
-
-  This namespace consumes `sandbar.db.datatype/library-card-of` and projects
-  the result to a JSON / EDN-friendly shape across protocol boundaries.
-
-  Substrate-quality discipline preserved: class-agnostic; axis-specs are
-  caller-supplied."
+  library-card projects caller-defined neighborhood axes; type-tree follows
+  the class hierarchy; tree summarizes path-based groups. Domain-specific
+  planning, queues and session policy remain the application's responsibility.
+  These views reuse model/navigation primitives and return data that transport
+  adapters can serialize without rebuilding the query logic."
   (:require [sandbar.api.projection :as projection]
             [sandbar.db.datatype     :as dt]
             [sandbar.db.datomic      :as db]
@@ -32,31 +21,15 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (defn library-card
-  "Return a multi-axis typed-edge neighborhood view of `:entity`.
+  "Return a projected neighborhood for an entity ident or eid and axis specs.
+  Each axis has :name, :direction (:forward or :inverse), optional :predicates,
+  :target-type or :source-type, and :limit. Qualified predicates retain their
+  relationship meaning when similar local names exist on different classes.
 
-  Required opts:
-    :entity     — entity ident (keyword) or eid (long)
-    :axes       — vec of axis-spec maps; each:
-                    {:name       <string-or-keyword>     ; label for the axis
-                     :direction  :forward | :inverse     ; outbound / inbound
-                     :predicates [<pred-ident>...]       ; optional predicate restriction
-                     :target-type <class-ident>           ; optional for :forward axes
-                     :source-type <class-ident>           ; optional for :inverse axes
-                     :limit      <int>}                   ; optional per-axis cap
-
-  Optional opts:
-    :projection — `:metadata-only` (default) returns just
-                  `:db/id`/`:db/ident`/`:dt/type` per entity + edge
-                  target/source; `:full` returns complete entity-maps
-
-  Returns:
-    {:entity <entity-map>
-     :axes   {<axis-name> [{:predicate ... :target/source <entity-map>} ...] ...}}
-
-  Substrate-quality: class-agnostic; axis-specs are caller-supplied.  No
-  hardcoded knowledge of any domain class's predicate vocabulary.  Per
-  fulltext arc Phase O of plans/sandbar_fulltext_search_substrate_arc_2026_05_13.md.
-  `:projection` opt per Gap 3 of MCP cutover exercise 2026-05-22."
+  :projection defaults to :metadata-only; :full requests complete entities.
+  Returns {:entity entity :axes {axis-name [{:predicate p :target entity} ...]}};
+  inverse axes use :source instead of :target. Axis definitions belong to the
+  caller, so the view does not assume a domain-specific vocabulary."
   [{:keys [entity axes projection]
     :or   {projection :metadata-only}}]
   ;; Per ADR §D-3.2 (Option B), the `:pre` guard on `entity` (a ref-arg)
@@ -110,20 +83,10 @@
        :children (mapv #(subtree % visited') direct-children)})))
 
 (defn type-tree
-  "Return the class-hierarchy subtree rooted at `:root` (default
-  `:dt/Resource` — the metamodel root).  Recursive walk via
-  `dt/direct-subclasses-of`; produces a nested-map tree with `:class` +
-  `:children` per node.
-
-  Required opts: none — `:root` defaults to `:dt/Resource`.
-
-  Optional opts:
-    :root — root class ident (default `:dt/Resource`)
-
-  Returns:
-    {:root <ident> :tree {<nested-tree>}}
-
-  Per Stage 5.B-pre #3 of decisions/stage_5_mcp_verb_authoring_sub_arc_2026_05_21.md."
+  "Return the class hierarchy below :root, defaulting to :dt/Resource.
+  Follows direct subclasses and returns {:root ident :tree node}, with :class
+  and :children on nodes. Cycles are marked; multiple inheritance can show a
+  class in more than one branch."
   [{:keys [root] :or {root :dt/Resource}}]
   {:pre [(keyword? root)]}
   {:root root
@@ -148,7 +111,7 @@
     entities))
 
 (defn tree
-  "Return a top-level directory grouping of entities by their `:path-slot`
+  "Return a top-level directory grouping of named entities by their `:path-slot`
   value.  Output shape: `{:dirs {<dir-name> {:count N :sample [<entity-map>...]}}
                           :total N}`.
 
@@ -160,7 +123,8 @@
   Optional opts:
     :sample-size — entities sampled per directory (default 0 = none)
 
-  Per Stage 5.B-pre #3."
+  Unnamed entities are excluded. Samples contain ident and the path value,
+  not full entity content; use exact reads for the selected records."
   [{:keys [class path-slot sample-size]
     :or   {sample-size 0}}]
   {:pre [(keyword? class)

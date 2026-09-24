@@ -1,53 +1,26 @@
 (ns sandbar.shape
-  "SHACL-style abstract-interpreter walker for `:mm/Shape` validation.
+  "Constraint evaluation for :mm/Shape over an explicit database value.
 
-   Stage C of the SHACL-deeply-incorporated arc (2026-05-23) — implements
-   the validation walker as a family of first-class `:mm/Fn` instances per
-   the Cousot-Cousot abstract-interpretation framing (see
-   `memory/observations/shape_walker_is_abstract_interpreter.md`).
+   walk-entity composes required-property, cardinality, pattern, datatype,
+   closed-property, custom-function and exclusive-or checks for one pair.
+   validate selects shapes whose applies-to equals the entity's declared type;
+   conformance-report uses direct instances and exact-class shapes. Parent
+   targeting is not inherited by these selectors.
 
-   ## Architecture
+   Each check is a deployed classpath function with inspectable metadata.
+   Shape declarations describe constraints; they do not install implementation
+   code. A custom function supplements the built-in walker.
 
-   Each check fn here is authored via `sandbar.db.fn/defdbfn` with
-   `:dt.fn/installed-as :classpath-fn` — the actual implementation lives
-   here in the peer JVM classpath; the `:mm/Fn` memorial entity carries
-   the metadata (purpose / purity / cost-class / source-ns / source-var)
-   so substrate consumers can discover + invoke the walker fns by ident.
+   Results distinguish :pass from :fail, with failure details and severity.
+   Strict mode throws on a :violation result; audit returns findings; disabled
+   returns []. Validation itself performs no transaction. The accepting write
+   boundary owns preflight validation and commit ordering.
 
-   The check fns are composed by `walk-entity` (the top-level walker) and
-   `conformance-report` (the batch aggregator).
-
-   ## Abstract-interpretation framing (per the observation)
-
-   - **Concrete domain**: dynamic substrate properties (actual entity
-     graph; actual behavior under workload; actual retrieval semantics)
-   - **Abstract domain**: the entity's slot values + ref-graph viewed
-     statically (without running it through any workload)
-   - **Shape constraints**: invariants over the abstract domain that
-     soundly approximate properties we care about in the concrete domain
-   - **Walker = interpreter**: evaluates each constraint against the
-     abstract view per (entity, shape) pair
-   - **Severity discipline**: `:violation` shapes should be SOUND (no
-     false negatives — never says 'clean' when concrete domain is dirty);
-     `:warning` shapes may admit false positives; `:info` is fully
-     informational
-
-   ## Conformance report shape
-
-   Per-check fns return:
-     `{:status :pass}` — constraint satisfied
-     `{:status :fail :severity <s> ...}` — constraint violated; <s> from
-                                            shape's `:mm.shape/severity`
-                                            (default :violation)
-
-   `walk-entity` aggregates per-check results:
-     `{:status :pass :entity <eid> :shape <eid>}`
-     `{:status :fail :entity <eid> :shape <eid> :failures [<check-result> ...]}`
-
-   `conformance-report` produces batch summary:
-     `{:class <ident> :instance-count <n> :shape-count <n>
-       :total-checks <n> :passes <n> :failures <n>
-       :failure-details [<walk-result> ...]}`"
+   Current limits: the datatype fallback can accept wrong primitive values;
+   ident-bearing custom-function references can fail resolution; the declared
+   value-constraints slot is not executed. A zero-failure report therefore needs
+   target and constraint coverage checks. No formal soundness guarantee or
+   complete SHACL conformance is implied. See doc/concepts/shape-validation.md."
   (:require [clojure.set :as set]
             [clojure.tools.logging :as log]
             [datomic.api :as d]
@@ -205,7 +178,7 @@
    :dt.fn/purity       :pure-total
    :dt.fn/cost-class   :cheap
    :dt.fn/installed-as :classpath-fn
-   :dt.fn/description  "Verify property values match declared datatypes in shape's :mm.shape/datatype-constraints."
+   :dt.fn/description  "Evaluate declared datatype constraints. The current keyword fallback is permissive and can pass wrong primitive values; do not treat a pass as complete datatype validation."
    :dt.fn/version      "1.0.0"}
   (let [entity      (d/entity db entity-eid)
         shape       (d/entity db shape-eid)
@@ -280,7 +253,7 @@
    :dt.fn/purity       :pure-partial
    :dt.fn/cost-class   :moderate
    :dt.fn/installed-as :classpath-fn
-   :dt.fn/description  "If shape carries a :mm.shape/validator-fn ref, resolve it via :dt.fn/source-ns + :dt.fn/source-var and invoke; capture the result."
+   :dt.fn/description  "Contribute a custom check via :dt.fn/source-ns and :dt.fn/source-var. Current named references can fail resolution before invocation; inspect the result."
    :dt.fn/version      "1.0.0"}
   (let [shape        (d/entity db shape-eid)
         validator-fn (:mm.shape/validator-fn shape)]
@@ -370,7 +343,7 @@
    :dt.fn/purity       :pure-partial
    :dt.fn/cost-class   :expensive
    :dt.fn/installed-as :classpath-fn
-   :dt.fn/description  "Batch conformance: walks all instances of class-ident against all applicable :mm/Shape instances; aggregates per-pair walk-entity results into a structured report."
+   :dt.fn/description  "Evaluate direct instances of class-ident against exact-class shapes. Return counts of instances, shapes and evaluated entity/shape pairs, plus failures."
    :dt.fn/version      "1.0.0"}
   (let [;; Shapes targeting this class:
         shape-eids    (d/q '[:find [?s ...]
@@ -404,11 +377,12 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (defn validate
-  "Public entry: validate an entity against the shapes applicable to its class.
+  "Validate an entity against shapes targeting its directly declared class.
+   Parent-class shapes are not inherited. No transaction is performed.
    Returns a vector of walk-entity results (one per applicable shape).
 
    `mode` ∈ #{:strict :audit :disabled}:
-     - :strict — throw ex-info on first :violation-severity failure
+     - :strict — evaluate selected shapes and throw ex-info if any violation fails
      - :audit  — return all results; let caller decide
      - :disabled — skip validation entirely (no-op; returns [])"
   ([db entity-eid] (validate db entity-eid :audit))

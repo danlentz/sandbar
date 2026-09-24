@@ -2,10 +2,12 @@
   (:gen-class)
   (:require [clojure.tools.logging :as log]
             [com.stuartsierra.component :as component]
+            [datomic.api :as d]
             [sandbar.codec.markdown :as codec-md]
             [sandbar.db.datatype :as dt]
             [sandbar.db.datomic :as db]
             [sandbar.logging.init :as logging-init]
+            [sandbar.mcp.tools :as tools]
             [sandbar.reactive :as reactive]
             [sandbar.reactive.queue :as reactive-queue]
             [sandbar.reactive.sinks :as reactive-sinks]
@@ -43,45 +45,21 @@
 ;; search/where-matching-eids) — see that namespace.  No process-wide state.
 
 (defn make-system
-  "Construct the (unstarted) component system map.
+  "Construct the unstarted component system map.
 
-   The default `:config` designator resolves through the LAYERED config
-   loader (`edn/config-value` → `sandbar.config/config`): bundled
-   defaults — including the committed `config-example.edn`
-   fresh-checkout fallback — deep-merged with the client
-   `.sandbar/config.edn` override and env-var overrides.
+   The default :config designator uses `sandbar.config/config`: bundled
+   defaults (with the committed config-example.edn fallback), client
+   .sandbar/config.edn, and environment overrides. Other designators read a
+   raw classpath EDN resource.
 
-   Fresh-checkout portability (2026-07-22, closes the make-system
-   residual of the 2026-07-21 config-example fallback): this path
-   previously read the raw `config.edn` classpath resource directly via
-   `edn/resource-value`, which (a) threw `Cannot open <nil> as a
-   Reader` on a fresh checkout — `config/config.edn` is gitignored, so
-   `io/resource` resolves nil — BYPASSING the
-   `sandbar.config/read-bundled-defaults` fallback, and (b) ignored the
-   client-override + env layers that the sibling boot-path config
-   consumer `db/db-spec` already honors (per the deployment-strategy
-   ADR D.B, `memory/decisions/sandbar_deployment_consumption_cohabitability_strategy_2026_05_24.md`).
+   A map argument supplies optional :config, :db-spec, :port, and :nrepl?
+   overrides while retaining the production component types and dependencies.
+   Tests can therefore boot the same graph on an isolated store and free port.
 
-   A NON-`:config` designator is still read as a raw classpath EDN
-   resource via `edn/resource-value` — an extension seam for booting
-   from an alternate bundled config; no production caller uses it.
-
-   Overrides (2026-09-19, reliability sprint D1): a MAP argument builds the
-   SAME graph, same component types and same dependency declarations, on
-   test resources — `{:config <map> :db-spec <spec> :port <port>
-   :nrepl? <bool>}`, each optional.  `sandbar.core-boot-order-acceptance-test`
-   boots this graph on a free port and an in-memory store, fresh and
-   pre-initialized, through the unmodified `start`.
-
-   Dependency: `:pedestal` USES `:datomic`, so the HTTP port opens only after
-   the database component has run `initialize-db!` and set `db/**conn*`.
-   `component/system-map` is insertion-ordered and `start-system` keeps that
-   order for components without a declared dependency, so before this
-   declaration `:pedestal` started BEFORE `:datomic`: the port answered
-   before schema was loaded and before the connection was set.  On an
-   existing store the connection fallback hid it; on a fresh store the first
-   requests failed.  The projection pipeline needs no such dependency — it
-   is registered in `start` before `component/start` runs at all."
+   The Pedestal component depends on Datomic, so HTTP starts only after the
+   database component initializes the schema and connection. Projection sinks
+   are registered by `start` before component startup and consult the database
+   when they drain, preventing a startup window that accepts unprojected writes."
   ([] (make-system :config))
   ([designator-or-overrides]
    (let [overrides  (when (map? designator-or-overrides) designator-or-overrides)
@@ -106,20 +84,10 @@
   (alter-var-root #'sys/system (constantly (make-system))))
 
 (defn- bm25f-warmable-class?
-  "True if `class-ident` should be cold-warmed in the startup BM25F sweep:
-   it declares effective bm25f-weights AND is NOT a runtime-event class.
-
-   The `:dt/Event` subtree (`:event/SystemEvent`, `:event/ServerEvent`,
-   `:event/UserEvent`, …) carries bm25f-weights but is operational
-   telemetry — NOT corpus-retrieval content.  The `:db-only` system jobs
-   emit `:event/SystemEvent` (~240/day), so warming that subtree bloats
-   startup unboundedly for zero corpus-search value.  Per Dan-directive
-   2026-05-28.
-
-   NB: the `:mm.event/*` memory-model events are a DIFFERENT hierarchy
-   (`:mm.event/* → :mm/Event → :mm/Meta → :mm/Memory`) — genuine corpus
-   members — and remain warmable.  BM25F is a corpus-retrieval tool;
-   `:dt/Event` runtime events have no business in the startup warm."
+  "True when `class-ident` has effective BM25F weights and is outside the
+   :dt/Event runtime-event hierarchy. Runtime telemetry can grow independently
+   of the corpus and is excluded from the startup warm sweep. Memory-model
+   events under :mm/Event remain eligible corpus content."
   [class-ident]
   (and (seq (dt/effective-bm25f-weights-of class-ident))
        (not (dt/type-isa? :dt/Event class-ident))))
@@ -144,25 +112,10 @@
                 "Markdown codec registration failed; entity.create with :format :markdown will reject"))))
 
 (defn- start-reactive-projection!
-  "Start the projection worker, register `enqueue-projection!` as the
-   reactive callback, and register the fs + SSE sinks.
-
-   Per decisions/reactive_projection_queue_bounded_buffer_and_health_observability_2026_05_23.md
-   (eid 17592186094353) + plans/sse_reactive_corpus_projection_arc_2026_05_23.md
-   (eid 17592186094359); sinks per that plan's Stage B (closes gap #2, the
-   one-way :format :markdown ingest, by making DB→FS projection live).
-
-   ORDER MATTERS (2026-09-18, reliability sprint item 2.2): this runs
-   BEFORE the component system opens the HTTP port.  It used to run AFTER
-   the port opened AND after the BM25F warm sweep, so for the ~50 s the
-   warm took on the live corpus the server accepted writes that reached
-   the database and were never projected to files (observed on the
-   2026-09-18 restart: `reactive_health` reported 0 sinks three minutes
-   after boot).  Under the filesystem-canonical ruling that window was
-   data loss.  None of this needs the database: the worker is a thread,
-   the callback and sinks are fns; the fs sink consults the database only
-   at drain time, and nothing can be enqueued before the database
-   component exists because every enqueue comes from a dt/* mutation."
+  "Start the projection worker and register the reactive callback plus
+   filesystem and SSE sinks before the HTTP component accepts requests.
+   Registration needs no database connection; sinks consult the database at
+   drain time. This order avoids accepting writes before their sinks exist."
   []
   (try
     (reactive-queue/start!)
@@ -177,14 +130,79 @@
       (log/warn e :SYS/REACTIVE-PROJECTION-STARTUP-FAILED
                 "Reactive-projection worker failed to start; dt/* mutations will skip the hook"))))
 
+(defn verb-catalog-readiness
+  "How the persisted `:mm/Verb` catalog compares, BY COUNT ONLY, with the
+   source catalog `sandbar.mcp.tools/verb-catalog`. Read-only; query failures
+   return :error. The zero-argument database lookup may throw; `start`
+   supplies the outer startup failure boundary.
+
+   `sandbar.tools.search` and `sandbar.tools.describe` answer from the
+   persisted cards, while `tools/list` and the `initialize` instructions come
+   from source — so a store that was never seeded advertises the discovery
+   verbs and then answers no matches and a miss for every verb (the failed
+   HTTP rehearsal 15294480403161084913, 2026-09-20).  Nothing on the start
+   path seeds the catalog; `lein seed-verb-catalog` does, in a stopped-server
+   window (doc/operations.md § Seed the verb catalog for a fresh store).
+
+   Returns `{:status :empty | :count-mismatch | :present | :error
+             :persisted <n or nil> :source <n> [:error <message>]}`.
+   `:present` means the two counts agree and nothing more: name and card
+   parity is not checked here, and an equal count is not freshness proof."
+  ([] (verb-catalog-readiness (db/db)))
+  ([database]
+   (let [source (count tools/verb-catalog)]
+     (try
+       (let [persisted (count (d/q '[:find [?name ...] :where [_ :mm.verb/name ?name]]
+                                   database))]
+         {:status    (cond (zero? persisted)        :empty
+                           (not= persisted source) :count-mismatch
+                           :else                   :present)
+          :persisted persisted
+          :source    source})
+       (catch Throwable t
+         {:status :error :persisted nil :source source :error (ex-message t)})))))
+
+(defn check-verb-catalog!
+  "Startup step, after the database is up: log the persisted verb catalog's
+   readiness. Never seeds or mutates. Returns the `verb-catalog-readiness`
+   map; `start` catches failures from this step and continues.
+
+   An empty catalog is logged as an actionable warning naming the effect
+   (discovery blind while the catalog is advertised) and the remedy (seed in a
+   stopped-server window, then start).  A count mismatch warns likewise: the
+   discovery verbs answer from cards that may be stale.  A matching count is
+   logged as information and explicitly as a count, not as parity.  A read
+   failure warns and continues."
+  []
+  (let [{:keys [status persisted source error] :as readiness} (verb-catalog-readiness)
+        remedy "stop the server, run `lein seed-verb-catalog` from this checkout with the same configuration, start again — doc/operations.md § Seed the verb catalog for a fresh store"]
+    (case status
+      :empty
+      (log/warn :SYS/VERB-CATALOG-EMPTY
+                {:persisted persisted :source source
+                 :effect "sandbar.tools.search answers no matches and sandbar.tools.describe answers a miss for every verb, while tools/list and the initialize instructions still advertise the source catalog"
+                 :remedy remedy})
+      :count-mismatch
+      (log/warn :SYS/VERB-CATALOG-COUNT-MISMATCH
+                {:persisted persisted :source source
+                 :effect "the discovery verbs answer from persisted cards that may be stale relative to this checkout's source catalog"
+                 :remedy remedy})
+      :present
+      (log/info :SYS/VERB-CATALOG-PRESENT
+                {:persisted persisted :source source
+                 :note "count only — name and card parity is not checked at startup"})
+      :error
+      (log/warn :SYS/VERB-CATALOG-CHECK-FAILED
+                {:error error :source source
+                 :effect "the persisted verb catalog could not be read; the server continues"
+                 :remedy "check the schema load in this log, then sandbar.tools.describe of one known verb through an authenticated client"}))
+    readiness))
+
 (defn- warm-bm25f-caches!
-  "Stage 5 D5 — cold-warm the BM25F search cache for every BM25F-searchable
-   class.  First-query post-restart drops from cold-tokenize (~5.7s at
-   1500-entity scale) to <100ms.  Searchable = class has :dt/bm25f-weights
-   declared.  Per-class warm is independent; failure on one class doesn't
-   block others (per-class try/catch).  Needs the database, so it runs
-   after the component system starts; queries arriving during the sweep
-   lazy-build the class they need (slower, never wrong)."
+  "Warm startup BM25F caches for eligible classes after database startup.
+   Runtime-event classes are excluded by `bm25f-warmable-class?`. Each class
+   has its own error boundary, so one failure does not stop the sweep.
+   Requests arriving before a class is warmed build its cache on demand."
   []
   (try
     (let [searchable (filter bm25f-warmable-class? (dt/all-classes))]
@@ -214,7 +232,15 @@
   (log/info :SYS/START "Starting system components")
   (alter-var-root #'sys/system component/start)
   (log/info :SYS/STARTED "System started successfully")
-  ;; AFTER the database is up: the search warm sweep (needs dt/all-classes).
+  ;; AFTER the database is up: the persisted verb catalog's readiness — a
+  ;; read and a log line, never a seed (an unseeded store leaves the
+  ;; discovery verbs blind while tools/list advertises them; 2026-09-20).
+  (try
+    (check-verb-catalog!)
+    (catch Exception e
+      (log/warn e :SYS/VERB-CATALOG-CHECK-FAILED
+                "Verb catalog readiness check failed; the server continues")))
+  ;; Then the search warm sweep (needs dt/all-classes).
   (warm-bm25f-caches!)
   ;; γ.3 — autostart the scheduler if config opts in (:scheduler {:enabled? true}).
   ;; Default is :enabled? false (per Q.γ.5 opt-in safety) so this is a no-op

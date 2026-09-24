@@ -1,45 +1,11 @@
 (ns sandbar.logging.format
-  "Signal-middleware + formatter helpers for sandbar's Telemere substrate.
-
-   Per Dan-directive 2026-05-23 (memory/authorizations/logging_curation_sequence_easy_wins_then_deep_telemere_study_then_arc_alignment_dan_directive_2026_05_23.md)
-   — the middleware composes three curations:
-
-   ## 1.  Drop the noisy `ctx: {pid X}` footer
-
-   Telemere's `signal-content-fn` emits `:ctx` unconditionally when
-   non-empty.  slf4j-telemere stamps an MDC `{\"pid\" \"...\"}` into
-   every SLF4J-bridged signal's `:ctx`, contributing nothing while
-   taking half a line.  We strip `:ctx` so the formatter has nothing
-   to render.
-
-   ## 2.  Drop Datomic `:MetricsReport` periodic floods
-
-   Per Dan-quote 2026-05-23 — *\"the datomic metrics report
-   (:MetricsReport) does not appear to be interesting at this time\"*.
-   Narrow predicate: only matches signals carrying `:MetricsReport`
-   in `:data`.  Other Datomic events still flow through (per Dan-quote
-   *\"in general we are interested in datomic logging\"*).
-
-   ## 3.  Restore real source attribution for SLF4J-bridged signals
-
-   Per memory/observations/slf4j_telemere_signal_shape_logger_name_lives_in_location_ns_not_ns_2026_05_23.md
-   — slf4j-telemere puts the original logger name (`datomic.peer`,
-   `sandbar.core`) into `:location {:ns logger-name}`, NOT the
-   top-level `:ns`.  Telemere's `signal-preamble-fn` reads `:ns` +
-   `:coords` (compile-time captures from where the bridge expanded the
-   `signal!` macro — ALWAYS `taoensso.telemere.slf4j[115,3]` for
-   bridge-routed signals).
-
-   We rewrite `:ns ← :location :ns` and clear `:coords` + `:kind` for
-   `:kind :slf4j` signals so the formatter displays the real logger
-   name without the per-line `SLF4J` repetition + bridge-code line/col.
-
-   ## 4.  Short timestamp via `short-inst-fn`
-
-   Default `format-inst-fn` produces full ISO with microseconds
-   (`2026-05-24T01:32:18.883135Z`).  We provide `short-inst-fn`
-   producing local `HH:mm:ss.SSS` for use as the `:format-inst-fn`
-   option to `taoensso.telemere.utils/signal-preamble-fn`."
+  "Telemere signal formatting middleware.
+   Remove the bridged MDC context footer and drop signals carrying the
+   periodic Datomic MetricsReport payload, while retaining other Datomic
+   signals. For SLF4J signals, use :location/:ns as the logger attribution
+   instead of the bridge's macro-expansion location. Clear bridge coordinates
+   and kind where appropriate. short-inst-fn supplies an ISO 8601 UTC
+   timestamp with milliseconds. These are output choices, not persistence policy."
   (:import [java.time Instant ZoneId LocalDateTime]
            [java.time.format DateTimeFormatter]))
 

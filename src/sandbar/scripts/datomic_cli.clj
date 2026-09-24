@@ -1,51 +1,15 @@
 (ns sandbar.scripts.datomic-cli
-  "Locate the Datomic CLI binary for shell-out invocations.
+  "Locate and memoize an executable Datomic CLI for administrative scripts.
 
-   ## Discovery priority
+   Discovery order: DATOMIC_BIN; DATOMIC_HOME/bin/datomic; datomic on PATH;
+   conventional installations under $HOME/opt, /opt, or /usr/local. Scanned
+   candidates prefer later names. Each candidate must be a regular executable
+   file, so a stale explicit path can fall through to another strategy.
 
-   1. `DATOMIC_BIN` env var — explicit full path to the binary
-   2. `DATOMIC_HOME/bin/datomic` — env var + conventional layout
-   3. `datomic` on `$PATH` — via `which`
-   4. Scan common installation roots — `$HOME/opt/datomic*`,
-      `/opt/datomic*`, `/usr/local/datomic*` (newest by name preferred)
-   5. ABORT exit 4 with actionable error message
-
-   Each candidate path is verified with `(executable?)` (file exists +
-   is a regular file + is executable) BEFORE it's accepted — so a stale
-   env var pointing at a deleted install falls through to the next
-   strategy rather than tripping a cryptic `IOException` at shell-out
-   time.
-
-   ## Why a discovery chain
-
-   Hardcoding the Datomic binary path couples scripts to one operator's
-   machine layout.  Operators install Datomic in different places
-   (Homebrew, `$HOME/opt`, `/opt`, custom).  CI agents may have their own
-   conventions.  The discovery chain prefers EXPLICIT (env var) over
-   IMPLICIT (`$PATH`) over CONVENTIONAL (scan common roots) — the
-   standard Unix tooling discovery pattern (cf. `JAVA_HOME` / `M2_HOME`
-   / `GOROOT`).
-
-   ## Why a `delay`
-
-   `(datomic-bin)` is invoked from within `-main`, never at ns load.
-   Wrapping the resolution in a `delay` defers the discovery work
-   (~one shell-out for `which` + a few file-existence checks) to first
-   use, AND memoizes it for the lifetime of the JVM — so a script that
-   invokes the CLI multiple times pays the discovery cost once.
-
-   ## Failure mode
-
-   On total discovery failure, prints an actionable error message naming
-   ALL FOUR strategies tried + the env var to set + the typical install
-   layout, then exits with code 4 (distinct from the 2/3 used by the
-   existing scripts' preflight + lock aborts).
-
-   Per Dan-feedback 2026-05-24 — hardcoded `/Users/dan/opt/datomic/bin/datomic`
-   in `backup_db.clj` / `restore_db.clj` / `verify_backup.clj` was flagged
-   as 'bad'.  This namespace consolidates the discovery + verification.
-
-   Per memory/libraries/datomic/backup_restore.md §12."
+   A delay defers discovery until first use and caches it for the JVM lifetime.
+   If no candidate works, print the attempted strategies and exit 4.
+   Explicit configuration makes deployment selection repeatable; discovery
+   alone does not verify the selected version's command compatibility."
   (:require [clojure.java.io    :as io]
             [clojure.java.shell :as sh]
             [clojure.string     :as str])

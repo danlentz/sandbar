@@ -1,47 +1,14 @@
 (ns sandbar.codec.json
-  "JSON codec implementation per
-   decisions/sandbar_codec_layer_owns_wire_format_concerns_consumer_native_representation_2026_05_12.md §2.4 step 4.
+  "JSON entity codec using class-aware key mapping.
 
-   Wire format: JSON object whose keys are slot-shortname strings + a
-   reserved `:dt/type` entry naming the class.
-
-   ## Wire shape
-
-     {\"_class\": \"mm/Memory\",
-      \"name\":    \"Foo\",
-      \"type\":    \"decision\",
-      \"scope\":   \"global\",
-      \"body-raw\": \"...\"}
-
-   The `_class` reserved key carries the class ident (with the leading
-   `:` stripped per JSON conventions); remaining keys are
-   frontmatter-style shortnames mapped to namespaced slot idents via
-   the same per-class alias + namespace-prefixing convention used by
-   sandbar.codec.markdown.
-
-   Class-specific knowledge is read from the metamodel at runtime:
-   - Per-class aliases via `dt/codec-aliases-of` (the `:dt/codec-aliases`
-     schema attribute on the class)
-   - Keyword-typed slot detection via `dt/range-of` on the slot ident
-
-   No hardcoded consumer-class knowledge in this namespace.  The codec
-   is wire-format-agnostic at the per-class level — adding a new
-   consumer class requires no edits to this file; the class's
-   `:dt/codec-aliases` schema declaration is read at parse / emit time.
-
-   ## Stage C scope
-
-   Minimum-viable: single-entity parse + emit.  Multi-entity sources
-   (memory + section vector) are passed through as a JSON array of
-   entity objects; the consumer handles flattening / ref-wiring.
-
-   Composes with the MCP JSON-RPC envelope (codec produces the 'result'
-   content; envelope wraps it) per codec ADR §2.4 step 4.
-
-   Layer-targeting: codec operates at the MODEL layer (`:dt/type`,
-   class-keyed slot mapping) — never at Datomic-schema attributes
-   (`:db.*`)."
+   The reserved _class field names the entity class. Other keys map to
+   namespaced model slots using class aliases and slot ranges. Keyword and
+   reference values have codec-specific conversions. Entity arrays are
+   parsed/emitted as collections; callers own persistence and reference
+   reconstruction. This representation is distinct from a JSON-RPC response
+   envelope. See doc/concepts/codec-layer.md and doc/api/codec-protocol.md."
   (:require [cheshire.core          :as json]
+            [clojure.edn            :as edn]
             [clojure.string         :as str]
             [sandbar.codec.protocol :as proto]
             [sandbar.db.datatype    :as dt]))
@@ -137,6 +104,50 @@
     (sequential? v) (mapv coerce-keyword->string v)
     :else v))
 
+(defn- edn-readable-keyword?
+  "True iff keyword K survives an EDN round trip as exactly itself: printed
+   inside a one-element vector and read back with clojure.edn, the same
+   vector returns.  A reader error, extra reader forms (whitespace, `,`,
+   brackets, a `::` spelling) and comment truncation (`;` in the name) all
+   fail — the oracle the Markdown codec and the MCP slot coercion apply."
+  [k]
+  (try (= [k] (edn/read-string (pr-str [k])))
+       (catch Exception _ false)))
+
+(defn- refuse-unreadable-keywords!
+  "Return COERCED unchanged unless it is, or contains as a member, a keyword
+   that cannot round-trip EDN; then throw an ex-info naming the wire KEY, the
+   resolved SLOT, the ORIGINAL wire value (bounded; the member for a list)
+   and the keyword's text — never the unreadable keyword itself, so the
+   diagnostic reads back as EDN and serialises as JSON.  Runs at conversion
+   time, before any caller transacts, so a refused document writes nothing."
+  [key slot original coerced]
+  (let [bounded (fn [v] (let [s (str v)] (if (> (count s) 200) (str (subs s 0 200) "…") s)))
+        refuse! (fn [k index]
+                  (let [value (if (and (some? index) (sequential? original))
+                                (nth original index nil)
+                                original)]
+                    (throw (ex-info (str "JSON codec refused key " (pr-str key)
+                                         " (slot " slot "): the value " (pr-str (bounded value))
+                                         " would become a keyword that cannot round-trip EDN ("
+                                         (pr-str (bounded (str k))) ")"
+                                         (when (some? index) (str " at index " index)))
+                                    (cond-> {:type         :codec.json/unreadable-keyword
+                                             :key          key
+                                             :slot         slot
+                                             :value        (bounded value)
+                                             :keyword-text (bounded (str k))}
+                                      (some? index) (assoc :index index))))))]
+    (cond
+      (keyword? coerced)
+      (when-not (edn-readable-keyword? coerced) (refuse! coerced nil))
+
+      (sequential? coerced)
+      (doseq [[i member] (map-indexed vector coerced)]
+        (when (and (keyword? member) (not (edn-readable-keyword? member)))
+          (refuse! member i))))
+    coerced))
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; JSON object ↔ entity-spec conversion
 
@@ -145,7 +156,9 @@
    (or `:dt/type`); maps remaining keys to slot idents via
    class-declared `:dt/codec-aliases` (runtime metamodel lookup).
    Keyword-typed slot values (detected via `dt/range-of`) are coerced
-   string → keyword."
+   string → keyword, and a value whose keyword cannot round-trip EDN is
+   refused with `:codec.json/unreadable-keyword` before any caller
+   transacts — a document is parsed whole or not at all."
   [json-obj]
   (let [class-name (or (get json-obj "_class")
                        (get json-obj "_dt/type")
@@ -160,18 +173,15 @@
           acc
           (let [slot (wire-key->slot class-ident k)
                 v'   (if (wire-coerced-as-keyword? slot)
-                       (coerce-string->keyword v)
+                       (refuse-unreadable-keywords! k slot v (coerce-string->keyword v))
                        v)]
             (assoc acc slot v'))))
       {:dt/type class-ident}
       json-obj)))
 
 (defn- internal-key?
-  "True if a key is in a Datomic-internal or entity-locator namespace
-   that should NOT leak into wire format.  Excludes `:db/*` /
-   `:db.*` / `:mm.memory/rel-path`.  Phase U Stage U-2 UR-6 + UR-7
-   fix per
-   observations/sandbar_codec_emit_leaks_db_internal_attrs_wire_format_2026_05_14.md."
+  "True for an internal database or entity-location key excluded from
+   JSON entity emission, including :db/*, :db.* and :mm.memory/rel-path."
   [k]
   (and (keyword? k)
        (or (= :mm.memory/rel-path k)

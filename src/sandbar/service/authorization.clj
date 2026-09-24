@@ -1,42 +1,15 @@
 (ns sandbar.service.authorization
-  "The REST `/api` scope gate — the same principal decision the MCP dispatch
-   gate applies, run as a Pedestal interceptor before any handler.
+  "Authorize protected REST requests using the same principal-scope
+   decision as MCP: authz/principal->scope and authz/family-scope-decision.
 
-   Before this gate the protected REST stack required only AUTHENTICATION
-   (`auth/require-authentication`): any active account, including one carrying
-   the read-only role or no role at all, could create events, jobs, workflow
-   processes and transitions over HTTP while the same credential was refused
-   the same mutations over MCP (contract CT-01 of the 0.2.0 review fleet,
-   reliability sprint D4b, 2026-09-19).  The two transports authenticate
-   against one account store, so they must authorize against one decision:
-   `authz/family-scope-decision`, fed by `authz/principal->scope`.
+   Auth session self-service routes are :exempt and retain their own handler
+   checks; GET is :read; other HTTP methods are :mutating. A denial returns
+   HTTP 403 with :reason, :method, and :role, encoded using the negotiated
+   content type. It logs the refusal without creating an event entity.
 
-   Classification of an HTTP request into a scope family:
-
-   - `:exempt`   — the session self-service routes under `/api/auth/*`
-                   (logout, password change, session listing and invalidation,
-                   the latter two already permission-gated in their handlers).
-                   A session must be able to end itself whatever its scope,
-                   mirroring the MCP lifecycle exemption for `initialize`.
-   - `:read`     — every GET.  The route table has no mutating GET.
-   - `:mutating` — every other method (POST / DELETE / PUT / PATCH).
-
-   A deny short-circuits with HTTP 403 and a data body whose keys mirror the
-   MCP deny envelope (`:reason`, `:method`, `:role`) so a client sees the same
-   vocabulary on both transports; the negotiated encoder (`content/data-body`)
-   renders it as EDN or JSON per the Accept header.  The deny is a log line,
-   not an event row (Dan's retention ruling of 2026-09-19).
-
-   On allow the gate also BINDS the principal for everything downstream: it
-   puts `sandbar.security.visibility/*principal*` into the context's
-   `:bindings` map, which Pedestal's chain establishes around every later
-   interceptor and handler, so every projection on the REST plane runs under
-   the one visibility decision whether or not the handler remembers to bind
-   it (D4b-R1, Astra's 2026-09-19 19:51Z finding: the property route described
-   any ident under the unrestricted nil-principal convention).
-
-   Requires `sandbar.mcp.authz` (the pure decision core) and nothing of the
-   verb catalog; it is a thin transport adapter, like the dispatch gate."
+   Allowed requests bind sandbar.security.visibility/*principal* through
+   Pedestal's downstream interceptor context, so projections share the same
+   visibility decision even when individual handlers do not bind it."
   (:require [clojure.string          :as str]
             [clojure.tools.logging   :as log]
             [io.pedestal.interceptor :as interceptor]

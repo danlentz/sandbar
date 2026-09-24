@@ -1,48 +1,13 @@
 (ns sandbar.workflow.session
-  "Session-orientation workflow transition guards + effects (ι.2 substrate).
+  "Session workflow guards and effect planners referenced by
+   schema/workflow-session.edn. They are ordinary classpath functions invoked
+   with [process context], not transactor functions with a [db ...] signature.
+   Guards return permission; effect planners can return transaction data.
 
-   Companion to `schema/workflow-session.edn`.  Implements the 4 new transition
-   guards/effects added by ι.2 per Q.ι.6 (states :session/paused + :session/failed)
-   + Q.ι.13 (transitions as first-class :mm/Fn entities).
-
-   ## Why plain `defn` instead of `defdbfn`?
-
-   The existing sandbar.workflow runtime invokes guards/effects with signature
-   `(fn [process context] -> boolean|nil)` — application-space Clojure fns whose
-   value is consumed by sandbar.util.workflow/transition!  (line ~285+, the
-   guard-evaluation code path).  `defdbfn` emits a Datomic `:db/fn` schema entity
-   whose body MUST be transactor-shaped `(fn [db ...] -> tx-data)` — wrong shape
-   for workflow guards/effects.
-
-   Q.ι.13 ratified \"transition guards + effects ARE first-class :mm/Fn entities.\"
-   These plain `defn`s satisfy Q.ι.13 via post-commit `:mm/Fn` memorial authoring
-   (the closure observation memorial captures the fns as `:mm/Fn` instances with
-   `:dt.fn/source-ns \"sandbar.workflow.session\"` + `:dt.fn/source-var <name>`).
-   Future arc may extend `defdbfn` with `:dt.fn/installed-as :clojure-fn-only`
-   flag to suppress `:db/fn` emission + auto-author `:mm/Fn` memorials — but
-   that's substrate-extension out-of-scope for ι.2.
-
-   ## Composition
-
-   - sandbar.util.workflow runtime invokes these via `(resolve symbol)` →
-     `(apply f [process context])` (the symbol is stored in `:workflow/guard`
-     or `:workflow/on-transition` slot per workflow.edn's `:db.type/symbol`
-     range).
-   - Effect functions LOG via clojure.tools.logging (the metrics-vocabulary
-     event-firing per Q.ι.12 + Keystone Event Substrate ADR is deferred to a
-     follow-on commit — requires authoring `:mm.event/Session-*` event classes
-     first, which is substrate-extension).
-   - State-change tx-data is RETURNED by effects (sandbar.util.workflow runtime
-     applies the tx-data alongside the standard state-transition CAS).
-
-   ## See also
-
-   - `:memory.decisions/iota_eta_q_checkpoint_wave_one_ratification_session_workflow_substrate_design_fs_audit_scope_finalized_2026_05_25`
-     — the ratification ADR this code implements
-   - `:memory.libraries.synthesis/stateful_workflow_substrate_design_foundations_…_kappa_sub_arc_2026_05_25`
-     — κ pattern catalog (P6 maintenance-mode + P7 verb-family + P8 hard-fail)
-   - `schema/workflow-session.edn` — the workflow definition this namespace's
-     fns are referenced from"
+   The workflow runtime applies returned data with the state update, but its
+   current transition path does not compare-and-set state and records history
+   separately. Logging and external actions do not become atomic because a
+   function is named in a workflow definition."
   (:require [clojure.tools.logging :as log]
             [datomic.api :as d]
             [sandbar.db.datomic :as db]))
@@ -106,7 +71,7 @@
    deferred to a follow-on commit; for ι.2, log-only.
 
    Returns tx-data vector for the workflow runtime to merge with the standard
-   state-transition CAS."
+   state-update transaction; this is not a compare-and-set operation."
   [process context]
   (let [from-state-keyword (:workflow/state-name (:workflow/current-state process))
         reason (:reason context)]

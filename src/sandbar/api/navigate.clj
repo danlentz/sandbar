@@ -1,22 +1,11 @@
 (ns sandbar.api.navigate
-  "REST API for the navigation surface — path-grammar walker.
+  "REST adapter for sandbar.navigate.path/path-via.
 
-  Stage P-6 of comprehensive memory-model MCP arc per
-  plans/sandbar_fulltext_search_substrate_arc_2026_05_13.md.  Thin
-  HTTP-layer wrapper around sandbar.navigate.path/path-via.
+  GET /api/navigate/path?from=:dt/Property&via=<EDN>[&limit=20&include=paths]
 
-  Substrate-quality discipline preserved per
-  interaction/target_sandbar_introspection_api_layer_not_raw_datomic_2026_05_12.md:
-  routes through the consumer-facing path namespace, never raw dt/*
-  primitives or datomic.api.
-
-  ## Endpoints
-
-    GET /api/navigate/path?from=:dt/Property&via=<EDN>[&limit=20&include=paths]
-
-  Query params arrive URL-decoded as strings.  `:from` is coerced to a
-  keyword; `:via` is parsed as EDN at the consumer layer; `:include`
-  is split on commas."
+  Parameters arrive URL-decoded as strings. from becomes a keyword, via is
+  parsed as EDN by the path layer, and include is comma-separated. Operator
+  support and path-witness behavior follow the shared path implementation."
   (:require [clojure.string :as str]
             [sandbar.navigate.path     :as nav-path]
             [sandbar.navigate.siblings :as nav-siblings]
@@ -80,9 +69,7 @@
 
    Response:
      {:reachable [...] :total <int> :returned <int>}
-     With :include=paths: also :path-data-deferred true
-
-   Per fulltext arc Stage P-6."
+     With :include=paths: also :path-data-deferred true"
   [_ _ params]
   (let [from-ident (str->keyword (:from params))
         via-str    (:via params)
@@ -117,9 +104,7 @@
      ?limit=20                            - Max returned siblings (default 0 = no cap)
 
    Response:
-     {:siblings [...] :total <int> :returned <int>}
-
-   Per fulltext arc Stage 22."
+     {:siblings [...] :total <int> :returned <int>}"
   [_ _ params]
   (let [entity-ident (str->keyword (:entity params))
         path-slot    (str->keyword (:path-slot params))

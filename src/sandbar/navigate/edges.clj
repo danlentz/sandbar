@@ -1,22 +1,12 @@
 (ns sandbar.navigate.edges
-  "Sandbar Navigation — Edges Subsurface (Stage 16 of comprehensive
-  memory-model MCP arc per
-  plans/sandbar_fulltext_search_substrate_arc_2026_05_13.md).
+  "Typed inbound and outbound edge views over the model's reference properties.
 
-  Consumer-facing wrappers around the dt/* inbound/outbound edge
-  primitives.  Two public verbs:
-
-    inbound-edges   — typed-edges pointing AT the subject
-                      (who cites this entity?)
-    outbound-edges  — typed-edges originating FROM the subject
-                      (what does this entity reference?)
-
-  Edge = a `(predicate-attribute, entity)` pair where the
-  predicate-attribute is a `:db.type/ref`-typed slot.  Substrate-quality
-  preserved per
-  interaction/target_sandbar_introspection_api_layer_not_raw_datomic_2026_05_12.md:
-  wrappers route through `sandbar.db.datatype/*-edges-of` primitives,
-  never raw `datomic.api`."
+  inbound-edges answers who refers to an anchor; outbound-edges answers what
+  the anchor refers to. Each edge retains its qualified property and source
+  or target. Eids support anchors and members without idents. The wrappers
+  compose predicate resolution, type filtering, projection and limits over
+  the shared dt/* primitives, with distinct entity counts kept separate from
+  edge counts."
   (:require [sandbar.api.projection :as projection]
             [sandbar.db.datatype :as dt]
             [sandbar.db.datomic :as db]))
@@ -95,27 +85,17 @@
                 :available-slots []})))))
 
 (defn resolve-predicates
-  "Resolve a predicate spec (single keyword OR collection) to a vec of
-  slot-idents suitable for dt/*-edges-of comparison.  Namespaced
-  keywords pass through unchanged.  Bare keywords (no namespace)
-  resolve by `direction`:
+  "Resolve one predicate keyword or a collection into qualified slot idents.
+  Qualified names pass through. Outbound bare names resolve against the
+  anchor's class; a classless anchor uses every reference property with that
+  local name. Inbound names resolve against owner-class when supplied,
+  otherwise schema-wide. An unmatched name is refused. Multiple matches on
+  a supplied class are ambiguous and refused; schema-wide resolution returns
+  the union so qualified edge roles remain visible.
 
-    :outbound — against the anchor's class slots (the anchor owns an
-                outbound slot); one match is used, none or several
-                are refused with a hint.  An anchor without a class
-                (an identless value carrier) resolves schema-wide.
-    :inbound  — against `owner-class` (the caller's source-type) when
-                given, else schema-wide: every ref-typed property with
-                that local name, so each edge reports the qualified
-                predicate it was found through.  None is refused.
-
-  The two-arity form keeps the outbound rule for callers that predate
-  the direction (the library-card's per-axis resolution).  Returns nil
-  when `predicate` is nil (preserves dt/*'s no-filter semantic).
-
-  Per inbox capture
-  memory/inbox/2026-05-22_mcp_cutover_exercise_substrate_verb_authoring_queue_10_gaps_surfaced_via_orientation_of_sandbar_as_mcp_server_arc.md
-  (Gap 7) and D7b, RT-14 item 4 (2026-09-20)."
+  The two-argument arity uses outbound semantics. Nil predicate returns nil,
+  preserving the unfiltered-edge contract. For membership use qualified
+  :mm.memory/tags and :mm.memory/themes explicitly."
   ([entity-ident predicate]
    (resolve-predicates entity-ident predicate :outbound nil))
   ([entity-ident predicate direction]
@@ -167,9 +147,8 @@
   Optional opts:
     :predicate    — keyword OR collection of keywords; restricts results
                     to edges whose attribute-ident is in the set.  Bare
-                    keywords (no namespace) auto-resolve to slot-idents
-                    on the entity's class — `:cites` becomes
-                    `:mm.memory/cites` when the entity is an :mm/Memory
+                    keywords resolve against `:source-type` when given,
+                    otherwise against ref attributes across the schema
     :source-type  — class ident; restricts results to edges whose source
                     is an instance-of the class
     :limit        — max edges to return (default 0 = no cap)
@@ -185,11 +164,11 @@
      :limit          <int>
      :truncated?     <bool>}
 
-  Bare predicates resolve against `:source-type` when given, else
-  schema-wide (see `resolve-predicates`): pass `:mm.memory/tags` /
-  `:mm.memory/themes` qualified for membership.  Per fulltext arc Stage
-  16; `:projection` opt per Gap 3 of MCP cutover exercise 2026-05-22;
-  the totals and the inbound resolution rule per D7b (2026-09-20)."
+  Pass qualified predicates such as `:mm.memory/tags` and
+  `:mm.memory/themes` when the role matters. One source may contribute
+  several edges, so `:distinct-total` can be smaller than `:total`.
+  Policy-blocked entries have :blocked and :reason but omit :source;
+  they count as edges, not distinct source identities."
   [{:keys [entity predicate source-type limit projection]
     :or   {limit      0
            projection :metadata-only}}]
@@ -226,7 +205,8 @@
     :predicate    — keyword OR collection of keywords; restricts results
                     to edges whose attribute-ident is in the set.  Bare
                     keywords (no namespace) auto-resolve to slot-idents
-                    on the entity's class
+                    on the entity's class, or across the schema when
+                    the anchor has no class
     :target-type  — class ident; restricts results to edges whose target
                     is an instance-of the class
     :limit        — max edges to return (default 0 = no cap)
@@ -242,8 +222,10 @@
      :limit          <int>
      :truncated?     <bool>}
 
-  Per fulltext arc Stage 16; `:projection` opt per Gap 3 of MCP cutover
-  exercise 2026-05-22; the totals per D7b (2026-09-20)."
+  One target may be reached through several predicates, so
+  `:distinct-total` can be smaller than `:total`. Policy-blocked entries
+  have :blocked and :reason but omit :target; they count as edges,
+  not distinct target identities."
   [{:keys [entity predicate target-type limit projection]
     :or   {limit      0
            projection :metadata-only}}]

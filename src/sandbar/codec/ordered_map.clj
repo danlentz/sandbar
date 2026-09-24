@@ -1,43 +1,9 @@
 (ns sandbar.codec.ordered-map
-  "Insertion-ordered map abstraction for codec wire-format fidelity.
-
-   The sandbar codec layer needs a map type whose iteration order matches
-   INSERTION ORDER so source frontmatter key-ordering round-trips through
-   parse + emit per
-   `decisions/markdown_as_canonical_sandbar_export_format_2026_05_12.md`
-   M.3.  Clojure's `array-map` promotes to PHM at 16+ entries (losing
-   order); `sorted-map` requires a key comparator (wrong shape — we want
-   insertion order, not sorted-by-key).
-
-   ## Current backend (2026-05-20)
-
-   Backed by `java.util.LinkedHashMap` — Java stdlib insertion-ordered
-   Map.  Encapsulated behind this namespace's API; consumers don't see
-   the Java backing.
-
-   ## Future backend swap
-
-   Per Dan-directive 2026-05-20 (captured at
-   `~/claude/memory/ideas/ordered_collections_insertion_ordered_map_addition_2026_05_20.md`):
-   when dco-dev/ordered-collections ships an `insertion-ordered-map`
-   type, swap the backend HERE — consumers don't need to change.
-
-   ## API surface
-
-     create        — empty ordered-map
-     put!          — add (mutating; returns the same map)
-     pairs         — ordered seq of [k v] pairs
-     keys-vec      — ordered vec of keys
-     ->clojure-map — convert to Clojure hash-map (drops order; for API boundary)
-     from-pairs    — build from a seq of [k v] pairs (preserving the seq's order)
-     ordered-map?  — predicate
-
-   ## Layering discipline
-
-   This namespace is the SINGLE POINT where the codec touches the
-   ordered-map backend.  All other codec code calls these helpers — never
-   `java.util.LinkedHashMap` directly.  This is the modularization that
-   makes the future backend swap a single-namespace edit.")
+  "Insertion-ordered maps for frontmatter key-order fidelity.
+   A java.util.LinkedHashMap is encapsulated behind create, put!, pairs,
+   keys-vec, from-pairs and ordered-map?. ->clojure-map deliberately drops
+   the ordering guarantee. Centralizing the representation lets codecs
+   preserve insertion order without depending on one backing map type.")
 
 (defn create
   "Create an empty insertion-ordered map."

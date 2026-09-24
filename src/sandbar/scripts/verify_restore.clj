@@ -1,55 +1,22 @@
 (ns sandbar.scripts.verify-restore
-  "Gate 2 verification — restore a Datomic backup into an ISOLATED
-   second :dev transactor + storage; query cardinality from a peer
-   connection; tear down.  The LIVE transactor + storage are UNTOUCHED
-   throughout (different ports + different data-dir).
+  "Deployment-specific native-backup restore rehearsal.
+   Usage: lein verify-restore [<backup-dir>]
 
-   This is the test that lifts the no-reset-db forbidden discipline
-   per `authorizations/db_preservation_during_cutover_no_reset_db_-
-   without_recovery_tested_dan_directive_2026_05_23.md` — by
-   DEMONSTRATING that we can recover from a backup.
+   Start a temporary :dev transactor on ports 4344 and 4345, restore a
+   database named sandbar, and compare class cardinalities with the database
+   on port 4334 as of the restored basis t. The helper also has installation
+   paths and version assumptions in its executable configuration. Inspect
+   and adapt those assumptions for a new deployment; this is not a portable
+   fresh-install recipe.
 
-   ## Approach (per the 7-step destructive-ops analysis 2026-05-24)
+   Preflight rejects occupied rehearsal ports. Cleanup stops the child
+   transactor and removes its temporary storage. The report and sidecar record
+   the comparison and failures; equal counts are useful recovery evidence,
+   not a complete comparison of content and references.
 
-   Stand up an isolated second :dev transactor at port 4344 (peer) +
-   4345 (h2) with H2 storage in `/tmp/sandbar-verify-restore-<TS>/`;
-   restore the baseline backup into it (Datomic restore-db invariant:
-   target DB name must match source name, so SAME NAME 'sandbar' on
-   the DIFFERENT TRANSACTOR); connect peer; run cardinality queries;
-   compare to expected counts; tear down second transactor + temp
-   storage.
-
-   The live transactor at port 4334 (peer) + 4335 (h2) is never
-   touched.  Target URI is HARDCODED to port 4344 — refuse to target
-   anywhere else.
-
-   ## Failure modes + recovery (3a-3f per the 7-step analysis)
-
-   - 3a: second transactor fails to start  → live DB untouched; tear down
-   - 3b: restore-db fails                  → live DB untouched; tear down
-   - 3c: peer connection times out         → live DB untouched; tear down
-   - 3d: cardinality returns 0 or wrong    → CRITICAL; do NOT lift no-reset-db
-   - 3e: teardown leaks                    → kill -9; rm -rf
-   - 3f: script targets live transactor    → IMPOSSIBLE (port 4344 hardcoded)
-
-   ## Usage
-
-       lein verify-restore [<backup-dir>]
-
-   `<backup-dir>` defaults to the latest backup under <backup-root>/.
-
-   ## Exit codes
-
-   - 0 — success; cardinality matches expectations; Gate 2 PASSED
-   - 2 — preflight failure (backup-dir invalid; port busy; etc.)
-   - 3 — transactor failed to start
-   - 4 — restore-db failed
-   - 5 — peer connection failed
-   - 6 — cardinality check failed (THE one that doesn't lift no-reset-db)
-   - 7 — teardown leaked
-
-   Per memory/interaction/think_destructive_ops_end_to_end_including_-
-   failure_modes_before_execute_2026_05_23.md (the amended discipline)."
+   Pass the exact backup directory and use the stopped-writer maintenance
+   procedure in doc/operations.md. A successful rehearsal does not itself
+   authorize deleting or replacing the original database."
   (:require [clojure.edn                 :as edn]
             [clojure.java.io             :as io]
             [clojure.java.shell          :as sh]

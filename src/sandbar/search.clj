@@ -1,22 +1,18 @@
 (ns sandbar.search
-  "Sandbar Search Namespace — Phase S of comprehensive memory-model MCP arc
+  "Search over typed entity populations.
 
-  Consumer-facing wrappers around the dt/* fulltext primitives.  Composes
-  per-field BM25 results into BM25F multi-field weighted scoring, projects
-  results into the canonical result-shape (`:hits` / `:total` / `:returned`
-  / `:timing` / optional `:snippets` / `:facets` / `:field-scores`), and
-  handles result-set concerns (limit, sort-order, timing).
+  search-attribute wraps Datomic's native single-attribute fulltext index.
+  search-bm25f uses Sandbar's analyzer and canonical BM25F kernel: normalized
+  weighted field frequencies are combined before term-frequency saturation.
+  They are separate scoring and execution paths.
 
-  Three layers in this namespace as scoped stages land:
-  - search-attribute  (Stage 3 — LANDED) — single-field BM25 search
-  - search-bm25f      (Stage 4c — LANDED) — multi-field weighted BM25F
-  - search-with-snippets / -facets       (Stages 6-7)
+  Results use :hits, :total, :returned and :timing, with requested enrichment
+  such as snippets, facets and field-score diagnostics. Class declarations
+  select weighted fields and optional status/recency ordering. Structural
+  filtering and graph restrictions compose with lexical relevance.
 
-  Higher-level concerns (path-grammar + aggregation + orientation) live
-  in sibling namespaces sandbar.{navigate,aggregate,orient}.
-
-  Per fulltext arc plan §1.1, §1.6, §6.5 of
-  plans/sandbar_fulltext_search_substrate_arc_2026_05_13.md."
+  See doc/concepts/fulltext-search.md for the formula, cache boundary and
+  current option-composition limits."
   (:require [clojure.set]
             [clojure.tools.logging   :as log]
             [sandbar.api.projection  :as projection]
@@ -24,6 +20,7 @@
             [sandbar.db.datomic      :as db]
             [sandbar.db.rules        :refer [all-rules]]
             [sandbar.security.query  :as secq]
+            [sandbar.security.visibility :as visibility]
             [datomic.api             :as d]
             [sandbar.search.analysis :as analysis]
             [sandbar.search.bm25f    :as bm25f]
@@ -34,17 +31,13 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (defn- hit-map
-  "Project an [eid score] tuple into the canonical hit-map shape.
-
-  Resolves the entity via dt/* substrate, then applies `projection-mode`
-  (`:full` / `:metadata-only`) via `sandbar.api.projection/apply-projection`.
-  When `projection-mode` is nil, apply-projection defaults to `:full`
-  (legacy substrate-fn contract; MCP handlers explicitly opt to
-  :metadata-only at the MCP boundary).  Per
-  interaction/target_sandbar_introspection_api_layer_not_raw_datomic_2026_05_12.md
-  + B.3 of substrate-stab arc (:projection opt on bulky-response verbs)."
-  [[eid score] projection-mode]
-  {:entity (projection/apply-projection (db/entity eid) projection-mode)
+  "Project an [eid score] pair into {:entity entity :score score}.
+  Nil projection selects the in-process full-entity default. MCP callers
+  select their own default projection at the transport boundary."
+  [[eid score] projection-mode authority-db]
+  {:entity (projection/apply-projection
+             (if authority-db (d/entity authority-db eid) (db/entity eid))
+             projection-mode)
    :score  score})
 
 (defn- now-ms []
@@ -59,35 +52,17 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (defn search-attribute
-  "Single-field fulltext search over a `:db/fulltext true` attribute.
+  "Search one :db/fulltext-enabled attribute through Datomic's native index.
+  Returns :hits ordered by Datomic/Lucene relevance score, :total before the
+  limit, :returned after the limit, and :timing {:total-ms n}.
 
-  Wraps `dt/search-fulltext` with result-shape projection, limit handling,
-  and timing.  Returns a map with `:hits` (ranked descending by Lucene's
-  BM25 single-field score), `:total` (total hits before limit), `:returned`
-  (count after limit), and `:timing`.
-
-  Required opts:
-    :attribute   — slot/property ident with :db/fulltext true
-    :query       — Lucene query string (phrase, boolean, wildcard, etc.)
-
-  Optional opts:
-    :limit       — max hits to return (default 50; 0 = no limit)
-    :projection  — :metadata-only (default) or :full; controls per-hit
-                   :entity shape.  B.3 of substrate-stab arc — exploration
-                   verbs default to :metadata-only at substrate boundary
-                   for payload safety (10-300x reduction).  Consumers opt
-                   to :full when slot bodies needed.
-
-  Returns:
-    {:hits     [{:entity <entity-map> :score <double>} ...]
-     :total    <integer>
-     :returned <integer>
-     :timing   {:total-ms <int>}}
-
-  Throws (via precondition) if attribute is not `:db/fulltext true`.
-
-  Per fulltext arc Stage 3 of
-  plans/sandbar_fulltext_search_substrate_arc_2026_05_13.md."
+  Required options are :attribute (keyword) and :query (native query string).
+  :limit defaults to 50; zero means no cap. :projection accepts :full or
+  :metadata-only; nil uses the in-process full default. Each hit contains
+  :entity and :score. A precondition rejects an unindexed attribute.
+  A bound read principal removes unreadable hits before sorting, counts and
+  limiting; projected entities use the same current database value as that
+  decision. These scores are not Sandbar's multi-field BM25F scores."
   [{:keys [attribute query limit projection]
     :or   {limit 50}}]
   {:pre [(keyword? attribute)
@@ -98,10 +73,18 @@
          (dt/fulltext-indexed? attribute)]}
   (let [t-start    (now-ms)
         raw-hits   (dt/search-fulltext attribute query)
-        sorted     (sort-by (fn [[_ score]] (- score)) raw-hits)
+        principal  visibility/*principal*
+        authority-db (when principal (db/db))
+        readable   (if principal
+                     (filter (fn [[eid _]]
+                               (visibility/entity-visible-to?
+                                 authority-db principal (d/entity authority-db eid)))
+                             raw-hits)
+                     raw-hits)
+        sorted     (sort-by (fn [[_ score]] (- score)) readable)
         total      (count sorted)
         limited    (if (zero? limit) sorted (take limit sorted))
-        hits       (mapv #(hit-map % projection) limited)
+        hits       (mapv #(hit-map % projection authority-db) limited)
         t-end      (now-ms)]
     {:hits     hits
      :total    total
@@ -151,7 +134,7 @@
   "True if `where-clauses` is a vector-of-clause-vectors —
    `[[?e :slot value] [?e :other-slot ?bound] ...]`.
 
-   Phase U Stage U-9 (UR-9) input-shape guard: `where-matching-eids`
+   Input-shape guard: `where-matching-eids`
    was failing with opaque Datalog stack traces when given malformed
    shapes (e.g., a flat single clause `[?e :slot value]` instead of
    `[[?e :slot value]]`).  This predicate codifies the accepted
@@ -185,7 +168,7 @@
   `?e` to be a direct instance of `class`.  Uses `instance-of`
   recursive rule for subclass coverage.
 
-  Phase U Stage U-9 (UR-9): the boundary `:pre` replaces an opaque
+  The boundary `:pre` replaces an opaque
   deep-Datalog failure with a structured AssertionError carrying
   the malformed-input shape."
   [class where-clauses]
@@ -314,7 +297,7 @@
 
   NOTE: per-slot scores do NOT sum to the total `score` because BM25F's
   cross-field length-normalized-TF accumulates BEFORE saturation
-  (Robertson & Zaragoza 2009 §3.4).  Per-slot scores are a debugging
+  (Robertson & Zaragoza 2009 §3.6).  Per-slot scores are a debugging
   surface for relative-contribution intuition, not an additive
   decomposition."
   [query-tokens analyzed-entity stats field-weights]
@@ -326,10 +309,9 @@
 ;; BM25F analyzed-entry + corpus-stats cache (Stage 5 D5 resolution)
 ;;
 ;; Per-class, per-entity cache of analyzed entries + the derived corpus
-;; stats.  Re-tokenizing 1500+ entities per query costs ~5.7s (per the
-;; corpus parity probe at
-;; observations/sandbar_bm25f_parity_probe_5_divergences_2026_05_22.md).
-;; Cache hit drops latency to <100ms (score loop dominates).
+;; stats. Cache misses analyze the population; warm queries reuse analyzed
+;; fields and statistics, leaving scoring and requested enrichment to the call.
+;; Cost depends on population, query and cache state; no latency bound is implied.
 ;;
 ;; Invalidation strategy: per-entity, hook-driven.  basis-t advances on
 ;; EVERY MCP request (audit log + token-last-used + session bookkeeping
@@ -507,7 +489,7 @@
      bm25f/analyze-entity call (~4ms; the analysis depends only on the
      weights map, not on the class ident).  A class whose cache is not
      built is left alone: it will be warmed in full on its first query.
-   - Transitive (Phase B tag-content tokenizer support): For every
+   - Referenced-field invalidation: For every
      dependent class whose bm25f-weights reference this entity's class
      via a ref-slot, finds entries that reference this entity's eid and
      re-tokenizes them in place (since their analyzed-text included
@@ -750,8 +732,8 @@
 ;; +superseded-demotion-factor+, so a superseded twin of comparable
 ;; relevance yields to its current successor while a superseded record
 ;; that is far more relevant than any current hit still surfaces first (a
-;; historical question keeps its answer; the demotion is proportional,
-;; never an absolute bucket — Astra's caution, 2026-09-19 17:28Z).  Among
+;; historical question can keep its answer; the demotion is proportional,
+;; rather than an absolute status bucket). Among
 ;; equal weights the more recent hit comes first; status is evidence about
 ;; currency, recency alone confers no authority.
 ;;
@@ -763,9 +745,8 @@
 ;; :score is the raw relevance, unchanged.  The policy is applied before
 ;; :limit truncates, so a successor outside the relevance top-k can still
 ;; enter the result.  :rank-by :relevance opts out; the structural modes
-;; are untouched.  Proof instrument: the corpus's quality harness
-;; (supersession accuracy: three of seven canonical memorials outranked
-;; their superseded twins before), with recall, MRR and NDCG held.
+;; are untouched. Evaluate current-successor and historical questions together,
+;; measuring recall and ranking quality as well as successor selection.
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (def ^:const +superseded-demotion-factor+
@@ -848,7 +829,7 @@
   `sandbar.search.bm25f`, and projects results into the canonical
   `{:hits :total :returned :timing}` shape.
 
-  ## Query language contract (narrow scope; F-SF-1 fix, Phase R Stage R-5)
+  ## Query language contract
 
   `:query` is a bag-of-words string.  It is tokenized via
   `sandbar.search.analysis` (Porter stemmer + lowercase + word-boundary
@@ -862,7 +843,7 @@
   For Lucene-query-syntax support, use `search-attribute` instead — it
   hits Datomic's `:db.fn/fulltext-search` over a single :db/fulltext-
   indexed slot.  The BM25F surface deliberately stays narrow so
-  multi-field length-normalized scoring (Robertson & Zaragoza 2009 §3.4)
+  multi-field length-normalized scoring (Robertson & Zaragoza 2009 §3.6)
   is the only concern.
 
   Required opts:
@@ -875,12 +856,12 @@
     :field-weights — `{slot-ident weight-double}` map overriding the
                      class's declared `:dt/bm25f-weights`
     :limit         — max hits to return (default 20; 0 = no cap)
-    :where         — vec of Datalog clauses (Stage 5) restricting hits to
+    :where         — vec of Datalog clauses restricting hits to
                      entities matching the predicate.  Clauses must
                      reference `?e` as the entity variable.  Composes
                      fulltext relevance with structural filtering.
                      Example: `[[?e :mm.memory/memory-type :decision]]`
-    :facet-by      — vec of slot-idents (Stage 7) to facet over.  Adds
+    :facet-by      — vec of slot-idents to facet over.  Adds
                      `:facets {slot-ident {value count}}` to result.
                      Counts computed over the FULL match-set (before
                      limit), so consumers see corpus-wide distribution.
@@ -913,14 +894,14 @@
   if no `:dt/bm25f-weights` declared on the class AND no `:field-weights`
   supplied (substrate has no default weights per substrate-quality rule).
 
-  Stage 29 cross-axis composition (Phase B):
+  Composition with navigation and ranking:
     :from + :via   — graph-walk pre-filter; restricts candidate set to
                      entities REACHABLE from `:from` under path-grammar
                      expression `:via`.  Reuses `sandbar.navigate.path/
                      path-via` for the walk.  Composes with `:where` —
                      both filters apply (intersection).
     :rank-by       — :degree / :backlink-density / :recency / :freshness
-                     — re-rank top-K hits by structural axis instead of
+                     — order all positive matches by structural axis instead of
                      by BM25F score.  BM25F score is preserved on each
                      hit as `:relevance-score`; the primary `:score`
                      becomes the structural rank value.
@@ -938,8 +919,7 @@
   declared every hit carries `:recency` (epoch ms).  The policy applies
   before `:limit`.  A class declaring neither keeps pure relevance order.
 
-  Per fulltext arc Stage 4c + Stage 29 of
-  plans/sandbar_fulltext_search_substrate_arc_2026_05_13.md."
+  See doc/concepts/fulltext-search.md for supported combinations."
   [{:keys [query class field-weights limit where facet-by include
            from via rank-by temporal-slot projection]
     :or   {limit 20 include []}}]
@@ -964,9 +944,9 @@
                                           {:class         class
                                            :field-weights field-weights})))
         q-tokens        (analysis/tokenize query)
-        ;; Stage 5 D5 — cached per (class, basis-t); see analyzed-corpus-for
-        ;; above.  Cache miss on first-after-tx: full ~5.7s corpus rebuild.
-        ;; Cache hit (overwhelmingly common): <100ms; score loop dominates.
+        ;; Cached analyzed entries and statistics are maintained per class.
+        ;; A miss builds the population; entity-change hooks refresh affected
+        ;; entries. Unrelated database transactions do not force a rebuild.
         [analyzed-corpus stats] (analyzed-corpus-for class)
         ;; Stage 5: structured composition via :where Datalog clauses.
         ;; Filter scoring-set to entities matching the predicate before
@@ -999,7 +979,24 @@
         effective-eids  (if candidate-eids
                           (clojure.set/intersection class-eids candidate-eids)
                           class-eids)
-        scoring-corpus  (filter #(contains? effective-eids (:eid %)) analyzed-corpus)
+        ;; Authorize whole hits before scores, snippets, facets or limits are
+        ;; computed. Scrubbing only :entity leaves sibling :eid/:snippets and
+        ;; match counts exposed. Read authority from the current store value,
+        ;; never a cached analyzed entity whose visibility may have changed.
+        authority-db    (db/db)
+        principal       visibility/*principal*
+        scoring-corpus  (keep (fn [ae]
+                               (when (contains? effective-eids (:eid ae))
+                                 (if (nil? principal)
+                                   ae
+                                   (let [current (d/entity authority-db (:eid ae))]
+                                     (when (visibility/entity-visible-to?
+                                             authority-db principal current)
+                                       ;; Keep cached scoring analysis, but never
+                                       ;; project a now-public hit's older private
+                                       ;; payload or facets from the cached entity.
+                                       (assoc ae :entity current))))))
+                             analyzed-corpus)
         scored          (for [ae    scoring-corpus
                               :let  [s (bm25f/score q-tokens ae stats weights)]
                               :when (pos? s)]
@@ -1155,10 +1152,10 @@
 (defn- search-bm25f-multi
   "Multi-class BM25F search — the D7 strategic-subgroup fan-out.
 
-  Queries each class in `classes` via `search-bm25f-single` with its OWN
+  Queries each class in `classes` via `search-bm25f-single` with its own
   declared `:dt/bm25f-weights` and `:limit 0` (no per-class cap — the cap
   applies AFTER the merge), then merges the per-class hit lists, sorts by
-  raw score descending, and applies `:limit` post-merge.
+  the selected ordering policy, and applies `:limit` post-merge.
 
   Compositions:
    - `:where`     applies per-class (same `?e` contract; each class's
@@ -1225,24 +1222,37 @@
       (seq facet-by) (assoc :facets (facet-counts sorted facet-by)))))
 
 (defn search-bm25f
-  "Multi-field BM25F search over Datomic-stored entities of `:class`.
+  "Search typed entities with Sandbar's analyzer and canonical BM25F kernel.
+  Required :query is a bag of words, not a Lucene query expression. :class
+  is one keyword or a vector of two to eight class keywords. Class declarations
+  supply field weights and each class population supplies its own statistics.
 
-  `:class` accepts EITHER a single class-ident keyword (single-class
-  scope — unchanged from HEAD) OR a vec of 2..8 class-ident keywords
-  (multi-class strategic-subgroup scope — D7).  For the single form this
-  delegates byte-identically to the substrate-correct single-class
-  pipeline; for the vec form it fans out per-class (each with its own
-  `:dt/bm25f-weights`), merges the hit lists, sorts by raw score
-  descending, and applies `:limit` post-merge.
+  Options: :where clauses using ?e; paired :from and :via for graph restriction;
+  :limit (20 by default, 0 for all hits); :projection (:full by default in-process,
+  :frontmatter or :metadata-only); :include [:snippets :field-scores]; :facet-by;
+  :field-weights for a single class; :rank-by with :temporal-slot where needed.
 
-  See `search-bm25f-single` (the single-class pipeline; full opt
-  documentation) and `search-bm25f-multi` (the multi-class fan-out +
-  composition semantics + the approximate cross-class score-comparability
-  caveat).
+  Default order applies class-declared supersession demotion, then recency,
+  while retaining raw BM25F :score. :rank-by :relevance selects score-only order.
+  Structural modes :degree, :backlink-density, :recency and :freshness retain
+  BM25F as :relevance-score and place the structural value in :score.
+  Returns {:hits [...] :total n :returned n :timing {:total-ms n}}, plus facets
+  when requested. Each hit includes :eid, :entity and :score.
 
-  Per D7 of decisions/c8_ratification_batch_d1_d9_plus_defaults_all_
-  approved_2026_07_02 (closes the C12 strategic-subgroup gap) + fulltext
-  arc Stage 4c + Stage 29."
+  When a read principal is bound, unreadable entities are excluded before
+  scoring, enrichment, faceting and limiting. Authorization uses the current
+  store rather than cached entity labels. Hit payloads, snippets and scalar
+  facets use that current entity; analyzed terms, frequencies and class-wide
+  statistics remain cached. This does not establish lexical freshness after
+  arbitrary writes. Scores are not a confidentiality or corpus-isolation
+  guarantee.
+
+  Multi-class search merges separate populations before limiting; their raw
+  scores are only approximately comparable and overlapping scopes can repeat
+  an identity. Weight overrides cannot add fields absent from the analyzed
+  cache. Use single-class temporal ranking and scalar faceting while the
+  multi-class temporal/projection defects remain. See the search guide for
+  current composition limits and the distinction between score and authority."
   [{:keys [class where] :as opts}]
   (let [multi? (multiclass? class)]
     ;; SECURITY (read-plane namespace firewall): deny a firewalled :class (single
@@ -1251,8 +1261,13 @@
     (if multi?
       (doseq [c class] (secq/assert-class-allowed! c))
       (secq/assert-class-allowed! class))
-    (secq/assert-where-namespaces! where)
-    (dt/assert-where-eids-allowed! where)   ; numeric-eid-form firewall (db-aware)
+    ;; Identity constants in :where (citation target, author, owner, tag — by
+    ;; ident, eid or lookup ref) are judged by their resolved target's class
+    ;; and readability; every other position keeps the older checks.  The
+    ;; hits are then authorized per principal as before; a variable join can
+    ;; still test a hidden referent's attributes (a recorded S-2 limitation).
+    (dt/assert-where-identities-allowed!
+      where #(visibility/entity-visible-to? visibility/*principal* %))
     (if multi?
       (search-bm25f-multi opts)
       (search-bm25f-single opts))))

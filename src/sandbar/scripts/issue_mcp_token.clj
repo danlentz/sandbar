@@ -1,59 +1,16 @@
 (ns sandbar.scripts.issue-mcp-token
-  "Bootstrap a Sandbar MCP service-account + emit the corresponding
-   Bearer-token value for the operator's `SANDBAR_TOKEN` env var.
+  "Create an MCP service account or rotate its key, then print its token.
+   Usage:
+     lein issue-mcp-token <service-name> [<api-key>] [--rotate]
 
-   ## Usage
+   Connect to the selected database, initialize a fresh database if needed,
+   and create an auth/ServiceAccount or rotate an existing account's key hash.
+   Existing stores must already contain the required account schema. The
+   printed token has shape <service-name>:<api-key>; handle stdout as a secret.
 
-       lein issue-mcp-token <service-name>                    ; auto-generate API key
-       lein issue-mcp-token <service-name> <api-key>          ; supply API key
-       lein issue-mcp-token <service-name> --rotate           ; rotate existing
-       lein issue-mcp-token <service-name> <api-key> --rotate
-
-   The service-name should be a keyword-shape string (e.g. `corpus`,
-   `claude`, `mcp-client`).  The script:
-
-   1. Connects to the Datomic database per `config.edn`
-   2. Ensures the database + required schema are present (idempotent
-      for first-create; existing DBs must have schema loaded already
-      — same behavior as `sandbar.db.datomic/initialize-db!`)
-   3. Sets the dynamic `sandbar.db.datomic/**conn*` atom so downstream
-      `dt/make` + `auth/find-service-account` calls use this conn
-   4. Creates an `auth/ServiceAccount` entity OR rotates the API key
-      hash on an existing account (with `--rotate`)
-   5. Prints the Bearer-token shape (`<service-name>:<api-key>`) +
-      a ready-to-paste shell-export line for `SANDBAR_TOKEN`
-
-   ## Why this exists
-
-   Before this script, the only documented path to provision an MCP
-   client token was the Clojure recipe in `doc/auth.md` §'MCP Bearer
-   Token Authentication' — eight lines of `dt/make` + `auth/hash-
-   password` that the operator had to copy-paste into a REPL session.
-   That was fine when Sandbar's only consumer was an interactive
-   developer; the 0.1.1 memory-model co-evolution arc surfaced it as
-   Friction Item #1 (`memory/plans/sandbar_0_1_1_coevolution_arc_-
-   2026_05_20.md` §3): the corpus's MCP client cannot authenticate
-   without `SANDBAR_TOKEN`, and no end-to-end script existed.
-
-   Composes with:
-   - `doc/auth.md` §'MCP Bearer Token Authentication' — the manual
-     Clojure recipe this script automates
-   - `sandbar.util.auth/hash-password` + `sandbar.util.auth/find-
-     service-account` — the underlying primitives
-   - `sandbar.db.datatype/make` — the canonical entity-creation
-     primitive per the operational verb catalog
-
-   ## Limitations
-
-   - Assumes Datomic schema is already loaded for existing DBs
-     (`initialize-db!` only loads schema on first-create).  If the
-     DB exists but `:auth/ServiceAccount` schema isn't loaded, the
-     `dt/make` call will fail; bring up `lein run` once to populate
-     schema then re-run this script.
-   - The token is printed to stdout — appropriate for dev-time
-     bootstrap; not appropriate as a production secret-provisioning
-     path.  Future work: emit to a file in `~/.config/sandbar/` or
-     similar."
+   This script assigns neither an authorization role nor memory clearance.
+   Provision those separately as described in doc/auth.md before expecting
+   authenticated tool calls or private-memory reads to succeed."
   (:require [clojure.string        :as str]
             [clojure.tools.logging :as log]
             [datomic.api           :as d]

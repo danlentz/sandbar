@@ -1,45 +1,14 @@
 (ns sandbar.identifier
-  "ζ Scope B stable-identifier substrate primitive — sandbar-internal staging
-  ground for clj-uuid v5 federation-anchor identity computation.
+  "Deterministic UUID derivation for durable entity identity.
+   Derive an authority UUID from a tag-URI seed, a namespace UUID from that
+   authority and namespace name, and an entity UUID from the namespace and
+   entity name. Identical inputs produce identical UUIDs.
 
-  Per the ζ Scope B ADR §3 (authority-UUID + namespace-UUID + entity-UUID
-  derivation chain) + the build-prove-promote discipline (Dan-directive
-  2026-05-26: `interaction/build_protocol_extensions_in_sandbar_first_prove_consume_locally_then_promote_to_public_library_release_dan_directive_2026_05_26.md`):
-  this namespace BUILDS the extension capabilities sandbar-internally;
-  PROVES them via β.2.3 migration tx-fn consumption + 1+ session of
-  operational use; only THEN promotes to clj-uuid as a public-release PR.
-
-  The OPAQUE tier of the 3-tier identifier value hierarchy
-  (`memory/decisions/three_tier_identifier_value_hierarchy_...md`) is
-  operationalized via `:mm/id` slot population at β.2.3 migration time;
-  this namespace provides the derivation primitives.
-
-  Per ζ Scope B ADR §3.1: the per-deployment authority-UUID is computed
-  from a `tag:` URI seed (RFC 4151; date-scoped permanence) via clj-uuid v5.
-  For the claude-corpus deployment, the seed is
-  'tag:danlentz.github.io,2026:claude-memory'.
-
-  Per ADR §3.3: per-entity `:mm/id` is derived deterministically from
-  (authority-UUID, namespace-name, entity-slug) — any sandbar deployment
-  with the same authority-UUID + same namespace-slug + same entity-slug
-  computes the SAME entity-UUID. This enables federation without
-  coordination.
-
-  Pragmatic scope (per the build-prove-promote discipline's §3.3
-  recommendation: don't speculatively build):
-  - LOAD-BEARING for v0.2.0: authority-UUID + namespace-uuid +
-    entity-uuid + ident-uuid (β.2.3 migration consumption)
-  - NOT YET BUILT (deferred): to-urn-string-with-nid (custom NID for
-    `urn:sandbar:` if IANA-registered) + to-crockford-base32-string
-    (ARK Noid-style transcription-safe form) + UUIDable protocol
-    extension for :mm/Memory entity-records (entity-as-namespace-anchor)
-
-  See:
-  - decisions/zeta_scope_b_stable_identifier_substrate_primitive_three_slot_model_...md (the ADR; §3 chain)
-  - interaction/build_protocol_extensions_in_sandbar_first_prove_consume_locally_then_promote_to_public_library_release_dan_directive_2026_05_26.md (the discipline)
-  - libraries/synthesis/stable_identifier_substrate_clj_uuid_extension_three_slot_model_for_sandbar_zeta_2026_05_25.md (the original synthesis)
-  - decisions/three_tier_identifier_value_hierarchy_...md (ζ Scope A)
-  - preferences/clj_uuid_as_preferred_substrate_primitive_for_zeta_stable_identifier_layer_evolvable_at_will_2026_05_25.md"
+   The installed default authority is shared by current creation paths.
+   Distinct project identity roots require explicit provisioning and proof;
+   this helper alone does not establish cross-project collision isolation.
+   Custom URN names and alternative transcription encodings are not supplied
+   here. See doc/concepts/markdown-as-canonical.md for identity distinctions."
   (:require [clj-uuid :as uuid]
             [clojure.string :as str]))
 
@@ -155,16 +124,10 @@
 
 
 (defn ident-uuid
-  "Convenience: derive the entity-UUID directly from a corpus `:db/ident` keyword.
-   Composes `ident->namespace-name` + `entity-uuid`. Returns the v5 UUID
-   suitable for assertion into `:mm/id`.
-
-   Example:
-     (ident-uuid :memory.decisions/three_tier_identifier_value_hierarchy)
-     → #uuid \"<deterministic-v5-derived-from-+authority+>\"
-
-   At β.2.3 migration time, per-family tx-fns invoke this to backfill
-   `:mm/id` for each touched entity."
+  "Derive the durable UUID for a keyword ident by composing
+   ident->namespace-name and entity-uuid under the configured authority.
+   Creation and backfill can use the same derivation for compatible :mm/id
+   values. Existing durable identity should be preserved during maintenance."
   [ident]
   {:pre [(keyword? ident) (namespace ident) (name ident)]}
   (entity-uuid (ident->namespace-name ident) (name ident)))

@@ -1,32 +1,15 @@
 (ns sandbar.scripts.seed-verb-catalog
-  "S2 of the MCP-Surface-Mastery arc — seed the `:mm/Verb` catalog from the
-   live `verb-catalog` (sandbar.mcp.tools), so the MCP verb surface becomes a
-   queryable / BM25F-retrievable / graph-navigable substrate (foundation for
-   the affordance map P1 + per-task verb retrieval P2).
+  "Project the operational verb catalog into :mm/Verb entities.
+   `sandbar.mcp.catalog-model` supplies derived argument summaries, hints,
+   axes, related verbs, and prerequisite edges. Unlike file renderers, this
+   script writes the selected database.
 
-   Source of truth is `tools/verb-catalog`; this is a PROJECTION of it, and as
-   of F6 it is the one STATEFUL projection (writes a live DB, not a repo file).
-   The derived fields (axis / arg-summary / section split / combines-with /
-   prereq-of graph) now come from the shared `sandbar.mcp.catalog-model` — the
-   SAME derivation the doc + edges-map projections use — so the three copies of
-   that logic collapse to one (design §5.4, a behavior-preserving refactor: the
-   same datoms get written, from one shared model).
-
-   Idempotent — `:mm.verb/name` is `:db.unique/identity`, so re-running
-   upserts rather than duplicating.
-
-   Passes:
-     0. idents   — intern a semantic `:db/ident` per verb (`:sandbar.<axis>/<leaf>`).
-     1. entities — one `:mm/Verb` per verb (scalar slots from the model).
-     2. combines-with — assert the symmetric related-verb graph from the model's
-        :combines-with (undirected, prose-parsed).
-     3. prereq-of — DIRECTIONAL edges: for each verb, the model's :prereqs are
-        the verbs that are prerequisite OF it (edge prereq->verb).  Cycle-safe
-        (the model already dropped cycle-closing edges).
-
-   Usage:
-     lein run -m sandbar.scripts.seed-verb-catalog        ; separate peer → prod DB
-     (sandbar.scripts.seed-verb-catalog/seed!)            ; in-JVM via nREPL (live conn)"
+   Passes intern semantic idents, upsert scalar slots by unique verb name,
+   assert symmetric combines-with edges, then directional prerequisite edges.
+   Repeated seeding avoids duplicate names; inspect reconciliation requirements
+   separately when removing catalog entries or edges.
+   Usage: lein run -m sandbar.scripts.seed-verb-catalog
+   In-process: (sandbar.scripts.seed-verb-catalog/seed!)"
   (:require [clojure.string            :as str]
             [datomic.api               :as d]
             [sandbar.mcp.tools         :as tools]
@@ -39,12 +22,9 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (defn verb-ident
-  "Semantic :db/ident for a verb name: \"sandbar.entity.create\" -> :sandbar.entity/create.
-   ns = sandbar.<axis>, name = <leaf-path> (everything after the axis segment).
-   Fixes the BRITTLE-identifier defect — verbs were addressable only by a
-   name-lookup-ref or an eid; a semantic ident is valuable to human + LLM +
-   backend (the three-tier identifier hierarchy).  Mirrors the wire MCP tool
-   name (sandbar.entity.create) for recognizability + reversibility."
+  "Derive a semantic ident from a dotted verb name, for example
+   sandbar.entity.create becomes :sandbar.entity/create. This gives callers a
+   readable lookup key in addition to the verb-name identity attribute and eid."
   [verb-name]
   (let [segs (str/split (str verb-name) #"\.")]
     (cond

@@ -1,41 +1,18 @@
 (ns sandbar.config
-  "Sandbar's 3-layer config loader — bundled defaults + client-project
-   override + env vars.
+  "Layered configuration: bundled defaults, client-project overrides, then
+   environment overrides, in increasing precedence.
 
-   ## Layer 1 — bundled defaults
-   Read from `config.edn` on the classpath (sandbar's `:resource-paths`
-   include `config/`; the resource is bundled with the deployment artifact).
-   Holds sentinel + minimal values; ships with sandbar.
+   Bundled `config.edn` falls back to the committed `config-example.edn` only
+   when the primary resource is absent. Client overrides live at
+   `<client-dir>/.sandbar/config.edn`; `client-dir` is selected by
+   SANDBAR_CLIENT_DIR, the sandbar.client-dir JVM property, then the working
+   directory. Configure values such as :sid, :port, :nrepl {:port ...}, and
+   the database connection there. Environment mappings are declared in
+   `env-overrides-mapping`.
 
-   ## Layer 2 — client-project override
-   Read from `<SANDBAR_CLIENT_DIR>/.sandbar/config.edn` if it exists.
-   This is the PRIMARY configuration surface — project-specific bindings
-   like `:sid`, `:port`, `:nrepl-port`, transactor URL, backup retention.
-
-   `SANDBAR_CLIENT_DIR` discovery: env var → `sandbar.client-dir` JVM
-   property → CWD fallback.  The `bin/sandbar` wrapper propagates the env
-   value to the JVM via `-Dsandbar.client-dir=<path>`.
-
-   ## Layer 3 — env vars
-   Per-deployment ops overrides without editing config files.  Mapped
-   from env-var names to config-map paths via `env-overrides-mapping`.
-
-   ## Merge semantics
-   Layer 3 wins over layer 2 wins over layer 1.  Deep merge — nested
-   maps merge slot-by-slot.  Non-map values from a higher layer replace
-   non-map values from a lower layer.
-
-   ## Caching
-   The resolved config is computed via `delay` — runs at most once per
-   JVM, on first call to `(config)`.  In test environments where the
-   layers should be re-evaluated (e.g., after `with-redefs` stubs the
-   env), use `(reload!)`.
-
-   ## Per memory/decisions/sandbar_deployment_consumption_cohabitability_strategy_2026_05_24.md
-   This namespace implements D.B (3-layer merge) which finally executes
-   D.3 of `sandbar_sid_reconciliation_*_2026_05_12.md` (late-bind via
-   env-var / CLI / registry-driven config) — extended from `:sid`-only
-   to the full config surface."
+   Nested maps merge recursively; a non-nil higher-layer value replaces a
+   lower-layer value. The resolved map is cached until `reload!` clears it.
+   See doc/operations.md for explicit deployment selection."
   (:require [clojure.edn        :as edn]
             [clojure.java.io    :as io]
             [clojure.string     :as str])
@@ -175,8 +152,8 @@
 ;; Deep merge
 
 (defn deep-merge
-  "Like `merge` but recurses into nested maps.  Non-map values from `b`
-   replace values from `a`."
+  "Recursively merge nested maps. A non-nil value from `b` replaces a
+   non-map value from `a`; nil in `b` leaves the value from `a` intact."
   [a b]
   (cond
     (and (map? a) (map? b)) (merge-with deep-merge a b)
@@ -194,8 +171,8 @@
       (deep-merge (read-env-overrides))))
 
 (defn config
-  "Return the resolved 3-layer config map.  Memoized — runs the layer
-   reads + merge at most once per JVM (or until `(reload!)`)."
+  "Return the resolved configuration map, caching it until `reload!`.
+   Concurrent first callers may independently read and merge the layers."
   []
   (or @resolved
       (reset! resolved (compute-resolved))))

@@ -1,30 +1,13 @@
 (ns sandbar.store
-  "Unified :mm/Memory creation entry point — the single path that gives every
-   memorial its full ζ three-slot identity at birth.
+  "Create memories with consistent symbolic and durable identity.
+   Before dt/make, create-memory! derives an EDN-readable ident from the
+   relative path when needed and supplies a durable :mm/id through the
+   shared identifier helper. Explicit existing identity has its own
+   preservation rules. This entry point avoids divergent identity logic in
+   individual client adapters; raw datatype calls are a separate surface.
 
-   BEFORE delegating to `dt/make`, `create-memory!`:
-     1. derives a stable, EDN-safe `:db/ident` from `:mm.memory/rel-path`
-        (via the codec convention + `codec-md/edn-safe-ident` digit-dodge), and
-     2. mints the opaque-stable `:mm/id` (clj-uuid v5, the federation anchor)
-        from that ident — using the SAME `sandbar.identifier/ident-uuid` the ζ
-        backfill uses, so a create-time mint and a later sweep agree.
-
-   This replaces the divergent per-call identity logic that previously lived in
-   two places and disagreed:
-     - `sandbar.mcp.tools/entity-create-handler` derived `:db/ident` but NOT
-       `:mm/id`; and
-     - `sandbar.workflow.orchestrate` (session/log creation) used a raw
-       `dt/make` that derived NEITHER — the identless-session bug.
-
-   Routing both through here closes the identless-entity gap corpus-wide and
-   makes every future memorial federation-ready at birth.  Per the 2026-05-29
-   session-lifecycle-hardening arc + decisions/three_tier_identifier_value_-
-   hierarchy + libraries/synthesis/stable_identifier_substrate_clj_uuid_-
-   extension_three_slot_model_for_sandbar_zeta_2026_05_25.
-
-   Lives in its own ns (not `sandbar.db.datatype`) because identity derivation
-   needs `sandbar.codec.markdown`, and the codec already depends on datatype —
-   so putting it in datatype would be a cycle."
+   The namespace depends on the Markdown codec for path conventions. It is
+   kept outside datatype to avoid the codec/datatype dependency cycle."
   (:require [clj-uuid :as uuid]
             [clojure.string :as str]
             [datomic.api :as d]
@@ -43,6 +26,7 @@
             ;; pre-transact (it7 FF-2) so a traversal/absolute rel-path is refused
             ;; before it commits to the DB, not only at the sink.
             [sandbar.reactive.sinks :as sinks]
+            [sandbar.project.destination :as destination]
             [sandbar.identifier :as ident]))
 
 (defn derive-memory-ident
@@ -258,20 +242,34 @@
 
    Class-agnostic + reusable at the mutation boundary (create today; update /
    bulk-import fold in here next).  Returns `rel-path`."
-  [class rel-path the-id]
+  ([class rel-path the-id]
+   (assert-corpus-rel-path-safe! class rel-path the-id {}))
+  ([class rel-path the-id props]
   ;; (1) per-segment NAME_MAX budget — MUST precede containment (see docstring:
   ;; canonicalization raw-throws on ≥256-byte segments before a structured
   ;; refusal could fire).
   (sinks/assert-rel-path-name-max! rel-path)
   ;; (2) containment + grammar via the landed G2 sanitizer (throws on escape).
-  (sinks/contained-target-path rel-path)
+  (let [routed? (seq (destination/configured-roots))
+        database (when routed? (db/db))
+        existing (when (and database the-id) (d/entity database the-id))
+        effective (merge (into {} existing) props)
+        selected (when routed? (sinks/destination-for database effective))]
+    (when (and routed? (:dt/type existing))
+      (destination/assert-stable-update! database existing props (sinks/corpus-root)))
+    (if selected
+      (destination/target-path selected rel-path)
+      (sinks/contained-target-path rel-path))
   ;; (3) collision / ownership — only meaningful once we know our own ident.
   (when the-id
-    (let [owners (try
+    (let [owners (if selected
+                   (destination/other-claimants database (:db/id existing) selected rel-path
+                                                (sinks/corpus-root))
+                   (try
                    (d/q '[:find [?e ...] :in $ ?rp
                           :where [?e :mm.memory/rel-path ?rp]]
                         (db/db) rel-path)
-                   (catch Throwable _ nil))
+                   (catch Throwable _ nil)))
           others (when (seq owners)
                    (->> owners
                         (map db/entity)
@@ -291,7 +289,12 @@
                  :rel-path       rel-path
                  :creating-ident the-id
                  :colliding      (mapv #(or (:db/ident %) (:db/id %)) others)})))))
-  rel-path)
+    ;; Report the stable database collision first. A file with no other DB
+    ;; claimant still needs a matching identity before an upsert can overwrite it.
+    (when selected
+      (sinks/assert-file-owner! (destination/target-path selected rel-path)
+                               (:mm/id effective)))
+    rel-path)))
 
 (defn create-memory!
   "Create a `class` entity with full ζ identity, then transact via `dt/make`.
@@ -378,8 +381,6 @@
          ;; sanitizer) + collision/ownership, BEFORE dt/make — so a traversal /
          ;; absolute / colliding rel-path is refused at the create boundary rather
          ;; than committing a malformed or clobbering DB row.
-         _ (when (and memory? rel-path)
-             (assert-corpus-rel-path-safe! class rel-path the-id))
          props    (cond-> props
                     ;; D7 2c/2d (2026-09-20): an identity is minted ONLY when neither the
                     ;; incoming properties nor the existing entity carry one — a repeat
@@ -393,5 +394,8 @@
                          (nil? (:mm/id (datomic.api/entity (sandbar.db.datomic/db) the-id))))
                     (assoc :mm/id (if (and rel-path (clojure.string/includes? rel-path "/"))
                                     (ident/rel-path-uuid rel-path)
-                                    (ident/ident-uuid the-id))))]
+                                    (ident/ident-uuid the-id))))
+         ;; The file-ownership check needs the final (or preserved) UUID.
+         _ (when (and memory? rel-path)
+             (assert-corpus-rel-path-safe! class rel-path the-id props))]
      (dt/make class props opts))))

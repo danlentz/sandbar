@@ -1,71 +1,25 @@
 (ns sandbar.navigate.path.evaluate
-  "Sandbar Path-Grammar — Clojure-Side IR Evaluator (Stage P-7 / Phase R
-  Stage R-7 of comprehensive memory-model MCP arc per
-  plans/sandbar_0_1_0_codex_remediation_2026_05_14.md §R-7).
+  "Evaluate path expressions while retaining a representative witness per endpoint.
 
-  Resolves F-DB-1 per Option D + Policy A per
-  decisions/sandbar_path_data_reconstruction_option_d_policy_a_2026_05_14.md.
+  Datomic performs indexed property lookups; Clojure composes frontiers,
+  tracks witnesses and suppresses repeated arrivals. The frontier maps eid
+  to a path value built through path.value constructors. First arrival wins,
+  with leftmost preference across OR branches; this is not all-path enumeration
+  or a universal shortest-path guarantee for arbitrary compound expressions.
 
-  ## Why Clojure-side evaluation
+  Supported witness operations are atomic predicates, INV, SELF, ANY,
+  RESTRICT, SEQ, OR, REP+ and REP*, with OPT and bounded REP expanded into
+  those forms. NOT, FILTER and TEST do not support witnesses here and throw
+  when requested; the public adapter has a separate endpoint-only route.
 
-  The Datomic compiler (`sandbar.navigate.path.datomic`) is excellent
-  for reachability — \"which entities can I reach via expression e\" —
-  but Datalog recursive rules don't natively track the path that
-  produced each endpoint.  Reconstructing paths post-hoc from a flat
-  endpoint set is awkward (sub-quadratic blowup; multiple
-  reach-paths-per-endpoint demand re-querying).  The cleaner separation:
-  let Datomic do single-attribute lookups + valueType filtering (its
-  strong suit), let Clojure do composition + path-tracking + cycle
-  suppression (its strong suit).  Same shape as `dt/graph-walk-from`
-  precedent per
-  decisions/sandbar_graph_walk_clojure_bfs_over_datomic_recursive_rules_2026_05_14.md.
+  Each traversed edge is checked using its physically asserted direction,
+  even when the query follows it inversely. Rejected hops leave the frontier
+  and produce blocked findings. This is traversal policy, not a complete
+  caller-specific confidentiality boundary.
 
-  ## Algorithm
-
-  Frontier-as-map `{eid path-value}` threaded through per-operator
-  evaluators.  Path values are built via the
-  `sandbar.navigate.path.value` substrate (`singleton` / `extend-path`
-  / `concat-paths` / `reverse`) — NEVER constructed inline.
-
-  Policy A (one-representative-path-per-endpoint, Cypher
-  shortestPath-style): when multiple distinct paths to the same
-  endpoint exist, BFS first-arrival wins; subsequent re-arrivals are
-  dropped.  Frontier-as-map naturally dedupes within an iteration;
-  `first-arrival-merge` enforces leftmost-wins across `:OR` branches
-  and `:REP+` / `:REP*` iterations.
-
-  ## Operator coverage (0.1.0)
-
-  Canonical-8 (full path-data evaluation):
-    :PREDICATE — atomic forward step (single-attribute Datalog lookup)
-    :INV       — atomic inverse step (when child is :PREDICATE)
-    :SELF      — identity / singleton frontier at seed
-    :ANY       — wildcard predicate, ref-typed (composes with R-2)
-    :RESTRICT  — node-position filter at current frontier endpoint
-    :SEQ       — fold-left composition; concat-paths joins
-    :OR        — union of branch frontiers with first-arrival
-    :REP+      — iterative fixpoint (1+); visited-set termination
-    :REP*      — iterative fixpoint (0+); seed in initial frontier
-
-  Tier-2 desugar-able (evaluated via canonical-8 expansion):
-    :OPT       — desugars to (:OR p :SELF)
-    :REP m n   — desugars to (:OR n-length :SEQ chains for n in [m,n])
-
-  Tier-2 not-yet-supported for path-data:
-    :NOT / :FILTER / :TEST — throw ex-info; path-data evaluation lands
-                              in 0.1.x.  Endpoint-only fast-path still
-                              works (callers don't request :include
-                              #{:paths}).
-
-  ## Path value shape (from path.value substrate)
-
-      {:nodes [<node-0> <node-1> ... <node-N>]      ; N+1 nodes
-       :edges [<edge-1> <edge-2> ... <edge-N>]}     ; N edges
-
-  Internally, nodes are eids during BFS (efficient).  At
-  `evaluate-from`'s exit boundary, nodes are projected to the
-  canonical {:db/id eid :db/ident ident} entity-summary shape so
-  JSON serialization through MCP/REST stays compact + meaningful."
+  Paths have {:nodes [node ...] :edges [edge ...]}, with one more node than
+  edge. Internal eids are projected to compact entity summaries at the result
+  boundary. Output limits alone do not bound traversal work."
   (:require [datomic.api :as d]
             [sandbar.db.datomic :as db]
             [sandbar.firewall.enforce :as fw-enforce]

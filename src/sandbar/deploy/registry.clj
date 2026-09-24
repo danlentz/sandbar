@@ -1,143 +1,19 @@
 (ns sandbar.deploy.registry
-  "W1.deploy — the per-machine STORE-REGISTRY: a LOGICAL trust-scope → THIS
-  machine's PHYSICAL `{transactor-endpoint, corpus-repo, local-disk-path, sid}`,
-  plus the CREDENTIAL AIR-GAP that makes a cross-scope transactor connection
-  impossible rather than merely disallowed (W1.deploy §2/§5).
+  "Legacy per-machine registry for a separate-store deployment topology.
+   Map logical trust scopes to local transactor and corpus locations. Registry
+   presence does not grant project membership. Validation requires a defined
+   owner scope, rejects foreign private entries and enforces this component's
+   endpoint-port rules. resolve-endpoint applies its own reachability policy.
 
-  ── WHY this exists (the standing physical lock) ────────────────────────────
-  The registry is location-only indirection (R7 relocatability): it maps a
-  logical scope to where its DB physically lives on THIS host, and NOTHING
-  else.  Membership authority stays corpus-canonical
-  (`:mm.context/visible-projects`, resolved by `sandbar.project.route`) — a
-  project present only in a registry but absent from `visible-projects` is NOT a
-  member.  The registry never confers membership; it only answers `where`.
+   The default registry path is etc/sandbar-store-registry.edn under the
+   starting directory, overridden by SANDBAR_STORE_REGISTRY. Bring-up loads
+   and validates the selected file; it does not install OS-level isolation.
 
-  The load-bearing security property is the CREDENTIAL AIR-GAP (W1.deploy §5,
-  arc-plan §1.3 truth #4): a PUBLIC-scope process must hold NO credential /
-  endpoint for any PRIVATE-scope transactor.  Acceptance is not \"we don't do
-  that\" — it is \"the connection is impossible\": the public process's
-  connection surface simply does not contain a private endpoint (A-1), and an
-  explicit public→private connect REFUSES at the resolver/process boundary
-  (A-2), never at a query filter.  This air-gap IS the standing physical lock
-  the CA-6 write-side deferral rests on (two-lock collapse rule, W1.deploy §CA-6
-  obligation): weakening it reverts CA-6 to fix-now.  Every function here is
-  therefore written to STRENGTHEN physical exclusion, never widen it.
-
-  ── SHAPE (reuses the 2026-05-12 store-registry EDN spirit) ─────────────────
-  A registry is a per-machine EDN map stamped with the `:owner-scope` — the
-  trust scope of the PROCESS that loads it — plus a `:public` entry and/or a
-  `:private` map keyed by `:mm.project/ident`:
-
-    {:schema-version 1
-     :owner-scope    :trust-scope/public         ; the loading process's scope
-     :public {:transactor-endpoint \"datomic:dev://localhost:4334/\"
-              :sid \"global\" :corpus-repo \"…\" :local-disk-path \"…\"}
-     :private {:proj/foo {:transactor-endpoint \"datomic:dev://localhost:4336/\"
-                          :sid \"foo\" :corpus-repo \"…\" :local-disk-path \"…\"}}}
-
-  `:owner-scope` is the air-gap key, and it must be WELL-FORMED: exactly
-  `:trust-scope/public` or a `[:trust-scope/private <key>]` vector.  A registry
-  that cannot name its own scope (absent / nil / malformed `:owner-scope`) is
-  REFUSED loudly at bring-up (`assert-owner-scope-resolved!`) — never a silent
-  no-op of the air-gap assertion.
-
-  The air-gap is ONE invariant with two directions (`assert-credential-air-gap!`,
-  `foreign-private-entries`): a registry may carry a `:private` ENTRY only for
-  its OWNER's own scope.
-    • a `:trust-scope/public` owner carries NO `:private` entry at all — not
-      merely no private transactor endpoint: a public process has no legitimate
-      use for a private scope's `:local-disk-path` / `:corpus-repo` handles
-      either, and the registry is location indirection, so an entry-level refusal
-      closes the disclosed `:local-disk-path` hole in one move
-      (strengthen-never-widen); and
-    • a `[:trust-scope/private k]` owner carries EXACTLY its own `:proj/k` entry
-      — any `:private` entry keyed to a DIFFERENT scope is a FOREIGN disclosure
-      and is refused (the private↔private separation, W1.deploy §1 / brief line
-      28; alpha's registry names only alpha's location, never beta's).
-  Both legs throw the same `:credential-air-gap-violation` marker,
-  disambiguated by `:air-gap-direction` in ex-data.
-
-  ONE retained, INTENDED asymmetry: a `[:trust-scope/private k]` owner holding a
-  `:public` transactor ENTRY is permitted-but-unreachable — NOT refused by the
-  air-gap (public location handles are the shared-bottom, not secrets; R9
-  private-only is a recommendation), because a private→public live connect is
-  already refused at `resolve-endpoint` (`reachable?` false).  This stays
-  explicitly distinct from the foreign-PRIVATE refusal above.
-
-  ── PORT DOCTRINE (the second half of A-1's physical exclusion) ─────────────
-  Reachability is filtered by SCOPE, and the air-gap sweeps `:private` ENTRIES —
-  NEITHER inspects endpoint PORTS.  So the shared `:public` slot needs one more
-  physical lock: its transactor port must be the PUBLIC port (4334), never a
-  RESERVED PRIVATE port (>= 4336).  Without it, a private-port endpoint
-  hand-edited into the `:public` slot would be REACHABLE by the public owner
-  (public→public), and `resolve-endpoint` would hand the public process the
-  ruled-private 4336 — the air-gap misses it because the forgery lives in
-  `:public`, not `:private`.  `assert-endpoint-port-doctrine!` (a
-  `validate-registry!` gate) refuses it, and symmetrically refuses a PUBLIC port
-  in a `:private` slot (a private scope co-located on the public transactor,
-  DEP-1).  This is why A-1 — \"the public process's connection surface does not
-  contain a private endpoint\" — holds for a VALIDATED registry across EVERY
-  slot, not only `:private` (D.3 port policy).
-
-  The gate is BLIND TO ENDPOINT FORM and FAIL-CLOSED on an unreadable one.  The
-  port is parsed from BOTH a plain host (`localhost:4336`) AND a bracketed IPv6
-  literal (`[::1]:4336`, `[2001:db8::1]:4336`) — an earlier parser stopped at the
-  first colon of an IPv6 literal, read a nil port, and the gate SKIPPED nil-port
-  slots, so a private-port endpoint smuggled in as bracketed IPv6 slipped BOTH
-  slots' checks (the round-4 A-1 re-opening).  Now a PRESENT endpoint whose port
-  cannot be parsed at all is itself a violation (`:unparseable-port`) — the slot
-  is REFUSED, not skipped — so no endpoint form the parser cannot place can evade
-  the doctrine.  (Only a slot with NO endpoint is exempt; that is
-  `resolve-endpoint`'s `:no-such-scope` concern.)
-
-  The strongest posture on the sandboxed work machine is a PRIVATE-only owner
-  registry that reaches the public corpus read-only BY REFERENCE
-  (`public-corpus-reference`, R9) and never co-locates a public transactor.
-
-  ── DISCOVERY — how a process finds ITS registry (ruled read seam) ──────────
-  `registry-path` resolves the file, two sources in order (confirm-only C-8 of
-  the 2026-07-10 Dan docket, adopted as the standing default):
-    1. the `SANDBAR_STORE_REGISTRY` env var when set + non-blank — the
-       explicit per-machine ops override (R2);
-    2. else the PER-PROJECT file `etc/sandbar-store-registry.edn` under the
-       directory the process started FROM — fork-5's operating model (start
-       the tool from the project's own directory) makes that file the
-       project's OWN registry, per-project + per-machine, never shared
-       (DEP-6).
-  `bring-up-registry!` composes resolve → load → validate in the ONE call a
-  bring-up makes.  A missing / unreadable / gate-violating file REFUSES
-  loudly; resolution never invents a permissive default.
-
-  ── SUPERVISION / BRING-UP POSTURE (A4 ruling, 2026-07-20) ──────────────────
-  Ruled (docket C-6 → A4): process supervision is the IN-PROCESS component /
-  bring-up script that invokes `bring-up-registry!` (⇒ `validate-registry!`)
-  at process start — NO launchd-per-scope service, NO OS-level separation
-  (no per-scope OS users, security domains, or storage ACLs).  The
-  threat-model calibration is A4's \"enforce separation during normal use,
-  not attack-paranoid\": scope separation is enforced IN-PROCESS by this
-  registry's credential air-gap + the closure refuse-to-serve gates
-  (`sandbar.deploy.closure`), not by OS machinery.
-
-  INTERIM POSTURE (explicit): until the multi-store fork actually forks a
-  private scope, the substrate runs as a SINGLE sandbar JVM serving the
-  public scope only (one Datomic transactor slot, public 4334/4335).  DEP-1's
-  one-transactor-process-per-trust-scope topology (public 4334 + net-new
-  private 4336) becomes live WHEN that fork lands — and each per-scope
-  process is then STILL brought up by script/component under this same
-  posture, each validating its own registry at start.
-
-  ── LOGICAL scope key shape (consumes `sandbar.project.route`) ──────────────
-  The logical trust-scope this registry keys on is EXACTLY what
-  `route/trust-scope-of` produces: `:trust-scope/public` or the vector
-  `[:trust-scope/private <project-key>]`.  This ns never re-derives a scope from
-  a label — it consumes the route resolver's output and maps it to a physical
-  endpoint (the W1.ctx spine owns derivation; W1.deploy owns the physical map).
-
-  Spec: W1.deploy-topology.md §2 (store-registry contract), §5 (adversary /
-  credential air-gap), DEP-3 (cross-scope connection impossible), DEP-4 (private
-  store ≠ public repo).  Prior art: the 2026-05-12 multi-store hybrid ADR
-  (`decisions/datomic_multi_store_deployment_strategy_hybrid_*`, D.3 port
-  policy) + `decisions/private_sandbar_stores_live_in_their_own_git_repos_*`."
+   These mechanisms describe this optional topology. They do not establish
+   physical separation for a shared-database deployment or replace principal
+   clearance. Private-to-public graph references are a separate policy from
+   the legacy resolver's stricter cross-store connection rules.
+   See doc/firewall-and-projects.md."
   (:require [clojure.edn     :as edn]
             [clojure.java.io :as io]
             [clojure.string  :as str]))

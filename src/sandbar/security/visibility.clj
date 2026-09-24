@@ -26,8 +26,12 @@
    requires this namespace; nothing in the datatype chain requires the
    projection layer, so there is no load cycle (checked over the require graph
    at landing)."
-  (:require [sandbar.db.datatype   :as dt]
-            [sandbar.mcp.clearance :as clearance]))
+  (:require [datomic.api :as d]
+            [sandbar.db.datomic :as db]
+            [sandbar.db.datatype :as dt]
+            [sandbar.db.ref :as ref]
+            [sandbar.mcp.clearance :as clearance])
+  (:import (datomic Entity)))
 
 (def ^:dynamic *principal*
   "The authenticated principal on whose behalf the current read runs, or nil.
@@ -61,24 +65,87 @@
   [lookup]
   {:entity nil :missing? true :lookup lookup :reasons #{:entity-ref/not-found}})
 
+(defn- resolve-in [database value]
+  (when database
+    (when-let [eid (ref/ref->eid database value)]
+      (d/entity database eid))))
+
+(defn- normalize-entity [database entity]
+  (if (or (nil? entity) (map? entity) (instance? Entity entity))
+    entity
+    (resolve-in (or database (db/db)) entity)))
+
+(defn- instance-of? [class-ident entity]
+  (let [t (:dt/type entity)]
+    (dt/type-isa? class-ident (if (keyword? t) t (:db/ident t)))))
+
 (defn compartmented?
   "True iff `entity` carries a confidentiality compartment at all — it is an
-   instance of `:mm/Memory` (the domain of `:mm.memory/visibility` and
-   `:mm.memory/owning-project`), by class or by inheritance.
+   instance of `:mm/Memory`, or one of its document-owned `:mm/Section` or
+   `:mm/Frontmatter` components, including subclasses. Components inherit
+   authority from the host; a label copied onto a component is not authority.
 
    The metamodel (`:dt/Class`, `:dt/Property`), the tag vocabulary, the verb
-   catalog and every other non-memory entity are OUTSIDE the compartment model
+   catalog and other entities are OUTSIDE the compartment model
    and read under the namespace firewall alone — exactly the scoping of the
    firewall label core, whose `label-of` dispatches a compartment only for a
    `:mm/Memory` descendant.  An entity whose class cannot be read (a raw map
    without `:dt/type`, a pre-commit spec) counts as compartmented only when it
    carries one of the two compartment slots itself."
   [entity]
-  (boolean
-    (if-let [cls (dt/class-ident-of entity)]
-      (dt/type-isa? :mm/Memory cls)
-      (or (contains? entity :mm.memory/visibility)
-          (contains? entity :mm.memory/owning-project)))))
+  (let [entity (normalize-entity nil entity)]
+    (boolean
+      (if (:dt/type entity)
+        (or (instance-of? :mm/Memory entity)
+            (instance-of? :mm/Section entity)
+            (instance-of? :mm/Frontmatter entity))
+        (or (contains? entity :mm.memory/visibility)
+            (contains? entity :mm.memory/owning-project))))))
+
+(defn- entity-db [database entity]
+  (or database (when (instance? Entity entity) (d/entity-db entity))))
+
+(defn- section-document
+  "Follow only Section parents to a Memory in one immutable database.
+   Absent, cyclic, untyped and wrong-kind chains have no read authority."
+  [database section]
+  (loop [current (resolve-in database section) seen #{}]
+    (when-let [eid (:db/id current)]
+      (when-not (contains? seen eid)
+        (cond
+          (instance-of? :mm/Memory current) current
+          (instance-of? :mm/Section current)
+          (recur (resolve-in database (:mm.section/parent current)) (conj seen eid)))))))
+
+(defn- frontmatter-document
+  "The carrier must have exactly one owning Memory via the actual component
+   edge. Its path-derived ident and any copied labels prove no ownership."
+  [database carrier]
+  (when-let [eid (and database (ref/ref->eid database carrier))]
+    (let [owners (d/q '[:find [?owner ...] :in $ ?carrier
+                        :where [?owner :mm.memory/frontmatter ?carrier]]
+                      database eid)]
+      (when (= 1 (count owners))
+        (let [owner (d/entity database (first owners))]
+          (when (instance-of? :mm/Memory owner) owner))))))
+
+(defn read-compartment
+  "Read authority for a memory or its owned content, at `database` or the
+   Datomic entity's snapshot. Sections use their parent chain; frontmatter
+   uses its unique host edge. Invalid ownership returns an unknown compartment
+   that no principal clears, even with full clearance. Never copy host labels.
+   Raw component maps need an explicit database to establish ownership."
+  ([entity] (read-compartment nil entity))
+  ([database entity]
+   (let [entity (normalize-entity database entity)
+         database (entity-db database entity)
+         owner (cond
+                 (instance-of? :mm/Section entity) (section-document database entity)
+                 (instance-of? :mm/Frontmatter entity) (frontmatter-document database entity)
+                 :else entity)]
+     (if owner
+       (clearance/entity-compartment database owner)
+       {:visibility ::invalid-ownership :project nil}))))
 
 (defn entity-visible-to?
   "THE read-plane visibility decision: may `principal` be shown `entity`?
@@ -90,25 +157,29 @@
      documented nil policy — `:public` and non-compartmented only — and
      applies it BEFORE calling here; see `resources/read-cleared?`.)
    - `entity` nil → false.
-   - `entity` not `compartmented?` (not memory-shaped) → true.  Outside the
+   - `entity` not `compartmented?` (not memory or owned content) → true. Outside the
      compartment model; the namespace firewall is the separate rule.
    - otherwise → `clearance/cleared-for-compartment?` over
-     `clearance/entity-compartment`, the S5 clearance predicate unchanged:
+     `read-compartment`, preserving the S5 clearance rules:
      `:public` clears for everyone; a `:private` (or absent-visibility,
      `*default-visibility*`) memory clears only for a principal marked
      `:auth/full-clearance?` or cleared for its owning project; anything
-     unknown fails closed.
+     unknown or invalid component ownership fails closed.
 
-   `db` may be threaded (the 3-arity) so an ident-bearing owning-project ref
-   resolves to its eid; the 2-arity is the pure shape."
+   The 3-arity accepts an explicit immutable database; otherwise a Datomic
+   entity supplies its own snapshot. Both ownership and project-clearance
+   references resolve against that database. Raw memory maps remain supported."
   ([principal entity] (entity-visible-to? nil principal entity))
   ([db principal entity]
-   (cond
-     (nil? principal)              true
-     (nil? entity)                 false
-     (not (compartmented? entity)) true
-     :else (clearance/cleared-for-compartment?
-             principal (clearance/entity-compartment db entity)))))
+   (if (nil? principal)
+     true
+     (let [entity (normalize-entity db entity)]
+       (cond
+         (nil? entity)                 false
+         (not (compartmented? entity)) true
+         :else (let [db (entity-db db entity)]
+                 (clearance/cleared-for-compartment?
+                   db principal (read-compartment db entity))))))))
 
 (defn compartment-scrub
   "The projection layer's compartment backstop: given the RAW `entity` and its

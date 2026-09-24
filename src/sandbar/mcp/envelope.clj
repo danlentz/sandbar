@@ -1,22 +1,14 @@
 (ns sandbar.mcp.envelope
-  "JSON-RPC 2.0 envelope construction + validation.
+  "JSON-RPC 2.0 envelope construction and validation.
 
-   Leaf namespace — depends on nothing inside `sandbar.mcp.*`.
-   Lives below `sandbar.mcp.protocol` and `sandbar.mcp.notifications`
-   in the require graph so both can construct + inspect envelopes
-   without inducing a cycle (per the F-M-001 cycle-break correction
-   from `audit-results/codex_sandbar_as_mcp_server_2026_05_12.md`
-   + `memory/decisions/sandbar_mcp_tool_surface_resolution_operational_verb_catalog_per_adr_b13_2026_05_12.md`).
+   This leaf namespace has no dependencies inside sandbar.mcp, allowing
+   protocol dispatch and notification delivery to share envelopes without
+   a require cycle.
 
-   JSON-RPC 2.0 specification: https://www.jsonrpc.org/specification
-
-   Standard error codes:
-   -32700 Parse error
-   -32600 Invalid Request
-   -32601 Method not found
-   -32602 Invalid params
-   -32603 Internal error
-   -32000 to -32099 Server error (implementation-defined)")
+   Standard error codes: -32700 parse error, -32600 invalid request,
+   -32601 method not found, -32602 invalid params, -32603 internal error;
+   -32000 through -32099 are implementation-defined server errors.
+   Specification: https://www.jsonrpc.org/specification")
 
 (defn jsonrpc-result
   "Construct a JSON-RPC 2.0 success response."

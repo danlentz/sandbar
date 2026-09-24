@@ -224,7 +224,11 @@
    :dt/range :dt/Property
    :db/valueType :db.type/ref
    :db/cardinality :db.cardinality/many
-   :db/doc "RDFS-style sub-property declaration — `(p :dt/subproperty-of q)` iff `IEXT(p) ⊆ IEXT(q)`.  Reflexive + transitive per Hayes & Patel-Schneider 2014 §5.2.  Operational consequence (RDFS rule rdfs7): `(p :dt/subproperty-of q) ∧ (x p y) → (x q y)` is entailed.  Used to declare predicate hierarchy: e.g., `(:mm.memory/evidences :dt/subproperty-of :mm.memory/cites)` means every evidences-edge is also a cites-edge.  Per `observations/predicate_hierarchy_lattice_analysis_and_substrate_memorial_layered_duplication_2026_05_21.md`."}
+   :db/doc "RDFS-style subproperty declaration: a relation p specializes q when every
+            (x p y) also entails (x q y). Subproperty semantics are reflexive and
+            transitive. For example, declaring evidences below cites allows rule
+            consumers to treat an evidence edge as a citation. The declaration
+            records the hierarchy; it does not itself transact inferred edges."}
 
   {:db/ident :dt/inverse-of
    :dt/type  :dt/Property
@@ -232,7 +236,11 @@
    :dt/range :dt/Property
    :db/valueType :db.type/ref
    :db/cardinality :db.cardinality/one
-   :db/doc "OWL 2 owl:inverseOf alignment.  Declares two predicates as inverses: `(p :dt/inverse-of q)` iff `(x p y) ↔ (y q x)`.  Symmetric in semantics (if p inverse-of q then q inverse-of p) — but cardinality-one here records the directional assertion; the symmetric companion is asserted separately if needed.  Operational consequences (OWL 2 RL rules prp-inv1 + prp-inv2): `(p :dt/inverse-of q) ∧ (x p y) → (y q x)` AND `(p :dt/inverse-of q) ∧ (x q y) → (y p x)`.  Substrate-level encoding of the inverse-of relation that lives informally in predicate-memorial frontmatter (`inverse-of:` field).  Layer 0 entailment rules per `references/rdfs_entailment_rules_datalog_compilation_reference.md` §4.6 + `plans/layered_rule_subsystem_architecture_arc_2026_05_21.md`."}
+   :db/doc "Inverse-property declaration aligned with OWL inverseOf: (x p y) corresponds
+            to (y q x). The relationship is symmetric in meaning, but this
+            cardinality-one attribute records one direction; assert the companion
+            declaration separately when needed. Rule consumers can derive reverse
+            edges from it; declaring the metadata does not itself materialize them."}
 
   ;; ==========================================================================
   ;; Abstract super-properties — RDFS-formal layering of substrate-level
@@ -303,10 +311,10 @@
    :dt/range :db.type/keyword
    :db/valueType :db.type/keyword
    :db/cardinality :db.cardinality/one
-   :db/doc "Per-class default codec format hint. The codec mediator
-            (sandbar.codec) uses this when no explicit :format hint is
-            provided. E.g., :mm/Memory → :markdown. Per
-            decisions/sandbar_codec_layer_owns_wire_format_concerns_consumer_native_representation_2026_05_12.md §2.5."}
+   :db/doc "Per-class default codec format used by sandbar.codec when no explicit
+            :format is supplied; for example, :mm/Memory uses :markdown. This
+            selects a format, while :dt/codec-type-keyword selects a class within
+            that format."}
 
   {:db/ident :dt/codec-type-keyword
    :dt/type  :dt/Property
@@ -315,29 +323,12 @@
    :db/valueType :db.type/keyword
    :db/cardinality :db.cardinality/many
    :db/unique :db.unique/identity
-   :db/doc "Per-class CLASS-ROUTING keywords for frontmatter-driven codec
-            class resolution.  When a markdown document's frontmatter
-            carries `type: <kw>`, the codec routes to the class whose
-            `:dt/codec-type-keyword` SET contains `<kw>`.  Cardinality-
-            many so a single class can claim MULTIPLE routing keywords
-            (e.g., :mm/Actor claims both :ai-actor and :human-actor —
-            the corpus's `type:` vocabulary preserves the kind-
-            distinction while the substrate routes both to one class).
-            Example: :mm/Tag declares `:dt/codec-type-keyword :tag` so
-            files with `type: tag` parse as :mm/Tag entities (not
-            :mm/Memory with memory-type :tag).  Default routing target
-            (when no class claims the type-keyword) is :mm/Memory.
-            Per decisions/tag_as_first_class_introspectable_type_in_metamodel_2026_05_20.md
-            Stage 7.C codec class-routing — replaces hardcoded :mm/Memory
-            in sandbar.codec.markdown/parse-document with metamodel-
-            driven dispatch.  Bumped to cardinality-many 2026-05-20 per
-            decisions/actor_as_first_class_metamodel_class_with_mm_actor_slots_2026_05_20.md
-            so :mm/Actor can claim both :ai-actor and :human-actor.
-            Sister attribute to :dt/native-codec (which selects the
-            codec FORMAT) — :dt/codec-type-keyword selects the CLASS
-            within a chosen codec.  Unique-identity per VALUE so each
-            keyword in the set is independently a unique-identity lookup
-            for its class."}
+   :db/doc "Keywords that route Markdown frontmatter type values to this class.
+            A class may claim multiple keywords, such as :ai-actor and
+            :human-actor; each keyword is a unique-identity lookup for its class.
+            A type not claimed by a class falls back to :mm/Memory.
+            Unlike :dt/native-codec, which selects a wire format, this attribute
+            selects the entity class within the Markdown codec."}
 
   {:db/ident :dt/codec-aliases
    :dt/type  :dt/Property
@@ -346,34 +337,12 @@
    :db/valueType :db.type/tuple
    :db/tupleType :db.type/keyword
    :db/cardinality :db.cardinality/many
-   :db/doc "Per-class codec-layer alias map.  Each tuple is
-            [short-key slot-ident] — a codec wire-form short name
-            paired with the canonical namespaced slot ident.  Codecs
-            read this via `sandbar.db.datatype/codec-aliases-of` for
-            class-declared alias resolution.
-
-            NOTE — these are NOT owl:sameAs-shaped identity aliases.
-            They are context-specific naming conventions for the codec
-            layer ONLY: when a class is encoded via a codec, short-key
-            surfaces in the wire form as a stand-in for the canonical
-            namespaced slot.  The slot retains its full canonical
-            identity in the model; only the wire-form name is short.
-
-            Attribute name `:dt/codec-aliases` (not `:dt/aliases`)
-            chosen to disambiguate from OWL identity-relation
-            semantics + to match the `:dt/native-codec` sister
-            attribute naming pattern, per
-            interaction/check_substrate_schema_attribute_names_against_rdf_owl_semantics_2026_05_13.md.
-
-            Example: on :mm/Memory, [:type :mm.memory/memory-type]
-            tells the markdown codec that frontmatter key `type:` maps
-            to slot :mm.memory/memory-type (avoiding collision with
-            the :dt/type system attribute).
-
-            Replaces the prior hardcoded `known-class-slot-aliases`
-            map in `sandbar.codec.markdown` per
-            interaction/no_hardcoded_consumer_class_knowledge_in_substrate_2026_05_13.md
-            + decisions/sandbar_dt_star_explicit_ident_entity_helper_split_2026_05_13.md."}
+   :db/doc "Class-declared codec aliases as [short-key slot-ident] keyword pairs.
+            `codec-aliases-of` exposes the mapping to codecs. For example,
+            [:type :mm.memory/memory-type] gives the Markdown type field its
+            canonical slot without colliding with :dt/type.
+            These aliases change wire spelling only; they neither merge entity
+            identities nor declare an owl:sameAs relationship."}
 
   {:db/ident :dt/codec-slot-order
    :dt/type  :dt/Property
@@ -382,38 +351,13 @@
    :db/valueType :db.type/tuple
    :db/tupleTypes [:db.type/keyword :db.type/long]
    :db/cardinality :db.cardinality/many
-   :db/doc "Per-class CANONICAL slot ordering for codec emit.  Each
-            entry is `[slot-ident position]` — a heterogeneous tuple
-            pairing the canonical namespaced slot ident with its
-            sort position (smaller = earlier).  Codecs read this via
-            `sandbar.db.datatype/codec-slot-order-of` to introspect
-            the class-declared emit order.
-
-            Distinct from `:dt/slots` — `:dt/slots` is the cardinality-
-            many SET of slots belonging to a class (membership, order
-            lost at transact); `:dt/codec-slot-order` is the ORDERED
-            sequence specifically governing wire-form emit.  The two
-            CAN diverge: slots that exist on a class but never surface
-            in the wire form (e.g., :mm.memory/body-raw, structural-
-            graph slots) MAY be omitted from `:dt/codec-slot-order`.
-
-            Codec semantics:
-              - On emit, the codec introspects this attribute and
-                writes slots in the declared order.  Slots present in
-                the entity but absent from the ordering are appended
-                at the end (in entity-key iteration order).
-              - On parse, this attribute has NO effect — parse just
-                accumulates whatever the source provides.  Round-trip
-                fidelity for slot-ordering comes from emit producing
-                CANONICAL class-declared order, not from preserving
-                source-text accident.
-
-            Per decisions/slot_order_declared_by_class_introspectable_2026_05_20.md
-            (Dan-directive 2026-05-20: 'slot order should be declared
-            by the class and introspectable').  Replaces the prior
-            `:codec/key-order` metadata threading pattern that carried
-            source-text order through parse → entity → emit (brittle:
-            metadata dropped on any new map construction)."}
+   :db/doc "Canonical codec emission order as [slot-ident position] pairs, with smaller
+            positions emitted first. `codec-slot-order-of` exposes this class
+            metadata. Unlike :dt/slots membership, these numeric positions retain
+            ordering after transaction. Slots omitted from the order use the
+            codec's fallback ordering, and some structural slots need not appear
+            in the wire form at all. Parsing is unaffected: the emitted order
+            follows the class contract rather than incidental source key order."}
 
   {:db/ident :dt/superseded-when
    :dt/type  :dt/Property
@@ -452,36 +396,13 @@
    :db/valueType :db.type/tuple
    :db/tupleTypes [:db.type/keyword :db.type/double]
    :db/cardinality :db.cardinality/many
-   :db/doc "Per-class default BM25F field-weights for fulltext search.
-            Each entry is [slot-ident weight] — a heterogeneous tuple
-            pairing the canonical namespaced slot ident with its
-            multi-field BM25F scoring weight.  Consumed by
-            sandbar.search/search-bm25f when no :field-weights opt is
-            provided on the query; a per-query :field-weights opt
-            overrides.
-
-            Algorithm-specific name (`bm25f-weights`) chosen over a
-            bare `weights` to disambiguate from any RDF/OWL weighted-
-            axiom semantics, per
-            interaction/check_substrate_schema_attribute_names_against_rdf_owl_semantics_2026_05_13.md.
-
-            Heterogeneous tuple shape ([keyword double]) declared via
-            :db/tupleTypes (plural) — Datomic's fixed-length typed-pair
-            form, distinct from :db/tupleType (singular, homogeneous).
-            Sister attribute :dt/codec-aliases uses the homogeneous
-            form (two keywords); :dt/bm25f-weights mixes keyword +
-            double so requires the plural form.
-
-            Example: on :mm/Memory,
-              [[:mm.memory/name 12.0]
-               [:mm.memory/description 8.0]
-               [:mm.memory/body-raw 1.0]]
-            tells sandbar.search/search-bm25f to weight name-matches
-            12x, description-matches 8x, and body-matches 1x when
-            scoring fulltext hits against the memory class.
-
-            Per fulltext arc Stage 1 of
-            plans/sandbar_fulltext_search_substrate_arc_2026_05_13.md."}
+   :db/doc "Default field weights for BM25F search, stored as [slot-ident double] pairs.
+            A query's explicit :field-weights overrides the class default.
+            Weights control relative field contribution before scoring; they are
+            not direct multipliers of the final document score.
+            For example, name 12.0, description 8.0, and body-raw 1.0 emphasize
+            descriptive fields. :db/tupleTypes declares the heterogeneous pair,
+            unlike the homogeneous keyword pairs used by :dt/codec-aliases."}
 
   {:db/ident :dt/memorial-policy
    :dt/type  :dt/Property
@@ -489,32 +410,14 @@
    :dt/range :db.type/keyword
    :db/valueType :db.type/keyword
    :db/cardinality :db.cardinality/one
-   :db/doc "Per-class declarative classification governing how instances
-            are persisted + projected to the fs corpus.  Three values:
-
-              :first-class — instances project to memory/<class-path>/<ident>.md
-                             via the reactive sink (sandbar.reactive.sinks);
-                             BM25F-searchable + human-editable + git-versioned
-
-              :db-only     — instances stay DB-resident; covered by the DB-dump
-                             arc for disaster recovery + audit
-
-              :inline      — instances serialize inline within host memorials
-                             (e.g., :mm/Tag in :mm.memory/tags)
-
-            The reactive-projection sink consults this slot at projection time
-            to decide whether to materialize a fs counterpart.  The DB-dump arc
-            consults this slot at dump time to decide whether to include.
-
-            Per decisions/option_b_plus_c_ratified_spec_vs_state_criterion_pivot_to_first_class_memorialization_2026_05_23.md
-            + plans/sandbar_first_class_memorialization_arc_workflows_schedules_contexts_dt_memorial_policy_2026_05_23.md
-            (Dan-pivot 2026-05-23 ratifying Option B + C of the corpus/DB
-            inversion question; SPEC-vs-STATE criterion).
-
-            Future evolution: REQUIRED at class-design time (loud-fail without)
-            per the arc plan's §6.7 Stage G.  Currently optional with no enforced
-            default; Stage A.2 of the first-class-memorialization arc resolves
-            the required-vs-optional default semantics."}]
+   :db/doc "Class-level projection policy: :first-class makes instances eligible for
+            corpus-file projection; :db-only retains database state without a
+            separate corpus file; :inline represents content within a host
+            document. The filesystem sink resolves the effective inherited policy
+            and writes only :first-class instances that also satisfy path and
+            codec requirements. An undeclared policy is skipped by that sink.
+            This policy alone provides neither search configuration nor backup;
+            database-only state needs a separate recovery procedure."}]
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Fundamental Classes

@@ -1,60 +1,14 @@
 (ns sandbar.firewall.core
-  "S7 — THE PURE DIRECTIONAL FIREWALL CORE (BU-1).
+  "Pure directional flow predicates over already-resolved labels.
+   A label carries :sensitivity, :contexts and :project. This namespace does
+   not query the database or inspect principals; label resolution and write/
+   traversal enforcement live in the label and enforce namespaces.
 
-  The deterministic, physical, principal-INDEPENDENT flow-core of the
-  X-minus firewall.  Label × Label → verdict.  This namespace is
-  DB-QUERY-FREE: no `d/q`, no db reads, no entity resolution.  Its ONLY
-  dependency is `clojure.set` (for the compartment subset test).  All DB
-  touching lives in `sandbar.firewall.label` (label-of) and
-  `sandbar.firewall.enforce` (the resolver-binding sites); this core is
-  consumed IDENTICALLY by EP-1 (author-time write), EP-3 (traverse-time),
-  the S9 db-closure, and S10's audit emitter — five callers, one core
-  (semantic-identity proven by T-19).
-
-  TRUST MODEL (non-negotiable, `decisions/firewall_trust_model_deterministic_physical_enforcement_llm_untrusted_audit_orthogonal_optin_dan_2026_07_06.md`):
-  the firewall is DETERMINISTIC + PHYSICAL; the LLM is UNTRUSTED in the
-  enforcement path.  The point predicates are PURE over LABELS (slot
-  values) — reject on the EDGE, never on the caller/principal.  No model
-  judgement, no content inference, no paraphrase detection (that residual
-  stays disciplinary + named, never mechanical — the trust-model boundary).
-
-  ── The Label contract (a PLAIN MAP, not a record — §1.1) ──────────────
-    Label ::= {:sensitivity  :public | :private   ; X-minus binary; tiers
-                                                   ;   are additive VALUES later
-               :contexts     #{eid ...}           ; the compartment coordinate —
-                                                   ;   a SET of :mm/Context eids
-                                                   ;   (card-many
-                                                   ;    :mm.project/runs-in-context, R2)
-               :project      eid | nil}           ; the owning-project eid
-                                                   ;   (routing anchor; nil for a
-                                                   ;   bare Context)
-  All eids are `sandbar.db.ref/ref->eid`-normalized upstream — a sentinel
-  or interned ident-bearing ref NEVER collapses to nil (S6-review #1).
-  TOTAL + fail-closed: an unrecognized/unresolvable source is labelled
-  {:sensitivity :private :contexts #{<:context/UNASSIGNED eid>}
-   :project <:project/UNASSIGNED eid>} by `label-of` (BU-2), so it falls to
-  the subset clause with the UNASSIGNED singleton and refuses across
-  compartments.  `:sensitivity` is computed by `label-of` as the
-  MOST-RESTRICTIVE composition of all four axes present (CA-4/BU-2); this
-  core simply CONSUMES the already-composed `:sensitivity`.
-
-  ── The Verdict contract (§1.4) ────────────────────────────────────────
-    Verdict ::= {:permitted? false
-                 :reason     :flow-forbidden | :tie-forbidden
-                 :slot       <kw>          ; the governed slot the edge is on
-                 :target-ref <raw>         ; the raw ref as written (pre-resolution)
-                 :src-label  <Label>
-                 :tgt-label  <Label>}
-  A refusal Verdict is the ONE shape `enforce/verdict->error` adapts to the
-  `validate-data` error map ({:type :firewall-violation :severity :violation
-  ...}) that EP-1 throws, EP-3 projects as a blocked hop, and S10 records —
-  no second detection path anywhere.
-
-  ── F7 declassification (RESERVED, unimplemented — §10 scope exclusion) ─
-  A future `declassified-handle?` carve-out (the ratified F7 clause) would
-  permit an explicitly-declassified public→private edge.  It is NOT in S7:
-  no clause here consults it; it is named only so S9/S10 know where it will
-  attach."
+   Public references may not flow to private knowledge. Private sources may
+   refer to public knowledge and compatible private compartments. Verdicts
+   report permission and, on refusal, the source/target labels and edge.
+   These predicates do not detect private prose or implement declassification.
+   See doc/firewall-and-projects.md for the separate boundaries."
   (:require [clojure.set :as set]))
 
 ;;; ===========================================================================

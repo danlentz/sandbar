@@ -25,30 +25,26 @@
    fire `resources/entity-updated!` for a `:private` entity; assert only the
    cleared subscriber's closure received the frame.
 
-   ## No DB, no S6 schema (INERT-UNTIL-S6, HARD RULE 5)
+   ## Explicit database fixture and map-shaped delivery
 
-   The S6 compartment slots (`:mm.memory/visibility`,
-   `:mm.memory/owning-project`, `:auth/cleared-projects`, `:auth/full-clearance?`)
-   do NOT exist in the schema yet (grep-proven absent, D3 §7).  The clearance
-   predicates are PURE keyword-as-fn lookups over already-loaded maps
-   (`sandbar.mcp.clearance`), and `resources/entity->uri` reads a map's
-   `:dt/type` directly (`db/entity` returns an associative arg as-is), so this
-   test feeds BARE maps carrying those keys — the exact projection shape the
-   wire hands the delivery path once S6 mints the slots.  This needs no DB
-   fixture and no `:firewall` schema; it is the same map-driven idiom the pure
-   companion `clearance_test.clj` uses, but exercised through the real registry
-   + the real `entity-updated!` seam.
+   The ownership-aware delivery seam now reads one current database snapshot
+   to resolve document components and project refs. Use an explicit isolated
+   fixture even though these legacy cases supply memory-shaped slot maps.
+   The pure companion clearance_test.clj still needs no database; component
+   ownership and reparenting cases live in section_visibility_test.clj.
 
    Per S5-PLAN.md §2.2 item 8 + §2.4 (criterion-3 CI shape) + DESIGN-D3 §8."
   (:require [clojure.test              :refer :all]
             [sandbar.mcp.clearance     :as clearance]
             [sandbar.mcp.notifications :as notifications]
-            [sandbar.mcp.resources     :as resources]))
+            [sandbar.mcp.resources     :as resources]
+            [sandbar.test-util         :as tu]))
 
 ;; Registry state is process-global (defonce atoms survive between deftests and
 ;; across reloads — R4).  Clear before AND after every test so a stray
 ;; subscriber from another suite cannot receive (and thus mask) a leak here.
 (use-fixtures :each
+  (tu/make-test-db-fixture {:test-name "notify-clearance" :auth? false})
   (fn [t]
     (notifications/clear-all!)
     (resources/clear-all-subscriptions!)

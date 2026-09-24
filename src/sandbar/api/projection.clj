@@ -1,58 +1,16 @@
 (ns sandbar.api.projection
-  "Entity-projection helpers — single source of truth shared across
-  `sandbar.navigate.*`, `sandbar.orient`, `sandbar.api.aggregate`, and
-  `sandbar.mcp.tools` handlers.  Lifted from 5+ duplicate definitions
-  per Task #12 of the MCP cutover-friction batch (2026-05-22).
+  "Entity projection shared by navigation, orientation, aggregation and MCP.
 
-  ## Modes
+  :full realizes an entity's attributes, retains its namespaced slots and
+  identifiers, and projects nested reference values to :metadata-only.
+  :metadata-only contains :db/id, :db/ident when present, and :dt/type
+  when set. It does not require full attribute realization.
 
-  - `:full` — preserves all namespaced-keyword slots + `:db/ident` +
-    explicit `:db/id`.  Calls `d/touch` first to realize all slot
-    values (Datomic Entity iteration via `seq` only enumerates
-    already-realized attrs; fresh-from-transact entities are sparse
-    without touch — see Bug C4 in `audit-results/mcp_e2e_correctness_audit_2026_05_22.md`).
-    Ref-slot values (Datomic Entity instances) recursively project to
-    `:metadata-only` shape — enough to identify the target without
-    unbounded recursion or JSON-serialization failure on raw
-    EntityMap (see Bug C1).
-
-  - `:metadata-only` — substrate-universal fields only: `:db/id` +
-    `:db/ident` (if interned) + `:dt/type` (if set).  Class-agnostic;
-    no consumer-specific slot inclusion.  Doesn't `d/touch` — these
-    three attrs are accessible without realization.  10-300x smaller
-    payload than `:full` for exploration use cases (navigate /
-    library-card defaults).
-
-  ## Recursive projection bound
-
-  `:full` projection of a top-level entity recurses to `:metadata-only`
-  for nested ref-slot values (one hop deep).  Avoids:
-  - infinite recursion on circular ref graphs (corpus has many
-    cites / related / composes-with cycles)
-  - exponential payload blow-up on deeply-connected entities
-  - JSON-serialization failure on unprocessed Datomic Entity objects
-
-  Consumers wanting deeper traversal use `sandbar.navigate.*` or
-  `sandbar.orient.library-card` explicitly with their own `:projection`
-  opts per axis.
-
-  ## Why class-agnostic?
-
-  Per `interaction/no_hardcoded_consumer_class_knowledge_in_substrate_2026_05_13.md`
-  — substrate helpers don't carry knowledge of consumer-class-specific
-  slots.  `:dt/type` is the universal class-membership slot every
-  entity carries; `:db/id` + `:db/ident` are substrate-level fields.
-  These three together suffice for orientation without coupling the
-  substrate to any specific consumer schema.
-
-  ## Stage B.1 of substrate-stabilization arc
-
-  Per `plans/sandbar_mcp_end_to_end_correctness_pass_substrate_stabilization_arc_2026_05_22.md`
-  Stage B.1.  Unified fix for:
-  - Bug C1 (entity.create / write-verb response fails JSON serialization
-    on nested Datomic Entity values)
-  - Bug C4 (fresh-from-transact entity returns sparse projection
-    because seq iteration only surfaces realized attrs)"
+  Limiting nested references to identification avoids unbounded recursion
+  through cycles and avoids returning raw Datomic Entity values to JSON
+  encoders. Consumers request deeper graph traversal explicitly through
+  navigation operations. These helpers describe result shape; callers must
+  separately enforce authorization and disclosure policy."
   (:require [clojure.string :as str]
             [datomic.api    :as d]
             [sandbar.security.query :as secq]

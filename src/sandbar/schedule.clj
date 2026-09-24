@@ -1,65 +1,13 @@
 (ns sandbar.schedule
-  "γ.2 Step 6 — public API facade for the sandbar scheduler.
+  "Public scheduler facade over state, recurrence, dispatch and job execution.
+   enable!/disable! change the gate flag; they do not allocate or release
+   the runtime. start!/stop! compose dispatcher resources with event-handler
+   registration. add-schedule!/remove-schedule! manage queued schedules;
+   list-schedules, inspect and state expose diagnostics.
 
-   Thin wrapper over the four internal namespaces:
-     - `sandbar.schedule.state`         — runtime state + state-machine
-     - `sandbar.schedule.recurrence`    — lib-recur RRULE boundary
-     - `sandbar.schedule.dispatcher`    — fire-thread + queue + emission
-     - `sandbar.schedule.job-dispatcher` — :mm.event/Scheduled subscriber
-
-   Consumers (γ.4 MCP verbs; γ.3 lifecycle wiring; operators at the
-   REPL) should reach for THIS namespace + only fall through to the
-   internal namespaces for deep introspection.
-
-   ## Public surface
-
-     `enable!`         — flip :enabled? true (does NOT start fire-thread)
-     `disable!`        — flip :enabled? false (does NOT stop fire-thread)
-     `enabled?`        — read :enabled? flag
-     `start!`          — full activation: dispatcher.start! + job-dispatcher.register!
-     `stop!`           — full deactivation: job-dispatcher.unregister! + dispatcher.stop!
-     `add-schedule!`   — schedule a :mm/Schedule eid for firing
-     `remove-schedule!`— deschedule
-     `list-schedules`  — diagnostic; returns vec of queued [fire-at eid] entries
-     `inspect`         — full state snapshot for operator + MCP verb consumption
-     `state`           — diagnostic; returns the current state-machine keyword
-
-   ## Lifecycle composition (per γ.1 ADR §1.6)
-
-   `start!` composes the two-side activation:
-   1. `dispatcher/start!` — allocates handler-pool + spawns fire-thread + transitions to :active
-   2. `job-dispatcher/register!` — subscribes the :mm.event/Scheduled handler
-
-   `stop!` composes the inverse:
-   1. `job-dispatcher/unregister!` — removes the subscriber (so the
-      dispatcher's final-drain fires don't trigger Run creation)
-   2. `dispatcher/stop!` — drains handler-pool + joins fire-thread +
-      transitions to :inactive
-
-   The two halves are coupled at this layer (not at the dispatcher or
-   job-dispatcher layer) so each internal namespace stays single-
-   responsibility.
-
-   ## Enable/disable vs start/stop
-
-   `enable!` / `disable!` flip the gate flag; the dispatcher's fire-
-   thread + job-dispatcher's subscriber both read `:enabled?` at fire/
-   handle time to decide whether to act.
-
-   `start!` / `stop!` allocate / release the actual threads + pool +
-   subscriber.
-
-   Typical production lifecycle (per γ.3 sandbar.core wiring; not yet
-   landed): `start!` at JVM boot when config's `:scheduler/enabled?`
-   is true; `stop!` at JVM shutdown.  Operators may `disable!` to
-   suspend firings without tearing down resources.
-
-   ## See also
-
-   - γ.1 ADR: `:memory.decisions/gamma_1_scheduler_path_a_native_min_heap_dispatcher_q_gamma_1_through_6_resolved_2026_05_27`
-   - γ implementation plan-mode: `~/.claude/plans/golden-squishing-flamingo.md` Step 6
-   - sibling sandbar.reactive (shape precedent for public-API facade
-     fronting per-thread + atom-inside-dyn-var idiom)"
+   Service lifecycle invokes this facade according to configuration. Job
+   overlap, timeout and effect guarantees remain those of the current
+   dispatcher, described in doc/concepts/temporal-substrate.md."
   (:require [sandbar.schedule.state          :as state]
             [sandbar.schedule.dispatcher     :as dispatcher]
             [sandbar.schedule.job-dispatcher :as jd]))

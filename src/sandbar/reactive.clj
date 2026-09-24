@@ -1,61 +1,11 @@
 (ns sandbar.reactive
-  "Reactive-projection substrate hook layer.
-
-   ## What this exists for
-
-   Sandbar entity mutations (via the canonical dt/* primitive layer —
-   `dt/make` / `dt/make-all` / `dt/update-entity!`) trigger reactive
-   projection of the post-mutation entity state to parallel surfaces
-   (filesystem markdown corpus; SSE-subscribed clients; audit
-   substrates).  This namespace owns:
-
-   - The HOOK DISPATCH POINT at the dt/* boundary
-   - The OPT-OUT mechanism (three-layer priority resolution)
-   - STRUCTURED LOGGING at the hook-fire / opt-out-skip boundary
-   - The CALLBACK REGISTRY that downstream pipeline modules (codec.emit /
-     fs.write / SSE.emit per Stage B; bounded queue per Stage A.6) attach
-     to
-
-   ## Decision lineage
-
-   - `decisions/reactive_projection_hook_at_dt_make_boundary_with_opt_out_2026_05_23.md`
-     (eid 17592186094347) — WHERE the hook attaches (dt/* not MCP) +
-     three-layer opt-out (per-call kwarg / dynamic binding / class
-     skip-list)
-   - `decisions/reactive_projection_queue_bounded_buffer_and_health_observability_2026_05_23.md`
-     (eid 17592186094353) — what happens AFTER the hook (bounded
-     core.async sliding-buffer; `sandbar.reactive.health` MCP verb)
-   - `decisions/reactive_projection_structured_logging_required_for_states_significant_actions_2026_05_23.md`
-     (eid 17592186094433) — `:REACTIVE/<event-name>` log vocabulary
-   - `plans/sse_reactive_corpus_projection_arc_2026_05_23.md`
-     (eid 17592186094359) — the parent arc plan
-
-   ## Stage tracking
-
-   - Stage A.5 (THIS module): opt-out + callback dispatch + structured
-     log at the hook-fire boundary.  Callbacks default empty; A.5 ships
-     the dispatch point only.
-   - Stage A.6 (separate module): bounded queue worker registers as a
-     callback; codec.emit + fs.write + SSE.emit fire from the worker.
-   - Stage B.1+: wire the pipeline sinks.
-
-   ## Public surface
-
-     `*reactive-projection-enabled?*` — dynamic var (default true);
-       bind to false for scoped opt-out (e.g., project.import echo
-       prevention, bulk-seed defer, test fixtures)
-
-     `(on-entity-changed! class-ident entity per-call-project?)` —
-       fire the hook; opt-out checks apply.  Called by dt/make /
-       dt/make-all / dt/update-entity! after a successful transaction.
-
-     `(register-callback! callback-fn)` — add a callback receiving
-       `[entity-eid post-tx-slots]` on every hook fire
-
-     `(unregister-callback! callback-fn)` — remove a previously-
-       registered callback
-
-     `(clear-callbacks!)` — test-only; reset registry"
+  "Post-mutation callback layer for derived projection.
+   Eligible datatype mutations call on-entity-changed! with class, the accepted
+   entity and the per-call projection option. Registered callbacks receive
+   the eid and entity. Per-call options, dynamic bindings and class policy can suppress
+   projection. Callbacks are registered/unregistered explicitly; the queue
+   is one consumer. This hook is not a subscription to every raw Datomic
+   transaction. See doc/concepts/reactive-substrate.md."
   (:require [clojure.tools.logging :as log]
             [sandbar.db.datomic    :as db]))
 
@@ -99,19 +49,10 @@
   true)
 
 (def ^:private +class-skip-list+
-  "Class idents whose instances DO NOT trigger reactive-projection by
-   default.  These are meta-substrate classes — schema bootstrap
-   entities + workflow substrate entities — whose mutations are not
-   user-facing corpus state and shouldn't materialize as filesystem
-   .md files.
-
-   Per `decisions/reactive_projection_hook_at_dt_make_boundary_with_opt_out_2026_05_23.md`
-   §2.2 Layer 3 (class-level default).
-
-   Future evolution: this set could become data-driven via a
-   `:dt/reactive-projection?` slot on `:dt/Class` (read at hook-fire
-   time).  Hardcoded for Stage A.5 MVP; data-driven shape lands in a
-   follow-on if the skip-set grows."
+  "Class idents whose instances skip reactive projection by default.
+   These include schema/bootstrap and runtime records that should not become
+   ordinary collection documents. The mutation path also consults its other
+   opt-out and class-policy controls; membership here is not authorization."
   #{:dt/Class
     :dt/Property
     :mm/Workflow

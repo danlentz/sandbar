@@ -1,6 +1,7 @@
 (ns sandbar.project.export-import-roundtrip-test
   "THE live-store export→import end-to-end round-trip (board-ruled shape,
-   fleet cycle 2026-07-21).
+   fleet cycle 2026-07-21), adapted on 2026-09-21 to the GUARDED export
+   contract (Dan-approved bounded W1.H first build).
 
    The gap this closes: no live-store export→import round-trip had ever
    run green —
@@ -14,46 +15,74 @@
    `sandbar.project.export` MCP verb, re-imported through the REAL
    `sandbar.project.import` MCP verb, and compared for semantic equality.
    That DB-born export path is exactly where sections were silently
-   dropped once before (Codex MUST-FIX #4 — `project-export-handler` now
-   realizes the section tree via `pg/mm-walker`); this test pins the fix
-   at the DISPATCHED-VERB level against a transacted store.
+   dropped once before (Codex MUST-FIX #4 — the exporter realizes the
+   section tree via `pg/mm-walker`); this test pins the fix at the
+   DISPATCHED-VERB level against a transacted store.
 
-   Board-ruled test shape:
-     1. transact a SECTIONED memorial into a test store
-     2. `project.export`  (real verb, via `tools/handle-call`)
-     3. assert the sections are PRESENT IN THE EXPORT (file content)
-     4. re-import (`project.import :persist? true`, real verb, fresh store)
-     5. compare semantic equality via the W1.J harness's §D.5 8-query
-        contract helpers (`sandbar.gate.roundtrip-contract`)
+   2026-09-21 adaptation to the guarded contract (what changed, and why):
+     - the verb no longer accepts a bare `:to`; it requires an explicit
+       ENROLLED project (a `:mm/Project` whose `:mm.project/ident` is a key
+       of the operator `:project-roots` map), an operator-configured
+       `:destination` (`:export-destinations` name → project, audience,
+       staging root, private audit root) and a FRESH direct child of the
+       staging root as `:to`, which the SERVER creates;
+     - the verb is preview-by-default: a preview writes a private audit and
+       returns a plan token; execution (`dry-run false`) must carry that
+       token (`expect-plan`) and the verb re-plans before any effect;
+     - only documents OWNED by the selected project export, so the
+       schema-seeded resident `workflows/session.md` (unowned) is no longer
+       part of the exported population: the exported count is exactly the
+       probe(s), not the whole file-backed population.  The re-imported
+       store still holds that resident from its own schema load, so the
+       §D.5 population comparison stays exact;
+     - a document must carry an explicit `visibility` and an `id` UUID and be
+       owned by the project (all three are guarded-export preconditions), so
+       the authored probes now carry those keys; the settle pass keeps the
+       byte-for-byte obligation over that richer form;
+     - the FRESH second store is kept deliberately (codec compatibility
+       proof), with the probe's dependency — the owning project — seeded
+       there explicitly under the same idents before the import, so the
+       re-import resolves the same owner rather than minting a placeholder.
+       This is a fresh-store fidelity proof; retained-store identity
+       (same eids/UUIDs/incoming refs across an import into the SAME store)
+       is Astra's `export_import_test`, not this file.
 
-   Settle discipline (mirrors `sandbar.gate.roundtrip`'s SETTLE pass, at
-   the TEXT level): the authored markdown is normalized ONCE through
-   parse→emit before it seeds the source store, so the comparison
-   measures round-trip FIDELITY of the store→export→import pipeline, not
-   fixture-authoring whitespace normalization — keeping Q6 (per-file
-   body SHA) an exact assertion.
+   Original obligations retained: settle-text fidelity (export reproduces the
+   settled at-rest form byte for byte), the three-section probe with
+   prologue, the nested two-level probe with sibling order and body text at
+   every hop, the §D.5 8-query semantic equality, per-file fingerprint and
+   section-count equality, and a clean persist (no failures/refusals).
 
    Store lifecycle via `sandbar.gate.db/with-fresh-db*` (ephemeral
    datomic:mem; ambient conn saved/restored) — the live store is never
-   touched, per HARD-CONSTRAINT-e.  No `make-test-db-fixture` here, same
-   as `sandbar.gate.release-gate-test`."
+   touched, per HARD-CONSTRAINT-e."
   (:require [cheshire.core   :as json]
             [clojure.java.io :as io]
             [clojure.string  :as str]
             [clojure.test    :refer [deftest is testing]]
             [sandbar.codec.markdown          :as md]
+            [sandbar.config                  :as config]
             [sandbar.db.datatype             :as dt]
+            [sandbar.firewall.support        :as sup]
             [sandbar.gate.db                 :as gdb]
             [sandbar.gate.roundtrip-contract :as contract]
-            [sandbar.mcp.tools               :as tools]))
+            [sandbar.mcp.tools               :as tools]
+            [sandbar.project.export          :as export])
+  (:import [java.nio.file Files]
+           [java.nio.file.attribute FileAttribute PosixFilePermissions]))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; helpers
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-(defn- fresh-tmp-dir ^java.io.File [stem]
-  (let [f (java.io.File/createTempFile (str "e2e-" stem "-") "")]
-    (.delete f) (.mkdirs f) f))
+(defn- canonical-tmp-dir
+  "A fresh temp directory as a CANONICAL File: the guarded exporter accepts a
+   staging child only when the path handed to it already equals its canonical
+   form (no alias, `..` or symlink), so every path below derives from this."
+  ^java.io.File [stem]
+  (-> (Files/createTempDirectory (str "e2e-" stem "-") (make-array FileAttribute 0))
+      .toFile
+      .getCanonicalFile))
 
 (defn- rm-rf! [^java.io.File f]
   (when (.isDirectory f)
@@ -72,6 +101,72 @@
         (str wire-name " returned isError — " (-> result :content first :text)))
     (some-> result :content first :text (json/parse-string true))))
 
+;; ---- the enrolled project the guarded exporter routes by ---------------------
+
+(def ^:private project-key :proj/probe)                 ; :mm.project/ident + :project-roots key
+(def ^:private project-ident :memory.projects/probe)    ; document ident → renders as projects/probe.md
+(def ^:private destination-name "probe-public")
+
+(defn- seed-enrolled-project!
+  "Seed the public context + project the probes are owned by, in the CURRENT
+   store.  Mirrors `sandbar.project.export-test`: `seed-project!` mints the
+   routing key as `:mm.project/ident`; the document ident is then re-asserted
+   in the `memory.projects` namespace so the codec renders the owner as
+   `projects/probe.md`, and the project carries the explicit `visibility` the
+   guarded exporter requires of every referenced target."
+  []
+  (sup/seed-context! :ctx/probe :public-bottom)
+  (sup/seed-project! project-key :public :ctx/probe :public-bottom)
+  (sup/raw-transact! [{:db/id (sup/eid-of project-key)
+                       :db/ident project-ident
+                       :mm.memory/visibility :public}]))
+
+(defn- with-operator-destination
+  "Create the operator-owned directories (project source root, staging root,
+   0700 audit root) and run `f` with the service configuration redefined to
+   enroll `project-key` and name one public destination.  `f` receives
+   `{:root :staging :audit}`; everything is removed afterwards."
+  [f]
+  (let [root    (canonical-tmp-dir "guarded-rt")
+        source  (doto (io/file root "project-source") .mkdirs)
+        staging (doto (io/file root "staging") .mkdirs)
+        audit   (doto (io/file root "audit") .mkdirs)]
+    (Files/setPosixFilePermissions (.toPath audit) (PosixFilePermissions/fromString "rwx------"))
+    (let [overlay  {:project-roots {project-key (.getPath source)}
+                    :export-destinations
+                    {destination-name {:project project-key :audience :public
+                                       :staging-root (.getPath staging)
+                                       :audit-root (.getPath audit)}}}
+          original config/value]
+      (try
+        (with-redefs [config/value (fn [k] (if (contains? overlay k) (get overlay k) (original k)))]
+          (f {:root root :staging staging :audit audit}))
+        (finally
+          (rm-rf! root))))))
+
+(defn- guarded-export!
+  "Preview, then execute with the preview's token, through the REAL dispatched
+   verb; returns `{:to <child> :preview <payload> :execution <payload>}` after
+   asserting the preview/execute contract (a preview writes no staging output;
+   execution completes only with status complete and complete? true)."
+  [staging child]
+  (let [to      (.getPath (io/file staging child))
+        base    {"project" (str project-ident) "destination" destination-name "to" to}
+        preview (call-verb "sandbar_project_export" base)]
+    (testing (str "guarded preview into " child)
+      (is (= "preview" (:status preview)) (pr-str preview))
+      (is (string? (:plan-token preview)))
+      (is (false? (:complete? preview)))
+      (is (zero? (:exported-count preview)))
+      (is (not (.exists (io/file to))) "a preview creates no staging output"))
+    (let [execution (call-verb "sandbar_project_export"
+                               (assoc base "dry-run" false "expect-plan" (:plan-token preview)))]
+      (testing (str "guarded execution into " child)
+        (is (= "complete" (:status execution)) (pr-str execution))
+        (is (true? (:complete? execution)))
+        (is (.isFile (io/file to export/manifest-name)) "the completion manifest is written last"))
+      {:to to :preview preview :execution execution})))
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; the sectioned memorial (authored form)
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -80,12 +175,18 @@
 
 (def ^:private section-headings ["Context" "Decision" "Consequences"])
 
+;; visibility, owning-project and id are the guarded exporter's preconditions
+;; (explicit label, enrolled owner, stable identity); they ride the authored
+;; form so the settle pass and the byte-for-byte obligation include them.
 (def ^:private authored-markdown
   (str "---\n"
        "name: Live Store Roundtrip Probe\n"
        "type: decision\n"
        "scope: project\n"
+       "visibility: public\n"
+       "owning-project: projects/probe.md\n"
        "tags: [e2e-roundtrip, live-store]\n"
+       "id: '2b0e4b1a-7c2d-4b8e-9f11-3a5d6e7f8091'\n"
        "---\n"
        "A memorial BORN IN THE DB (transacted, never ingested from FS),\n"
        "exercising the live-store export→import round-trip.\n"
@@ -123,15 +224,16 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (deftest live-store-export-import-round-trip
-  (let [export-dir (fresh-tmp-dir "export")]
-    (try
-      (let [;; ---- SOURCE STORE — settle, transact, snapshot, export via the verb.
+  (with-operator-destination
+    (fn [{:keys [staging]}]
+      (let [;; ---- SOURCE STORE — enroll, settle, transact, snapshot, guarded export.
             ;; (The settle parse/emit ALSO needs the ambient schema-loaded DB —
             ;; the codec introspects the metamodel — so it runs inside the same
             ;; fresh-store scope that receives the transact.)
-            {:keys [settled source-snapshot export-result]}
+            {:keys [settled source-snapshot to execution]}
             (gdb/with-fresh-db* {:name "e2e-rt-source"}
               (fn []
+                (seed-enrolled-project!)
                 (let [settled (settled-markdown)
                       _       (testing "settle sanity — normalization preserves the sections"
                                 (doseq [h section-headings]
@@ -145,11 +247,10 @@
                   ;; Baseline BEFORE the transact: a schema-loaded store is not
                   ;; empty of file-backed memorials — schema/workflow-session.edn
                   ;; seeds the `:workflow/session` lifecycle definition, which
-                  ;; carries `:mm.memory/rel-path "workflows/session.md"` and
-                  ;; therefore participates in export/import alongside the probe.
-                  ;; All store-level counts below are DELTAS against this
-                  ;; baseline, so the test asserts the probe's contribution
-                  ;; without hardcoding the schema's resident population.
+                  ;; carries `:mm.memory/rel-path "workflows/session.md"`.  It is
+                  ;; UNOWNED, so the guarded export never selects it; it stays
+                  ;; in the file-backed population of BOTH stores.  All
+                  ;; store-level counts below are DELTAS against this baseline.
                   (let [baseline (contract/capture)]
                     ;; (1) transact the sectioned memorial — the canonical
                     ;; sectioned persist boundary (tempid translation via
@@ -157,7 +258,7 @@
                     ;; `make-all*`, F#17), i.e. the memorial is DB-BORN here.
                     (dt/make-all* (md/entity-specs->tx-data specs))
                     (let [snapshot (contract/capture)]
-                      (testing "the memorial is IN the store, sectioned"
+                      (testing "the memorial is IN the store, sectioned, owned by the enrolled project"
                         (is (not (contains? (:by-rel-path baseline) rel-path))
                             "probe rel-path must be NEW (not schema-seeded)")
                         (is (contains? (:by-rel-path snapshot) rel-path))
@@ -165,22 +266,18 @@
                             "exactly the probe joins the file-backed population")
                         (is (= (+ 3 (:section-count baseline)) (:section-count snapshot))
                             "all three probe :mm/Section entities must be transacted"))
-                      ;; (2) export through the REAL dispatched verb.
-                      {:settled         settled
-                       :source-snapshot snapshot
-                       :export-result   (call-verb "sandbar_project_export"
-                                                   {"to" (str export-dir)})})))))
+                      ;; (2) export through the REAL dispatched verb: preview, then execute.
+                      (merge {:settled settled :source-snapshot snapshot}
+                             (guarded-export! staging "probe-one")))))))
 
-            exported-file (io/file export-dir rel-path)]
+            exported-file (io/file to rel-path)]
 
         ;; ---- (3) sections present in the export (the MUST-FIX #4 pin).
-        (testing "project.export verb response"
-          (is (= (:population source-snapshot) (:exported export-result))
-              (str "every file-backed memorial exports (probe + schema-seeded "
-                   "residents like workflows/session.md) — got "
-                   (pr-str export-result)))
-          (is (some #{rel-path} (:files export-result))
-              (str "probe file missing from export — " (pr-str (:files export-result)))))
+        (testing "project.export verb response — only the enrolled project's documents"
+          (is (= 1 (:exported-count execution))
+              (str "the guarded export writes the probe alone; the unowned schema "
+                   "resident is not selected — got " (pr-str execution)))
+          (is (zero? (:held-count execution)) (str "nothing may be held — " (pr-str execution))))
         (testing "sections are present in the exported file"
           (is (.isFile exported-file) (str rel-path " must exist under :to"))
           (let [content (slurp exported-file)]
@@ -195,18 +292,20 @@
             (is (= content settled)
                 "export of the DB-born memorial reproduces the settled at-rest form byte-for-byte")))
 
-        ;; ---- (4) re-import through the REAL verb into a FRESH store.
+        ;; ---- (4) re-import through the REAL verb into a FRESH store whose
+        ;; dependency (the owning project) is seeded under the same idents.
         (let [{:keys [import-result reimport-snapshot]}
               (gdb/with-fresh-db* {:name "e2e-rt-reimport"}
                 (fn []
+                  (seed-enrolled-project!)
                   (let [result (call-verb "sandbar_project_import"
-                                          {"from" (str export-dir) "persist?" true})]
+                                          {"from" to "persist?" true})]
                     {:import-result     result
                      :reimport-snapshot (contract/capture)})))]
           (testing "project.import verb response — persisted clean"
             (is (true? (:persist? import-result)))
-            (is (= (count (:files export-result)) (:persisted-count import-result))
-                (str "every exported file persists as one atomic group — got "
+            (is (= 1 (:persisted-count import-result))
+                (str "the one exported file persists as one atomic group — got "
                      (pr-str import-result)))
             (is (zero? (:failed-count import-result))
                 (str "failed: " (pr-str (:failed import-result))))
@@ -228,14 +327,12 @@
                 "name / type / scope / body-sha / cites must be identical for the probe"))
           (testing "sections survive INTO the re-imported store"
             (is (= (:section-count source-snapshot)
-                   (:section-count reimport-snapshot))))))
-      (finally
-        (rm-rf! export-dir)))))
+                   (:section-count reimport-snapshot)))))))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; the nested cross-path case (Astra, D7 2026-09-20): two nested levels,
 ;; sibling order and body text through the dispatched export and a dispatched
-;; import into a SECOND fresh store, then that store's own export
+;; import into a SECOND fresh store, then that store's own guarded export
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (def ^:private nested-rel-path "decisions/nested_roundtrip_probe.md")
@@ -251,6 +348,9 @@
        "name: Nested Roundtrip Probe\n"
        "type: decision\n"
        "scope: project\n"
+       "visibility: public\n"
+       "owning-project: projects/probe.md\n"
+       "id: '7d3c9e52-1f0a-4c6b-8a2e-5b4f6d7e8f90'\n"
        "---\n"
        "A memorial born in the store with two nested levels.\n"
        "\n"
@@ -267,26 +367,27 @@
   ;; Astra's remaining cross-path acceptance case for REP-01 / REP-02 (her
   ;; D7 increment 1 review, 2026-09-20): the shipped section-tree suite
   ;; exercises project-graph and reparse; this runs the REAL dispatched verbs
-  ;; end to end — a store-born memorial with two nested levels exported by
-  ;; `project.export`, imported by `project.import` into a SECOND fresh
-  ;; store, and exported again from there — asserting heading depth, sibling
-  ;; order and body text at every hop.
-  (let [export-dir   (fresh-tmp-dir "nested-export")
-        reexport-dir (fresh-tmp-dir "nested-reexport")]
-    (try
-      (let [{:keys [settled source-sections]}
+  ;; end to end — a store-born memorial with two nested levels exported by the
+  ;; guarded `project.export`, imported by `project.import` into a SECOND
+  ;; fresh store (owner seeded there under the same idents), and exported
+  ;; again from there through the guarded verb — asserting heading depth,
+  ;; sibling order and body text at every hop.
+  (with-operator-destination
+    (fn [{:keys [staging]}]
+      (let [{:keys [settled source-sections to]}
             (gdb/with-fresh-db* {:name "e2e-nested-source"}
               (fn []
+                (seed-enrolled-project!)
                 (let [settled (md/emit-document (md/parse-document nested-markdown nested-rel-path))
                       specs   (md/parse-document settled nested-rel-path)]
                   (is (= nested-headings (heading-lines settled))
                       "the settled form keeps every heading at its depth, in order")
                   (is (= 5 (count (filter #(= :mm/Section (:dt/type %)) specs))))
                   (dt/make-all* (md/entity-specs->tx-data specs))
-                  (call-verb "sandbar_project_export" {"to" (str export-dir)})
-                  {:settled         settled
-                   :source-sections (:section-count (contract/capture))})))
-            exported (slurp (io/file export-dir nested-rel-path))]
+                  (merge {:settled         settled
+                          :source-sections (:section-count (contract/capture))}
+                         (guarded-export! staging "nested-one")))))
+            exported (slurp (io/file to nested-rel-path))]
         (testing "the dispatched export keeps two nested levels, sibling order and body text"
           (is (= nested-headings (heading-lines exported)))
           (doseq [b nested-bodies]
@@ -295,11 +396,12 @@
         (let [{:keys [import-result reimported-sections reexported]}
               (gdb/with-fresh-db* {:name "e2e-nested-reimport"}
                 (fn []
-                  (let [result (call-verb "sandbar_project_import" {"from" (str export-dir) "persist" true})]
-                    (call-verb "sandbar_project_export" {"to" (str reexport-dir)})
+                  (seed-enrolled-project!)
+                  (let [result (call-verb "sandbar_project_import" {"from" to "persist" true})
+                        again  (guarded-export! staging "nested-two")]
                     {:import-result       result
                      :reimported-sections (:section-count (contract/capture))
-                     :reexported          (slurp (io/file reexport-dir nested-rel-path))})))]
+                     :reexported          (slurp (io/file (:to again) nested-rel-path))})))]
           (testing "the dispatched import into the second store persists the unit"
             (is (zero? (:failed-count import-result)) (pr-str (:failed import-result)))
             (is (zero? (:conflict-count import-result)) (pr-str (:conflicts import-result)))
@@ -311,7 +413,4 @@
             (is (= nested-headings (heading-lines reexported)))
             (doseq [b nested-bodies]
               (is (str/includes? reexported b) (str "the second store's export lost " b)))
-            (is (= settled reexported) "the second store's export equals the first's"))))
-      (finally
-        (rm-rf! export-dir)
-        (rm-rf! reexport-dir)))))
+            (is (= settled reexported) "the second store's guarded export equals the first's")))))))

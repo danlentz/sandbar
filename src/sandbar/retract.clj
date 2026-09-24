@@ -1,36 +1,14 @@
 (ns sandbar.retract
-  "Safety + report layer for first-class entity retraction.
+  "Plan and execute bounded first-class entity retraction.
+   Build a snapshot report containing existence, identity, type, dependent
+   sections/carriers and protected-target decisions. Dry run is default;
+   persist requests retraction. A request is capped at 100 targets, and
+   protected targets are reported without aborting the whole batch.
 
-   The substrate half already EXISTS in `sandbar.db.datomic`
-   (`retract-entity` / `retract-entities`, both `:db.fn/retractEntity`
-   wrappers).  This namespace builds the SAFETY LAYER that the MCP verb
-   `sandbar.entity.retract` (registered in `sandbar.mcp.tools`) needs:
-
-   - a PURE per-target dry-run report built against a `(db/db)` snapshot
-     (`build-report`), enumerating resolved-eid / exists? / ident /
-     dt-type / datom-count / dependents / protected? / protection-reason;
-   - a protected-namespace / protected-class GUARD (`protected-namespaces`
-     / `protected-classes` — plain data vars, extendable) that skips
-     dangerous targets WITHOUT aborting the batch;
-   - the 1..100 target-cap enforcement (loud error over the cap);
-   - the dry-run-by-DEFAULT / `persist`-to-commit convention (mirrors
-     `sandbar.project.import`);
-   - dependents enumeration (the target's `:mm/Section` tree +
-     `:mm.memory/frontmatter` carrier) — ALWAYS reported so the caller
-     sees the blast radius, included in the retraction set ONLY when
-     `cascade` is chosen;
-   - one atomic `:db.fn/retractEntity` transaction over targets + cascade
-     set;
-   - one `:mm.event/EntityRetracted` audit event per persisted retraction
-     via the Keystone Event Substrate (`sandbar.util.event/log-event!`).
-
-   Per `decisions/mcp_retraction_verb_substrate_first_over_nrepl_toolchain_workaround_2026_07_02`
-   + the ratified Fable safety-semantics decision-tokens (SPEC
-   scratchpad/retract-verb-2026-07-02/SPEC.md).
-
-   Design: the report is built pure-functionally against a db snapshot;
-   retraction reuses the existing conn accessor (`db/conn`) — no new conn
-   plumbing (the C1 bulk-retract redesign owns that)."
+   Cascade controls whether reported dependent entities join the retraction
+   set. Database retraction and owned-file cleanup have separate outcomes;
+   inspect both. Ownership and incoming-reference conflicts require review,
+   not inference from a missing representation. See doc/operations.md."
   (:require
    [clojure.string :as str]
    [clojure.tools.logging :as log]
@@ -293,14 +271,21 @@
             rel-path (:mm.memory/rel-path e)
             mm-id    (some-> (:mm/id e) str)
             doc?     (boolean (some-> (:dt-type r) dt/corpus-document-class?))
+            destination (when rel-path (sinks/destination-for db e))
+            mapped-project? (contains?
+                              ((requiring-resolve 'sandbar.project.destination/configured-roots))
+                              (:mm.project/ident e))
             others   (when rel-path
-                       (d/q '[:find [?o ...] :in $ ?rp ?e
-                              :where [?o :mm.memory/rel-path ?rp] [(not= ?o ?e)]]
-                            db rel-path (:resolved-eid r)))]
-        (cond-> (assoc r :rel-path rel-path :mm-id mm-id :corpus-document? doc?)
+                       ((requiring-resolve 'sandbar.project.destination/other-claimants)
+                        db (:resolved-eid r) destination rel-path (sinks/corpus-root)))]
+        (cond-> (assoc r :rel-path rel-path :mm-id mm-id :corpus-document? doc?
+                         :destination destination)
+          mapped-project? (assoc :protected? true
+                                 :protection-reason "project has an operator-configured destination; remove the mapping through maintenance first")
           rel-path (assoc :file-effect
                           (sinks/remove-projected-file! {:rel-path rel-path :mm-id mm-id
                                                          :corpus-document? doc?
+                                                         :destination destination
                                                          :other-claimant? (boolean (seq others))
                                                          :dry-run? true})))))))
 
@@ -498,11 +483,12 @@
                               (sinks/remove-projected-file!
                                {:rel-path         (:rel-path t)
                                 :mm-id            (:mm-id t)
+                                :destination      (:destination t)
                                 :corpus-document? (:corpus-document? t)
                                 :other-claimant?  (fn []
-                                                    (some? (d/q '[:find ?e . :in $ ?rp
-                                                                  :where [?e :mm.memory/rel-path ?rp]]
-                                                                (db/db) (:rel-path t))))})))]
+                                                    (seq ((requiring-resolve 'sandbar.project.destination/other-claimants)
+                                                          (db/db) (:resolved-eid t) (:destination t)
+                                                          (:rel-path t) (sinks/corpus-root))))})))]
             (-> report
                 (assoc :persist         true
                        :reason          reason

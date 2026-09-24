@@ -1,24 +1,14 @@
 (ns sandbar.scripts.reproject-bootstrap
-  "Re-project sandbar's substrate state to client-project bootstrap memorials.
+  "Render substrate introspection as client bootstrap documents.
+   Default output is a scratch directory; an explicit output directory selects
+   another destination. --dry-run reports without writing. --canonical writes
+   directly into the client memory tree and can overwrite existing documents.
 
-   Per plans/sandbar_bootstrap_authority_arc_2026_05_21.md Stage 3 +
-   decisions/bootstrap_authority_q1_q5_resolutions_2026_05_21.md.
-
-   Default mode: SAFE — writes to a scratch directory.  --canonical
-   flag overwrites the client-project memory/.  --dry-run shows what
-   WOULD change without writing.
-
-   Per interaction/bootstrap_rendering_must_preserve_narrative_human_readable_content_2026_05_21.md
-   — output quality is currently INSUFFICIENT for safe canonical overwrite
-   (introspection-only; no narrative).  Stage 2.D template work gates
-   the --canonical flag's acceptance.
-
-   Usage:
-     lein reproject-bootstrap                       # scratch dir default
-     lein reproject-bootstrap -- <out-dir>          # explicit dir
-     lein reproject-bootstrap -- --dry-run          # report only
-     lein reproject-bootstrap -- --canonical        # CANONICAL overwrite
-     lein reproject-bootstrap -- --class :mm/Memory # restrict to one class"
+   Generated introspection does not retain authored narrative, so it is not
+   suitable as an unattended replacement for canonical documents. Review
+   scratch output and integrate only the intended changes.
+   Usage: lein reproject-bootstrap -- [<out-dir>] [--dry-run]
+          [--class :mm/Memory]"
   (:require [clojure.java.io          :as io]
             [clojure.string           :as str]
             [datomic.api              :as d]

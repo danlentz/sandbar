@@ -1,23 +1,13 @@
 (ns sandbar.scripts.roundtrip-stability
-  "Stability test for codec round-trip.  Per
-   `decisions/round_trip_stable_normalization_acceptance_criterion_2026_05_20.md`:
-   the codec MAY normalize source text on first emit (whitespace, key
-   order, list flow style, etc.), but the normalized form MUST be a
-   FIXED POINT under further round-trips — emit1 must equal emit2 when
-   emit1 is itself re-parsed and emitted.
+  "Check that Markdown normalization reaches a fixed point.
+   Parse and emit a source, then parse and emit the result; emit1 must equal
+   emit2. This catches unstable ordering and repeated projection churn.
+   Fixed-point equality does not by itself prove preservation of every source
+   meaning or a database import/export cycle.
 
-   This catches non-deterministic emit paths (set iteration order
-   variations, extras-slot appendage order, etc.) that would create git
-   churn on repeated projection.
-
-   Usage:
-     lein run -m sandbar.scripts.roundtrip-stability <corpus-root> [<rel-path>]
-
-   With <rel-path>: stability check on one file; prints first ~30
-   differing lines between emit1 and emit2.
-
-   Without <rel-path>: stability check on the full corpus.  Reports
-   #stable / #unstable / #errors counts."
+   Usage: lein run -m sandbar.scripts.roundtrip-stability <corpus-root> [<rel-path>]
+   A selected file prints a bounded diff; a tree run reports stable, unstable,
+   and error counts."
   (:require [clojure.java.io        :as io]
             [clojure.string         :as str]
             [datomic.api            :as d]

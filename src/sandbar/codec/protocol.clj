@@ -1,36 +1,10 @@
 (ns sandbar.codec.protocol
-  "Codec protocol — every concrete codec implements this protocol; the
-   mediator at `sandbar.codec` routes to the appropriate codec based on
-   explicit format hint, MIME type, or per-class default
-   (`:dt/native-codec`).
-
-   Per
-   decisions/sandbar_codec_layer_owns_wire_format_concerns_consumer_native_representation_2026_05_12.md
-   §2.2: Sandbar owns wire-format concerns; consumers pass native
-   representation (markdown / TTL / EDN-TTL-hybrid / JSON / etc.);
-   codec parses to / emits from entity-spec maps suitable for
-   `sandbar.db.datatype/make`.
-
-   The codec layer extends the layer-targeting discipline one level up
-   from `dt/* over datomic.api` — consumers target the codec layer,
-   never hand-roll markdown / YAML / TTL parsers.
-
-   ## Implementor contract
-
-   Concrete codecs are typically deftypes / defrecords that close over
-   any per-instance configuration (e.g., a markdown codec might close
-   over its YAML library choice) and implement all five protocol
-   methods.  Stateless codecs may use a singleton instance registered
-   at namespace load.
-
-   Codecs MUST operate at the MODEL layer (`:dt/Class`, `:dt/Property`,
-   `:dt/slots`, class hierarchy) — never at the Datomic-schema layer
-   (`:db.unique/identity`, `:db.install/attribute`).  Per
-   interaction/export_format_must_be_neutral_and_database_agnostic_2026_05_12.md
-   the wire format MUST be neutral and portable across model-equivalent
-   backends.
-
-   See `sandbar.codec` for the consumer-facing mediator API."
+  "Protocol for explicit external representations of entity data.
+   The sandbar.codec mediator selects a registered implementation by format,
+   MIME type or class default. Implement parse, emit, mime-types, supports?
+   and round-trip-test with a declared supported value/identity contract.
+   Model metadata supplies class-specific mapping; parsing itself does not
+   authorize or persist data. See doc/api/codec-protocol.md."
   )
 
 (defprotocol Codec

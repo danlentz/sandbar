@@ -15,8 +15,10 @@
    runs the batch firewall floor over the asserted half and transacts the
    retractions with it."
   (:require [datomic.api            :as d]
+            [clojure.string         :as str]
             [sandbar.codec.markdown :as md]
-            [sandbar.db.datatype    :as dt]))
+            [sandbar.db.datatype    :as dt]
+            [sandbar.identifier     :as identifier]))
 
 (def substrate-owned-slots
   "Slots the substrate or another owner maintains, never retracted from an
@@ -173,6 +175,14 @@
         ident (:db/ident m)
         eid   (when ident (d/entid db ident))
         stored (when eid (d/entity db eid))
+        stored-class (when (:dt/type stored) (dt/class-ident-of stored))
+        file-id (:mm/id m)
+        store-id (:mm/id stored)
+        root-conflicts (cond-> []
+                         (and stored-class (not= (:dt/type m) stored-class))
+                         (conj {:reason :class-changed :from stored-class :to (:dt/type m)})
+                         (and file-id store-id (not= file-id store-id))
+                         (conj {:reason :identity-conflict :file-id (str file-id) :store-id (str store-id)}))
         ;; the basis the plan is good for: `apply-plan!` guards its
         ;; transaction with it (D7-R3, Astra 2026-09-20)
         basis (d/basis-t db)]
@@ -181,20 +191,30 @@
       ;; keeps resolving the ident to its old eid, and the assert repopulates
       ;; that eid, so there is nothing to reconcile against
       (or (nil? eid) (nil? (:dt/type stored)))
-      {:mode :insert :specs specs :ops [] :conflicts [] :basis basis}
+      (let [mint? (and ident (dt/type-isa? :mm/Memory (:dt/type m))
+                       (nil? file-id) (nil? store-id))
+            rel-path (:mm.memory/rel-path m)
+            id (or file-id store-id
+                   (when mint?
+                     (if (and rel-path (str/includes? rel-path "/"))
+                       (identifier/rel-path-uuid rel-path)
+                       (identifier/ident-uuid ident))))]
+        ;; Only a new document receives an absent UUID. Existing documents
+        ;; without one remain an explicit maintenance disposition. A forward
+        ;; placeholder may already hold an identity; preserve it as well.
+        {:mode :insert
+         :specs (if id (assoc (vec specs) 0 (assoc m :mm/id id)) specs)
+         :identity-minted? (boolean mint?)
+         :ops []
+         :conflicts root-conflicts
+         :basis basis})
 
       (= mode :additive)
-      {:mode :additive :specs specs :ops [] :conflicts [] :basis basis}
+      ;; Additive controls omission, not permission to change identity/class.
+      {:mode :additive :specs specs :ops [] :conflicts root-conflicts :basis basis}
 
       :else
       (let [class-ident    (:dt/type m)
-            stored-class   (dt/class-ident-of stored)
-            class-conflict (when (not= class-ident stored-class)
-                             {:reason :class-changed :from stored-class :to class-ident})
-            file-id        (:mm/id m)
-            store-id       (:mm/id stored)
-            id-conflict    (when (and file-id store-id (not= file-id store-id))
-                             {:reason :identity-conflict :file-id (str file-id) :store-id (str store-id)})
             sections       (section-ops db eid specs)
             slots          (slot-ops db class-ident stored m)
             old-carrier    (get stored :mm.memory/frontmatter)
@@ -203,7 +223,7 @@
             old-first      (get stored :mm.memory/first-section)
             first-op       (when (and old-first (not (contains? m :mm.memory/first-section)))
                              [:db/retract eid :mm.memory/first-section (stored-value db :mm.memory/first-section old-first)])
-            conflicts      (vec (concat (keep identity [class-conflict id-conflict]) (:conflicts sections)))]
+            conflicts      (into root-conflicts (:conflicts sections))]
         {:mode               :replace
          :basis              basis
          :specs              specs
@@ -217,6 +237,50 @@
          ;; retractions unexplained)
          :retracted-slot-attrs (vec (distinct (map #(nth % 2) slots)))
          :retracted-carrier? (boolean carrier-op)}))))
+
+(defn plan-body-update
+  "Plan the derived section changes for an interactive whole-body update.
+   Applies to Memory classes whose native body is :mm.memory/body-raw. Reuse
+   the import section diff, without treating omitted frontmatter as deletion.
+   The caller must transact the returned assertions, retractions and host
+   updates together at :basis. Referenced removed sections refuse the edit."
+  [db eid updates]
+  (let [host (d/entity db eid)
+        class-ident (dt/class-ident-of host)]
+    (when (and (contains? updates :mm.memory/body-raw)
+               (dt/type-isa? :mm/Memory class-ident)
+               (= :mm.memory/body-raw (#'md/body-slot-for class-ident)))
+      (let [ident (:db/ident host)
+            _ (when (and (contains? updates :db/ident) (not= ident (:db/ident updates)))
+                (throw (ex-info "Change document identity separately from its body"
+                                {:reasons #{:body-update/identity-change}})))
+            old-eids (section-tree-eids db eid)
+            sections (md/parse-sections (:mm.memory/body-raw updates)
+                                       (or ident :sandbar.body-update/anonymous))
+            _ (when (and (nil? ident) (or (seq sections) (seq old-eids)))
+                (throw (ex-info "Section reconciliation requires an identified memory"
+                                {:reasons #{:body-update/ident-required} :entity eid})))
+            diff (section-ops db eid sections)
+            collisions (for [s sections
+                             :let [existing (d/entid db (:db/ident s))]
+                             :when (and existing (not (contains? old-eids existing))
+                                        (:dt/type (d/entity db existing)))]
+                         {:reason :section-identity-owned-elsewhere :section (:db/ident s)})
+            conflicts (into (:conflicts diff) collisions)
+            _ (when (seq conflicts)
+                (throw (ex-info "Body update would remove a referenced section or overwrite another document"
+                                {:reasons #{:body-update/conflicts} :conflicts conflicts})))
+            tx-sections (md/entity-specs->tx-data sections)
+            first-ident (:db/ident (md/first-section-of sections ident))
+            first-tempid (:db/id (first (filter #(= first-ident (:db/ident %)) tx-sections)))
+            old-first (:mm.memory/first-section host)
+            first-retract (when (and old-first (nil? first-ident))
+                            [:db/retract eid :mm.memory/first-section
+                             (stored-value db :mm.memory/first-section old-first)])]
+        {:basis (d/basis-t db)
+         :sections tx-sections
+         :ops (cond-> (:ops diff) first-retract (conj first-retract))
+         :host-updates (if first-tempid {:mm.memory/first-section first-tempid} {})}))))
 
 (defn apply-plan!
   "Transact a conflict-free plan: the asserted half through the batch

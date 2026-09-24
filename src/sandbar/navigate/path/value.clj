@@ -1,35 +1,13 @@
 (ns sandbar.navigate.path.value
-  "Sandbar Path-Grammar — Paths as First-Class Values (Stage P-5 of
-  comprehensive memory-model MCP arc per
-  plans/sandbar_fulltext_search_substrate_arc_2026_05_13.md +
-  decisions/query_engine_architectural_cornerstone_2026_05_11.md D9).
+  "Construct, inspect and compose path witnesses as ordinary values.
 
-  Establishes the path-data abstraction + predicate operations so paths
-  can be returned, compared, composed, and queried — not just used as
-  reachability witnesses.
+  A path is {:nodes [node ...] :edges [edge ...]}. Each edge has :predicate
+  and :direction (:forward or :inverse). There is exactly one more node than
+  edge; a singleton path has one node and zero edges.
 
-  ## Path data shape
-
-      {:nodes [<node-0> <node-1> ... <node-N>]              ; N+1 nodes
-       :edges [<edge-1> <edge-2> ... <edge-N>]}             ; N edges
-
-  Each edge:
-
-      {:predicate <pred-ident>
-       :direction :forward | :inverse}
-
-  Invariant: `(= (count :nodes) (inc (count :edges)))`.  A path of
-  length 0 has one node and no edges (the singleton/identity path).
-
-  ## Compiler integration
-
-  Stage P-5 ships path-data + predicates only.  The compiler integration
-  — surfacing path data via `:include [:paths]` opt — lands at P-6 with
-  the `sandbar.navigate.path/path-via` consumer-facing API.
-
-  P-5 abstraction is consumed by P-6 and by downstream client code
-  that walks/projects path results (e.g., MCP/REST result projection,
-  corpus migration adapter at P-7)."
+  The path evaluator uses these constructors while traversing. path-via
+  exposes witnesses when :include contains :paths. Consumers can inspect or
+  compose returned values without inventing a second path representation."
   (:refer-clojure :exclude [reverse]))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;

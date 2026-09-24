@@ -607,50 +607,15 @@
       (is (false? (prov/recording-enabled?))))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; fix-4/8/13 — the DOUBLE-GATE at the WIRING POINT (project-export-handler).
-;; A live :mm/Run mints ONLY when BOTH the per-call `:provenance` opt AND the
-;; server-side `recording-enabled?` flag are open — driven end-to-end through
-;; the (private) handler var against a mem fixture + scratch :to.  This pins the
-;; AND so a regression defaulting `want-record?` true cannot ship silently.
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Guarded export now requires an explicit enrolled project and an authorized
+;; destination even when provenance is requested. Real four-cell double-gate,
+;; file, audit and wire cases live in sandbar.project.export-test.
 
-(def ^:private export-handler #'sandbar.mcp.tools/project-export-handler)
-
-(deftest handler-double-gate-both-locks-open-mints-one-succeeded-run
-  ;; The fixture corpus's only rel-path memory is UNASSIGNED, admissible into the
-  ;; default :project/UNASSIGNED target — so with BOTH locks open the export
-  ;; succeeds and records exactly one :succeeded projection run + a manifest.
-  (let [to (scratch-to "gate-on")]
+(deftest legacy-whole-store-export-is-refused-before-effects
+  (let [to (scratch-to "legacy-refusal")]
     (with-recording-on*
       (fn []
-        (let [result (export-handler {"to" to "provenance" true})
-              runs   (prov/projection-runs (db/db))]
-          (testing "both locks open ⇒ exactly one projection run is minted"
-            (is (= 1 (count runs))))
-          (testing "it is a :succeeded projection run"
-            (is (= :succeeded (:mm.activity/status (first runs))))
-            (is (prov/projection-run? (first runs))))
-          (testing "the committed manifest is returned under :provenance, run-linked"
-            (is (contains? result :provenance))
-            (is (= [:mm/id (:mm/id (first runs))]
-                   (:manifest/run (:provenance result))))))))))
-
-(deftest handler-double-gate-any-lock-closed-mints-no-run
-  ;; The three CLOSED cells share ONE fresh mem fixture precisely because none of
-  ;; them may write a run: after each, ZERO :mm/Run rows must exist and the
-  ;; result must carry NO :provenance manifest (a plain read-only projection).
-  (let [check
-        (fn [label args recording-on?]
-          (let [to     (scratch-to (str "gate-" label))
-                runner (fn [] (export-handler (assoc args "to" to)))
-                result (if recording-on?
-                         (with-recording-on* runner)
-                         (with-recording-off* runner))]
-            (testing (str label " ⇒ no :mm/Run minted")
-              (is (empty? (prov/projection-runs (db/db)))))
-            (testing (str label " ⇒ no committed manifest surfaced")
-              (is (not (contains? result :provenance)))
-              (is (contains? result :files)))))]         ; still a real read-only export
-    (check "opt-true--flag-OFF"  {"provenance" true}  false)
-    (check "opt-FALSE-flag-on"   {"provenance" false} true)
-    (check "opt-absent-flag-on"  {}                   true)))
+        (is (thrown? clojure.lang.ExceptionInfo
+             (#'sandbar.mcp.tools/project-export-handler {"to" to "provenance" true})))
+        (is (empty? (prov/projection-runs (db/db))))
+        (is (empty? (seq (.listFiles (io/file to)))))))))

@@ -1,20 +1,11 @@
 (ns sandbar.navigate.walk
-  "Sandbar Navigation — Graph-Walk Subsurface (Stage 17 of comprehensive
-  memory-model MCP arc per
-  plans/sandbar_fulltext_search_substrate_arc_2026_05_13.md).
+  "Bounded neighborhood traversal over dt/graph-walk-from.
 
-  Consumer-facing wrapper around the dt/graph-walk-from substrate
-  primitive.  Provides one verb:
-
-    graph-walk — BFS reachable-neighborhood traversal with hop-cap,
-                 direction selection (`:forward` / `:inverse` /
-                 `:bidirectional`), predicate-set filtering, and
-                 optional path projection (`:include [:paths]`).
-
-  Substrate-quality preserved per
-  interaction/target_sandbar_introspection_api_layer_not_raw_datomic_2026_05_12.md:
-  routes through `sandbar.db.datatype/graph-walk-from`, never raw
-  `datomic.api`."
+  graph-walk uses breadth-first discovery with a hop cap, predicate filter and
+  direction (:forward, :inverse or :bidirectional). include [:paths] adds a
+  shortest discovery witness for each endpoint. The seed is excluded. A
+  response limit applies after traversal, so use hops and predicates to
+  constrain work as well as response size."
   (:require [sandbar.db.datatype :as dt]))
 
 (defn graph-walk
@@ -42,7 +33,7 @@
      :returned <int>}
 
   Substrate-quality: class-agnostic; predicate-set + direction +
-  include opts are caller-supplied.  Per fulltext arc Stage 17."
+  include opts are caller-supplied."
   [{:keys [from hops predicates direction include limit]
     :or   {limit 0}}]
   {:pre [(some? from)

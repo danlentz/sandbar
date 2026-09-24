@@ -35,7 +35,12 @@
    :dt/context       "mm"
    :dt/label         "Guidance"
    :dt/abstract?     true
-   :db/doc "Abstract supertype for memorial types that tell future sessions HOW TO BEHAVE — normative prescriptive memorials.  Per memory/types/guidance.md.  Concrete subtypes: :mm/Pattern (do-this-because positive convention), :mm/AntiPattern (don't-do-this-because negative convention; must cite at least one :mm/Pattern as positive alternative), :mm/Protocol (meta-rule governing the memory system), :mm/Preference (aesthetic / style filter), :mm/Feedback (correction or rule a collaborator has given; subtree 'interaction/'), :mm/Authorization (standing delegated decision authority).  Category-level invariants: every :mm/Guidance must carry claim-shaped name (title-as-API); every :mm/Guidance should cite at least one :mm/Signal that motivated it; every :mm/AntiPattern must contradict at least one :mm/Guidance.  Per decisions/sandbar_memorial_type_substrate_layering_2026_05_21.md D2 + decisions/sandbar_memorial_type_ontology_corrections_round_c_2026_05_21.md R5.  Not instantiated directly."}]
+   :db/doc "Abstract category for normative memory: patterns, antipatterns, protocols,
+            preferences, feedback, and recorded authorizations. Authoring guidance:
+            use a claim-shaped title, cite motivating evidence, and pair an
+            antipattern with a positive alternative. These conventions explain
+            how to write useful guidance; the category declaration alone does
+            not implement those audits or grant runtime authority."}]
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; :mm.authorization/* Properties
@@ -66,7 +71,8 @@
    :dt/range       :db.type/string
    :db/valueType   :db.type/string
    :db/cardinality :db.cardinality/one
-   :db/doc "Who granted the authorization (typically 'Dan' or actor rel-path).  Per memory/types/authorization.md.  When :mm/Actor instances are fully populated, this should become a ref to :mm/Actor."}
+   :db/doc "Text identifying the person or actor who granted the authorization.
+            The current slot is a string, not an :mm/Actor entity reference."}
 
   {:db/ident       :mm.authorization/motivation
    :dt/type        :dt/Property
@@ -82,7 +88,8 @@
    :dt/range       :db.type/string
    :db/valueType   :db.type/string
    :db/cardinality :db.cardinality/one
-   :db/doc "Dan's exact words when granting the authorization — the epistemic anchor; paraphrasing drifts.  Per memory/types/authorization.md + interaction/preserve_dan_directives_verbatim_with_quote.md."}
+   :db/doc "Exact words of the authorization grant, retained so later readers can
+            distinguish the original scope from an interpretation or paraphrase."}
 
   {:db/ident       :mm.authorization/authorized
    :dt/type        :dt/Property
@@ -114,7 +121,8 @@
    :dt/range       :db.type/string
    :db/valueType   :db.type/string
    :db/cardinality :db.cardinality/many
-   :db/doc "Failure modes the authorization enables — what Dan should watch for; what signals suggest the authorization should be tightened or rescinded.  Multi-valued.  Per memory/types/authorization.md."}
+   :db/doc "Failure modes and warning signs that warrant tightening, suspending, or
+            rescinding the recorded authorization. Multiple values are allowed."}
 
   {:db/ident       :mm.authorization/re-evaluation-triggers
    :dt/type        :dt/Property
@@ -183,7 +191,11 @@
    :dt/label             "Feedback"
    :dt/native-codec      :markdown
    :dt/abstract?         false
-   :db/doc "A correction or rule a collaborator has given — typically the negative class ('don't do X') or the procedural class ('always do Y in situation Z').  Per memory/types/feedback.md.  Distinct from :mm/AntiPattern by specificity: anti-patterns describe general failure modes across projects; feedback memorials typically capture a specific collaborator's preferences and the specific guidance they give.  Subtree: 'interaction/' (with alias 'feedback/').  Captureable: mid-conversation-captureable: true; inject-trigger: 'don't do X', 'yes that's right', 'learn behavior:'; inject-class: 'Feedback'; audit-class: 'feedback'.  Tier: expanding-periphery."}
+   :db/doc "A collaborator's specific correction or behavioral guidance, such as a
+            request to avoid an action or follow a procedure in a given situation.
+            Preserve the context and speaker's intended scope. Antipatterns instead
+            describe general failure modes across situations. Client capture and
+            injection conventions are separate from this class declaration."}
 
   {:db/ident             :mm/Authorization
    :dt/type              :dt/Class
@@ -204,7 +216,13 @@
                           :mm.authorization/history
                           :mm.authorization/applies-in-session-from]
    :dt/abstract?         false
-   :db/doc "First-class record of standing delegated decision authority — a collaborator's pre-approval for a class of actions.  Per memory/types/authorization.md.  Each authorization is a major architectural decision about self-organization, friction reduction, and the nature of the collaboration itself.  Required slots: status (:active|:suspended|:rescinded) + granted-on + granted-by + motivation.  Recommended slots: verbatim-directive + authorized (many) + not-authorized (many) + filter + risks (many) + re-evaluation-triggers (many) + history (many) + applies-in-session-from.  Captureable: mid-conversation-captureable: true; inject-trigger: 'you can stop asking', 'I authorize'; inject-class: 'Authorization'; audit-class: 'authorization-change'.  Subtree: 'authorizations/'.  Tier: stable-core.  Introduced-in: 0.5.0.  Future audit invariants (deferred): required-fields-present, status-vocab-conformance, history-entries-for-non-active-status, granting-log-exists."}
+   :db/doc "Record of delegated decision authority for a stated class of actions.
+            Document status (:active, :suspended, or :rescinded), grant date,
+            grantor, and motivation, with the original directive, allowed actions,
+            exclusions, quality conditions, risks, review triggers, and history.
+            These records support human and client review; they do not themselves
+            issue credentials, assign roles, grant project clearance, or prove
+            that a retrieved historical grant applies to the current request."}
 
   {:db/ident             :mm/Protocol
    :dt/type              :dt/Class

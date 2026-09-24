@@ -48,7 +48,11 @@
    :dt/context       "mm"
    :dt/label         "Artifact"
    :dt/abstract?     true
-   :db/doc "Abstract supertype for memorial types whose role is producing durable, self-contained outputs with memorial value beyond their immediate trigger.  Per memory/types/artifact.md.  Concrete subtypes: :mm/Decision (ADR), :mm/Plan (design document + arc memorial), :mm/Log (session record), :mm/Example (reusable illustration), :mm/Briefing (audience-targeted explainer), :mm/Library (deep external-library study), :mm/Reference (external-facility pointer; sub-subtypes :mm/Resource + :mm/ContentType), :mm/Memoir (process-record), :mm/Codebase (source-code repo), :mm/Synthesis (derived claim across citations).  Per decisions/sandbar_memorial_type_substrate_layering_2026_05_21.md D2 + decisions/sandbar_memorial_type_ontology_corrections_round_c_2026_05_21.md R5.  Not instantiated directly."}]
+   :db/doc "Abstract memory category for durable, self-contained outputs whose value
+            outlasts their immediate trigger. Examples include decisions, plans,
+            logs, briefings, examples, library studies, references, memoirs,
+            codebase records, syntheses, and projects. Resource and ContentType
+            specialize Reference. Instantiate a concrete subtype."}]
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; :mm.plan/* Properties
@@ -57,7 +61,13 @@
  [{:db/ident       :mm.plan/status
    :dt/type        :dt/Property :dt/domain :mm/Plan
    :dt/range       :db.type/keyword :db/valueType :db.type/keyword :db/cardinality :db.cardinality/one
-   :db/doc "Plan lifecycle state (CLOSED canonical vocab per decisions/canonical_plan_status_vocabulary_and_synonym_normalization_2026_05_28.md): :draft (plan being written; work not started) | :active (work in progress; updated as stages complete) | :complete (all stages landed; completed: date set; retrospective written) | :paused (work deferred; resumable) | :superseded (replaced by a better approach / folded into another arc; distinct from :cancelled) | :cancelled (work abandoned; rationale documented; :abandoned is an alias).  Do NOT leak stage-strings or synonyms (closed/completed/in-progress/open/proposed/...) into this slot.  Per memory/types/plan.md."}
+   :db/doc "Canonical plan lifecycle vocabulary: :draft (not started), :active (work
+            underway), :complete (planned work finished, completion and retrospective
+            recorded), :paused (resumable), :superseded (replaced or incorporated
+            elsewhere), and :cancelled (abandoned with rationale). Normalize the
+            :abandoned spelling to :cancelled. Keep stage names and synonyms in
+            their appropriate fields; this keyword slot alone does not enforce
+            the authoring vocabulary."}
 
   {:db/ident       :mm.plan/stage
    :dt/type        :dt/Property :dt/domain :mm/Plan
@@ -77,12 +87,17 @@
   {:db/ident       :mm.plan/triggered-by
    :dt/type        :dt/DirectedBinaryRelationProperty :dt/domain :mm/Plan
    :dt/range       :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/one
-   :db/doc "Free-text — what surfaced this arc (idea, incident, decision, Dan-directive).  Per memory/types/plan.md."}
+   :db/doc "Free-text origin of the plan, such as an idea, incident, decision, or
+            explicit user request. Preserve enough context to explain why work
+            was initiated."}
 
   {:db/ident       :mm.plan/environment-affinity
    :dt/type        :dt/Property :dt/domain :mm/Plan
    :dt/range       :db.type/keyword :db/valueType :db.type/keyword :db/cardinality :db.cardinality/one
-   :db/doc "Which environment the arc is most usefully resumed in: :home | :work | :either | <custom-tag>.  Absent or :either means any-host.  Used by `mem arc ready` to bias surfacing toward matching-affinity arcs when the host's environment is detected.  Per memory/types/plan.md + plans/explicit_handoff_coordinates_2026_05_06.md."}
+   :db/doc "Preferred environment for resuming the plan: :home, :work, :either, or a
+            consumer-defined tag. Absent or :either expresses no host preference.
+            Client selection tooling can use this hint; it is not a server-side
+            restriction on where the plan may run."}
 
   {:db/ident       :mm.plan/primary-parent
    :dt/type        :dt/Property :dt/domain :mm/Plan
@@ -106,7 +121,9 @@
   {:db/ident       :mm.log/handoff-schema-version
    :dt/type        :dt/Property :dt/domain :mm/Log
    :dt/range       :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/one
-   :db/doc "Logs written from 2026-05-06 onward carry a `handoff-schema-version` (e.g. 'v1').  Authoritative registry of versions + shapes lives at `etc/handoff-schema-versions.edn`.  Per memory/types/log.md + decisions/handoff_format_evolution_no_long_lived_compat.md."}
+   :db/doc "Version label for the consumer's handoff format, such as v1. Consumers
+            define the corresponding fields and migration policy; the backend
+            stores the label and does not impose a private format registry."}
 
   {:db/ident       :mm.log/closed-at
    :dt/type        :dt/Property :dt/domain :mm/Log
@@ -121,7 +138,9 @@
   {:db/ident       :mm.log/environment
    :dt/type        :dt/Property :dt/domain :mm/Log
    :dt/range       :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/one
-   :db/doc "Claude environment tag (sandboxed / unsandboxed; v1+ handoff shape).  Per memory/types/log.md."}
+   :db/doc "Execution-environment label for the recorded session, such as sandboxed
+            or unsandboxed. This records context; it does not establish an
+            enforcement boundary."}
 
   {:db/ident       :mm.log/session
    :dt/type        :dt/Property :dt/domain :mm/Log
@@ -159,7 +178,9 @@
  [{:db/ident       :mm.briefing/audience
    :dt/type        :dt/Property :dt/domain :mm/Briefing
    :dt/range       :db.type/string :db/valueType :db.type/string :db/cardinality :db.cardinality/one
-   :db/doc "Named external readers — REQUIRED for briefing instances.  'Team' is too vague; 'CS graduates new to AI + KA + Claude' is right.  Per memory/types/briefing.md."}
+   :db/doc "Specific intended readers of the briefing. Authoring guidance: name their
+            relevant background and needs rather than only a broad label such
+            as team, so the explanation can be tailored to its audience."}
 
   {:db/ident       :mm.briefing/occasion
    :dt/type        :dt/Property :dt/domain :mm/Briefing
@@ -381,7 +402,11 @@
                           :mm.content-type/language-class
                           :mm.content-type/citing-corpus-relevance]
    :dt/abstract?         false
-   :db/doc "Single-axis pointer characterizing one dimension of external-content shape — either format (:mm.content-type/mime) or purpose (:mm.content-type/kind), NEVER BOTH.  Sub-subtype of :mm/Reference.  Per memory/types/content-type.md + decisions/external_resource_reification_2026_05_06.md Decision 8 §8.4 (compound-entry approach rejected).  Audit invariants: `content-type-has-exactly-one-axis` (warning); `resource-content-type-is-typed` (warning).  Tier: expanding-periphery.  Introduced-in: 0.7.0."}
+   :db/doc "Reference describing one external-content axis: format through
+            :mm.content-type/mime or purpose through :mm.content-type/kind.
+            Author separate records for the two axes rather than combining both
+            in one ContentType. Resources refer to these typed records; checking
+            exactly-one-axis and reference typing requires validation or audit."}
 
   {:db/ident             :mm/Plan
    :dt/type              :dt/Class
@@ -522,7 +547,9 @@
  [{:db/ident       :mm.activity/started-at
    :dt/type        :dt/Property :dt/domain :mm/Activity
    :dt/range       :db.type/instant :db/valueType :db.type/instant :db/cardinality :db.cardinality/one
-   :db/doc "PROV-O prov:startedAtTime — wall-clock instant when the activity began.  Composes with Allen's-13 interval relations + scheduler arc temporal predicates.  Per decisions/mm_activity_prov_o_lift_cross_arc_unification_log_eventlog_run_2026_05_23.md."}
+   :db/doc "Wall-clock instant when the activity began, aligned with PROV-O
+            prov:startedAtTime. Together with the end time it supplies an interval
+            for temporal comparisons."}
 
   {:db/ident       :mm.activity/ended-at
    :dt/type        :dt/Property :dt/domain :mm/Activity
@@ -638,7 +665,11 @@
                       ;; D6 (2026-09-19): :mm.activity/spec, event-kind and spans-interval
                       ;; are declared in mm-temporal.edn, which loads AFTER this file;
                       ;; they join this vector from there (see its tail).
-   :db/doc "Abstract supertype for memorial types that RECORD an activity (something that happened) with W3C PROV-O alignment.  Concrete subtypes: :mm/Log (session-handoff chronicle), :mm/EventLog (per-event-firing memorial wrapping a :dt/Event runtime instance), :mm/Run (scheduler-job execution record).  Slot vocabulary mirrors PROV-O Activity-shape (:mm.activity/started-at = prov:startedAtTime, :mm.activity/agent = prov:wasAssociatedWith, etc.).  Per decisions/mm_activity_prov_o_lift_cross_arc_unification_log_eventlog_run_2026_05_23.md.  Not instantiated directly.  Composes with: scheduler arc (Allen's-13 relations over Activity intervals); event-substrate keystone D.4 (memorial-face for runtime :dt/Event firings is :mm/EventLog under this hierarchy); rules arc Layer 0 (RDFS-entailment Activity-aware queries)."}
+   :db/doc "Abstract memory category for records of activities, aligned with PROV-O.
+            Log records sessions, EventLog records individual event firings, and
+            Run records job executions. Shared fields capture start/end instants,
+            associated agent, and activity relationships, allowing temporal and
+            provenance queries across those concrete record types."}
 
   ;; Re-parent :mm/Log from :mm/Artifact to :mm/Activity (single-attribute mutation;
   ;; existing :mm/Log instances unchanged — they remain :dt/type :mm/Log and are now
@@ -660,7 +691,11 @@
                       :mm.event-log/data]
    :dt/abstract?     false
    :dt/memorial-policy :first-class         ;; per-event-firing memorial — FS-projected to memory/event-logs/.  Explicit (was prose-only in :db/doc; matched the inherited :mm/Memory default but now asserted per bugs/mm_run_eventlog_memorial_policy_declared_in_doc_prose_not_as_slot_2026_05_29).
-   :db/doc "Per-event-firing memorial wrapping a :dt/Event substrate runtime instance.  Materialized by sandbar.logging.handlers/memorial-projection-handler when a Telemere signal carries :data {:memorial :first-class}.  Distinguished from :mm/Log (session-handoff chronicle; covers entire sessions) and :mm/Run (scheduler-job execution; covers job invocations).  Default :dt/memorial-policy :first-class — FS-projected to memory/event-logs/<>.md by the reactive-projection substrate.  Per decisions/mm_activity_prov_o_lift_cross_arc_unification_log_eventlog_run_2026_05_23.md.  Composes with sandbar.logging arc Stage D."}
+   :db/doc "Memory record of one runtime :dt/Event firing. The configured logging
+            memorial-projection handler creates it for a signal requesting
+            :first-class memorialization. It differs from a session Log and a
+            job-execution Run. The class declares :first-class projection policy;
+            actual filesystem output also requires a valid path and codec."}
 
   {:db/ident         :mm/Run
    :dt/type          :dt/Class
@@ -676,7 +711,11 @@
                       ;; file; they join this vector from there (see its tail).
    :dt/abstract?     false
    :dt/memorial-policy :db-only            ;; high-volume operational runs — covered by DB-dump arc, NOT FS-projected.  The :db/doc declared this default but the slot was never asserted (fixed 2026-05-29 per bugs/mm_run_eventlog_memorial_policy_declared_in_doc_prose_not_as_slot_2026_05_29); narrative runs may still opt :first-class via per-instance override.
-   :db/doc "Scheduler-job execution record.  Materialized by sandbar.schedule.dispatcher when a :mm/Schedule fires + a :mm/Job handler runs (scheduler arc Stage F).  Default :dt/memorial-policy :db-only — high-volume operational runs covered by the DB-dump arc.  Narrative runs may opt to :first-class via per-instance override.  Per decisions/mm_activity_prov_o_lift_cross_arc_unification_log_eventlog_run_2026_05_23.md.  Additional :mm.run/* slots (:mm.run/job ref to :mm/Job, :mm.run/triggered-by ref to :mm/Schedule, :mm.run/workflow-process ref to :workflow/Process) land when scheduler arc Stage B authors :mm/Schedule + :mm/Job."}]
+   :db/doc "Record of a scheduler-job execution, carrying activity context and :mm.run/*
+            fields. Its declared projection policy is :db-only, so routine runs
+            do not each create a corpus file. Preserve these records through the
+            database recovery procedure rather than assuming Markdown export
+            includes them."}]
 
  ;; Codec-type-keyword routing for the new concrete classes (:mm/Activity is abstract; no codec entry)
  [{:db/ident :mm/EventLog :dt/codec-type-keyword :event-log}

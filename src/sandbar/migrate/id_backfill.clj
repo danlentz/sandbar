@@ -1,54 +1,16 @@
 (ns sandbar.migrate.id-backfill
-  "One-shot DB->FS backfill of the `id: '<uuid>'` frontmatter line into corpus
-   files that lack it — the step-2 `backfill` of the ratified fidelity pipeline
-   (fidelity -> BACKFILL -> routing).
+  "Plan or apply a narrow durable-ID frontmatter backfill.
+   Read each selected entity's stored :mm/id and insert or rewrite its id
+   line without using the whole-frontmatter serializer. Dry run is the
+   default; apply is an explicit operator action. The run entry point applies
+   configured exclusions during planning. run-apply! accepts an optional
+   guard! callback; callers must supply it to enforce a projection registry
+   guard at write time.
 
-   WHY this exists.  The DB->FS emitter now emits a clean single-quoted
-   `id: '<uuid>'` line for any entity carrying `:mm/id` (markdown.clj
-   `uuid->id-line` + emit id: policy, landed fc6ae69/7f3a788).  But most corpus
-   files were hand-authored or ingested before that emit path ever wrote them,
-   so ~86% carry no id: line and ~2.5% carry the legacy `!!java.util.UUID`
-   java-tag form.  This tool materializes the DB's authoritative `:mm/id` into
-   those files SURGICALLY (one line touched; every other byte preserved), so a
-   later full-corpus re-emit — or a fresh restore — round-trips the identity
-   without re-deriving it.
-
-   WHY it is safe to run (and safe to defer).  `:mm/id` is a DETERMINISTIC
-   clj-uuid v5 value: `:mm/id = ident-uuid(:db/ident)` under the frozen
-   per-deployment authority (sandbar.identifier).  So this backfill materializes
-   REDISCOVERABLE data, not unrecoverable data (contrast the extras-carrier
-   backfill, which captured genuinely-dropped keys).  Losing the id: line never
-   loses the id.  That makes the backfill a durability/round-trip-cleanliness
-   convenience, not a correctness gate.
-
-   Design contract:
-     - DB-driven: the id comes from the entity's stored `:mm/id`, read directly
-       (never re-derived from rel-path — the naive rel-path->ident derivation
-       drops the digit-dodge that the ingest path applies, so re-derivation is
-       wrong for digit-leading slugs; reading :mm/id sidesteps that entirely).
-     - Dry-run FIRST: `run` defaults to dry-run and writes NOTHING; it returns
-       per-file plans + a stats map + unified diffs.  `:apply? true` is the
-       Dan-gated ceremony step.
-     - Surgical: only the id: line is inserted/rewritten.  The whole-frontmatter
-       serializer is deliberately NOT invoked, so no unrelated emit drift can
-       ride along.
-     - Guarded: every write goes through `guard-registry-critical-write!`
-       (the projection registry guard) — belt-and-suspenders; an id: insert
-       cannot drop keys, but the guard is the standing write-time contract.
-     - Idempotent: a second run is all no-ops (clean-sq lines already match).
-     - Scoped: dogfood :mm/Memory classes only; the junk-twin memory/memory/
-       and working-artifact trees are excluded.
-
-   Test law (per the fidelity decision): the PURE core (`classify-id-form`,
-   `plan-file`, `apply-plan`) has NO DB or IO dependency and is unit-testable
-   directly.  The DB-driven `id-map-from-db` is the only slot that needs a conn,
-   and acceptance runs it against a `datomic:mem` fixture (never the shared
-   transactor).
-
-   Provenance:
-     - decisions/db_fs_emitter_fidelity_option_a_wire_dormant_frontmatter_carrier_2026_07_02.md (the pipeline + sequencing)
-     - decisions/zeta_scope_b_stable_identifier_substrate_primitive_...2026_05_26.md (:mm/id = v5 UUID; compute-at-migration-time)
-     - sandbar.identifier / sandbar.codec.markdown (uuid->id-line, memory-ident-from-rel-path)"
+   Reading stored identity avoids deriving a different value after a path or
+   ident change. Existing identity must not be treated as recoverable merely
+   because new IDs can be derived deterministically. Preserve before-images
+   and review the exact file plan before applying it."
   (:require [clojure.string :as str]
             [clojure.java.io :as io]))
 

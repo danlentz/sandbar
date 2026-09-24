@@ -1,30 +1,15 @@
 (ns sandbar.db.entailment.quality
-  "Substrate-quality utilities for the entailment graph — β.2.0 pre-work.
+  "Read-only measurements and model-policy checks for the entailment graph.
 
-   Two responsibilities:
+  Benchmark helpers compare asserted-fact and selected entailment queries,
+  returning latency reports including median and p95. Interpret results with
+  the database population, revision and cache state; no fixed performance
+  threshold automatically selects materialization.
 
-   1. **S.3 — Entailment cost benchmark**: instrument rdfs2 / rdfs3 / rdfs9 /
-      rdfs11 entailment latency at corpus scale.  Compares ground-fact vs
-      entailment-aware query latency; produces median + p95 numbers per rule.
-      Informs Q.B.0.a (threshold for Stage-6 materialization trigger; master
-      plan suggests >10x ground-fact latency triggers materialization sub-arc).
-
-   2. **S.8 — Schema-load DAG cycle detection**: walks the `:dt/subclass-of`
-      and `:dt/subproperty-of` graphs at schema-load boundary; detects cycles
-      via DFS with visited-set tracking.  Loud-fails on cycle detection per
-      Q.B.0.b (recommendation: loud-fail; cycles in these graphs are
-      pathological per RDFS semantics).
-
-   Per:
-   - `:memory.plans/sandbar_pre_0_2_0_release_arc_phase_b_h_i_d_g_…_2026_05_25`
-     §3.β.2 (B.0 pre-work mandatory before B.1)
-   - `:memory.plans/sandbar_metamodel_unification_arc_…_2026_05_24` §10.B.0
-   - β.2 plan (`/Users/dan/.claude/plans/wise-splashing-stardust.md`) §3 stage
-     β.2.0
-
-   Both functions are read-only against the substrate — no mutations.
-   Validation throws ex-info on cycle detection (the loud-fail path); benchmark
-   returns the latency-report map for caller-side analysis."
+  Cycle detection walks subclass and subproperty graphs using DFS. The
+  validation helper throws ExceptionInfo on a detected cycle under Sandbar's
+  model policy. This policy is not a claim that RDF Schema forbids all cycles.
+  None of these helpers mutates the database."
   (:require [clojure.tools.logging :as log]
             [datomic.api :as d]
             [sandbar.db.datomic :as db]

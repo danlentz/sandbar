@@ -1,48 +1,10 @@
 (ns sandbar.migrations.phase-b-created-by
-  "β.2.3 commit-1 (Phase B Class-2 identity-attribution; created-by family) +
-  ζ Scope B piggyback driver — the FIRST per-family migration commit per
-  β.2.2 ADR §1.3 Q.B.3 ratified order (`created-by` first as pattern-proof
-  on UNIFORM format / LOWEST-RISK / canonical-pattern-proof).
-
-  Empirical finding from substrate inspection 2026-05-26T~08:15 (post-Gate-2-
-  backup): :mm.memory/created-by range is :dt/Resource (ref); cardinality-many;
-  642 entities have it populated; 0 entities have STRING-valued residual.
-  Conclusion: codec parsed all path-string values to refs at FS→substrate
-  ingest; Phase B ref-rewrite portion is NO-OP for created-by; ζ Scope B
-  backfill (`:mm/id` + `:mm/pref-label`) is the substantive per-entity work
-  for this first per-family commit. Drift report records the 0-string finding
-  as clean confirmation.
-
-  Per the ratified piggyback design (Q.STRAT.2 + Q.ζ.B.10 + ζ Scope B ADR §7.1):
-  per-family tx-fns piggyback ζ-backfill on per-entity touch. For created-by
-  (FIRST commit per Q.B.3), this scope includes the 642 entities that
-  currently have :mm.memory/created-by populated.
-
-  Driver shape (pure-fn + transact wrapper; per build-prove-promote discipline
-  applied at the migration level):
-    `find-created-by-string-drift`  — Datalog query for string-valued residual
-    `find-created-by-populated-entities` — Datalog query for the 642 entities
-    `entity-migration-tx`           — per-entity tx-data (combines Phase B
-                                       ref-rewrite [no-op for created-by] +
-                                       ζ-backfill via zeta-backfill ns)
-    `migrate-batch!`                — chunked driver (transacts batch-size at a time)
-    `migrate-all!`                  — loop migrate-batch! until quiescent
-    `migration-report`              — post-migration summary stats
-
-  Per the η.4 discipline that emerged (restart sandbar after schema-class-
-  evolution before subsequent ref-slot operations): this commit consumes
-  the post-restart sandbar state (PID 61286+ with mm-namespace.edn loaded;
-  schema verified live).
-
-  See:
-  - β.2.2 ADR (`memory/decisions/beta_2_2_phase_b_plus_i_resolution_rules_…_2026_05_26.md`)
-    §1.2 per-family migration template + §1.4 Q.B.1 SURFACE-AS-DRIFT policy
-  - ζ Scope B ADR (`memory/decisions/zeta_scope_b_stable_identifier_substrate_primitive_…_2026_05_26.md`)
-    §7.1 piggyback strategy
-  - β.2.1 B.1 survey (`memory/observations/beta_2_1_B_1_phase_b_ref_slot_value_distribution_survey_…_2026_05_26.md`)
-    created-by 622 file-count + canonical-pattern-proof rationale
-  - sandbar.migrations.zeta-backfill (the ζ-portion helpers)
-  - sandbar.identifier (the v5 UUID derivation primitives)"
+  "Backfill missing identity metadata on entities carrying created-by.
+   The drift query reports string-valued created-by data; this driver does
+   not rewrite those references. entity-migration-tx delegates only to
+   zeta-backfill. migrate-batch! and migrate-all! select entities with
+   created-by but no mm/id, then apply identity/preferred-label backfill.
+   Review the selected cohort and retain a backup before mutation."
   (:require [datomic.api :as d]
             [sandbar.identifier :as id]
             [sandbar.migrations.zeta-backfill :as zb]))
@@ -76,16 +38,9 @@
 ;; (b) portion is the substantive work.
 
 (defn entity-migration-tx
-  "Compute per-entity migration tx-data for the created-by family.
-
-   Combines:
-   - Phase B ref-rewrite (no-op for created-by today; would handle
-     string-valued residual if any surfaced)
-   - ζ Scope B backfill (`:mm/id` + `:mm/pref-label`)
-
-   Per β.2.2 ADR §1.2 + ζ Scope B ADR §7.1.
-
-   `entity-map` must contain at least :db/id + :db/ident; may also contain
+  "Compute :mm/id and :mm/pref-label backfill transaction data.
+   Does not repair string-valued created-by references.
+   entity-map must contain at least :db/id + :db/ident; may also contain
    :mm.memory/name, :mm.memory/description, :mm/id, :mm/pref-label."
   [entity-map]
   {:pre [(map? entity-map) (some? (:db/id entity-map))]}

@@ -1,113 +1,21 @@
 (ns sandbar.reactive.queue
-  "Dirty-map work queue + worker for the reactive-projection pipeline.
+  "Dirty-map queue and worker for derived projection.
+   The dirty map holds the latest pending slots and generation for each eid;
+   the wake-up channel carries signals, not work. Repeated enqueues coalesce
+   without discarding the newest payload. The configured buffer size is a
+   soft pressure threshold rather than a bounded queue of entity payloads.
 
-   ## What this exists for
+   Per-entity ownership lasts through sink dispatch. A newer generation
+   remains pending and the owner can redrain it, bounded per pass so a hot
+   entity does not starve other work. Worker and explicit drains share that
+   ownership. Shutdown retains workers that have not exited and reports an
+   incomplete stop; it does not assume a join timeout has stopped a sink.
 
-   `sandbar.reactive` ships the hook entry-point + opt-out mechanism at
-   the dt/* substrate primitive boundary.  This namespace ships what
-   happens AFTER the hook fires:
-
-   - A DIRTY MAP that IS the work queue: `{eid {:first-enqueue instant
-     :slots latest-post-tx-slots :gen n}}`.  Producer-side never blocks
-     (one atom swap), nothing is ever dropped, and repeated mutations to
-     the same entity collapse to ONE entry carrying the LATEST state.
-   - A WAKE-UP CHANNEL (core.async, sliding-buffer 1) that only signals
-     the worker; it carries no work, so a lost signal loses nothing — the
-     worker also sweeps the dirty map on an idle tick.
-   - A WORKER thread draining the dirty map oldest-first + invoking each
-     registered SINK (codec.emit + fs.write + SSE.emit) with the latest
-     slots.
-   - PER-ENTITY OWNERSHIP: an entity is owned by exactly one drainer from
-     the moment it is taken until its sink dispatch completes, so two
-     generations of the same entity can never be projected concurrently
-     or out of order (see below).
-   - HEALTH METRICS (dirty-entity-count, throughput, error rate,
-     oldest-pending-age-ms) exposed via the `sandbar.reactive.health`
-     MCP verb.
-
-   ## Redesign 2026-09-18 (reliability sprint, item 2.1)
-
-   The original design (Stage A.6, 2026-05-23) was a bounded sliding-
-   buffer channel of TASKS plus a separate dirty map of timestamps.  Two
-   defects, both found by Astra's review and verified at source:
-
-   1. COALESCING LOST THE NEWER PAYLOAD.  An enqueue for an already-dirty
-      entity returned without storing the new slots; the worker then
-      dispatched the FIRST-queued snapshot and cleared the dirty flag, so
-      the file on disk carried the older state while the database carried
-      the newer one (bugs/reactive_queue_coalescing_discards_newer_payload_-
-      drain_emits_original_snapshot_astra_finding_2026_09_18).
-   2. OVERFLOW STRANDED ENTITIES.  Past 4,096 distinct dirty entities the
-      sliding buffer evicted the OLDEST task silently while its dirty flag
-      stayed; every later write to that entity coalesced against the stale
-      flag and never projected again until restart (bugs/reactive_queue_-
-      sliding_buffer_overflow_strands_dirty_entities_never_reenqueued_-
-      astra_finding_2026_09_18).
-
-   Under the same-day filesystem-canonical ruling both were data loss.
-   The fix makes the dirty map the single source of truth: enqueue stores
-   the latest slots (and bumps a generation counter); drain takes an entry
-   ATOMICALLY (`swap-vals!` + `dissoc`); and there is no bounded buffer to
-   overflow.  `+default-buffer-size+` survives as a SOFT CAP that only
-   logs when exceeded, so the health snapshot keeps its `:buffer-size` key.
-
-   ## Ownership correction 2026-09-18 (Astra's P1 on the redesign)
-
-   Taking an entry atomically stops two drainers taking the SAME entry; it
-   did not serialize GENERATIONS of the same entity.  While one drainer's
-   sink was still projecting the old payload, a new enqueue reinstated the
-   eid and a second drainer (a concurrent `drain-all!`, or `stop!` draining
-   on the calling thread after its join timeout) projected the new payload
-   FIRST; the old sink finished last, so the final sink value was the old
-   state with the dirty map empty — a stale file on disk under the
-   filesystem-canonical ruling (codex/to-claude/2026-09-18T181049Z_-
-   reliability-review-queue-race.md; probe codex/review-probes/queue-
-   2026-09-18.clj).
-
-   The correction: an entity is OWNED by the drainer that takes it, for the
-   whole sink dispatch (`+in-flight+`).  A competing drainer that finds the
-   entity in flight takes nothing; an enqueue that lands while it is in
-   flight is recorded in the dirty map as usual and RE-DRAINED BY THE OWNER
-   right after its dispatch completes (bounded by `+max-owner-redrains+` so
-   one hot entity cannot starve the pass).  The take / release transitions
-   are the only code that holds `+ownership-lock+`, for microseconds, never
-   while a sink runs; the enqueue path stays a single lock-free atom swap.
-   `stop!` no longer starts a competing drain after a join timeout: it
-   retains the live worker handle, reports the incomplete shutdown (return
-   value + `:REACTIVE/worker-stop-join-timeout` warn), and a later `stop!`
-   joins the same handle.
-
-   ## Decision lineage
-
-   - `decisions/reactive_projection_queue_bounded_buffer_and_health_observability_2026_05_23.md`
-     (eid 17592186094353) — per-entity coalescing + metric surface (the
-     bounded-buffer half is superseded by the 2026-09-18 redesign above)
-   - `decisions/reactive_projection_structured_logging_required_for_states_significant_actions_2026_05_23.md`
-     (eid 17592186094433) — `:REACTIVE/<event-name>` log vocabulary
-   - `plans/reliability_sprint_2026_09_18.md` item 2.1 — the redesign
-
-   ## Public surface
-
-   - `(start!)` — start the worker thread (idempotent; safe on hot-reload).
-     Returns the worker channel (closes when the thread exits).
-   - `(stop!)` / `(stop! {:join-timeout-ms n})` — halt the worker
-     synchronously; best-effort drains what is pending once the worker has
-     exited.  Returns `{:stopped? bool :drained-on-stop n :remaining-dirty n
-     :in-flight n}`; `:stopped? false` means the join timed out and the
-     worker handle was retained (no competing drain was started).
-   - `(enqueue-projection! eid post-tx-slots)` — the callback fn that
-     registers via `(sandbar.reactive/register-callback! enqueue-projection!)`
-   - `(drain-all!)` — drain every currently-dirty entity now, oldest-first
-     (one pass).  Test / diagnostic / shutdown surface; safe alongside the
-     worker (each entity is owned by exactly one drainer at a time).
-   - `(register-sink! sink-fn)` — add a per-drain sink; sinks receive
-     `[eid post-tx-slots]`
-   - `(unregister-sink! sink-fn)` — identity-equality removal
-   - `(clear-sinks!)` — test-only reset
-   - `(health)` — snapshot of metric map (the backing fn for the
-     `sandbar.reactive.health` MCP verb); 13 keys, shape unchanged
-   - `(snapshot-dirty)` / `(snapshot-dirty-full)` / `(snapshot-in-flight)`
-     — diagnostics"
+   start!, stop!, enqueue-projection!, drain-all!, sink registration and
+   health expose lifecycle, work and diagnostics. stop! reports :stopped?,
+   remaining dirty work and in-flight work. Inspect sink results and output
+   in addition to queue counts: database acceptance, dispatch and correct
+   durable output are separate milestones. See doc/concepts/reactive-substrate.md."
   (:require [clojure.core.async    :as a]
             [clojure.set           :as set]
             [clojure.tools.logging :as log])
@@ -270,35 +178,14 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (defn enqueue-projection!
-  "Record that `eid` needs (re)projection with `post-tx-slots` as its
-   latest state, and wake the worker.
+  "Record the latest pending state for eid and signal the worker.
+   An already-dirty entity replaces its payload and advances its generation.
+   In-flight ownership is retained; later work is redrained by an owner
+   rather than projected concurrently by another drainer.
 
-   Per-entity coalescing: if the entity is already dirty, its stored
-   slots are REPLACED by `post-tx-slots` and its generation counter is
-   bumped (counter `:coalesce-total` increments); the drain that follows
-   dispatches the latest state.  Otherwise a fresh entry is created
-   (counter `:enqueue-total` increments).  Either way the worker is woken
-   through the sliding-buffer-1 signal channel — a non-blocking `offer!`
-   that never fails and never blocks the caller (this fn runs on the
-   substrate write path).
-
-   If the entity is IN FLIGHT (its sinks are running right now), the fresh
-   entry is recorded exactly the same way and the drainer that owns the
-   entity re-drains it as soon as its current dispatch completes — never
-   a competing drainer, so generations are always projected in order.
-
-   Nothing is ever dropped: the dirty map is unbounded; past
-   `+default-buffer-size+` entries a warn is logged (`:REACTIVE/dirty-
-   set-over-cap`) so a worker falling behind a bulk operation is visible.
-
-   Per `decisions/reactive_projection_structured_logging...` §2.1:
-   - `:REACTIVE/enqueue`  (debug) on fresh enqueue
-   - `:REACTIVE/coalesce` (debug) on already-dirty entity
-
-   This fn is the callback registered with sandbar.reactive via
-   `(sandbar.reactive/register-callback! enqueue-projection!)`.
-
-   Returns nil."
+   The dirty map is unbounded and crossing the soft cap logs pressure.
+   :REACTIVE/enqueue and :REACTIVE/coalesce distinguish the two paths.
+   Register this callback with sandbar.reactive. Returns nil."
   [eid post-tx-slots]
   (let [now         (Instant/now)
         ident       (:db/ident post-tx-slots)

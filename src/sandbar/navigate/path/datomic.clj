@@ -1,45 +1,17 @@
 (ns sandbar.navigate.path.datomic
-  "Sandbar Path-Grammar — Canonical-8 Datomic Compiler (Stage P-3 of
-  comprehensive memory-model MCP arc per
-  plans/sandbar_fulltext_search_substrate_arc_2026_05_13.md).
+  "Compile supported path AST nodes to Datomic clauses and recursive rules.
 
-  Compiles a canonical path-grammar AST (output of P-2 IR) to a Datomic
-  query fragment — a `:where` clause vec + a `:rules` recursive-rule
-  vec — that, when run starting from a seed entity, yields the set of
-  reachable entities under the path semantics.
+  The output {:where [clause ...] :rules [rule ...]} can be spliced into a
+  query with a seed and endpoint variable. Compilation constructs data and
+  does not query the database. SEQ composes relations; OR uses alternatives;
+  REP+ and REP* use recursion; INV reverses direction; SELF preserves a node;
+  ANY restricts to reference-valued properties; RESTRICT tests a node value.
+  Additional endpoint forms have their own compiler handlers.
 
-  Per-operator compilation strategy follows
-  syntheses/sandbar_path_grammar_substrate_design_research_2026_05_13.md
-  §3.1.  This file ships the Canonical-8 (Tier-1) operators:
-
-    :SEQ       — sequence composition (relation composition)
-    :OR        — alternation (Datomic or-join)
-    :REP+      — transitive closure (recursive rule)
-    :REP*      — reflexive-transitive closure (recursive rule + identity)
-    :INV       — inverse (compile-time variable swap)
-    :SELF      — identity step ([(identity ?from) ?to] binding)
-    :ANY       — wildcard predicate (predicate-position variable)
-    :RESTRICT  — specific-node restriction (literal attribute clause)
-
-  Plus the atomic predicate primitive `:PREDICATE` (which the parser
-  produces for any bare keyword that's not a registered operator).
-
-  Tier-2 (:NOT / :OPT / :REP / :FILTER / :TEST) and Tier-3 operators
-  are not compiled here; P-4 adds them.
-
-  Substrate-quality preserved: class-agnostic; no hardcoded slot
-  knowledge; pure data → data (no DB queries during compilation).
-
-  ## Output shape
-
-    {:where [<clause> <clause> ...]
-     :rules [[<rule-head-clause> <body-clauses>...] ...]}
-
-  Splice into a Datalog query via:
-
-    (let [{:keys [where rules]} (compile ast '?start '?end)
-          q (vec (concat '[:find ?end :in $ % ?start :where] where))]
-      (d/q q (db) rules start-eid))"
+  The public path-via adapter chooses between this route and the Clojure
+  evaluator. Compilation alone supplies neither path witnesses nor the same
+  per-hop policy evaluation as that evaluator. Consult the adapter's supported
+  operators and permission boundary before invoking generated queries directly."
   (:refer-clojure :exclude [compile])
   (:require [clojure.string :as str]
             [sandbar.navigate.path.ast :as ast]

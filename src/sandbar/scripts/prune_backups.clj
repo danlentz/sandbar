@@ -1,24 +1,12 @@
 (ns sandbar.scripts.prune-backups
-  "Prune Datomic backups under `<backup-root>/` by age or count.
+  "Prune backup directories by age or count.
+   Usage: lein prune-backups [--keep-days N] [--keep-count K] [--confirm]
 
-   Usage:
-
-       lein prune-backups [--keep-days N] [--keep-count K] [--confirm]
-
-   Defaults: `--keep-days 7` (delete anything older than 7 days).
-   Without `--confirm`, performs a DRY RUN — prints which dirs WOULD be
-   deleted, then exits 0 without touching the filesystem.
-
-   `--keep-days` AND `--keep-count` may be combined: a dir survives if it
-   passes EITHER predicate (within the last N days OR among the K most
-   recent).
-
-   Datomic provides no native pruning verb — pruning is destructive
-   `rm -rf` per the docs (\"delete the entire content hierarchy at a
-   particular backup-uri's location\").  Voice-match `reset_db.clj`'s
-   ABORT-unless-confirm pattern.
-
-   Per memory/libraries/datomic/backup_restore.md §11 + §14."
+   Default retention is seven days. Without --confirm, print the proposed
+   deletions and leave the filesystem unchanged. When both selectors are
+   supplied, a directory survives if either predicate keeps it.
+   Confirmed pruning deletes entire selected directory trees. Set
+   SANDBAR_CLIENT_DIR explicitly and review the dry run before deletion."
   (:require [clojure.edn    :as edn]
             [clojure.string :as str])
   (:import (java.io File)

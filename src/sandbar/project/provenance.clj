@@ -1,110 +1,23 @@
 (ns sandbar.project.provenance
-  "W1.E — the export/projection-run PROVENANCE RECORDER: the per-run `:mm/Run`
-  PROV-O record (fork-3), the per-run MANIFEST (with the G4 audience-split), and
-  the emitter touchpoint that mints one run per export.
+  "Record export provenance as :mm/Run entities and EDN manifests.
+   Projection runs reuse :mm/Run with :mm.activity/activity-type :projection.
+   Entity provenance records and file/basis manifests carry different data.
 
-  ── Fork-3 (Dan re-ruled 2026-07-08) ────────────────────────────────────────
-  Export/projection runs REUSE the existing concrete `:mm/Run` `:mm/Activity`
-  subclass + a `:projection` DISCRIMINATOR carried on the ceremony-8-minted
-  `:mm.activity/activity-type` slot — NO `:mm/ProjectionRun` subclass, NO
-  net-new type, NO net-new slot, NO additive schema mint (maximal reuse; the
-  same instinct Dan applied to `:mm/Project`).  A \"projection run\" is queried
-  as `:mm/Run` filtered on `:mm.activity/activity-type = :projection`.
-  (`memory/decisions/dan_rules_export_runs_reuse_mm_run_plus_discriminator_...`.)
+   Manifest routing is derived from the database-resolved project, not a
+   caller's claimed label. Written rows with verified entity descriptors
+   route through the live entity; unverifiable descriptors use a fail-closed
+   lookup over all entities at that path. Incompatible written sets refuse
+   the manifest. The export thunk has already written files at this point:
+   refusal does not remove them or make the destination safe to publish.
 
-  Two surfaces (W1.E §2/§3 — do NOT conflate):
-
-    (1) the `:mm/Run` ENTITY  — the PROV-O subject.  agent (wasAssociatedWith,
-        ref→:mm/Actor), generated (wasGeneratedBy, refs→:mm/Memory produced),
-        used (refs→:mm/Memory consumed), started/ended-at, status, +
-        `:mm.activity/activity-type :projection`; visibility-from/to for
-        promotion runs.  Built by `projection-run-spec`.
-    (2) the MANIFEST  — a plain EDN map (NOT a schema entity): the machine-
-        readable index W1.F commits + W1.G's newer-DB guard reads.  Carries the
-        :manifest/basis-t <long> + :manifest/file-set [<rel-path>…] the :mm/Run
-        entity does NOT (its generated/used are memorial REFS, not paths/basis-t).
-        Built by `export-manifest`; assembled from an export by `manifest-for-export`.
-
-  ── CODEX-1 fix (manifest forgery, held-note travelling requirement) ─────────
-  `manifest-for-export` DERIVES `:manifest/firewall-class` from the DB-resolved
-  project via the shared label core (`sandbar.project.route/route-of`, which
-  composes `sandbar.firewall.label/project-effective-sensitivity`), NOT from a
-  caller-supplied route map.  The held draft trusted `(:sensitivity route)`, so a
-  forged `{:sensitivity :public}` could stamp a private export `:public`.  The
-  audit-integrity property is now structural: the recorded firewall-class is
-  recomputed from the same DB the routing/enforcement reads — the caller has
-  nothing to forge.  NB the `project.export` path itself applies NO content
-  filter yet (the G4/H exclusion filter is W1.H, unbuilt); until it lands, the
-  recorded firewall-class is the DERIVED target class AND the manifest boundary
-  ITSELF enforces class/content consistency by REFUSING a written-set that does
-  not resolve to that class (see the whole-file-set gate below) — so the class
-  the manifest records is the class its file-set is verified to satisfy.
-
-  ── WHOLE-MANIFEST class/content consistency (P-CITE-2 over the file-set) ────
-  The audience-split scrubs the exclusions/redactions ENUMERATION, but a private
-  identifier can also ride the `:manifest/file-set` itself — a private-project
-  row smuggled into a `:public`-derived export.  So the manifest boundary
-  ADDITIONALLY VERIFIES the whole written set against the DERIVED route via the
-  shared label core (`verify-written-against-route!`): a `:public`-derived
-  target REFUSES (throws a marker-tagged `:sandbar/error`, no committed
-  manifest) if ANY written row resolves non-`:public`; a `:private`-derived
-  target refuses any row whose trust-scope is neither its own nor `:public`.
-  REFUSE-not-filter (mirrors `sandbar.projection/guard-registry-critical-write!`
-  / the S7 refuse-at-boundary precedent): a mis-scoped export must ABORT the
-  future W1.F commit path loudly, not silently drop the offending rows.
-
-  Each row is routed EXACTLY when it carries a VERIFIED source-entity claim:
-  `project-graph` stamps every written row with `:entity` (the projected
-  entity's slim descriptor), and the gate PROVES that claim against the DB —
-  the descriptor's `:db/ident` must resolve to a live entity whose own
-  rel-path equals the row's — then routes the LIVE entity, never the carried
-  map (the r4 CODEX-A MEDIUM fix: the r3 gate trusted the descriptor's routing
-  slots, so a forged `:public` descriptor paired with a private rel-path
-  skipped the fail-closed set-lookup).  Exact routing closes the R3-flagged
-  fail-open where a rel-path shared by a `:public` and a `:private` entity
-  resolved to the public twin while the private twin's file was what landed.
-  A row WITHOUT `:entity` — or with an UNVERIFIABLE one (forged / stale /
-  unresolvable / rel-path-mismatched) — fail-closes over the SET of ALL
-  entities carrying its rel-path (admitted only if EVERY one is admissible);
-  a rel-path resolving to zero live entities routes `:private`.
-
-  RESIDUAL (not an absolute; RULED — stays documented-option-(b), W1 adopted
-  defaults 2026-07-21): on the wired emitter path this gate runs AFTER the
-  thunk has written the file-set to disk, so it keeps a COMMITTED (W1.F-published)
-  manifest class-consistent but does NOT unwrite refused files at a scratch `:to`
-  — the on-disk content filter is W1.H, the newer-DB restore guard W1.G.
-
-  ── G4 audience-split (E-4 / R3-1 / W1.H P-CITE-2) ──────────────────────────
-  A COMMITTED manifest for a `:public`-target run MUST NOT carry any private
-  entity identifier: its exclusions/redactions collapse to NON-LINKABLE forms
-  (a count + a per-run-SALTED digest, the salt discarded) plus an OPAQUE
-  run-scoped `:manifest/audit-ref` (the run's own `:mm/id` UUID — resolvable to
-  the audit-side `:mm/Run`, never name-bearing).  Because the salt is DISCARDED,
-  the digest is NOT independently auditor-verifiable — it is a NON-LINKABLE
-  opaque form (it hides the count-preserving shape + defeats cross-run
-  correlation), NOT an attestation; the AUTHORITATIVE verification rides the
-  audit-side EXACT record (the `:audit` value `manifest-for-export` returns
-  alongside `:committed`, keyed by the same opaque ref).  A `:private`-target
-  run MAY commit the exact enumeration (committed manifest + audit ledger
-  co-reside in its private repo).  The scrub is applied at the lowest level
-  (`export-manifest`), so a `:public` committed manifest carrying an exact
-  private id IN ITS EXCLUSIONS/REDACTIONS ENUMERATION is unconstructible by
-  construction.  (The other channel a private id could ride — the
-  `:manifest/file-set` — is closed by the whole-manifest gate above, which
-  REFUSES rather than scrubs; that gate is a boundary refusal, not an
-  unconstructible-by-construction property.)
-
-  ── AUDIT-LEDGER persistence (E-4(a) — DEFERRED E/F/G seam) ──────────────────
-  `manifest-for-export` RETURNS the audit-side EXACT enumeration (`:audit`,
-  keyed by the run's `:mm/id`).  Persisting that enumeration as slots on a
-  private audit sink is the W1.H/E-F-G seam and is NOT built here (no-new-schema
-  fork-3 + W1.H produces no real exclusions yet — today the export path applies
-  NO filter).  What IS load-bearing now: `:manifest/audit-ref` is the run's
-  `:mm/id`, so it resolves to the persisted (`:db-only`) `:mm/Run` rather than
-  pointing at nothing (the auditor looks the run up by `[:mm/id audit-ref]`).
-
-  Spec: W1.E-manifest-contract §2/§3 (fork-3 amended), arc-plan W1.E + G4,
-  HELD-NOTE.md (CODEX-1 travelling requirement)."
+   Public-target manifests replace exact exclusion/redaction enumeration
+   with counts, a salted digest and an opaque audit reference. The returned
+   private audit data retains exact enumeration; its separate persistence
+   is not implemented here. The digest is not independently verifiable after
+   its salt is discarded. These legacy wrapping helpers do not provide the
+   guarded MCP export boundary. sandbar.project.export now performs pre-write
+   whole-document holds and persists its private audit, reusing the pure manifest
+   builder and gated Run recorder here. See doc/concepts/projection.md."
   (:require [clojure.string :as str]
             [datomic.api :as d]
             [sandbar.config :as config]

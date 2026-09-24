@@ -1,14 +1,8 @@
 (ns sandbar.scripts.config-show
-  "Print the resolved 3-layer config + provenance.
-
-   Usage:
-
-       bin/sandbar config-show              ;; pretty-printed full config
-       bin/sandbar config-show --provenance ;; ALSO show per-layer contributions
-
-   The output answers 'what config does sandbar actually see right now?'
-   — useful for diagnosing 'why is :port X instead of Y?' situations.
-   Per memory/decisions/sandbar_deployment_consumption_cohabitability_strategy_2026_05_24.md D.G."
+  "Print the resolved layered config, optionally with each layer's values.
+   Usage: bin/sandbar config-show [--provenance]
+   Use this to diagnose which client directory, database, port, or environment
+   override the process actually resolves."
   (:require [clojure.pprint :as pp]
             [sandbar.config :as cfg])
   (:gen-class))

@@ -1,52 +1,23 @@
 (ns sandbar.search.bm25f
-  "BM25F retrieval scoring — canonical multi-field BM25 per
-  Robertson & Zaragoza (2009) §3.4.  Sandbar substrate port from corpus
-  per `authorizations/move_bm25f_and_generic_primitives_to_sandbar_2026_05_13.md`.
+  "Canonical multi-field BM25F analysis, corpus statistics and scoring.
 
-  Pipeline:
+  analyze-entity builds per-field token frequencies and lengths; corpus-stats
+  computes population size, document frequencies and average field lengths;
+  score applies the kernel to distinct analyzed query terms. Field extraction
+  follows model declarations and may resolve reference targets. The statistics
+  and scoring calculations operate on the resulting analyzed values.
 
-      entities  →  (mapv analyze-entity)  →  analyzed
-                                          ↓
-                                       corpus-stats  →  stats
-                                          ↓
-      query     →  (analysis/tokenize)   →  (score q-toks ae stats)
+  For a query term, normalize each field frequency by its field length,
+  multiply by its field weight, sum across fields, then saturate the combined
+  frequency. Summing independently saturated field scores is a different
+  function. Reference target fields contribute selected text at one hop;
+  their numeric weights are not recursively propagated.
 
-  `analyze-entity` is the per-entity analyzer (tokenize each weighted
-  slot, frequencies, length).  Weights come from the entity's class
-  `:dt/bm25f-weights` declaration via `dt/effective-bm25f-weights-of` — no
-  hardcoded consumer-class knowledge in the substrate.  `corpus-stats`
-  aggregates corpus-wide N, df-by-term, avgdl-by-slot.  `score` is the
-  scoring kernel.  All three are pure.
-
-  Canonical form vs. per-field-weighted-sum:
-
-      tilde_tf(t, D) = Σ_f w_f · tf(t, D_f) / (1 - b + b · |D_f|/avgdl_f)
-      B_TF(t, D)     = (k1 + 1) · tilde_tf / (k1 + tilde_tf)
-      score(Q, D)    = Σ_{t ∈ Q} IDF(t) · B_TF(t, D)
-
-  Length-normalized TFs accumulate across fields BEFORE saturation —
-  Robertson & Zaragoza 2009 §3.4.  An older variant (per-field BM25,
-  weighted-summed) is sometimes called BM25F too but saturates each
-  field independently; the difference matters when a query term appears
-  across multiple curated fields.  See
-  `decisions/bm25f_canonical_robertson_zaragoza_form.md`.
-
-  References:
-  - Robertson, S.E., Zaragoza, H. (2009).  'The Probabilistic Relevance
-    Framework: BM25 and Beyond.'  Foundations and Trends in Information
-    Retrieval 3(4): 333–389.  §3.2 + §3.4.
-  - Robertson, S.E., Zaragoza, H., Taylor, M. (2004).  'Simple BM25
-    extension to multiple weighted fields.'  CIKM '04.
-  - Apache Lucene `BM25Similarity` — JVM canonical reference for
-    parameter defaults (k1=1.2, b=0.75).
-
-  Ported 2026-05-13 from `etc/lib/bm25f.clj` (Robertson-Zaragoza canonical)
-  to Sandbar substrate.  Field-extraction adapted from corpus-frontmatter-
-  shape to metamodel-driven via `dt/effective-bm25f-weights-of` per substrate-quality
-  discipline (no hardcoded consumer-class knowledge).
-
-  Per fulltext arc Stage 4b of
-  plans/sandbar_fulltext_search_substrate_arc_2026_05_13.md."
+  The construction follows Robertson and Zaragoza (2009), The Probabilistic
+  Relevance Framework: BM25 and Beyond, section 3.6 (multi-stream BM25F), and
+  Robertson, Zaragoza and Taylor (2004), Simple BM25 extension to multiple
+  weighted fields. Sandbar uses k1=1.2 and b=0.75. See
+  doc/concepts/fulltext-search.md for the exact implemented formula."
   (:require [sandbar.db.datatype  :as dt]
             [sandbar.db.datomic   :as db]
             [sandbar.search.analysis :as a]))
@@ -75,27 +46,12 @@
 (declare ref-target-text)
 
 (defn- raw-field
-  "Extract the raw text of `slot-ident` from `entity-map`.  Generic over
-  Sandbar entity-map shape — no class-specific knowledge.  Returns nil
-  if the slot is absent or holds no surfacing-eligible content.
-
-  Cardinality-many string-valued slots collapse to a space-joined
-  string before tokenization (analogous to corpus's `:tags` handling).
-
-  Ref-typed slot resolution — TAG-CONTENT TOKENIZER (Phase B):
-
-      When `slot-ident` has `:dt/range :<class>` (i.e., it's a ref slot
-      pointing at a metamodel class) AND that target class declares its
-      own `:dt/bm25f-weights`, this fn resolves the ref to the target
-      entity-map and extracts the TARGET'S full BM25F-weighted text
-      content as a single concatenated string.  This generalizes the
-      `:mm.memory/tags` + `:mm.memory/themes` → `:mm/Tag` participation
-      pattern but is class-agnostic — any class with a ref slot to a
-      bm25f-weighted target gets its target's content folded into the
-      tokenization stream.
-
-  Per `decisions/sandbar_substrate_absorbs_full_search_complexity_client_is_thin_layer_2026_05_22.md`
-  + Dan-emphasis 2026-05-22 on rich tag participation in BM25F."
+  "Extract text for slot-ident from an entity map, or nil when absent.
+  Many string values become a space-joined string. For supported references,
+  the declared target class selects primitive text fields through its BM25F
+  declaration; their text is concatenated into this referring field.
+  Expansion is one hop. The referring field's weight applies; target numeric
+  weights are not multiplied into this text or propagated recursively."
   [entity-map slot-ident]
   (let [v (get entity-map slot-ident)]
     (cond
@@ -107,8 +63,9 @@
                             (when (seq strs)
                               (clojure.string/join " " strs)))
                           (ref-target-text slot-ident v))
-      ;; Card-one refs — either a numeric eid or a datomic Entity (associative).
-      (or (number? v)
+      ;; Datomic returns ident-bearing references as keywords, including
+      ;; card-one refs. Resolve them just like numeric eids.
+      (or (number? v) (keyword? v)
           (and (associative? v) (:db/id v)))
                       (ref-target-text slot-ident v)
       :else           nil)))
@@ -116,13 +73,14 @@
 (defn- ref-target-text
   "If `slot-ident` is a ref slot pointing at a class with `:dt/bm25f-weights`,
   resolve the value(s) to target entity-maps and return the concatenated
-  BM25F-weighted text from each target.  Returns nil for non-ref slots,
+  text from each target's declared BM25F fields. Returns nil for non-ref slots,
   refs to classes without weights, or unresolvable refs.
 
   This is the substrate-quality primitive for typed-edge participation
   in BM25F: ANY class can declare a ref slot in its `:dt/bm25f-weights`
-  and the target class's own weighted content folds in transparently —
-  no hardcoded consumer-class knowledge.  Two-deep traversal would
+  and text from the target class's selected primitive fields joins the
+  source field. Target field weights select fields but their numeric values
+  do not propagate into this text. Two-deep traversal would
   require an explicit recursion-depth parameter; current implementation
   is one level (target's primitive slots only)."
   [slot-ident value]
@@ -138,7 +96,8 @@
               target-maps (keep (fn [r]
                                   (cond
                                     (associative? r) r
-                                    (number? r)      (try
+                                    (or (number? r) (keyword? r))
+                                                     (try
                                                        (db/entity r)
                                                        (catch Throwable _ nil))
                                     :else            nil))
@@ -291,7 +250,7 @@
 (defn- tilde-tf
   "Cross-field weighted sum of length-normalized TFs.  This is
   `Σ_f w_f · norm-tf_f(t, D)` — accumulated BEFORE saturation, the
-  load-bearing canonical-BM25F move (Robertson & Zaragoza 2009 §3.4).
+  load-bearing canonical-BM25F move (Robertson & Zaragoza 2009 §3.6).
 
   Fields absent from `field-weights` contribute zero."
   [term fields avgdl field-weights]

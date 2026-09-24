@@ -1,24 +1,11 @@
 (ns sandbar.bootstrap.render
-  "Render sandbar's substrate state to corpus markdown memorials.
+  "Render model declarations as readable Markdown documentation records.
 
-   Stage 2.B of plans/sandbar_bootstrap_authority_arc_2026_05_21.md (per
-   the corpus side).  Implements the substrate-as-authoritative-source
-   pattern: each `:mm/<Class>` declaration + each `:mm.memory/<predicate>`
-   slot renders to a markdown documentation memorial in the corpus
-   filesystem.
-
-   Stage 2.B scope = minimum viable:
-   - `render-class :mm/<Class>` → entity-spec map for memory/types/<class>.md
-   - `render-predicate :mm.memory/<predicate>` → entity-spec map for
-     memory/predicates/<predicate>.md
-   - `render-all-bootstrap` → seq of {:rel-path :content} pairs
-
-   Per-class narrative templates (Stage 2.D) are NOT implemented in this
-   first pass; the body is a structured introspection report.  Templates
-   are a future refinement.
-
-   Per decisions/bootstrap_authority_q1_q5_resolutions_2026_05_21.md
-   + decisions/bootstrap_source_as_first_class_class_not_keyword_enum_2026_05_21.md."
+   render-class and render-predicate build entity specifications internally,
+   emit Markdown, and return {:rel-path path :content text} pairs.
+   render-all-bootstrap returns a sequence of those pairs. Model metadata supplies factual fields;
+   optional resource templates supply the narrative around those fields.
+   When no template exists, rendering falls back to introspection output."
   (:require [clojure.string         :as str]
             [sandbar.codec.markdown :as codec-md]
             [sandbar.db.datatype    :as dt]
@@ -61,13 +48,9 @@
     (str "sandbar:" version)))
 
 (defn- load-template
-  "Load a per-class or per-predicate narrative template from
-   resources/bootstrap/templates/.  Returns the template content
-   (string with {{placeholder}} tokens) OR nil if no template exists.
-
-   Per interaction/bootstrap_rendering_must_preserve_narrative_human_readable_content_2026_05_21.md
-   — templates carry the generic pedagogical narrative; substrate
-   introspection fills the placeholders."
+  "Load a narrative template from resources/bootstrap/templates/.
+   Returns text containing placeholder tokens, or nil when absent.
+   Templates hold reusable explanation; introspection supplies field values."
   [kind name-str]
   (let [resource-path (str "bootstrap/templates/" kind "/" name-str ".md.template")
         url (clojure.java.io/resource resource-path)]
@@ -172,15 +155,10 @@
      :slot-order-list slot-list}))
 
 (defn render-class-body
-  "Render the markdown body for a class documentation memorial.
-   Uses per-class narrative template from
-   resources/bootstrap/templates/types/<class-name>.md.template when
-   present; falls back to introspection-only output when no template
-   exists.
-
-   Per interaction/bootstrap_rendering_must_preserve_narrative_human_readable_content_2026_05_21.md
-   — templates carry the generic pedagogical narrative; introspection
-   fills the placeholders."
+  "Render the Markdown body for a class documentation record.
+   Uses resources/bootstrap/templates/types/<class-name>.md.template when
+   present, substituting model metadata; otherwise uses introspection-only
+   output. Templates preserve explanation around the generated facts."
   [class-ident]
   (let [class-nm (class-name-lc class-ident)
         template (load-template "types" class-nm)
@@ -192,9 +170,9 @@
       ;; know it's not the canonical narrative)
       (str
         "*This memorial is rendered from substrate introspection only — "
-        "no narrative template ships for this class yet.  Per "
-        "`interaction/bootstrap_rendering_must_preserve_narrative_human_readable_content_2026_05_21.md`, "
-        "a template should be authored to provide pedagogical context.*\n\n"
+        "no narrative template ships for this class yet. "
+        "Add a template under resources/bootstrap/templates/types/ "
+        "to explain the class's purpose and use.*\n\n"
         "## What this class is\n\n"
         (:class-doc context) "\n\n"
         "## Substrate identity\n\n"

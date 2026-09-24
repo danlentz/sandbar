@@ -1,46 +1,15 @@
 (ns sandbar.event
-  "Boundary verb for substrate-event subscription with class-hierarchical
-   dispatch.
+  "Class-hierarchical in-process event subscription and dispatch.
+   Subscribers register for a class; an event reaches subscribers to that
+   class or its ancestors. Dispatch caches are invalidated by subscription
+   changes and schema reload callbacks.
 
-   ## Thesis (per event-substrate keystone ADR D.2 + D.3)
-
-   Subscribers register interest by EVENT CLASS.  The dispatcher fans
-   out per event to all subscribers whose registered class is
-   `:dt/subclass-of` (or equal to) the event's class — via
-   `sandbar.db.datatype/ancestors-of` (which uses the existing memoized
-   type-relation cache).  A MANDATORY dispatch cache keyed
-   `{event-class-ident → subscriber-set}` is rebuilt on demand +
-   invalidated on subscriber-change or schema-reload.
-
-   ## Phase status
-
-   Phase 2 of the event-substrate keystone ADR.  Implements the
-   subscribe/unsubscribe boundary verbs + class-hierarchical dispatch
-   cache.
-
-   Composes with Phase 1 (`sandbar.reactive.tx-source` — the
-   transactional event publisher).  Phase 1's Manifold stream can be
-   bridged to this dispatcher via a `(ms/consume #'fire! stream)` call.
-
-   ## Not yet implemented (deferred to follow-on phases)
-
-   - Per-subscriber `:async` policy (sliding-buffer / dropping / etc.) — Phase 6
-   - Per-subscriber handler-isolation thread (gen_event anti-lesson) — Phase 7
-   - Per-class buffer policy slot (`:mm.event/buffer-policy`) — Phase 6
-   - Chronicle Queue escape hatch for non-droppable + high-volume — Phase 6
-
-   ## Boundary discipline
-
-   Public surface:
-     `subscribe!`     — register a handler fn against an event class
-     `unsubscribe!`   — remove a registered handler
-     `subscribers-of` — diagnostic: what subscribers are registered for a class
-     `dispatch-set`   — the set of subscribers matched for a given event-class
-                        (computed via class-hierarchy walk; memoized)
-     `fire!`          — publish an event to all matching subscribers
-     `clear!`         — test-only; reset all subscriber state
-
-   Per `memory/decisions/sandbar_event_substrate_architecture_datomic_tx_report_queue_wrapped_behind_dt_star_manifold_transport_class_hierarchical_subscription_2026_05_23.md`."
+   Delivery is synchronous in the publishing thread, with exception barriers
+   around individual handlers. Slow handlers still delay the publisher.
+   The bus does not provide durable replay, isolated subscriber threads or
+   per-subscriber backpressure. The transaction-report source can be bridged
+   explicitly; it is not automatically wired by subscribing here.
+   See doc/concepts/event-substrate.md."
   (:require [clojure.tools.logging :as log]
             [sandbar.db.datatype   :as dt]))
 
@@ -116,15 +85,9 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (defn- compute-dispatch-set
-  "For event-class `event-class-ident`, walk up the class hierarchy
-   (via `dt/ancestors-of` — uses the existing memoized substrate
-   cache) + accumulate every subscriber registered against the class
-   itself OR any of its ancestors.
-
-   Per the build-on-the-type-system discipline
-   (memory/interaction/build_on_type_system_reflectively_and_prospectively_dont_reinvent_in_parallel_due_to_tactical_concerns_2026_05_23.md)
-   — uses the substrate's existing ancestor-walk rather than
-   reimplementing class traversal here."
+  "Collect distinct subscribers registered on the event class or any ancestor.
+   If ancestry lookup fails, only the event class's direct subscribers are used.
+   This computes a set; dispatch-set handles caching the result."
   [event-class-ident]
   (let [registry @+subscribers+
         ;; The event-class itself + all ancestors (transitive)

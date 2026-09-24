@@ -1,73 +1,15 @@
 (ns sandbar.codec.markdown
-  "Markdown + YAML frontmatter codec implementation per
-   decisions/sandbar_codec_layer_owns_wire_format_concerns_consumer_native_representation_2026_05_12.md §2.4
-   and decisions/mm_section_schema_path_derived_idents_sibling_chain_navigation_2026_05_13.md.
+  "Markdown codec with a bounded, line-based frontmatter convention.
 
-   ## Wire format
+   Frontmatter keys map through class aliases and declared ranges. Body
+   text maps to the class's body slot. Document helpers also produce hosts,
+   sections, sibling links and optional frontmatter carriers.
 
-   A markdown document with optional YAML frontmatter delimited by
-   `---` lines:
-
-       ---
-       name: Foo
-       description: ...
-       type: decision
-       ---
-       # Heading
-
-       Body text.
-
-   ## Parse contract
-
-   Parse takes a markdown string + opts (must include `:class
-   class-ident`) and returns an entity-spec map:
-
-       {:dt/type   :mm/Memory
-        :mm.memory/name        \"Foo\"
-        :mm.memory/description \"...\"
-        :mm.memory/memory-type :decision
-        :mm.memory/body-raw    \"# Heading\\n\\nBody text.\\n\"}
-
-   Slot mapping rules:
-     - Frontmatter keys are mapped to slot idents using the class's
-       property-namespace convention (`<class-ns>.<lowercase-class-local>/<key>`)
-     - Per-class aliases (read at runtime via `dt/codec-aliases-of`
-       from the `:dt/codec-aliases` schema attribute on the class)
-       handle reserved-word collisions (e.g., `type` →
-       `:mm.memory/memory-type`)
-     - Unknown frontmatter keys for which the class has no matching slot
-       are passed through under `:frontmatter-extra` (the consumer can
-       choose to store them via `mm/Frontmatter`)
-     - Body text is assigned to the class's `body` slot
-       (`:mm.memory/body-raw` for mm/Memory; `:mm.section/body` for
-       mm/Section)
-
-   ## Emit contract
-
-   Emit takes an entity map + opts and returns a markdown string:
-     - Frontmatter slots are emitted as YAML key-value pairs (block style)
-     - Body slot is emitted verbatim after the closing `---`
-     - Whitespace normalized per
-       decisions/mm_section_schema_path_derived_idents_sibling_chain_navigation_2026_05_13.md
-       §4 (LF line endings; trailing-whitespace stripped except hard-breaks;
-       single blank between paragraphs; final newline)
-
-   ## Stage B.2 scope
-
-   This stage implements the FRONTMATTER + BODY round-trip layer.
-   Section-tree decomposition (markdown headings → mm/Section entities
-   with sibling-chain wiring) lands at Stage B.3.  For Stage B.2,
-   mm/Memory's body is parsed/emitted as a single string (`:body-raw`);
-   the section structure is preserved as-is in the body text without
-   decomposition.
-
-   ## Layer-targeting discipline
-
-   Codec operates at the MODEL layer (slot idents, class metadata via
-   `dt/*`) — never at the Datomic-schema layer (`:db.*` attributes).
-   Per
-   interaction/export_format_must_be_neutral_and_database_agnostic_2026_05_12.md
-   the wire format is portable across model-equivalent backends."
+   Interactive creation can refuse unknown or invalid frontmatter; bulk
+   document import is lenient and reports issues. Emission normalizes the
+   supported representation. This parser is not a general YAML parser or
+   a complete CommonMark syntax tree, and normalized output is not archival
+   byte preservation. See doc/concepts/markdown-as-canonical.md."
   (:require [clj-yaml.core           :as yaml]
             [clojure.edn             :as edn]
             [clojure.string          :as str]
@@ -172,18 +114,12 @@
 ;; frontmatter shape.
 
 (defn- coerce-scalar
-  "Minimal YAML scalar coercion for the lenient parser:
-   - bare `true` / `false` → real booleans
-   - double-quoted `\"...\"` → unquoted string contents (with `\\\"` → `\"`)
-   - single-quoted `'...'`   → unquoted string contents (with `''` → `'`)
-   Everything else passes through as the original trimmed string.
-
-   Per YAML 1.1/1.2 escape rules + round-trip-stability requirement
-   (decisions/round_trip_stable_normalization_acceptance_criterion_2026_05_20.md):
-   the parser MUST unescape single-quote escapes so emitted form
-   `'Anthropic''s'` parses back to the literal string `Anthropic's`,
-   not `Anthropic''s` (which would re-escape to `Anthropic''''s` on the
-   next emit and grow without bound)."
+  "Coerce scalar text in the lenient frontmatter parser.
+   Bare true/false become booleans. Quoted forms remove their enclosing
+   quotes and support the implemented quote-escape substitutions; other
+   values remain trimmed strings. Unescaping a doubled single quote keeps
+   repeated parse/emit cycles from adding another level of quote escaping.
+   This helper does not implement general YAML scalar syntax."
   [v]
   (cond
     (= v "true")  true
@@ -348,11 +284,8 @@
        set))
 
 (defn- strip-trailing-non-hardbreak-whitespace
-  "Strip trailing whitespace from each line UNLESS it's a markdown
-   hard-break (line ending with 2+ trailing spaces per CommonMark §4.2.6).
-   Per
-   decisions/mm_section_schema_path_derived_idents_sibling_chain_navigation_2026_05_13.md
-   §4.2."
+  "Strip trailing whitespace except Markdown hard breaks with two or
+   more trailing spaces. This is a normalization rule, not a full parser."
   [body]
   (when body
     (str/join "\n"
@@ -370,20 +303,13 @@
     (str/replace body #"\n{3,}" "\n\n")))
 
 (defn normalize-body
-  "Apply the whitespace normalization rules per
-   decisions/mm_section_schema_path_derived_idents_sibling_chain_navigation_2026_05_13.md §4.2:
-     - CRLF → LF
-     - trailing whitespace stripped (except markdown hard-breaks)
-     - 2+ consecutive blank lines collapsed to 1
-     - leading + trailing blank lines stripped (canonical form:
-       non-empty bodies end with exactly ONE trailing newline; empty
-       bodies remain the empty string)
-   Per §4.3, this transformation is applied on PARSE for canonical
-   storage; emission produces normalized output too — round-trip is
-   idempotent at the second parse, not byte-exact with the first parse's
-   source.  Code-block interiors are CURRENTLY normalized (Stage B.2
-   minimum-viable); preserving code-block interiors verbatim is a Stage
-   B.3 follow-up requiring fenced-block awareness."
+  "Normalize line endings and body whitespace for storage and emission.
+   Convert CRLF to LF, preserve hard breaks during per-line space cleanup,
+   collapse consecutive blank lines, and trim outer whitespace. The final
+   trim can remove whitespace on the first/last line, including a final hard break. A
+   nonempty normalized body ends in one newline; an empty body stays empty.
+   Code-block interiors are normalized too, so this is not byte-preserving
+   archival storage or a fenced-block-aware CommonMark transformation."
   [body]
   (when body
     (let [s (-> body
@@ -423,7 +349,7 @@
   [class-ident]
   (str (namespace class-ident) "." (str/lower-case (name class-ident))))
 
-(defn- body-slot-for
+(defn body-slot-for
   "The body slot ident for a class.  Convention: `<class-prop-ns>/body-raw`
    for memory-level classes (which preserve the raw whole-document body);
    `<class-prop-ns>/body` for section-level classes.
@@ -496,26 +422,43 @@
    ;;     declared as slots; supports incremental class expansion).
    (keyword (class-slot-namespace class-ident) (name yaml-key))))
 
+(defn- diagnostic-spelling [value]
+  ;; Import units retain the message in their report and log. Bound each
+  ;; quoted spelling there; ex-data retains the original supplied value.
+  (let [s (pr-str (str value))]
+    (if (> (count s) 200) (str (subs s 0 200) "…") s)))
+
+(defn- require-readable-keyword
+  "Refuse a generated keyword that cannot survive an EDN round trip.
+   A container detects extra reader forms as well as outright reader errors.
+   Keep the offending spelling as a STRING so the diagnostic is readable too."
+  [k value]
+  (when-not (try (= [k] (edn/read-string (pr-str [k])))
+                 (catch Exception _ false))
+    (throw (ex-info (str "Generated keyword cannot round-trip EDN: " (diagnostic-spelling k)
+                         "; supplied value " (diagnostic-spelling value))
+                    {:type :markdown/unreadable-keyword
+                     :keyword-text (str k)
+                     :value (if (keyword? value) (str value) value)})))
+  k)
+
 (defn- coerce-string->keyword
   "Coerce a YAML-parsed string to a keyword for a keyword-typed slot.
-   Lists of strings → vectors of keywords.  Pass-through otherwise."
+   Lists of strings → vectors of keywords. Refuse unreadable keyword values;
+   pass other value types through to the existing type checks."
   [v]
   (cond
-    (keyword? v) v
-    (string?  v) (keyword v)
+    (keyword? v) (require-readable-keyword v v)
+    (string?  v) (require-readable-keyword (keyword v) v)
     (sequential? v) (mapv coerce-string->keyword v)
     :else v))
 
 (defn- coerce-string->instant
-  "Coerce a YAML-parsed string to a java.util.Date for an instant-typed
-   slot.  Accepts ISO-8601 forms understood by `clojure.instant/read-
-   instant-date` (date-only YYYY-MM-DD; datetime with offset; etc.).
-   Lists of strings → vectors of Dates.  Date / Instant pass-through.
-   Falls back to the original value on parse failure (the transact
-   layer will surface a loud type error if the shape doesn't fit —
-   the right discipline per F-S-002 fail-loud).  Added 2026-05-20 per
-   F#15 of memory/plans/sandbar_0_1_1_coevolution_arc_2026_05_20.md +
-   Stage 2.A of the bootstrap-memory-substrate sub-arc."
+  "Coerce strings in an instant-typed slot using
+   clojure.instant/read-instant-date. Accept supported ISO date/datetime
+   forms and map over sequential values; Date/Instant values pass through.
+   On parse failure return the original value. A caller still needs its
+   declared validation and transaction-type checks before accepting it."
   [v]
   (cond
     (instance? java.util.Date v) v
@@ -671,7 +614,8 @@
    'memory.actors/foo'                      → :memory.actors/foo (NEW; was :memory.memory.actors/foo)
    'memory.libraries.patterns/scheduler'    → :memory.libraries.patterns/scheduler (NEW)
 
-   Returns nil for unparseable input.
+   Returns nil when no ident can be derived. Refuses a derived keyword that
+   cannot round-trip EDN; never guesses a path by removing comments or text.
 
    Public per Gap 1 — consumers (MCP `sandbar.entity.find-by-rel-path`
    verb + others) need the canonical rel-path→ident conversion to avoid
@@ -690,41 +634,30 @@
     ;; EDN-reader-safe + round-trips.  edn-safe-ident is idempotent + nil-safe,
     ;; so wrapping both branches (incl. the path-form nil guard) is correct.
     ;; The inverse `memory-ident->rel-path` un-dodges (see edn-unsafe-ident).
-    (edn-safe-ident
-     (if ident-form
-       ;; Ident-string form: parse directly as keyword (no path-form
-       ;; reconciliation).
-       (let [[_ ns-str nm-str] ident-form]
-         (keyword ns-str nm-str))
-       ;; Path form: prepend `memory/` if absent + derive keyword.
-       (let [with-mem   (if (str/starts-with? no-ext "memory/")
-                          no-ext
-                          (str "memory/" no-ext))
-             parts      (str/split with-mem #"/")
-             ns-parts   (butlast parts)
-             local-name (last parts)]
-         (when (and (seq ns-parts) local-name)
-           (keyword (str/join "." ns-parts) local-name)))))))
+    (let [ident
+          (edn-safe-ident
+           (if ident-form
+             ;; Ident-string form: parse directly as keyword (no path-form
+             ;; reconciliation).
+             (let [[_ ns-str nm-str] ident-form]
+               (keyword ns-str nm-str))
+             ;; Path form: prepend `memory/` if absent + derive keyword.
+             (let [with-mem   (if (str/starts-with? no-ext "memory/")
+                               no-ext
+                               (str "memory/" no-ext))
+                   parts      (str/split with-mem #"/")
+                   ns-parts   (butlast parts)
+                   local-name (last parts)]
+               (when (and (seq ns-parts) local-name)
+                 (keyword (str/join "." ns-parts) local-name)))))]
+      (when ident (require-readable-keyword ident rel-path)))))
 
 (defn walk-rel->stored-rel-path
-  "Normalize a walk-relative rel-path to the corpus-relative STORED form
-   persisted in `:mm.memory/rel-path` — the walk-rel with a leading
-   `memory/` walk-anchor prefix stripped.
-
-   When `ingest-graph` anchors its walk at the corpus root
-   (`:from /Users/dan/claude`) the walk-rel is `memory/decisions/foo.md`,
-   but the corpus-canonical stored form (D2, per c8_ratification_batch)
-   is the unprefixed `decisions/foo.md` so the reactive sink routes to
-   the REAL corpus path.  Anchoring at `.../memory` already yields the
-   unprefixed form; this is a no-op there.
-
-   This is the SINGLE definition of the walk-rel→stored-rel relation.
-   `parse-document` (stored-slot mint) and `projection/ingest-graph`'s
-   tree-filter parse-skip optimization BOTH route through it so the two
-   filter forks compare the same target — the divergence that produced
-   bugs/project_import_tree_filter_double_fork_walk_rel_vs_stored_rel_-
-   path_2026_07_02 (sibling paths not swept when the canonical form
-   changed)."
+  "Convert a walk-relative document path to its stored relative form.
+   Strip a leading memory/ collection anchor when the walk starts at the
+   enclosing repository. A walk already rooted at the memory directory
+   normally needs no change. Parsing and import tree-filter selection use
+   this same conversion so they compare the same stored path convention."
   [rel-path]
   (str/replace rel-path #"^memory/" ""))
 
@@ -740,22 +673,13 @@
     (str (or singular "x") "-")))
 
 (defn edn-safe-ident
-  "Return `ident` with its NAME part guaranteed Clojure/EDN-reader-readable.
-   Datomic accepts keyword idents whose name starts with a digit (e.g.
-   :memory.sessions/2026-05-29T0713_x) but the Clojure/EDN reader REJECTS them
-   ('Invalid token'), breaking project.export/import round-trips + any EDN
-   tooling (per observations/datomic_idents_with_digit_starting_names_or_-
-   malformed_namespaces_are_not_clojure_or_edn_readable_2026_05_23).  When the
-   name starts with a digit, prefix it with a semantic singularized namespace
-   token; otherwise return `ident` unchanged.  Idempotent (a dodged name no
-   longer starts with a digit).
+  "Make a keyword ident's name readable by the Clojure/EDN reader.
+   When the name starts with a digit, prefix a singularized namespace token;
+   otherwise preserve the ident. The transformation is idempotent.
 
-   :memory.sessions/2026-05-29T0713_x -> :memory.sessions/session-2026-05-29T0713_x
-   :memory.decisions/foo              -> :memory.decisions/foo (unchanged)
-
-   Shared by `sandbar.store/create-memory!` (digit-dodge for NEW entities) +
-   (post-migration) `rel-path->memory-ident` itself, so both converge on the
-   same EDN-safe form.  Per the 2026-05-29 session-lifecycle-hardening arc."
+   For example, :memory.sessions/2026-example becomes
+   :memory.sessions/session-2026-example. Shared creation/path helpers use
+   this convention so they derive compatible addresses."
   [ident]
   (if (and (keyword? ident) (re-find #"^\d" (name ident)))
     (keyword (namespace ident) (str (ident-ns-type-prefix ident) (name ident)))
@@ -784,17 +708,11 @@
     ident))
 
 (defn- coerce-rel-path->ident-upsert
-  "Coerce a rel-path string (or vec) to a `:db/ident` upsert map for
-   cross-tx ref resolution.  Datomic's natural `:db/ident` upsert
-   semantics handle the target-not-yet-loaded case: if `:memory.decisions/foo`
-   doesn't exist yet, the transact creates a STUB entity with just
-   `:db/ident :memory.decisions/foo`; when the actual memorial loads
-   later, it upserts via the same ident.
-
-   'decisions/foo.md'         → {:db/ident :memory.decisions/foo}
-   Vec of strings             → mapv
-
-   Per decisions/mm_memory_typed_edge_migration_string_to_ref_2026_05_21.md."
+  "Convert a relative document path, or vector of paths, into ident
+   upsert maps for reference resolution. For example, decisions/example.md
+   becomes {:db/ident :memory.decisions/example}. A transaction may create
+   an ident-only stub when the referenced document has not loaded yet;
+   loading that document later upserts via the same ident."
   [v]
   (letfn [(coerce-one [s]
             (if-let [ident (rel-path->memory-ident s)]
@@ -970,40 +888,22 @@
     (keyword (namespace host-ident) (str (name host-ident) "__frontmatter"))))
 
 (defn frontmatter->slots
-  "Transform a YAML-parsed frontmatter map into a slot map for the given
-   class.  Each key is run through `frontmatter-key->slot`; values are
-   coerced per slot type:
+  "Map frontmatter to the given class's slots using aliases and ranges.
+   Coerce supported keywords, instants and reference upsert values. Unknown
+   keys and values excluded by the mapping guards are carried as extras
+   in the default lenient mode instead of asserted as model slots. The
+   five-argument form accepts :strict? and refuses unknown keys, guard-dropped
+   values and invalid primitive types before building the result.
 
-   - string → keyword for keyword-typed slots
-   - string → java.util.Date for instant-typed slots
-   - string → `{unique-attr string}` upsert-map for ref-typed slots
-     whose target class has a known `:db.unique/identity` attr (per
-     `class->unique-identity`)
+   The three-argument form carries the raw block so supported extras can
+   retain their original lines; the two-argument form reconstructs them
+   from parsed values. The four-argument form also receives the host ident
+   and derives an identful carrier for reuse on import. Without a host
+   ident the carrier uses anonymous transaction identity.
 
-   Unknown slots (no `dt/range-of`) and declared-but-guard-dropped values
-   are NOT transacted as slots; instead their verbatim frontmatter lines
-   are captured into the `:mm.memory/frontmatter` extras carrier (per
-   decisions/db_fs_emitter_fidelity_option_a_wire_dormant_frontmatter_carrier_2026_07_02.md
-   + SPEC.md §3) so they round-trip byte-faithfully on emit.  The carrier
-   is attached ONLY when extras is non-empty; fully-declared frontmatter
-   yields no carrier and is byte-identical to the pre-carrier behavior.
-
-   3-arity threads the raw (un-parsed) frontmatter block so extras `:raw`
-   is byte-faithful; the 2-arity (backward-compatible for existing
-   callers) passes nil → extras `:raw` is reconstructed from the parsed
-   value.
-
-   4-arity additionally threads the HOST entity's ident so the extras
-   carrier can be minted IDENTFUL (`<host-ident>__frontmatter`, via
-   `carrier-ident-for-host`) — identful carriers upsert in place on
-   re-import (eid stable) rather than orphaning the prior carrier.  When
-   `host-ident` is nil / not derivable, the carrier stays anonymous
-   (tempid fallback in `entity-specs->tx-data`).  Per the carrier-reuse
-   design (scratchpad/carrier-reuse-2026-07-02/SPEC.md).
-
-   Returns an ordered-map (per `sandbar.codec.ordered-map`) preserving
-   the frontmatter-map's insertion order — emit-side uses this to
-   round-trip source frontmatter key ordering."
+   Returns an insertion-ordered map. Carrier persistence and emission have
+   their own fidelity limits; this mapping step alone does not prove a
+   complete stored round trip."
   ([class-ident frontmatter-map]
    (frontmatter->slots class-ident frontmatter-map nil))
   ([class-ident frontmatter-map raw-fm-text]
@@ -1131,9 +1031,19 @@
         ;;     reason); a value of the wrong primitive type → strict: refused,
         ;;     lenient: landed as before; else land the slot
         :else
-        (let [v' (if strict?
-                   (try (landing-slot-value slot v) (catch Exception _ ::bad-coercion))
-                   (landing-slot-value slot v))]
+        (let [v' (try
+                   (landing-slot-value slot v)
+                   (catch Exception e
+                     ;; Both authoring modes refuse values whose representation
+                     ;; would be unreadable. Keep the originating field/value;
+                     ;; never turn a declared reference into a silent carrier.
+                     (if (= :markdown/unreadable-keyword (:type (ex-data e)))
+                       (throw (ex-info (str "Frontmatter key " (pr-str (name k))
+                                            ": " (.getMessage e))
+                                       (assoc (ex-data e) :key (name k)
+                                              :slot slot :class class-ident)
+                                       e))
+                       (if strict? ::bad-coercion (throw e)))))]
           (cond
             (= ::bad-coercion v')
             (refuse! k :wrong-type {:expected (dt/range-of slot)})
@@ -1389,15 +1299,9 @@
          (zero? (.get cal java.util.Calendar/MILLISECOND)))))
 
 (defn- coerce-instant->string
-  "Inverse of `coerce-string->instant` — emit Date values as ISO strings.
-   Date-only (midnight-UTC) → `YYYY-MM-DD`; full datetime → ISO-8601 with
-   `T...Z`.  Preserves the corpus's predominant date-only convention for
-   `created:` / `last-touched:` / `last-reviewed:` slots while still
-   supporting timestamped values when present.
-
-   Per `decisions/markdown_as_canonical_sandbar_export_format_2026_05_12.md`
-   M.3 (per-entity markdown shape mirrors corpus memorial shape) +
-   Dan-directive (cleanly round-trippable across meta-types)."
+  "Emit Date values as ISO strings. Midnight UTC uses YYYY-MM-DD;
+   other timestamps use an ISO datetime with a UTC suffix. This complements
+   coerce-string->instant for the supported date representation."
   [v]
   (cond
     (instance? java.util.Date v)
@@ -1415,32 +1319,11 @@
 (declare slots->yaml-text)
 
 (defn- emit-frontmatter
-  "Emit a slot map as YAML frontmatter text (without the `---` fences).
-   Uses block-style YAML for readability.  Empty map → empty string.
-
-   Value transformations applied (in order):
-   - Ref-slot upsert-maps unwrapped back to plain strings (reverses
-     parse-side `coerce-string->upsert-map`).  Without this, emitted YAML
-     would show `tags: [{mm.tag/value: x}]` instead of `tags: [x]`.
-   - Instant-typed slots' Date values serialized via `coerce-instant->string`
-     — date-only ISO (`YYYY-MM-DD`) when the time-portion is midnight UTC,
-     full ISO-8601 otherwise.  Mirrors the corpus's predominant convention
-     where `created:` / `last-touched:` / `last-reviewed:` use date-only.
-   - Keyword-typed slot values coerced keyword → bare-name string so YAML
-     emits idiomatic bare names (e.g., `type: decision` instead of `type:
-     :decision`).
-
-   Slot ordering is INTROSPECTED from the class's `:dt/codec-slot-order`
-   schema attribute (via `dt/codec-slot-order-of`).  Slots present in
-   the entity but absent from the class declaration are appended at the
-   end in entity-key iteration order — they still emit, just after the
-   declared canonical slots.
-
-   Per `decisions/markdown_as_canonical_sandbar_export_format_2026_05_12.md`
-   M.3 + `decisions/slot_order_declared_by_class_introspectable_2026_05_20.md`
-   (Dan-directive 2026-05-20: 'slot order should be declared by the class
-   and introspectable').  Replaces the prior `:codec/key-order` metadata
-   threading pattern."
+  "Emit frontmatter text without delimiter fences. Empty maps emit no text.
+   Unwrap reference upsert maps, serialize instant values, and render keyword
+   slots in their supported external spelling. Slot order comes from the
+   class's :dt/codec-slot-order; additional keys follow in iteration order.
+   The format is the codec's supported frontmatter subset, not general YAML."
   [slot-map class-ident]
   (if (empty? slot-map)
     ""
@@ -1521,7 +1404,7 @@
 
     :else carrier))
 
-(defn- read-carrier-extra
+(defn read-carrier-extra
   "Read the `:mm.frontmatter/extra` EDN payload off an
    `:mm.memory/frontmatter` carrier value, returning
    `{:order [...] :extras {...}}` or nil.  Works on ALL shapes the emit
@@ -1601,39 +1484,15 @@
       (str (str/join "\n" all-parts) "\n"))))
 
 (defn- strip-shadow-collisions
-  "Drop shadow slots that would emit to the SAME frontmatter key as a
-   canonical (class-declared) slot, so the authoritative value wins on emit.
+  "Omit shadow slots that emit to a key already owned by a canonical slot.
+   A legacy slot can otherwise overwrite a newer class-effective value when
+   both map to the same frontmatter name. Body-slot ownership also excludes
+   a shadow value that would serialize an obsolete body into frontmatter.
 
-   THE DEFECT this heals (bugs/mm_rule_derived_projection_lag_stale_
-   frontmatter_emit_reimport_regression_risk_2026_07_03): a class can carry
-   a slot whose frontmatter-key COLLIDES with a canonical slot's — e.g.
-   :mm/Rule instances persist both the inherited canonical :mm.memory/name
-   and a legacy same-named :mm.rule/name (a doubly-declared attribute whose
-   position β.2.2 Phase I moved to :mm.memory/* but whose stored value was
-   never dropped).  Both map to the `name:` YAML key via
-   `slot->frontmatter-key`.  Because the shadow slot is absent from the
-   class's `:dt/codec-slot-order`, it appends as an emit `extras` key AFTER
-   the declared canonical slot and OVERWRITES it in the ordered YAML map —
-   serializing the STALE shadow value.  :mm.rule/body-raw is worse: it is
-   not the body-slot, so it leaks a whole stale `body-raw:` frontmatter
-   block.  :mm/Protocol has no such shadow, which is why it emits faithfully;
-   this restores that property for every class SUBSTRATE-PURELY.
-
-   Resolution — purely metamodel-introspective (NO hardcoded class/slot
-   knowledge per interaction/no_hardcoded_consumer_class_knowledge_in_
-   substrate_2026_05_13).  A shadow slot is dropped when its emitted YAML
-   key is ALSO claimed by an authoritative source:
-     - the class's BODY-SLOT (`body-slot-for`) — its key rides the
-       post-fence body, so any same-keyed frontmatter slot (e.g.
-       :mm.rule/body-raw, whose key is `body-raw`, same as the canonical
-       :mm.memory/body-raw body-slot) is a stale leak; OR
-     - a DIFFERENT class-EFFECTIVE slot (`dt/slots-of`) present in
-       `fm-slots` that emits to the same key.
-   Collisions among only non-effective / non-body slots are left untouched —
-   there is no authoritative basis to prefer one, and this fix must not
-   change unrelated emit behavior.  Non-colliding slots (including
-   cross-cutting display slots like :mm/pref-label that are not
-   class-effective but collide with nothing) are preserved verbatim."
+   The decision uses the class body slot and effective slots rather than
+   hardcoded class names. Collisions among only non-effective, non-body
+   slots remain unchanged because no declared owner selects a winner.
+   Noncolliding values are retained."
   [fm-slots class-ident]
   (let [effective     (dt/slots-of class-ident)
         body-key      (some->> (body-slot-for class-ident) (slot->frontmatter-key class-ident))
@@ -1661,6 +1520,26 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; MarkdownCodec record — implements proto/Codec
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defn emitted-frontmatter-slots
+  "The current declared slots that reach Markdown frontmatter. Guarded export
+   uses this same selection as the emitter; shadow mirrors and derived locators
+   must not become a second, divergent policy surface. Extras are separate."
+  [entity]
+  (let [class-ident (:dt/type entity)
+        body-slot (body-slot-for class-ident)]
+    (-> (into {}
+              (remove (fn [[k v]]
+                        (or (contains? #{:dt/type :mm.memory/frontmatter
+                                         :mm.memory/identity :mm/id
+                                         :mm.memory/rel-path} k)
+                            (= body-slot k)
+                            (and (= :mm/pref-label k) (= v (:mm.memory/name entity)))
+                            (and (keyword? k)
+                                 (let [n (namespace k)]
+                                   (and n (or (= "db" n) (str/starts-with? n "db."))))))))
+              entity)
+        (strip-shadow-collisions class-ident))))
 
 (defrecord MarkdownCodec []
   proto/Codec
@@ -1723,29 +1602,7 @@
           ;; through the generic fm-slots and re-emitted as !!java.util.UUID).
           ;; Source the id: line from either; strip both below.
           identity-uuid (or (:mm.memory/identity entity) (:mm/id entity))
-          fm-slots      (-> (into {}
-                                   (remove (fn [[k v]]
-                                             (or (= :dt/type k)
-                                                 (= body-slot k)
-                                                 (= :mm.memory/frontmatter k)
-                                                 (= :mm.memory/identity k)
-                                                 (= :mm/id k)
-                                                 ;; the display label is derived: a migration copied the
-                                                 ;; name into it on 1,736 memorials no file ever declared;
-                                                 ;; written only when it says something the name does not
-                                                 ;; (D7 2c, 2026-09-20; the ownership census)
-                                                 (and (= :mm/pref-label k) (= v (:mm.memory/name entity)))
-                                                 (and (keyword? k)
-                                                      (when-let [ns (namespace k)]
-                                                        (or (= "db" ns)
-                                                            (str/starts-with? ns "db.")
-                                                            (= :mm.memory/rel-path k)))))))
-                                   entity)
-                            ;; Drop legacy shadow slots (e.g. :mm.rule/name)
-                            ;; that would clobber a canonical same-keyed slot
-                            ;; (:mm.memory/name) with a stale value on emit —
-                            ;; the :mm/Rule derived-projection-lag defect.
-                            (strip-shadow-collisions class-ident))
+          fm-slots      (emitted-frontmatter-slots entity)
           ;; Declared-slot frontmatter: extras-aware order walk when a
           ;; carrier is present (SPEC.md §3), else the legacy codec-slot-
           ;; order emit (byte-identical to pre-carrier behavior — R8).
@@ -2132,18 +1989,9 @@
                  sections)))
 
 (defn- peek-type-keyword
-  "Peek at the frontmatter to extract the `type:` keyword value WITHOUT
-   doing full class-specific slot mapping.  Used by `parse-document` for
-   class-routing — the codec needs to know which class to parse AS before
-   the class-aware frontmatter→slot pass runs.
-
-   Returns the keyword form of the type value (`type: tag` → `:tag`), or
-   nil when frontmatter is absent / `type:` is absent / value is unparseable.
-
-   Per Stage 7.C of
-   decisions/tag_as_first_class_introspectable_type_in_metamodel_2026_05_20.md
-   class-routing — the type-keyword maps to a class via
-   `dt/class-for-codec-type-keyword`."
+  "Read the frontmatter type keyword before class-specific slot mapping.
+   Returns nil when the key is absent or cannot be parsed. parse-document
+   uses this value with dt/class-for-codec-type-keyword for class routing."
   [source]
   (let [[fm-text _body] (split-frontmatter source)
         fm-map          (when (and fm-text (not (str/blank? fm-text)))
@@ -2155,28 +2003,10 @@
       :else        nil)))
 
 (defn resolve-document-class
-  "Resolve the codec target class for a markdown document based on its
-   frontmatter `type:` value, via metamodel introspection (NOT hardcoded
-   class knowledge per
-   interaction/no_hardcoded_consumer_class_knowledge_in_substrate_2026_05_13.md).
-
-   Resolution:
-     1. Peek frontmatter `type:` value.
-     2. Look up the class via `dt/class-for-codec-type-keyword` —
-        returns the class whose `:dt/codec-type-keyword` declaration
-        matches.
-     3. Fall back to `:mm/Memory` when no class claims the type-keyword
-        (the default for the corpus's universe of memorial documents).
-
-   Examples:
-     `type: tag`      → :mm/Tag  (when :mm/Tag declares :dt/codec-type-keyword :tag)
-     `type: decision` → :mm/Memory  (no class claims :decision; :mm/Memory's
-                                     :dt/codec-aliases consumes :type into
-                                     :mm.memory/memory-type instead)
-     no `type:`       → :mm/Memory  (default)
-
-   Public so tests + tooling can dispatch on the resolved class
-   independently."
+  "Resolve a document class from its frontmatter type through
+   dt/class-for-codec-type-keyword. Fall back to :mm/Memory when no class
+   claims the value. A declared :tag route can select :mm/Tag; other type
+   spellings depend on installed class metadata, not a fixed class switch."
   [source]
   (let [type-kw (peek-type-keyword source)]
     (or (try (dt/class-for-codec-type-keyword type-kw)
@@ -2195,30 +2025,14 @@
            (catch Exception _ false))))
 
 (defn parse-document
-  "Full markdown document parse: split frontmatter + body, resolve the
-   target class via `:dt/codec-type-keyword` routing, decompose into
-   sections when appropriate, return a vector of entity-specs.
+  "Parse a document into a vector of entity specifications.
+   Resolve the class from the frontmatter type and decompose section-bearing
+   memories into a host followed by section specifications. Non-section
+   document classes produce their own single-entity representation.
 
-   Class routing (Stage 7.C — per
-   decisions/tag_as_first_class_introspectable_type_in_metamodel_2026_05_20.md):
-   The codec peeks the frontmatter's `type:` value + resolves a class
-   via `dt/class-for-codec-type-keyword`.  Default routing target is
-   :mm/Memory.  For :mm/Tag (and other classes lacking a section-tree
-   convention), no section decomposition runs — the document is a
-   single entity.
-
-   Inputs:
-     source   — markdown source text
-     rel-path — corpus rel-path (e.g., 'decisions/foo.md' or
-                'tags/audit.md') — REQUIRED for path-derived idents
-
-   Returns:
-     - For :mm/Memory: vector starting with the memory entity (carrying
-       :mm.memory/rel-path + :mm.memory/first-section when sections present)
-       followed by section entities in document order.
-     - For non-:mm/Memory classes (e.g., :mm/Tag): single-element vector
-       with the class entity.  No section decomposition; no rel-path slot
-       (path is derivable from `memory/<plural>/<name>.md` convention)."
+   source is Markdown text; rel-path supplies collection-relative location
+   for derived idents. The result is proposed data, not a committed import.
+   Callers must preserve source-file grouping and inspect diagnostics."
   [source rel-path]
   ;; D2 routing fix (2026-07-02, per decisions/c8_ratification_batch_d1_d9_…):
   ;; derive the host ident via the CANONICAL converter `rel-path->memory-ident`
@@ -2257,19 +2071,11 @@
       [entity])))
 
 (defn group-by-source
-  "Walk a flat entity-spec vector from `sandbar.projection/ingest-graph` +
-   group by source file.  Each `:mm/Memory` starts a new group; subsequent
-   `:mm/Section` entities join that group until the next `:mm/Memory`.
-   Returns a seq of vectors, each a complete one-file unit suitable for
-   a single atomic Datomic transaction (via `entity-specs->tx-data`).
-
-   Per F#17 of plans/sandbar_0_1_1_coevolution_arc_2026_05_20.md — per-entity
-   transactions can't resolve same-tx forward refs (e.g.,
-   `:mm.memory/first-section` to an in-tx section).  Per-file atomic
-   transactions resolve cross-entity refs via tempid translation.
-
-   Promoted to public + codec-layer at 2026-05-20 consolidation per
-   observations/sandbar_codec_md_entity_specs_to_tx_data_duplicates_mcp_prep_temp_ids_2026_05_20.md."
+  "Group a legacy flat memory/section specification stream by host memory.
+   Each memory starts a group and following sections join it. A complete
+   document group can be translated to one transaction so references to
+   sections created in that transaction resolve together. New import paths
+   retain explicit per-file source units, including non-memory documents."
   [entities]
   (loop [acc [] cur [] [e & rst] entities]
     (cond
@@ -2283,53 +2089,26 @@
       (recur acc (conj cur e) rst))))
 
 (defn- ref-slot?
-  "Returns true if `slot-ident` is a `:db.type/ref`-typed attribute per
-   the metamodel — sandbar's convention is `:dt/range` carries the target
-   class keyword (e.g., `:mm/Tag`) for refs, vs `:db.type/*` primitives
-   for scalars.
-
-   Used by `entity-specs->tx-data` to identify ref slots whose values
-   may need tempid translation.  Metamodel-driven; NO hardcoded slot
-   knowledge per
-   interaction/no_hardcoded_consumer_class_knowledge_in_substrate_2026_05_13.md."
+  "Identify a reference slot through its metamodel range.
+   Class-valued ranges denote references; :db.type/* ranges denote scalars.
+   entity-specs->tx-data uses this to translate in-transaction references
+   without a hardcoded list of consumer slots."
   [slot-ident]
   (let [range (dt/range-of slot-ident)]
     (and (keyword? range)
          (not= "db.type" (namespace range)))))
 
 (defn entity-specs->tx-data
-  "Convert an entity-spec collection (e.g., from `parse-document` OR any
-   other source that emits ident-form refs) into Datomic tx-data with
-   TEMPID-based refs so a single `d/transact` resolves in-tx references
-   atomically.
+  "Translate entity specifications into Datomic transaction data.
+   Assign tempids and replace scalar or sequential keyword references to
+   entities in the same input with those tempids, retaining ident assertions.
+   Set-valued references pass through without this translation.
+   This allows a host to refer to a section introduced by the same input.
+   Reference slots are discovered through metamodel ranges.
 
-   Per bugs/sandbar_parse_document_tx_ordering_section_ident_resolution_2026_05_20.md
-   + F#17 of plans/sandbar_0_1_1_coevolution_arc_2026_05_20.md:
-   Datomic's `:db/ident` resolution fires before tx-data is fully
-   processed, so an entity's keyword-ident ref to a SIBLING in-tx entity
-   fails (`:db.error/not-an-entity`).  Solution: assign string tempids
-   to every entity (via `:db/id`) + translate every ref-slot value whose
-   target is an in-tx sibling to the corresponding tempid.  Each entity's
-   `:db/ident` assertion stays intact — that's the canonical post-tx
-   addressing handle.
-
-   GENERALIZED — works for ANY class, not just :mm/Memory + :mm/Section.
-   Ref slots are identified via `ref-slot?` (metamodel-driven; reads
-   `:dt/range` from the slot's :dt/Property definition).  Per the
-   no-hardcoded-consumer-class-knowledge-in-substrate rule.
-
-   Single-source-of-truth at the codec layer per
-   decisions/sandbar_codec_layer_owns_wire_format_concerns_consumer_native_representation_2026_05_12.md
-   — tx-shape IS a wire-format concern.  Consolidates the previously
-   duplicated `sandbar.mcp.tools/prep-temp-ids` (F#17) into a single
-   helper at the codec layer.
-
-   Call this immediately before `d/transact`:
-
-       @(d/transact conn (entity-specs->tx-data (parse-document src rel-path)))
-
-   `parse-document` keeps the ident-form output so existing test fixtures
-   + round-trip comparisons stay unaffected."
+   Parse results retain ident-form references for inspection and comparison;
+   call this translation at the transaction boundary. Translation alone
+   does not validate, authorize or commit the proposed entities."
   [entity-specs]
   (let [ident->tempid (->> entity-specs
                            (map-indexed (fn [i e]
@@ -2478,30 +2257,14 @@
     :mm.memory/first-section})
 
 (defn strip-derived-memory-attrs
-  "Return `entity` as a plain map with the `derived-memory-attrs`
-   (`:db/ident` / `:db/id` / `:mm.memory/rel-path` /
-   `:mm.memory/first-section`) removed — the single-source strip that
-   `emit-document` applies, exposed so the emit paths that BYPASS
-   `emit-document` can enforce the same parity.
+  "Return a plain entity map without derived memory-addressing attributes:
+   :db/id, :db/ident, :mm.memory/rel-path and :mm.memory/first-section.
+   Raw-codec emission paths use the same exclusion as emit-document so a
+   derived first-section link is not leaked into frontmatter.
 
-   `sandbar.projection/realize-and-emit-entity` has two branches that call
-   the raw codec `emit` instead of `emit-document`: the section-less
-   memory branch and the no-section-tree-walker branch.  The `emit`
-   method's own exclusion list (this file's `emit` impl) drops
-   `:db/*` + `:mm.memory/rel-path` but NOT `:mm.memory/first-section`, so
-   without this strip a `first-section:` line leaks into frontmatter on
-   those branches.  Per
-   observations/live_sink_emits_derived_first_section_for_subclass_-
-   memorials_regenerating_debris_130_files_2026_07_10.
-
-   Coerces via `(into {} …)` first so a LIVE Datomic Entity (which is not
-   a persistent map and rejects `dissoc`) is accepted; `(into {} entity)`
-   preserves `:dt/type` (verified) which the `emit` method requires.
-
-   Does NOT strip the identity slots (`:mm/id` / `:mm.memory/identity`):
-   the D1 :mm/id covenant requires the id to reach the YAML serializer so
-   a reload reads it back rather than re-deriving it (see
-   `derived-memory-attrs`' docstring)."
+   Preserve :dt/type and the durable identity carriers :mm/id and
+   :mm.memory/identity. Database-local addressing and durable document
+   identity have different reconstruction roles."
   [entity]
   (apply dissoc (into {} entity) derived-memory-attrs))
 

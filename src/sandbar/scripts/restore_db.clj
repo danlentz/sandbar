@@ -1,26 +1,17 @@
 (ns sandbar.scripts.restore-db
-  "Restore a Datomic database from a backup directory.
+  "Restore a native backup using the local :dev transactor workflow.
+   Usage: lein restore-db-from <backup-dir> [<target-db-name>]
 
-   Usage:
+   The backup directory is required. The script derives the original database
+   name from its sidecar or current config and refuses a different target name.
+   It checks directory structure, checks the transactor on port 4334, invokes
+   verify-backup, then restores to datomic:dev://localhost:4334/<name>.
 
-       lein restore-db-from <backup-dir> [<target-db-name>]
-
-   `<backup-dir>` is REQUIRED (absolute path or relative to PWD).
-   `<target-db-name>` defaults to the source DB name (per backup-db
-   invariant: Datomic restore-db requires the target URI's DB name to
-   match the original; differing names ABORT with a clear message).
-
-   Preflight checks:
-     (a) backup-dir exists + has `owner/`, `roots/`, `values/` subdirs
-     (b) `bin/datomic verify-backup <backup-uri>` reports :succeeded
-     (c) for :dev backend, the transactor MUST BE RUNNING (lsof :4334)
-
-   :dev lifecycle inversion — for `:dev` storage, the transactor must
-   stay up during restore (storage lives inside the transactor process;
-   H2 embedded).  Other backends invert this (peers + transactors down).
-   This script encodes the :dev variant.
-
-   Per memory/libraries/datomic/backup_restore.md §7 + §12."
+   This is a deployment-specific helper, not a generic restore adapter. Its
+   verify-backup preflight uses the legacy single-argument CLI form; validate
+   compatibility with the installed Datomic CLI before relying on the script.
+   Rehearse the actual recovery path and verify the intended target before a
+   destructive operation; see doc/operations.md."
   (:require [clojure.edn                 :as edn]
             [clojure.java.shell          :as sh]
             [clojure.string              :as str]

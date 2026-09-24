@@ -14,22 +14,18 @@
             [sandbar.service.routes             :as routes]
             [sandbar.service.config             :as service]))
 
+(defn- validate-destinations! []
+  (when (seq ((requiring-resolve 'sandbar.project.destination/configured-roots)))
+    ((requiring-resolve 'sandbar.project.destination/validate-roots!)
+     ((requiring-resolve 'sandbar.db.datomic/db))
+     ((requiring-resolve 'sandbar.project.destination/global-root)))))
+
 (defn- with-sandbar-interceptors
-  "Sandbar-customized version of `io.pedestal.connector/with-default-interceptors`
-   that swaps the default body-params interceptor (JSON-only) for one configured
-   with sandbar's full `content/body-parsers` map (JSON + EDN + CSV + form-encoded).
-
-   Mirrors the upstream interceptor stack (per pedestal.service 0.8.1
-   `io.pedestal.connector/with-default-interceptors`) verbatim with EDN-capable
-   body-params substituted at the body-parsing position.  Required because the
-   upstream default-interceptors uses `(body-params)` with no parser-map, which
-   handles only JSON — EDN requests (e.g., auth API POSTs sending application/edn)
-   reach handlers with `:edn-params nil`.
-
-   Per F#9 follow-on resolution (memory/bugs/sandbar_arc_0_1_2_branch_test_regression_pre_tag_modeling_stage_7_2026_05_20.md):
-   F#9 commit 032e22f correctly removed the duplicate route-level body-params,
-   but the parallel substrate fix — replacing the default with our custom body-params
-   — wasn't landed at the same time, leaving 36+5 failures on this branch."
+  "Install the Pedestal interceptor stack with Sandbar's body-parser map
+   at the body-parsing position. JSON, EDN, CSV, and form-encoded bodies can
+   then reach handlers through the appropriate parsed-params key. This mirrors
+   the Pedestal 0.8.1 connector stack with the custom parser substitution;
+   adding a second route-level body parser would duplicate that work."
   [connector-map]
   (conn/with-interceptors connector-map
                           [(tracing/request-tracing-interceptor)
@@ -41,9 +37,7 @@
                            (secure-headers/secure-headers)]))
 
 (defn- create-connector-map
-  "Create a connector map from service config.  Fallback port 8389 per
-   decisions/sandbar_deployment_consumption_cohabitability_strategy_2026_05_24.md
-   D.E (non-conflicting; off the universal-dev-default 8080)."
+  "Create a connector map from the service config, defaulting to port 8389."
   [service-config]
   (let [port (::http/port service-config 8389)]
     (-> (conn/default-connector-map port)
@@ -60,16 +54,19 @@
 
 (defn run-dev [& args]
   (println "\nCreating your [DEV] server...")
+  (validate-destinations!)
   (conn/start! dev-connector))
 
 (defn run [& args]
   (println "\nCreating your server...")
+  (validate-destinations!)
   (conn/start! prod-connector))
 
 (defrecord Pedestal [connector server]
   component/Lifecycle
   (start [self]
     (when server (component/stop self))
+    (validate-destinations!)
     (let [s (conn/start! connector)]
       (log/info "Pedestal started.")
       (assoc self :server s)))

@@ -1,67 +1,13 @@
 (ns sandbar.project.dump
-  "DB-dump for `:db-only` policy classes — Stage B of
-   `plans/sandbar_db_dump_phantom_ref_branch_runtime_state_disaster_recovery_arc_2026_05_23.md`.
+  "EDN diagnostic dump for classes with effective :db-only memorial policy.
+   Enumerate direct instances and serialize entity specifications with a
+   metadata header. Identful references use idents; identless references can
+   retain database-local numeric IDs. Undeclared-policy classes are reported.
 
-   ## What this exists for
-
-   The first-class-memorialization arc gives sandbar's `:first-class`
-   policy entities (workflows, schedules, memorials) durable FS-corpus
-   coverage via `sandbar.reactive.sinks/fs-projection-sink`.  This
-   namespace provides the COMPLEMENTARY coverage for `:db-only` policy
-   entities (workflow processes, schema, property-characteristic
-   meta-classes, future scheduler processes) via an EDN-canonical
-   substrate dump.
-
-   Together: first-class corpus + DB-only dump + inline-host serialization
-   = complete substrate coverage with no entity left ephemeral.
-
-   ## Dump file shape
-
-   ```
-   {:dump/metadata
-      {:dump/format            :edn-datomic-canonical
-       :dump/sandbar-version   \"0.2.0\"
-       :dump/dumped-at         #inst \"...\"
-       :dump/memorial-policy   :db-only        ; filter applied
-       :dump/classes-included  [:workflow/Process :dt/Class ...]
-       :dump/entity-count      681
-       :dump/policy-undeclared-classes  [...]} ; classes skipped + flagged
-
-    :dump/entities
-      [{:dt/type    :workflow/Process
-        :db/ident   :workflow.process/foo            ; if any
-        :db/id      12345                            ; quasi-ephemeral
-        :workflow/state  :workflow.state/running
-        ...}
-       ...]}
-   ```
-
-   Refs serialize as `:db/ident` when the target has one (the common case
-   for cross-substrate references); fall back to numeric `:db/id` when
-   the target is ident-less.  Restore-side composes with
-   `sandbar.codec.markdown/entity-specs->tx-data` (the existing
-   transact-boundary helper at the codec layer per
-   `decisions/sandbar_codec_layer_owns_wire_format_concerns_consumer_native_representation_2026_05_12.md`)
-   for tempid translation + write.
-
-   ## Filter scope
-
-   Stage B MVP: dump ONLY classes with `:db-only` policy declared
-   directly OR inherited via `dt/effective-memorial-policy-of`
-   (substrate primitive composing with `dt/ancestors-of` per
-   `interaction/build_on_type_system_reflectively_and_prospectively_dont_reinvent_in_parallel_due_to_tactical_concerns_2026_05_23.md`).
-   Policy-undeclared classes are listed in metadata `:dump/policy-undeclared-classes`
-   as a loud-warning signal — they SHOULD be either explicitly
-   `:db-only` or `:first-class`; Stage G of the FCM arc will make
-   undeclared a class-registration error.
-
-   ## Stage scope
-
-   - B.1-B.3 (this namespace): walk classes; emit entity-specs; serialize EDN; atomic file write
-   - B.4 (mcp/tools.clj): MCP `sandbar.project.dump-db-only` verb wrapping this fn
-   - C (separate): restore-from-dump
-   - D (separate): git phantom-ref-branch integration
-   - E (separate): session-close trigger via `:session/finalize` transition"
+   This is not a portable replacement for native database backup: bytes and
+   reference collections need an independently verified restore contract.
+   Documents plus this dump do not establish complete service recovery.
+   See doc/operations.md for backup and restoration procedures."
   (:require [clojure.edn          :as edn]
             [clojure.java.io      :as io]
             [clojure.pprint       :as pprint]
@@ -202,25 +148,11 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (defn dump-db-only
-  "Walk all classes; for those with `:dt/memorial-policy :db-only` (declared
-   or inherited), enumerate direct instances; serialize as EDN canonical
-   to `:to` path.
-
-   Options:
-     :to              - target file path (required)
-     :sandbar-version - version string for the dump header (default \"0.2.0\")
-     :pretty?         - if true, pprint the output (readable but larger);
-                        if false (default), use pr-str (compact)
-
-   Returns a map summarizing the dump:
-     :to                target path
-     :classes-dumped    count of `:db-only` classes with direct instances
-     :entities-dumped   total entity count written
-     :policy-undeclared count of policy-undeclared classes (warning signal)
-
-   Logs `:DUMP/start` + `:DUMP/done` events to `clojure.tools.logging`
-   with stable ident-first identifiers per
-   `interaction/prefer_stable_idents_over_brittle_eids_...`."
+  "Write the selected :db-only class instances to :to as an EDN dump.
+   :sandbar-version sets the header version; :pretty? selects pretty printing.
+   Return :to, :classes-dumped, :entities-dumped and :policy-undeclared counts.
+   Start/done log signals describe this operation; validate recovery
+   separately before relying on the dump as a backup."
   [{:keys [to sandbar-version pretty?]
     :or   {sandbar-version "0.2.0"
            pretty?         false}}]

@@ -29,6 +29,29 @@
 
 set -euo pipefail
 
+# This local read-only command must precede configuration/token handling and
+# mkdir. It never contacts the service or changes the chosen tree.
+if [ "${1:-}" = "verify-export" ]; then
+  shift
+  if ! command -v bb >/dev/null 2>&1; then
+    echo "verify-export: Babashka (bb) is required" >&2
+    exit 2
+  fi
+  verifier_home="${SANDBAR_HOME:-$HOME/src/sandbar}"
+  exec bb "${verifier_home}/bin/verify-export.bb" "$@"
+fi
+
+# The diagnostic reads existing client configuration only; no implicit mkdir.
+if [ "${1:-}" = "recovery-check" ]; then
+  shift
+  if ! command -v bb >/dev/null 2>&1; then
+    echo "recovery-check: Babashka (bb) is required" >&2
+    exit 2
+  fi
+  recovery_home="${SANDBAR_HOME:-$HOME/src/sandbar}"
+  exec bb "${recovery_home}/bin/recovery-check.bb" "$@"
+fi
+
 SANDBAR_HOME="${SANDBAR_HOME:-$HOME/src/sandbar}"
 SANDBAR_CLIENT_DIR="${SANDBAR_CLIENT_DIR:-$HOME/claude}"
 SANDBAR_CONFIG="${SANDBAR_CLIENT_DIR}/.sandbar"
@@ -253,15 +276,85 @@ EOF
     ;;
 
   export)
-    # X.1.C explicit DB → filesystem projection.  Invokes
-    # sandbar.project.export MCP verb.  DEFAULTS to a scratch dir
-    # (/tmp/sandbar-export-<timestamp>) for SAFETY — overwriting the
-    # canonical memory/ requires explicit `sandbar export --canonical`
-    # to avoid accidental normalization-commits.  Round-trip stability
-    # (per decisions/round_trip_stable_normalization_acceptance_criterion_2026_05_20.md)
-    # guarantees fixed-point output once the first normalization commit
-    # lands, but the FIRST projection rewrites every file with formatting
-    # changes — that's an editorial choice, not a cadence default.
+    # Guarded project export (W1.H first build, approved 2026-09-21):
+    #
+    #   sandbar export <dir> --project <ident> --destination <name> \
+    #                  [--execute --expect-plan <token>] [--provenance]
+    #
+    # Thin wrapper over the `sandbar.project.export` MCP verb.  The
+    # default is a PREVIEW (dry-run true): the server plans on one
+    # database basis, writes a private audit and returns counts, the
+    # basis and a plan token — no staging output.  `--execute` sends
+    # dry-run false and MUST carry the preview's token; the server
+    # re-plans and refuses when the basis, selection or destination
+    # moved.  <dir> is the `to` argument: an absolute path naming a
+    # fresh direct child of the named destination's staging root, which
+    # the SERVER creates (this wrapper never mkdirs it); the exported
+    # files land at <dir>/<rel-path>, so <dir> is the document tree root
+    # and can be used directly as an import `from`.
+    #
+    # Response decoding (contract 2026-09-21): transport failure,
+    # non-JSON body, JSON-RPC `error` and MCP `isError` are each decoded
+    # BEFORE any data field is read; an execute whose status is not
+    # `complete` with `complete? true` is a failure; the preview token is
+    # printed verbatim; no count is ever printed as "complete" unless the
+    # server said so.  Decoding uses Babashka (bb), the project's own
+    # scripting runtime; without it the raw response is kept in a file and
+    # the command fails rather than guessing.
+    shift
+    export_dir=""
+    export_project=""
+    export_destination=""
+    export_execute=0
+    export_expect_plan=""
+    export_provenance=0
+    export_usage() {
+      echo "usage: sandbar export <dir> --project <ident> --destination <name> [--execute --expect-plan <token>] [--provenance]" >&2
+    }
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --project)
+          [ $# -ge 2 ] || { echo "export: --project needs a value" >&2; export_usage; exit 2; }
+          export_project="$2"; shift 2 ;;
+        --destination)
+          [ $# -ge 2 ] || { echo "export: --destination needs a value" >&2; export_usage; exit 2; }
+          export_destination="$2"; shift 2 ;;
+        --expect-plan)
+          [ $# -ge 2 ] || { echo "export: --expect-plan needs a value" >&2; export_usage; exit 2; }
+          export_expect_plan="$2"; shift 2 ;;
+        --execute)    export_execute=1; shift ;;
+        --provenance) export_provenance=1; shift ;;
+        --canonical)
+          echo "export: --canonical is no longer supported; the guarded export writes only to a fresh child of an operator-configured staging root" >&2
+          exit 2 ;;
+        -h|--help)    export_usage; exit 0 ;;
+        --*)
+          echo "export: unknown option $1" >&2; export_usage; exit 2 ;;
+        *)
+          if [ -z "$export_dir" ]; then export_dir="$1"; shift
+          else echo "export: unexpected argument $1" >&2; export_usage; exit 2; fi ;;
+      esac
+    done
+    if [ -z "$export_dir" ] || [ -z "$export_project" ] || [ -z "$export_destination" ]; then
+      echo "export: <dir>, --project and --destination are required" >&2
+      export_usage; exit 2
+    fi
+    case "$export_dir" in
+      /*) ;;
+      *)  echo "export: <dir> must be an absolute path (a fresh child of the destination's staging root)" >&2; exit 2 ;;
+    esac
+    if [ "$export_execute" -eq 1 ] && [ -z "$export_expect_plan" ]; then
+      echo "export: --execute requires --expect-plan <token> from a preview of the same arguments" >&2
+      exit 2
+    fi
+    if [ "$export_execute" -eq 0 ] && [ -n "$export_expect_plan" ]; then
+      echo "export: --expect-plan only applies with --execute (a preview mints the token)" >&2
+      exit 2
+    fi
+    if ! command -v bb >/dev/null 2>&1; then
+      echo "export: babashka (bb) is required to build and decode the export request; install it or run the MCP verb sandbar.project.export directly" >&2
+      exit 2
+    fi
     pid=$(running_pid || true)
     if [ -z "$pid" ]; then
       echo "sandbar not running — start it first ('sandbar start')" >&2
@@ -272,34 +365,109 @@ EOF
       echo "no MCP token resolvable — set SANDBAR_TOKEN or 'sandbar rotate-token corpus <key>'" >&2
       exit 1
     fi
-    if [ "${2:-}" = "--canonical" ]; then
-      out_dir="${SANDBAR_CLIENT_DIR:-$HOME/claude}"
-      echo "WARNING: exporting to CANONICAL ${out_dir}/memory/ (overwrites canonical files)"
+    if [ "$export_execute" -eq 1 ]; then export_dry_run=false; else export_dry_run=true; fi
+    # Build the JSON-RPC body with a real JSON encoder (no shell interpolation
+    # into JSON): dry-run is a JSON boolean, expect-plan a string, provenance
+    # only when requested.
+    export_body=$(bb -e '
+      (require (quote [cheshire.core :as json]))
+      (let [[to project destination dry-run expect-plan provenance] *command-line-args*
+            args (cond-> {:to to :project project :destination destination
+                          :dry-run (= "true" dry-run)}
+                   (seq expect-plan) (assoc :expect-plan expect-plan)
+                   (= "1" provenance) (assoc :provenance true))]
+        (println (json/generate-string {:jsonrpc "2.0" :id 1 :method "tools/call"
+                                        :params {:name "sandbar_project_export" :arguments args}})))' \
+      -- "$export_dir" "$export_project" "$export_destination" "$export_dry_run" "$export_expect_plan" "$export_provenance")
+    if [ -z "$export_body" ]; then
+      echo "export: could not build the request" >&2
+      exit 2
+    fi
+    export_resp="$(mktemp "${TMPDIR:-/tmp}/sandbar-export-resp.XXXXXX")"
+    if [ "$export_execute" -eq 1 ]; then
+      echo "export: executing plan ${export_expect_plan} → ${export_dir} (project ${export_project}, destination ${export_destination})"
     else
-      out_dir="${2:-/tmp/sandbar-export-$(date +%Y%m%d-%H%M%S)}"
+      echo "export: previewing ${export_dir} (project ${export_project}, destination ${export_destination}); the server writes a private audit only, no staging output"
     fi
-    # The export verb writes each file at <to>/<rel-path>; the corpus
-    # convention (the audit's walk root, the import's staging root) is
-    # <root>/memory/<rel-path>, so the verb gets <out_dir>/memory.  Until
-    # 2026-09-20 the bare <out_dir> was passed and the files landed flat,
-    # against this message (and --canonical would have written into the
-    # corpus root).
-    mkdir -p "${out_dir}/memory"
-    echo "exporting DB → ${out_dir}/memory/ ..."
-    export_body=$(cat <<EOF
-{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"sandbar_project_export","arguments":{"to":"${out_dir}/memory"}}}
-EOF
-)
-    result=$(curl -s -X POST "http://localhost:$SANDBAR_PORT/mcp" \
-             --max-time 600 \
-             -H "Authorization: Bearer $token" \
-             -H "Content-Type: application/json" \
-             -d "$export_body" 2>/dev/null)
-    exported=$(echo "$result" | grep -oE 'exported[\\"]+ *: *[0-9]+' | head -1 | grep -oE '[0-9]+' || echo 0)
-    echo "export complete: $exported entities written"
-    if [ "${exported:-0}" = "0" ]; then
-      echo "DEBUG response: $result" >&2
+    set +e
+    export_http=$(curl -s -o "$export_resp" -w '%{http_code}' -X POST "http://localhost:$SANDBAR_PORT/mcp" \
+                  --max-time 900 \
+                  -H "Authorization: Bearer $token" \
+                  -H "Content-Type: application/json" \
+                  -d "$export_body" 2>/dev/null)
+    export_curl_exit=$?
+    set -e
+    if [ "$export_curl_exit" -ne 0 ]; then
+      echo "export: transport failure (curl exit $export_curl_exit); nothing can be concluded about the export" >&2
+      rm -f "$export_resp"
+      exit 1
     fi
+    # Decode in one place, in order: HTTP status, JSON body, JSON-RPC error,
+    # MCP isError (refusal), then the data fields.  Prints the operator
+    # lines; the exit code is the verdict (0 only for a preview or a
+    # complete execution).
+    set +e
+    bb -e '
+      (require (quote [cheshire.core :as json]) (quote [clojure.string :as str]))
+      (let [[resp-file http-code mode] *command-line-args*
+            fail (fn [code & lines] (doseq [l lines] (binding [*out* *err*] (println l))) (System/exit code))
+            raw (slurp resp-file)
+            body (try (json/parse-string raw true) (catch Exception _ ::unparseable))]
+        (when-not (re-matches #"2\d\d" (str http-code))
+          (fail 1 (str "export: server answered HTTP " http-code "; no data was read (raw response kept at " resp-file ")")))
+        (when (= ::unparseable body)
+          (fail 1 (str "export: the response was not JSON; no data was read (raw response kept at " resp-file ")")))
+        (when-let [err (:error body)]
+          (fail 1 (str "export: JSON-RPC error " (:code err) (when (:message err) (str ": " (:message err))))))
+        (let [result (:result body)
+              text (get-in result [:content 0 :text])
+              ;; MCP results may carry the payload as structuredContent (an
+              ;; object) and/or as the first text content item (JSON text);
+              ;; prefer the structured form, fall back to the text.
+              structured (:structuredContent result)
+              payload (cond (map? structured) structured
+                            (string? text) (try (json/parse-string text true) (catch Exception _ ::unparseable))
+                            :else nil)]
+          (when (nil? result)
+            (fail 1 "export: the response carried neither a result nor an error; nothing was concluded"))
+          (when (true? (:isError result))
+            (let [reason (or (get-in payload [:details :reason]) (get-in payload [:details :sandbar/error]))
+                  message (if (map? payload) (:message payload) (when (string? text) text))]
+              (fail 1 (str "export: refused" (when reason (str " (" (name (keyword (str reason))) ")")) (when message (str " — " message)))
+                      "export: inspect the operator configuration or the private audit; no output was accepted")))
+          (when (or (= ::unparseable payload) (not (map? payload)))
+            (fail 1 (str "export: the tool result could not be decoded; no data was read (raw response kept at " resp-file ")")))
+          (let [status (some-> (:status payload) str (str/replace #"^:" ""))
+                complete? (true? (:complete? payload))
+                token (:plan-token payload)
+                show (fn [k label] (when (contains? payload k) (println (str "  " label ": " (get payload k)))))]
+            (println (str "export: status " (or status "unknown")))
+            (show :basis "basis")
+            (show :included-count "included")
+            (show :held-count "held (see the private audit)")
+            (show :exported-count "exported")
+            (show :audit-ref "audit-ref")
+            (when (contains? payload :provenance-recorded?) (println (str "  provenance recorded: " (:provenance-recorded? payload))))
+            (when (contains? payload :reason) (println (str "  reason: " (:reason payload))))
+            (cond
+              (= mode "preview")
+              (if (and (= status "preview") (string? token))
+                (do (println (str "  plan-token: " token))
+                    (println "export: preview only — a private audit was written under the audit root of the destination; nothing was written to the staging destination; re-run with --execute --expect-plan <plan-token> to write")
+                    (System/exit 0))
+                (fail 1 (str "export: expected a preview with a plan token, got status " (or status "unknown") "; no output was accepted")))
+              :else
+              (if (and (= status "complete") complete?)
+                (do (println (str "export: complete — " (or (:exported-count payload) "?") " documents written; export-manifest.edn is the completion marker"))
+                    (System/exit 0))
+                (fail 1 (str "export: NOT complete (status " (or status "unknown") ", complete? " complete? "); any partial output has no valid completion manifest and must not be published")))))))' \
+      -- "$export_resp" "$export_http" "$([ "$export_execute" -eq 1 ] && echo execute || echo preview)"
+    export_verdict=$?
+    set -e
+    if [ "$export_verdict" -eq 0 ]; then
+      rm -f "$export_resp"
+    fi
+    exit "$export_verdict"
     ;;
 
   init)
@@ -428,9 +596,11 @@ EOF
     # sandbar.scripts.maintenance-import in an admin JVM against the
     # configured store with the server STOPPED — no MCP caller, reactive
     # worker or scheduler can write.  Refuses while the server runs.
-    # Point --from at a STAGING ROOT holding exactly the files to import
-    # at <root>/memory/<rel-path>: the walker takes every .md under the
-    # root, and a root mixing memory/ with other directories is refused.
+    # Point --from at the selected staging root for repairs, or at the
+    # mapped canonical memory/ directory for new-document enrollment.
+    # --persist --stamp binds the newly imported identity into its pinned
+    # canonical file. A staging copy cannot receive that stamp. A root
+    # mixing memory/ with other Markdown directories is refused.
     # Dry run without --persist.  Receipts default to
     # .sandbar/receipts/maintenance-import-<ts>/.  Exit 0 only when every
     # step finished whole.  Procedure: doc/operations.md § Maintenance import.
@@ -478,9 +648,24 @@ Commands:
   stop                           — stop sandbar (idempotent)
   restart                        — stop + start
   init                           — fresh-DB auto-import (idempotent; requires running + token)
-  export [dir | --canonical]     — DB → fs projection.  Default: /tmp/sandbar-export-<ts>.
-                                   Pass a dir arg to use that path.  `--canonical` overwrites
-                                   the client-project memory/ (only on explicit opt-in).
+  export <dir> --project <ident> --destination <name> [--execute --expect-plan <token>] [--provenance]
+                                 — guarded project export (W1.H first build).  Default is a
+                                   PREVIEW: plans on one basis, writes a private audit, prints
+                                   counts + the plan-token, writes no staging output.
+                                   --execute re-plans and writes only with the preview's
+                                   token; <dir> must be an absolute FRESH child of the named
+                                   destination's staging root (created by the server, never
+                                   by this wrapper); files land at <dir>/<rel-path>.  Success
+                                   is status complete + complete? true; anything else exits
+                                   non-zero.  Requires bb to decode the response.
+  verify-export <dir> [--expect-manifest <sha256>]
+                                 — read-only exact file-set/hash check against the completed
+                                   export manifest; no database/config/token/git access.
+                                   Requires bb; does not establish restore eligibility.
+  recovery-check <dir> --project <ident> --destination <name> [--expect-manifest <sha256>]
+                                 — read-only export-origin and snapshot comparison using
+                                   the configured private audit; never approves import.
+                                   Exit 0: same store/basis; 3: review required; 1/2: failure.
   reproject-bootstrap [opts]     — Re-render bootstrap memorials (types/ + predicates/) from
                                    substrate state.  Default: scratch dir.  Opts: --dry-run,
                                    --canonical (BLOCKED until templates land), --class :mm/X.
@@ -507,9 +692,10 @@ Commands:
   list-dbs                       — enumerate Datomic databases on the configured transactor;
                                    reveals all consumers' DBs (F2 cohabitability model).
   maintenance-import [opts]      — quiescent import into the live store with the server STOPPED
-                                   (refuses otherwise).  --from <staging-root> [--persist]
+                                   (refuses otherwise).  --from <import-root> [--persist] [--stamp]
                                    [--exclude-file f] [--retract-file f] [--receipts dir]
                                    [--mode replace|additive].  Dry run without --persist.
+                                   --stamp enrolls new files from their canonical memory/ root.
                                    Receipts default to .sandbar/receipts/maintenance-import-<ts>/.
                                    Exit 0 only when every step finished whole; 1 when a report
                                    is incomplete or the server is running; 3 when the JVM

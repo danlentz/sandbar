@@ -1,82 +1,16 @@
 (ns sandbar.schedule.job-dispatcher
-  "γ.2 Step 5 — `:mm.event/Scheduled` subscriber.
+  "Execute job targets in response to Scheduled events.
+   Registered handlers gate on scheduler enabled/active state, submit work
+   to its executor and resolve a job's function through source namespace/var.
+   The classpath function receives a run-context map. Lifecycle and effect
+   diagnostics describe the run; they are not an atomic effects transaction.
 
-   Sits downstream of `sandbar.schedule.dispatcher` (γ.2 Step 4): the
-   dispatcher's fire-thread emits `:mm.event/Scheduled` events; THIS
-   namespace registers a class-hierarchical subscriber via
-   `sandbar.event/subscribe!` that handles each fire by resolving the
-   Schedule's target :mm/Job, creating a :mm/Run instance, invoking
-   `:mm.job/fn`, and emitting `:mm.event/JobStarted` /
-   `:mm.event/JobCompleted` / `:mm.event/JobFailed` events at the
-   appropriate lifecycle transitions.
-
-   ## Architecture (per γ.1 ADR §1.6 + golden-squishing-flamingo.md Step 5)
-
-     [:mm.event/Scheduled] →[handle-scheduled-event]→ [.submit handler-pool fn]
-                                                       (this ns)
-
-   - Subscriber is registered via `register!` (called from public-API
-     `start!` in γ.2 Step 6, OR from tests directly).  Idempotent.
-   - Subscriber gates on `(:enabled? (state/snapshot))` AND
-     `(= :active (:state (state/snapshot)))` — fires during paused /
-     draining / inactive are no-ops.
-   - Per-handler work is submitted to the dispatcher's bounded
-     handler-pool (the `:handler-pool` ExecutorService allocated in
-     `dispatcher/start!`).
-   - Per-handler timeout: wraps the `:mm.job/fn` invocation in a
-     `future` + `.get(timeout, ms)` per κ P14 timeout pattern; default
-     30s; configurable via the state's :handler-timeout-ms slot.
-
-   ## :mm/Job invocation
-
-   `:mm/Job` instances declare `:mm.job/fn` referencing a `:mm/Fn`
-   memorial.  The :mm/Fn memorial carries `:dt.fn/source-ns` +
-   `:dt.fn/source-var` slots identifying the classpath-fn that
-   implements it.  Invocation resolves the var via `requiring-resolve`
-   and applies it to the run-context map (currently `{:run-eid ...
-   :schedule-eid ...}`; subsequent γ.5+ may extend the payload shape).
-
-   :mm/Fn instances with `:dt.fn/installed-as :db-fn` (transactor-side
-   Datomic fns) are NOT yet supported by this dispatcher — they require
-   wrapping in a tx-data invocation.  Future hardening sub-arc.
-
-   ## :mm.schedule/concurrency policy
-
-   - `:concurrency/allow` (no enforcement) — multiple in-flight Runs OK
-   - `:concurrency/forbid` (default per Q.γ.6) — if an in-flight :mm/Run
-     exists for this schedule, emit `:mm.event/ScheduleConcurrencyViolation`
-     + skip; do NOT start a new Run
-   - `:concurrency/replace` — cancel the in-flight Run; start a new one.
-     The cancel emits `:mm.event/JobCancelled` with
-     `:cancellation-reason :concurrency-replace`.  Not yet implemented
-     in γ.2 — falls through to :forbid behavior (skip).  Future
-     hardening.
-
-   ## :mm/EffectSpec validation (R.γ.6 mitigation)
-
-   On Run completion, if the :mm/Job declares an `:mm.job/effect-spec`,
-   compare the actual tx-data initiated against the declared
-   `:mm.effect/initiates`.  Mismatches LOG VIOLATION but do NOT REJECT
-   the run (MVP discipline; full enforcement is a future hardening
-   sub-arc).  γ.2 logs the violation via `sandbar.logging/warn` with
-   `:first-class` flag.
-
-   ## Public surface
-
-     `register!`              — subscribe `handle-scheduled-event` to :mm.event/Scheduled
-     `unregister!`            — unsubscribe (test + shutdown cleanup)
-     `registered?`            — diagnostic
-     `handle-scheduled-event` — public for direct invocation in tests
-     `run-job!`               — public for direct test invocation (executes a job + manages Run lifecycle)
-     `in-flight-runs-for`     — diagnostic; returns vec of :mm/Run eids in :run.status/active for a given Schedule
-
-   ## See also
-
-   - γ.1 ADR §1.6: `:memory.decisions/gamma_1_scheduler_path_a_native_min_heap_dispatcher_q_gamma_1_through_6_resolved_2026_05_27`
-   - γ implementation plan-mode: `~/.claude/plans/golden-squishing-flamingo.md` Step 5
-   - Sibling sandbar.schedule.dispatcher (Step 4) — the event publisher this ns subscribes to
-   - sandbar.event — class-hierarchical fire!/subscribe! substrate
-   - Q.γ.6 ratification: single fire-thread + bounded handler-thread-pool"
+   Current overlap admission is not atomic. Replacement does not reliably
+   terminate previous work, and timeout may release admission while an
+   interrupt-resistant invocation continues. Do not rely on these policies
+   for mutual exclusion or exactly-once external effects. register!,
+   unregister!, run-job! and in-flight-runs-for expose the current mechanism.
+   See doc/concepts/temporal-substrate.md."
   (:require [sandbar.schedule.state      :as state]
             [sandbar.event               :as event]
             [sandbar.db.datatype         :as dt]

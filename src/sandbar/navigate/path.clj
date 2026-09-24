@@ -1,62 +1,25 @@
 (ns sandbar.navigate.path
-  "Sandbar Path-Grammar — Consumer-Facing API (Stage P-6 of comprehensive
-  memory-model MCP arc per
-  plans/sandbar_fulltext_search_substrate_arc_2026_05_13.md).
+  "Consumer-facing path queries from EDN expressions to projected endpoints.
 
-  Threads the path-grammar layers — AST (P-1) → IR (P-2) → Datomic
-  compiler (P-3 + P-4) → query execution → result projection — into
-  a single opts-shaped consumer verb.
+  path-via composes parsing, normalization, execution and projection. It is
+  available in-process, through the MCP catalog and through the REST path
+  adapter. With :include [:paths], reachable entries contain :entity and a
+  representative :path witness; otherwise they contain endpoint entities.
 
-  Composes with:
-    - sandbar.navigate.path.ast       — EDN parsing
-    - sandbar.navigate.path.ir        — algebraic canonicalization
-    - sandbar.navigate.path.datomic   — Datomic compilation
-    - sandbar.navigate.path.value     — path-data abstraction (P-5)
+  Core and desugarable operators run through the Clojure evaluator, with
+  physically directed edge-policy checks at each hop, whether or not a
+  witness was requested. Inverse traversal applies the policy to the stored
+  edge direction. Rejected hops are reported as blocked entries.
 
-  Exposure protocols (per fulltext arc §5.2):
-    - In-process Clojure: (sandbar.navigate.path/path-via opts)  (this fn)
-    - MCP verb:            sandbar.navigate.path-via              (sandbar.mcp.tools)
-    - REST endpoint:       GET /api/navigate/path                 (sandbar.api.navigate)
+  NOT, FILTER and TEST use an endpoint-only Datomic route with a coarser
+  seed-to-endpoint check; requesting witnesses for them throws. Those checks
+  do not establish identical interior-path visibility guarantees. A permitted
+  private-to-public edge can also reveal an inbound source's existence to a
+  caller unless the broader read boundary excludes it. See
+  doc/firewall-and-projects.md before relying on navigation for isolation.
 
-  ## Path-data surfacing
-
-  `:include #{:paths}` is POPULATED (Phase R Stage R-7 / 2026-05-15
-  per decisions/sandbar_path_data_reconstruction_option_d_policy_a_2026_05_14.md).
-  When `:paths` is requested, the result's `:reachable` carries
-  `{:entity ... :path <path-value>}` maps with actual path data —
-  routed through `sandbar.navigate.path.evaluate`'s Clojure-side BFS
-  evaluator (analogous to the `dt/graph-walk-from` precedent per
-  decisions/sandbar_graph_walk_clojure_bfs_over_datomic_recursive_rules_2026_05_14.md).
-  No `:path-data-deferred` flag — Option D commitment closes the
-  documented-contract-vs-runtime gap permanently.
-
-  Path-explosion policy A (one-representative-path-per-endpoint,
-  Cypher shortestPath-style BFS first-arrival).
-
-  S7 EP-3 firewall routing (2026-07-06): reachability for the
-  evaluator-supported operators (Canonical-8 + desugarable) runs
-  through the guarded Clojure-side BFS evaluator whether or not
-  `:include #{:paths}` is requested — the per-hop firewall verdict is
-  applied SYMMETRICALLY to the physically-written edge direction (§8-
-  R17), so a FORBIDDEN hop (public→private flow, or cross-private) is
-  dropped from the frontier from EITHER traversal end and can never
-  appear as an endpoint, and each dropped hop is surfaced in the
-  result's `:blocked` (§5 audit, never silent — eid-FREE rows per R16).
-  A PERMITTED private→public edge lists normally from either end (the
-  `[:INV …]` inbound case): whether a public seed learns a private
-  citer EXISTS is the inbound-existence side-channel ruled S9 physical-
-  exclusion territory (§8-R17, note-not-block) — not an EP-3 concern.
-  This replaces the pre-S7 raw-Datalog endpoint-only fast-path, which
-  bypassed the firewall entirely (confidentiality is a safety property
-  that outranks the fast-path's perf).
-
-  Tier-2 `:NOT` / `:FILTER` / `:TEST` — the evaluator does not yet
-  execute these (path-data AND the per-hop guard land in a follow-on).
-  With `:include #{:paths}` they throw descriptive ex-info; endpoint-
-  only compiles via Datalog under a COARSE fail-closed seed→endpoint
-  firewall filter (`fw-enforce/endpoint-permitted?`) — see the fn body
-  for the narrow documented residual.  See
-  `sandbar.navigate.path.evaluate` for full operator coverage."
+  Witness selection retains one representative per endpoint, not all paths.
+  Limit applies after traversal; depth and branching determine execution cost."
   (:require [clojure.edn         :as edn]
             [datomic.api         :as d]
             [sandbar.api.projection         :as projection]
@@ -106,8 +69,9 @@
                each `:reachable` entry with the path-value from seed
                to endpoint (per path.value contract — `:nodes` +
                `:edges`).  Tier-2 :NOT / :FILTER / :TEST with :paths
-               throw ex-info (path-data evaluation for those lands in
-               0.1.x; omit :paths to get endpoint-only reachability).
+               throw ex-info; omit :paths for their endpoint-only route.
+    :projection — entity projection mode (default :full). Applied once while
+                  each endpoint still carries its database and ownership.
 
   Returns:
     ;; Without :include #{:paths} — endpoint-only fast-path
@@ -120,11 +84,10 @@
      :total     <int>
      :returned  <int>}
 
-  Per fulltext arc Stage P-6 + Phase R Stage R-7.  Composes with
-  cross-axis layers via the four-axis decomposition (search ∩
-  aggregate ∩ navigate ∩ orient); other axes wire `:from`/`:via` as
-  opts at Stage 29 (cross-axis composition)."
-  [{:keys [from via limit include]
+  Search accepts the same :from/:via restriction to intersect lexical hits
+  with a reachable population. A returned endpoint or witness has the policy
+  coverage of its execution route; see this namespace's boundary notes."
+  [{:keys [from via limit include projection]
     :or   {limit 0}}]
   ;; Per ADR §D-3.2 (Option B), the `:pre` guard on `from` (a ref-arg)
   ;; is dropped — boundary layer (sandbar.entity-ref) owns boundary
@@ -143,6 +106,7 @@
                         (throw (ex-info (str "Seed entity not found: " from)
                                         {:from from})))
         seed-eid      (:db/id seed-ent)
+        project       (projection/projection-fn-for (or projection :full))
         include-paths? (contains? (set include) :paths)
         cap           (fn [xs] (if (zero? limit) xs (take limit xs)))]
     (if (evalpath/evaluable? canon-tree)
@@ -159,11 +123,11 @@
       (let [{:keys [endpoints blocked]} (evalpath/reachable (db/db) canon-tree seed-eid)
             enriched (if include-paths?
                        (mapv (fn [{:keys [eid path]}]
-                               {:entity (projection/full-projection (db/entity eid))
+                               {:entity (project (db/entity eid))
                                 :path   path})
                              endpoints)
                        (mapv (fn [{:keys [eid]}]
-                               (projection/full-projection (db/entity eid)))
+                               (project (db/entity eid)))
                              endpoints))
             returned (vec (cap enriched))]
         {:reachable returned
@@ -192,7 +156,7 @@
               eids     (d/q q db-now rules seed-eid)
               safe     (filterv #(fw-enforce/endpoint-permitted? db-now seed-eid %) eids)
               dropped  (remove #(fw-enforce/endpoint-permitted? db-now seed-eid %) eids)
-              entities (mapv (comp projection/full-projection db/entity) safe)
+              entities (mapv (comp project db/entity) safe)
               returned (vec (cap entities))]
           {:reachable returned
            :total     (count entities)

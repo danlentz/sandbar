@@ -1,32 +1,19 @@
 (ns sandbar.mcp.catalog-model
-  "The pure, DB-free single-source catalog model — F6 consolidation substrate.
+  "Build the database-free model shared by catalog projections.
 
-   The ONE authored source of truth is `sandbar.mcp.tools/verb-catalog`.  This
-   namespace converts that def into a canonical per-verb data model with no
-   Datomic connection, reusing the SAME derivations that previously lived
-   inside `sandbar.scripts.seed-verb-catalog` (axis / arg-summary / section
-   split / combine + prereq prose-parsers) and the SAME leaf classifier
-   `sandbar.mcp.tools/verb-behavioral-hints` that feeds the wire
-   ToolAnnotations and the read-only authz gate.  Because every projection
-   renders from this one model, no projection can disagree with another or with
-   the wire surface.
+   sandbar.mcp.tools/verb-catalog supplies names, schemas and descriptions.
+   The same behavioral classifier supplies wire hints and model hints.
+   File generators and the optional persisted :mm/Verb seed consume this
+   model. catalog-check detects drift in the local file projections; it
+   does not verify a running server or a database seed.
 
-   The three file-backed projections (doc/mcp-affordance-map.md,
-   etc/verb-edges.edn in the corpus, the memory-open affordance table) and the
-   :mm/Verb substrate seed are all consumers of `build-catalog-model`.  Making
-   the model DB-free is what lets the drift gate run in pre-commit / CI without
-   a Datomic spin-up.
-
-   Design source of truth:
-   audit-results/xminus-build-2026-07-04/CONSOLIDATION-SINGLE-SOURCE-CATALOG-DESIGN.md §5.1.
-   The seed-script derivations moved here (not rewritten) per the design's
-   'refactor-with-no-behavior-change' mandate (§4, §5.4)."
+   Composition and prerequisite edges are derived from catalog prose.
+   They help discovery but do not enforce an execution order."
   (:require [clojure.string    :as str]
             [sandbar.mcp.tools :as tools]))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; Pure derivations — MOVED verbatim from sandbar.scripts.seed-verb-catalog.
-;; The seed script now consumes these instead of re-deriving (design §5.4).
+;; Pure derivations shared by file renderers and the optional catalog seed.
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (defn axis-of
@@ -153,8 +140,7 @@
 (defn build-catalog-model
   "verb-catalog vector -> sorted vec of per-verb model maps + derived edge
    graphs, DB-free.  Reuses tools/verb-behavioral-hints (the SAME classifier
-   feeding the wire annotations + the authz gate), so the model can never
-   disagree with either.  Per-verb map:
+   feeding the wire annotations + the authz gate), so the model uses the source classifier without copying it.  Per-verb map:
      {:name :wire-name :axis :title :description :safety :read-only?
       :destructive? :idempotent? :open-world? :transition-kind :hint-status
       :arg-summary :input-schema :which :when :how :order :combination

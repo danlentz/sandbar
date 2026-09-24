@@ -1,33 +1,18 @@
 (ns sandbar.scripts.full-corpus-ingest
-  "Stage 3.B — full-corpus ingest validation via the canonical
-   `sandbar.project.import` pathway.
+  "Exercise Markdown parsing and per-file entity creation in an in-memory
+   database, then run the tag audit.
+   Usage: lein run -m sandbar.scripts.full-corpus-ingest <corpus-root> [--limit N]
 
-   Per `~/claude/memory/plans/sandbar_0_1_1_coevolution_arc_2026_05_20.md`
-   Stage 3.B (project-graph initialization).  Where `sandbar.scripts.m1-preview`
-   BYPASSES the MCP layer + transacts parse-document output directly, this
-   script uses the CANONICAL pipeline that `sandbar.project.import` MCP verb
-   invokes:
+   `ingest-units` supplies parsed source groups; each group is converted to
+   transaction data and submitted through dt/make-all*. This does not execute
+   the maintenance import's preview, identity reconciliation, or source-owned
+   replacement contract. Parse failures are filtered out and transaction
+   failures are reported per group, so completion exit 0 is not an all-files
+   success certificate.
 
-     pg/ingest-graph
-       → codec-md/group-by-source
-       → for each group: codec-md/entity-specs->tx-data + dt/make-all*
-
-   This is the exact end-to-end shape any consumer would get through the
-   MCP surface — running it locally validates the canonical pathway.
-
-   ## Usage
-
-     lein run -m sandbar.scripts.full-corpus-ingest <corpus-root> [--limit N]
-
-   `--limit` caps the number of files ingested (0 = no cap; default 0 for
-   full corpus).
-
-   ## Output
-
-     Stdout: per-group ingest outcomes (success / failure) + final summary
-       (total ingested / failed / audit violations).
-     Exit 0 on completion regardless of per-group failures.
-     Exit 1 on script-level failure (DB setup, etc.)."
+   Zero (the default limit) means no cap. Run as a separate process: the script
+   creates/deletes its fixed in-memory database and replaces the process-global
+   database connection while it runs."
   (:require [clojure.java.io        :as io]
             [clojure.string         :as str]
             [datomic.api            :as d]
@@ -39,10 +24,9 @@
             [sandbar.test-util      :as tu]))
 
 (defn- ingest-group!
-  "Transact a single per-source-file group via the canonical pipeline:
-   entity-specs->tx-data (assign tempids + translate ref-slot values) +
-   dt/make-all* (one atomic tx per group).  Returns
-   `{:ok? bool :group-size N :ident <kw> :error nil-or-msg}`."
+  "Create one parsed source group with entity-specs->tx-data and dt/make-all*,
+   using one transaction. Return {:ok? :group-size :ident :error}. This helper
+   is a creation probe, not the source-owned replacement import path."
   [group]
   (let [memory (first group)
         ident  (:db/ident memory)

@@ -1,35 +1,15 @@
 (ns sandbar.search.analysis
-  "Sandbar analyzer — tokenizer + Porter stemmer beneath the BM25F scorer.
+  "Tokenizer and Porter stemmer for Sandbar's BM25F field analysis.
 
-  Pipeline: lowercase → split on `[\\p{L}\\p{N}]+` Unicode-aware letter/digit
-  runs → ASCII-guarded Porter-stem.  Output: vector of normalized tokens.
-  Same input produces same output byte-for-byte; required for stable
-  IDF tables + term-frequency counts.
+  Lowercase, extract Unicode letter/digit runs with [\\p{L}\\p{N}]+, then
+  apply Porter stemming to ASCII tokens. Non-ASCII tokens retain their
+  characters; this does not perform accent folding or Unicode normalization.
+  Stable tokenization is needed for comparable term frequencies and statistics.
 
-  Unicode-aware tokenizer; ASCII-guarded Porter stemmer.  Tokenizer
-  splits on `[\\p{L}\\p{N}]+` (Java regex Unicode classes — any letter,
-  any number), preserving Greek letters, diacritic'd proper names, and
-  other non-ASCII content.  The Porter stemmer applies only when the
-  token is pure ASCII letters/digits; non-ASCII tokens pass through
-  unchanged because Porter is an English-morphology algorithm with no
-  rules outside ASCII.
-
-  Ported 2026-05-13 from the corpus's `etc/lib/analysis.clj`
-  (Robertson-Zaragoza BM25F discipline; `decisions/unicode_tokenizer_ascii_stemmer.md`)
-  to Sandbar substrate per
-  `authorizations/move_bm25f_and_generic_primitives_to_sandbar_2026_05_13.md`.
-
-  Porter stemmer source attribution:
-  - Porter, M.F. 1980.  'An algorithm for suffix stripping.'
-    Program 14(3): 130-137.
-  - Definitive specification (Porter's own — more authoritative than the
-    1980 paper per his statement at the linked URL):
-    https://tartarus.org/martin/PorterStemmer/def.txt
-  - Reference implementation:
-    https://tartarus.org/martin/PorterStemmer/c.txt
-
-  Per fulltext arc Stage 4a of
-  plans/sandbar_fulltext_search_substrate_arc_2026_05_13.md."
+  Porter attribution: M. F. Porter (1980), An algorithm for suffix stripping,
+  Program 14(3), 130-137. Specification and reference implementation:
+  https://tartarus.org/martin/PorterStemmer/def.txt
+  https://tartarus.org/martin/PorterStemmer/c.txt"
   (:require [clojure.string :as str]))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;

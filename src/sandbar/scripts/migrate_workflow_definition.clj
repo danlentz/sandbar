@@ -1,32 +1,13 @@
 (ns sandbar.scripts.migrate-workflow-definition
-  "One-shot in-place migration — renames the `:workflow/Definition` class
-   ident to `:mm/Workflow` per the memorial-class naming-convention ADR
-   (memory/decisions/memorial_class_naming_convention_mm_prefix_workflow_definition_to_mm_workflow_2026_05_23.md).
+  "Rename the class ident :workflow/Definition to :mm/Workflow in place.
+   The class keeps its eid, so instance types and property-domain references
+   continue to point to it. If the old ident no longer resolves, report a no-op.
 
-   PRESERVES the database — does NOT erase + reimport.  Per
-   memory/authorizations/db_preservation_during_cutover_no_reset_db_without_recovery_tested_dan_directive_2026_05_23.md.
-
-   Idempotent: if `:workflow/Definition` no longer resolves, the
-   migration is a noop (safe to re-run; safe to leave in the codebase
-   even after the rename has propagated).
-
-   ## Mechanics
-
-   The class entity's eid is unchanged; only the human-readable ident
-   is swapped.  Existing `:dt/type :workflow/Definition` instance refs
-   point at the eid (Datomic refs are eids, not idents) — they
-   auto-resolve to the new ident after rename.  All slot declarations
-   (`:dt/domain :workflow/Definition` etc.) are similarly refs-to-eid
-   that auto-resolve.
-
-   ## Usage
-
-       cd ~/src/sandbar
-       bin/sandbar stop                          # safer to migrate offline
-       lein run -m sandbar.scripts.migrate-workflow-definition
-       bin/sandbar start                         # schema EDN reload merges slots onto renamed entity
-
-   The script exits 0 on success (including idempotent noop)."
+   Select the existing store explicitly, verify recovery, and stop other
+   writers before invoking:
+     lein run -m sandbar.scripts.migrate-workflow-definition
+   Audit the renamed entity and its references before restarting the server.
+   This migration preserves database identity; it does not rebuild the store."
   (:require [datomic.api        :as d]
             [sandbar.db.datomic :as db])
   (:gen-class))

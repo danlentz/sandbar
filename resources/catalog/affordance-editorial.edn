@@ -1,24 +1,6 @@
-;; Editorial sidecar for the memory-open affordance table (design §5.5).
-;;
-;; The STRUCTURAL columns (axis, n) are machine-owned — derived from the
-;; single-source catalog-model's catalog-summary.  The EDITORIAL columns
-;; (:reach-for = "Reach for it when…" prose, :schema = the EAGER/LAZY/mixed
-;; tier) are human-meaningful and preserved across regenerations from HERE.
-;;
-;; :order fixes the curated presentation sequence (eager axes first, then lazy
-;; by rough size) — NOT alphabetical.  When a NEW axis appears in the catalog
-;; with no editorial entry here, the generator FAILS LOUD (P4) demanding an
-;; editorial row — the correct forcing function so a new capability cluster
-;; can't slip into the surface undocumented.
-;;
-;; Extracted verbatim from the live .claude/commands/memory-open.md table
-;; (rows 44-64) 2026-07-06, PLUS a new `tools` row (the axis that was missing
-;; from the 79/21 hand-maintained table — tools.search / tools.describe).
-;;
-;; Content-drift note: the `n`/detail here is illustrative editorial prose; the
-;; generator does NOT parse verb lists out of it — counts come from the model.
-;; If the prose lists specific leaf verbs, keep it in sync by hand (it is
-;; editorial), but the AUTHORITATIVE count is always the model's.
+;; Editorial labels for the optional client affordance table. Counts and axes
+;; come from the catalog model; descriptions and presentation order live here.
+;; A new axis without an editorial entry fails generation for explicit review.
 
 {:order [:entity :search :navigate :aggregate :ground :orient :workflow :tools
          :tag :schedule :class :validation :shape :schema :property :types
@@ -33,7 +15,7 @@
                :schema "EAGER"}
   :aggregate  {:reach-for "rollups — count · group-by · rank-by · tag-histogram"
                :schema "EAGER"}
-  :ground     {:reach-for "4-axis type-scoped grounding BEFORE introducing a new predicate / type / concept"
+  :ground     {:reach-for "vocabulary lookup and model context before introducing a concept"
                :schema "EAGER"}
   :orient     {:reach-for "synthesized views — library-card *(EAGER)* · tree · type-tree *(LAZY)*"
                :schema "mixed"}
@@ -41,7 +23,7 @@
                :schema "EAGER core"}
   :tools      {:reach-for "META-verbs over the catalog — `search` (rank verbs for a task) · `describe` (full card + composition edges for one verb)"
                :schema "LAZY"}
-  :tag        {:reach-for "**tag-vocabulary curation** — lookup · define · audit · consolidate(-all) · align · harmonize · rename · split *(LARGEST axis; much-developed, easily-forgotten — check it before claiming a curation arc done)*"
+  :tag        {:reach-for "**tag-vocabulary curation** — lookup · define · audit · consolidate(-all) · align · harmonize · rename · split"
                :schema "LAZY"}
   :schedule   {:reach-for "γ scheduler — enable/disable · start/stop · add/remove · list · inspect (recurring jobs)"
                :schema "LAZY"}

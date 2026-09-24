@@ -1,19 +1,11 @@
 (ns sandbar.mcp.transport
-  "MCP transport layer — Streamable HTTP per
-   decisions/sandbar_mcp_server_design_2026_05_12.md B.1.1.
+  "Sandbar's MCP HTTP endpoints on the existing Pedestal service.
 
-   Slot routes into the existing Pedestal HTTP service rather than
-   spawning a separate server process. POST `/mcp` accepts a JSON-RPC
-   2.0 message; server responds with the corresponding response.
-
-   Stage C.1 foundation:
-   - Single POST `/mcp` endpoint accepting one JSON-RPC message
-   - Response is the dispatched method's result (or error)
-
-   Subsequent stages:
-   - SSE channel at `/mcp/sse` for server-streaming responses + notifications
-   - Batched message support (JSON-RPC allows array of messages)
-   - Connection-level state (session identity for capability negotiation)"
+   POST /mcp accepts one JSON-RPC message and returns its response, or HTTP 204
+   for a notification. GET /mcp/sse is a separate Sandbar notification stream.
+   This implementation does not provide JSON-RPC batches, negotiated MCP
+   sessions, or a standard Tasks surface. See doc/concepts/mcp-protocol.md
+   for the supported client contract."
   (:require [cheshire.core              :as json]
             [clojure.core.async         :as async]
             [clojure.tools.logging      :as log]
@@ -29,18 +21,10 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (defhandler mcp-handler
-  "POST `/mcp` — accept a JSON-RPC 2.0 message; dispatch via
-   sandbar.mcp.protocol/dispatch; return the response.
-
-   Per B.1.1: Streamable HTTP returns either a JSON response (single
-   message) or initiates an SSE stream (multi-message responses;
-   Stage C.3). C.1 returns single-message JSON responses only.
-
-   The authenticated principal (attached to `[:request :identity]` by
-   sandbar.mcp.auth/bearer-interceptor) is threaded into dispatch so the
-   tools/call token gate can authorize the verb.  A nil principal (no
-   Bearer token — the legacy/local path) leaves dispatch's behavior
-   unchanged."
+  "Dispatch one JSON-RPC message from POST /mcp using the authenticated
+   request identity. Return the method response or HTTP 204 with no body for
+   a notification. Authentication is supplied by the route's interceptor
+   chain; scope and method decisions are made by protocol dispatch."
   [request _ent-store data]
   (log/debug :MCP/inbound {:method (get data :method)
                             :id     (get data :id)})
@@ -77,23 +61,11 @@
       (throw e))))
 
 (defn sse-stream-ready
-  "Pedestal SSE setup callback. Called once when the SSE connection
-   opens; receives the event-channel + Pedestal context. Registers the
-   subscriber.
-
-   Subscriber cleanup on disconnect is lazy — when the channel is
-   closed (client disconnects), the next `notifications/publish-to!`
-   (or `publish!`) call's `send!` will throw on the closed channel;
-   the catch-clause in `notifications.clj` then unregisters the
-   subscriber.
-
-   The prior implementation ran a `(async/go ... (loop [] (<! channel)))`
-   monitor that competed with Pedestal's own take-from-channel for
-   delivering events to the client — per ultrareview #4 at
-   transport.clj:84.  Pedestal's SSE infrastructure OWNS the read end
-   of this channel; competing with it racially dropped notifications
-   to whichever taker won.  Removed entirely — lazy cleanup on next
-   publish-to is the correct shape."
+  "Register an SSE send function and principal when Pedestal opens a stream.
+   Pedestal owns the channel's read end; a competing consumer would steal
+   notification events. Disconnect cleanup is lazy: a later send returning
+   falsey or throwing causes the notification registry to evict the subscriber.
+   Emit the Sandbar ready event with the newly registered subscriber id."
   [event-channel context]
   (let [identity-info (:identity context)
         send-fn       (fn [notification]
@@ -112,15 +84,7 @@
                        {:subscriber-id sub-id}))))
 
 (def sse-handler
-  "GET `/mcp/sse` — opens a Server-Sent Events channel for server →
-   client notifications.
-
-   Per ADR B.1.1: Streamable HTTP transport optionally upgrades to SSE
-   for server-streaming responses + push notifications. Subscriber
-   registry lives in sandbar.mcp.notifications.
-
-   Returns a Pedestal SSE interceptor (NOT a defhandler — SSE needs
-   long-lived response). The Pedestal SSE start-event-stream takes a
-   ready-fn that gets a core.async channel; events sent via send-event!
-   propagate to the client."
+  "GET /mcp/sse opens Sandbar's long-lived server-notification stream.
+   Return Pedestal's SSE interceptor with `sse-stream-ready` as its setup
+   callback. This separate endpoint does not establish an MCP session."
   (sse/start-event-stream sse-stream-ready))

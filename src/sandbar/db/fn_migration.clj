@@ -1,25 +1,12 @@
 (ns sandbar.db.fn-migration
-  "Stage D D3 — one-shot migration of legacy `:dt/dt :fn` instances to
-   first-class `:dt/type :dt/Fn` + `:dt/type :mm/Fn`.
+  "Explicit migration of legacy :dt/dt :fn records to typed function entities.
 
-   Metacircular: the migration is performed by a :dt/Fn instance (the
-   `migrate-legacy-fn-instance` transactor function) authored via the
-   new dual-emit `defdbfn` macro.  The substrate migrates itself using
-   its own foundational primitive.
-
-   Per `decisions/dt_fn_existing_state_reconciliation_dual_emit_defdbfn_
-   legacy_migration_2026_05_23.md` §D3.
-
-   ## Usage
-
-   ```clojure
-   ;; After schema migration + load-all-dbfn + load-all-mm-fn-memorials:
-   (require '[sandbar.db.fn-migration :as fn-mig])
-   (fn-mig/migrate-all-legacy-fn-instances! my-conn)
-   ```
-
-   Idempotent: re-running is safe (the migration tx-fn checks
-   `already-migrated?` and no-ops on previously-migrated entities)."
+  migrate-legacy-fn-instance is a transactor function authored with defdbfn.
+  After the required schema and function implementations are installed,
+  migrate-all-legacy-fn-instances! invokes it for the selected connection.
+  The transactor checks whether an entity was already migrated and skips it
+  on repetition. This is a mutation utility; importing the namespace is not
+  an instruction to run a migration."
   (:require [clojure.tools.logging :as log]
             [datomic.api :as d]
             [sandbar.db.fn :refer [defdbfn]]))

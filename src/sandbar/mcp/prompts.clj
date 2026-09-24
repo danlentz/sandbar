@@ -1,31 +1,9 @@
 (ns sandbar.mcp.prompts
-  "MCP `prompts/list` + `prompts/get` handlers — exposes Sandbar's
-   workflow definitions as MCP prompts.
-
-   Per decisions/sandbar_mcp_server_design_2026_05_12.md B.1.6:
-   - Each `workflow/define-workflow!` definition is queryable as a named
-     MCP prompt
-   - Clients receive workflow spec (states + transitions + initial +
-     terminals) as structured guidance
-   - Self-documenting: the workflow IS its own MCP prompt; no parallel
-     registry
-
-   Discipline per
-   interaction/target_sandbar_introspection_api_layer_not_raw_datomic_2026_05_12.md:
-   uses `dt/all-named-instances-of :mm/Workflow` + the
-   `sandbar.util.workflow/*` abstraction (find-workflow + get-workflow-
-   states + get-workflow-transitions + get-initial-state + get-terminal-
-   states) — NEVER raw datomic.api.
-
-   Stage C.6:
-   - prompts/list walks dt/all-named-instances-of :mm/Workflow
-   - prompts/get returns workflow specification structured for MCP
-
-   Subsequent stages:
-   - C.6.1 Workflow argument schemas (each prompt has parameters per
-     :mm/Workflow's input slots)
-   - C.6.2 Workflow output projection (terminal-state outputs surfaced
-     as the prompt's expected response shape)"
+  "Expose named :mm/Workflow definitions through MCP prompts/list and
+   prompts/get. Prompt content describes the workflow's states, transitions,
+   initial state, and terminal states using the datatype and workflow APIs.
+   The workflow entities supply the prompt catalog; no parallel prompt
+   registry is maintained."
   (:require [clojure.string         :as str]
             [clojure.tools.logging  :as log]
             [sandbar.db.datatype    :as dt]
@@ -90,12 +68,11 @@
   (str/replace (str prompt-name) "." "_"))
 
 (defn prompt-name->workflow-ident*
-  "Resolve an incoming prompts/get `:name` — the NEW underscore wire form OR the
-   DEPRECATED dotted form — to a workflow `:db/ident`.  Returns
-   {:ident <kw-or-nil> :deprecated? <bool>}.  The dotted form uses the direct
-   decoder; the underscore form is resolved by enumerating the live `:mm/Workflow`
-   set and matching the wire projection (correct for any name-part), so no
-   lossy underscore→dot string-split is needed.  A non-matching name yields nil."
+  "Resolve a prompts/get name to {:ident <keyword-or-nil> :deprecated? <bool>}.
+   The dotted compatibility form uses the direct decoder. The underscore
+   wire form is matched against named workflows, avoiding a lossy reverse
+   string replacement when a workflow ident itself contains dots.
+   An unmatched wire name has :ident nil."
   [prompt-name]
   (let [s (str prompt-name)]
     (cond
@@ -116,11 +93,9 @@
 ;; Workflow → MCP prompt description
 
 (defn- workflow->prompt-description
-  "Build the MCP prompt description map for a single workflow definition.
-
-   Used in prompts/list responses. Each workflow's name + description +
-   the structural metadata (state count, transition count) helps Claude
-   choose which prompt to fetch."
+  "Build a prompts/list description from one workflow entity. Its name,
+   description, state count, and transition count help a client choose a
+   prompt to fetch."
   [workflow-def]
   (let [ident       (:db/ident workflow-def)
         states      (workflow/get-workflow-states workflow-def)
@@ -139,15 +114,8 @@
      :arguments   []})) ;; Stage C.6.1 derives from workflow input slots
 
 (defn all-workflow-prompts
-  "Walk every named `:mm/Workflow` entity + emit MCP prompt
-   descriptions.
-
-   Uses `dt/named-entities-of` (returns entity maps, per Q1=B Stage A
-   helpers) — `workflow->prompt-description` reads `:db/ident`,
-   `:dt/name`, `:dt/description`, etc. off each entity.  The prior
-   `dt/all-named-instances-of` returned idents, so the description
-   helper silently produced nil-everywhere descriptions (codex
-   MUST-FIX #2 at prompts.clj:86)."
+  "Describe every named :mm/Workflow. `dt/named-entities-of` supplies entity
+   maps, as required by `workflow->prompt-description`, rather than idents."
   []
   (->> (dt/named-entities-of :mm/Workflow)
        (map workflow->prompt-description)
@@ -158,10 +126,7 @@
 ;; prompts/list handler
 
 (defn handle-list
-  "MCP `prompts/list` — returns all defined Sandbar workflows as MCP
-   prompts. Stage C.6 returns only workflow-derived prompts;
-   subsequent stages can add cross-cutting prompts (e.g., domain-
-   specific guidance not tied to a workflow)."
+  "Handle MCP prompts/list by returning descriptions of named workflows."
   [id _params]
   (try
     {:jsonrpc "2.0"
@@ -225,9 +190,8 @@
          "```\n")))
 
 (defn handle-get
-  "MCP `prompts/get` — returns the prompt content for a named workflow.
-   Stage C.6 returns the workflow's structural shape as a markdown
-   description; subsequent stages can add binding-specific arguments."
+  "Handle MCP prompts/get by rendering the named workflow's structure as
+   Markdown guidance."
   [id params]
   (try
     (let [prompt-name      (:name params)

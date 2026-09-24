@@ -1,50 +1,17 @@
 (ns sandbar.audit.tag
-  "Tag-class lifecycle invariants — read-only audits over :mm/Tag entities + their
-   references on :mm/Memory.  Per decisions/tag_as_first_class_introspectable_type_in_metamodel_2026_05_20.md
-   §2.5 audit-invariant categories.
+  "Read-only vocabulary audits over :mm.tag/value carriers and their references.
 
-   All invariants are READ-ONLY — they produce a report; they NEVER mutate the
-   DB.  Tag-lifecycle commands (consolidate / split / rename / etc.) live in
-   sandbar.mcp.tools `tag.*` verbs and call these audit functions for
-   pre-action validation.
+  Checks report undefined-used, defined-unused, orphan, date-pattern,
+  type-pattern, drift and closure-consistency findings. A finding nominates
+  data for review; it does not establish that deletion or merging is correct.
+  Inspect the population and relationship scope of each check, especially the
+  distinction between tags, themes and untyped value carriers.
 
-   ## The seven invariants
-
-   | Invariant            | What it surfaces                                                                     |
-   |----------------------|--------------------------------------------------------------------------------------|
-   | undefined-used       | Tags referenced via :mm.memory/tags whose :mm/Tag lacks :mm.tag/definition           |
-   | defined-unused       | :mm/Tag with :mm.tag/definition but no inbound :mm.memory/tags references            |
-   | orphan               | :mm/Tag with no :mm.tag/in-scheme membership (not in any concept-scheme)             |
-   | date-pattern         | :mm.tag/value matching `YYYY-MM-DD` — likely date-frontmatter pollution, not concept |
-   | type-pattern         | :mm.tag/value matching a memorial-type keyword — duplicates :mm.memory/memory-type   |
-   | drift                | Multiple :mm/Tag with same normalized form (lower / depluralized) — variant clusters |
-   | closure-consistency  | Broader-* / supersedes / related edges checked for acyclicity + symmetric reciprocity |
-
-   ## Return shape contract
-
-   Every public audit function returns a map of the form:
-
-     {:invariant      :undefined-used
-      :violation-count 12
-      :violations     [{...detail-of-each-violation...}]
-      :description    \"Human-readable summary line\"}
-
-   The `audit-all` aggregator returns:
-
-     {:invariants  [...]                          ; map per invariant
-      :total-violations 47
-      :summary     \"47 violations across 7 invariants\"}
-
-   ## Layering discipline
-
-   Audit code targets `sandbar.db.datatype/*` introspection + `datomic.api/q`
-   queries — never raw `:db/...` traversal nor consumer-class hardcoding.
-   The :mm.* refs in queries below are first-class :mm-module class knowledge
-   that the corpus-of-record uses; sandbar substrate is consumer-class-agnostic
-   per
-   interaction/no_hardcoded_consumer_class_knowledge_in_substrate_2026_05_13.md,
-   but the AUDIT layer is consumer-aware by design (it audits a specific
-   class's lifecycle invariants — :mm/Tag in this namespace's case)."
+  Individual results contain :invariant, :violation-count, :violations and
+  :description. audit-all returns :invariants, :total-violations and :summary.
+  Findings from several invariants can overlap, so their total is not a count
+  of distinct bad entities. This namespace reports; mutation operations have
+  separate acceptance and identity-preservation responsibilities."
   (:require [clojure.set            :as set]
             [clojure.string         :as str]
             [datomic.api            :as d]
@@ -56,21 +23,10 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (defn- all-tag-entities
-  "Returns a vector of entity-maps for every entity with `:mm.tag/value`
-   populated.  This includes BOTH:
-
-     - Canonical :mm/Tag entities (post-Stage-7.C — `:dt/type :mm/Tag`
-       explicitly set when parsed from `memory/tags/<name>.md` via the
-       routed codec)
-     - Legacy F#18 anonymous-upsert entities (pre-Stage-7.C — entities
-       created by ref-typed-slot upserts that carry only `:mm.tag/value`
-       and lack `:dt/type :mm/Tag`)
-
-   Using the attribute-presence query rather than `dt/all-instances-of`
-   makes the audit robust to both substrate shapes — important during
-   migration M.1-M.5 where both legacy + canonical entities coexist in
-   the same DB.  The :mm.tag/value attribute's domain is :mm/Tag, so
-   any entity carrying it IS a tag by the schema."
+  "Return every entity carrying :mm.tag/value, including typed Tags and
+   lightweight carriers without a type or ident. Attribute presence keeps
+   both representations in the audit population. A declared property domain
+   does not make this equivalent to the direct/inherited typed-instance query."
   []
   (let [eids (d/q '[:find [?e ...]
                     :where [?e :mm.tag/value _]]
@@ -104,9 +60,9 @@
   "Surfaces tags that are USED (referenced by some :mm/Memory via
    :mm.memory/tags) but NOT DEFINED (no :mm.tag/definition slot populated).
 
-   These are pre-Stage-7 free-text tags that the corpus has accumulated but
-   that lack the SKOS-derived canonical-definition slot.  Migration M.1
-   inventory phase surfaces these for hand-authoring at M.2.
+   This check includes untyped value carriers and considers the tags role
+   only. A finding can guide definition authoring; it does not establish that
+   the concept is undefined elsewhere or should be deleted.
 
    Returns:
      {:invariant :undefined-used
@@ -142,8 +98,8 @@
   "Surfaces tags that ARE DEFINED (:mm.tag/definition populated) but NOT
    USED (no inbound :mm.memory/tags reference).
 
-   These are vocabulary entries that have canonical definitions but no
-   corpus memorial currently applies them.  Two-way valid interpretations:
+   These are vocabulary entries with definitions but no tags-role use;
+   themes and other reference roles are outside this check. Possible readings:
    (a) recently-defined canonical tag awaiting adoption — keep; (b) defined
    tag whose use-cases all migrated away — candidate for lifecycle :retired.
 
@@ -320,28 +276,15 @@
   (-> (or s "") str/lower-case depluralize))
 
 (defn drift-clusters
-  "Surfaces clusters of :mm/Tag entities whose :mm.tag/value normalizes to
-   the same form — singular/plural drift (`tag` / `tags`), case drift
-   (`Audit` / `audit`), and obvious variants.
+  "Report clusters of distinct tag values with the same normalized form.
+  Normalization detects spelling, case and singular/plural variants; it does
+  not prove conceptual equivalence. Review definitions and member records
+  before choosing an identity-preserving mutation.
 
-   Each cluster is a set of 2+ distinct :mm.tag/value strings that
-   normalize to the same form.  Migration M.3 auto-merges clusters by
-   choosing a canonical + declaring others as :mm.tag/alt-label.
-
-   EXCLUDES already-superseded variants (`:mm.tag/lifecycle-status
-   :superseded`) — these have already been consolidated via
-   `sandbar.tag.consolidate` / `.consolidate-all`; surfacing them again
-   in the drift invariant produces false-positive findings that the
-   editorial review cannot act on (already-acted-on).  Per
-   `observations/phase_h_M3_drift_consolidation_69_of_71_clusters_landed_…_2026_05_26.md`
-   substrate-quality follow-up.
-
-   Returns:
-     {:invariant :drift
-      :violation-count N-clusters
-      :violations [{:normalized-form <string>
-                    :variants [{:tag <ref> :value <string>} ...]} ...]
-      :description \"...\"}"
+  Already-superseded variants are excluded. Returns {:invariant :drift
+  :violation-count n :violations [{:normalized-form text :variants [...]} ...]
+  :description text}. Each variant contains :tag and :value. This audit does
+  not merge or rename tags."
   []
   (let [tags     (->> (all-tag-entities)
                       ;; Exclude superseded variants (already consolidated).
@@ -410,8 +353,8 @@
              (mapv tag-by-id path))))))
 
 (defn- symmetric-asymmetries
-  "Find pairs (A, B) where A has B in :mm.tag/related but B does NOT have A
-   in :mm.tag/related (asymmetric reciprocity violation)."
+  "Find an asserted :mm.tag/related edge without its reciprocal assertion.
+   This checks stored-edge conventions, not query-time symmetry entailment."
   []
   (let [tags     (all-tag-entities)
         rel-out  (into {}
@@ -431,9 +374,9 @@
    have A in the inverse :mm.tag/supersedes (or A has B in :supersedes but
    B lacks A in :superseded-by).
 
-   :mm.tag/supersedes isn't declared in the Stage 7.A schema yet (only
-   :superseded-by); this check returns empty until the inverse pair is
-   declared.  Future-extensible."
+   The bundled schema declares :superseded-by but not :mm.tag/supersedes.
+   A target must already have a nonempty supersedes set to be examined, so
+   an empty result does not prove the inverse relation is represented."
   []
   (let [tags     (all-tag-entities)
         super-by (into {}
@@ -454,10 +397,13 @@
     (vec violations)))
 
 (defn closure-consistency
-  "Aggregates the three closure-consistency sub-checks:
+  "Audit three conventions over asserted vocabulary relationships:
    (a) acyclic broader-generic / broader-instantial / broader-partitive,
    (b) symmetric :mm.tag/related reciprocity,
-   (c) inverse :mm.tag/superseded-by ↔ :mm.tag/supersedes reciprocity.
+   (c) partial inverse :mm.tag/superseded-by / :mm.tag/supersedes reciprocity.
+
+   These are stored-edge findings, not a proof of inferred closure. The
+   inverse check only examines targets with an existing supersedes set.
 
    Returns:
      {:invariant :closure-consistency

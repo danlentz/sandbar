@@ -1,26 +1,10 @@
 (ns sandbar.navigate.siblings
-  "Sandbar Navigation — Same-Directory Peers (Stage 22 of comprehensive
-  memory-model MCP arc per
-  plans/sandbar_fulltext_search_substrate_arc_2026_05_13.md).
+  "Same-directory peers based on a caller-selected path property.
 
-  Consumer-facing wrapper around `sandbar.db.datatype/siblings-of` —
-  the substrate primitive that returns entities sharing the same
-  directory prefix as a given anchor entity.
-
-  ## When to use vs. alternatives
-
-  - `sandbar.navigate.siblings/siblings-of` — filesystem-style
-    same-directory peers (this namespace).  E.g., all decision
-    memorials under `decisions/`.
-  - `sandbar.navigate.edges/inbound-edges` (with `:next-sibling` /
-    `:previous-sibling` predicate filter) — typed-edge sibling-chain
-    navigation (mm/Section's pairwise SIOC sibling chain).
-  - `sandbar.navigate.path/path-via` with `:FILTER` over a directory
-    prefix — broader same-tree-prefix queries with recursive descent.
-
-  Substrate-quality discipline preserved per
-  interaction/target_sandbar_introspection_api_layer_not_raw_datomic_2026_05_12.md:
-  routes through `dt/siblings-of`, never raw `datomic.api`."
+  Wraps dt/siblings-of to find entities whose paths share the anchor's
+  directory prefix. This differs from a document section's next-sibling edge
+  or a recursive subtree traversal. A path is representation metadata; use
+  typed relationships when the question concerns semantic containment."
   (:require [sandbar.api.projection :as projection]
             [sandbar.db.datatype    :as dt]))
 

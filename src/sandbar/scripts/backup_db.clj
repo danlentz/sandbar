@@ -1,36 +1,17 @@
 (ns sandbar.scripts.backup-db
-  "Incremental Datomic backup via `bin/datomic backup-db` (admin JVM).
+  "Create a timestamped native Datomic backup with the admin CLI.
+   Usage: lein backup-db [<label>]
 
-   Usage:
+   Set SANDBAR_CLIENT_DIR explicitly to select the backup root at
+   <client-dir>/.sandbar/backups. Directories include the configured store id,
+   timestamp, optional label, and recorded Datomic version. Each invocation
+   chooses a fresh directory rather than incrementing the preceding one.
+   status.edn records timing, source and backup URIs, segments, and CLI exit.
 
-       lein backup-db [<label>]
-
-   Writes to `<backup-root>/sandbar-<TS>[-<label>]-datomic1.0.7482/`
-   where `<backup-root>` is `${SANDBAR_CLIENT_DIR:-$HOME/claude}/.sandbar/backups`
-   and `<TS>` is `yyyyMMdd-HHmmss`.  Acquires a PID-file lock to refuse
-   concurrent backup/restore on the same URI.  Live-system safe (transactor
-   stays up).  Idempotent at the URI granularity per backup-db's incremental
-   segment-copy semantics — but each invocation here writes to a FRESH
-   directory (TS-stamped), so repeat invocations produce independent restore
-   points rather than incrementing one.
-
-   Writes sidecar `status.edn` to the backup dir capturing
-   `{:duration-ms ... :segments-copied ... :exit-code ... :datomic-version ...
-     :source-uri ... :backup-uri ... :timestamp ... :label ...}`.
-
-   LOCK LIFECYCLE (fixed 2026-09-19).  The lock is released in a `finally`
-   and `System/exit` is called only AFTER that block has run.  Before the
-   fix every exit path called `System/exit` inside the `try`, and finally
-   blocks do not run on `System/exit`, so the lock survived every run —
-   including successful ones — and the next backup aborted on a dead PID
-   until an operator deleted the file (bugs/backup_db_leaves_its_lock_file_-
-   behind_after_a_successful_run_... 2026-09-19).  A lock whose recorded
-   PID is no longer alive is now reported as stale and taken over; only a
-   lock whose PID is alive aborts (exit 3).
-
-   Per memory/libraries/datomic/backup_restore.md §12 + Dan-directive
-   2026-05-23 (authorizations/c_then_a_backup_restore_foundation_then_job_-
-   to_mm_migration_no_parallel_stacks_dan_directive_2026_05_23.md)."
+   A PID-file lock refuses a live holder and takes over a stale holder.
+   The finally block releases it before process exit. Select and verify the
+   exact backup before relying on it for a maintenance operation; see
+   doc/operations.md."
   (:require [clojure.java.shell          :as sh]
             [clojure.string              :as str]
             [sandbar.db.datomic          :as db]

@@ -1,59 +1,15 @@
 (ns sandbar.logging
-  "Sandbar's single public observability API.
+  "Public observability macros: info, warn, error, debug, trace and profile.
+   Use a namespaced event keyword, optional message and structured data;
+   error also accepts a Throwable. Literal-string shorthand derives an
+   event identifier from namespace, callsite and message, so it is not a
+   stable identifier across source movement or text edits.
 
-   Per memory/decisions/observability_api_ergonomics_first_human_string_shorthand_allowed_internal_design_compensates_with_structure_2026_05_23.md
-   the callsite surface is SIX macros (`info` / `warn` / `error` /
-   `debug` / `trace` / `profile`); vendor surface (Telemere / Tufte) is
-   internal engine never exposed at callsites.
-
-   ## Quick reference
-
-       (require '[sandbar.logging :as sb-log])
-
-       ;; --- structured form (preferred) ---
-       (sb-log/info ::sys-init)                              ; bare marker
-       (sb-log/info ::sys-init {:duration-ms 42})            ; with data
-       (sb-log/info ::sys-init {:duration-ms 42} :db-only)   ; with memorial-flag
-       (sb-log/info ::sys-init \"booted\" {:duration-ms 42}) ; msg + data
-       (sb-log/info ::sys-init \"booted\" {:duration-ms 42} :first-class)
-
-       ;; --- human-string shorthand (ADR §D.2) ---
-       (sb-log/info \"Datomic transactor reconnected\")
-       (sb-log/info \"User logged in\" {:user-id 42})
-
-       ;; --- error: typed error kind carries a Throwable ---
-       (sb-log/error ::tx-failed ex)                         ; throwable
-       (sb-log/error ::tx-failed ex {:tx-id 17592186})       ; + data
-       (sb-log/error ::tx-failed ex {:tx-id 17}    :db-only) ; + memorial
-
-       ;; --- profile: Tufte span (no memorial-flag) ---
-       (sb-log/profile :search-hot-path
-         (do-the-search ...))
-
-   ## Memorial flag
-
-   The optional final positional keyword on `info` / `warn` / `error` /
-   `debug` / `trace` flags the signal for the Stage D memorial-projection
-   handler:
-
-   - `:db-only`     — durable `:mm/Log` (or subtype) entity in Datomic
-   - `:first-class` — durable + FS-projected to `memory/logs/<>.md`
-   - `:inline`      — embedded in host memorial frontmatter
-
-   Absent flag = transient (handlers fire; no DB persistence).
-
-   ## Human-string shorthand + synthetic event-id
-
-   When the first arg is a string (no `::event-id`), the macro auto-
-   derives a synthetic stable id from `*ns*` + line + a hash of the
-   message.  Anonymous-at-callsite events remain RANKABLE + FACETABLE
-   post-hoc — the substrate compensating for callsite ergonomics per
-   ADR §D.2 compensation #1.
-
-   ## Initialization
-
-   Telemere handler setup happens via `sandbar.logging.init/start!`,
-   called by `sandbar.core/start` BEFORE any other startup work."
+   A trailing :db-only flag requests an :event/SystemEvent; :first-class
+   requests an :mm/EventLog eligible for projection. :inline is reserved.
+   Filters and handlers determine delivery, and a logging return is not a
+   durable-write acknowledgment. profile wraps a Tufte span and returns the
+   body's result. See doc/guides/using-logging.md."
   (:require [taoensso.telemere :as tel]
             [taoensso.tufte    :as tufte]))
 

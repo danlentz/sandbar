@@ -1,0 +1,51 @@
+;; Editorial guide rendered before the catalog-derived operation inventory.
+{:introduction "Sandbar exposes a stable vocabulary of operations over a changing model. Start with the question you need to answer, discover the relevant class or property, and then choose a tool. Creating a new class does not require creating another family of transport endpoints.
+
+The [wire reference](api/mcp-verbs.md) lists the tool names and arguments. The running server's `tools/list` is authoritative for its advertised schemas. `sandbar.tools.search` and `sandbar.tools.describe` help a client discover purpose and composition; these dotted names are catalog names, while tools are called by the advertised wire names.
+
+## Find a starting point
+
+| Question | Catalog operation | Useful next step |
+| --- | --- | --- |
+| What classes are available? | `sandbar.schema.classes` | `class.describe` for one class |
+| What belongs on this class? | `sandbar.class.slots`, `required-slots` | Inspect a property's range/cardinality |
+| What does this known record say? | `sandbar.entity.find`, `find-by-rel-path` | Read related records through typed edges |
+| Which records discuss these words? | `sandbar.search.bm25f` | Full read and relationship inspection |
+| Which entities meet a structural condition? | `sandbar.aggregate.count`, `group-by` | Narrow the population before fetching detail |
+| What cites or supersedes this record? | `sandbar.navigate.inbound-edges` | Read the returned source entities |
+| What is reachable by this relationship pattern? | `sandbar.navigate.path-via` | Inspect path witnesses and endpoints |
+| How is a record situated? | `sandbar.orient.library-card` | Select named axes worth following |
+| Where does a class sit in the hierarchy? | `sandbar.orient.type-tree` | Inspect parents, slots and instances |
+| What vocabulary fits this concept? | `sandbar.tag.lookup`, `sandbar.ground` | Read its definition, scope, alternatives and lifecycle |
+| Which records use this concept? | `sandbar.navigate.inbound-edges` with tag/theme predicates | Read the returned records and their relationships |
+
+Schema/entity listings can be large. Prefer counts, narrow classes and explicit projection to an unrestricted whole-store fetch. Metadata-only is useful for selecting identifiers; it is insufficient when an answer depends on a record's body or qualifications.
+
+## Compose a useful read
+
+Suppose a search finds an old cache decision. Read the decision in full, follow inbound `supersedes`, read its successor, then follow the successor's outbound `cites`. Each operation answers a different question. The highest search score does not settle which decision governs, and a citation does not prove that its author interpreted the evidence correctly.
+
+For unfamiliar terminology, start with vocabulary lookup, read the selected concept, and query its tag/theme membership. This can find records whose text uses different wording. Then establish their context in the same way. The [search guide](guides/searching-the-corpus.md) and [navigation guide](guides/navigating-with-paths.md) carry these routes through concrete calls. [Aggregation](concepts/aggregation.md) explains structural summaries; [path grammar](concepts/path-grammar.md) explains route composition.
+
+## Change data through its accepting boundary
+
+| Intent | Operation family | Contract to establish |
+| --- | --- | --- |
+| Create or amend a typed entity | `entity.create`, `entity.update` | Class, required slots, identity, validation mode and persistence result |
+| Examine conformance | `entity.validate`, `shape.validate`, `shape.conformance-report` | Which checks run, against what candidate or committed state |
+| Maintain vocabulary | `tag.define`, `rename`, `split`, `consolidate`, `align` | Typed targets, reference preservation and retrieval freshness |
+| Record application progress | `workflow.define`, `start-process`, `transition` | Accepted state/history/effect outcome |
+| Run a validation workflow | `validation.start`, `run`, `results` | Run identity and completion state |
+| Interchange native documents | `project.export`, `project.import` | Destination, disclosure, representation fidelity and conflict policy |
+| Retire explicit entities | `entity.retract` | Reviewed targets, references, dry-run result and recoverability |
+| Manage scheduler execution | `schedule.start`, `stop`, `add`, `remove` | Runtime ownership, enrollment and in-flight outcome |
+
+Inspect the full tool card and current schema before a write. Behavioral annotations help clients present an operation, but they are hints, not authorization or proof that all side effects were classified correctly. An export writes files even when it does not change database entities.
+
+`schedule.enable` and `schedule.start` answer different questions: an enabled flag does not allocate a worker or enroll every persisted schedule. Likewise, a domain validation run is not automatically a standards-compliant MCP Task. Use the advertised protocol capabilities and domain lifecycle deliberately.
+
+## Check the answer at the right layer
+
+Check transport status, JSON-RPC errors and tool `isError` before parsing a payload. Then inspect the operation's own outcome. A committed entity, a queued projection and a settled file are different milestones. An absent search hit, an inaccessible entity and an unknown identifier are also different results.
+
+For a client implementation, follow [Writing an MCP client](guides/writing-an-mcp-client.md). For the model behind the operations, start with [the metamodel](concepts/metamodel.md). For confidentiality, read [firewall and projects](firewall-and-projects.md)."}

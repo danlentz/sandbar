@@ -1,34 +1,30 @@
 (ns sandbar.scripts.maintenance-import
-  "The quiescent maintenance import — the sprint's maintenance-only import
-   contract (Dan's scope refinement, 2026-09-20): with the server STOPPED,
-   so no MCP caller, no reactive worker and no scheduler can write, and
-   nothing projects until the records are consistent, this entry point
-   connects to the configured store in-process, registers the codecs, and
-   runs the SAME import the MCP verb runs
-   (`sandbar.mcp.tools/project-import-handler`): a preview first, whose
-   source pin and basis the persist is then pinned to.  It can first retract
-   a named list of entities through the retract verb, dry run before persist.
-   Every step's report is written as EDN to a receipts directory and
-   summarized on stdout.  It refuses to run while the server's port answers.
+  "Import staged Markdown into an existing store during stopped-writer
+   maintenance. Stop every writer before canonical file edits and keep them
+   stopped through preview, import, and audit; a port check alone cannot prove
+   that admin peers or other filesystem writers are quiescent.
 
-   The root is a STAGING ROOT: the walker takes every `.md` under it, so the
-   operator stages exactly the files to import at `<root>/memory/<rel-path>`
-   (pass 1, 2026-09-20, imported three files that way).  A root that mixes
-   files under `memory/` with files elsewhere is a project root by accident
-   and is refused before any transaction.
+   Each invocation computes a fresh preview. With --persist, that invocation's
+   preview basis and source pin constrain its own persist call; a previous
+   human-reviewed receipt is not consumed. Use separate dry/persist receipt
+   directories and a frozen staging manifest as described in doc/operations.md.
+   Import may commit earlier files before a later file fails.
 
-   Usage:
-     lein maintenance-import -- --from <staging-root> [--persist]
-          [--exclude-file <rel-paths, one per line>]
-          [--retract-file <idents or eids, one per line>]
-          [--receipts <dir>] [--port 8389] [--mode replace|additive]
+   Stage only selected inputs at <root>/memory/<rel-path>. A root mixing those
+   paths with other Markdown is refused. --exclude-file entries match paths
+   relative to the staging root, including memory/. Without --persist, the
+   script writes receipts but performs no transactions or function installation.
 
-   Without `--persist` everything is a dry run: the retraction reports and
-   the import preview are written, nothing is transacted and no database
-   function is installed (Astra's 2e review, 2026-09-20 14:49Z).  The exit
-   code is 0 only when every step finished whole (`complete?`); 1 when a
-   report carries a parse failure, conflict, failure or refusal; 3 when the
-   run was refused before any transaction."
+   Usage: lein maintenance-import -- --from <staging-root> [--persist]
+          [--exclude-file <file>] [--receipts <directory>] [--port 8389]
+          [--mode replace|additive] [--retract-file <file>] [--stamp]
+   --stamp completes new-document enrollment at the canonical destination by
+   adding only a missing id line under the import's source pins. It requires
+   --receipts when persisting; ordinary projection stays strict. Staging copies
+   at other paths cannot be stamped as if they were canonical files.
+   Optional explicit retractions require their own review; they are outside
+   the bounded replacement recipe. Exit 0 reflects `complete?` on the import
+   preview/persist reports, not proof of all optional retraction effects."
   (:require [clojure.edn            :as edn]
             [clojure.java.io        :as io]
             [clojure.pprint         :as pp]
@@ -37,11 +33,13 @@
             [sandbar.db.datomic     :as db]
             [sandbar.db.fn          :as dbfn]
             [sandbar.mcp.tools      :as tools]
+            [sandbar.project.enrollment-stamp :as stamp]
             [sandbar.projection     :as pg]
             [sandbar.retract        :as retract]))
 
 (defn server-up?
-  "True when something answers on `port` — the server has not been stopped."
+  "True when a TCP connection to localhost at `port` succeeds.
+   This is a listener check, not a census of every possible database writer."
   [port]
   (try (with-open [s (java.net.Socket.)]
          (.connect s (java.net.InetSocketAddress. "localhost" (int port)) 500))
@@ -68,28 +66,24 @@
   (vec (remove #(str/starts-with? (str %) "memory/") rel-paths)))
 
 (defn mixed-root?
-  "True when the walk found files both under `memory/` and elsewhere — the
-   shape of a project root handed to a walker that takes everything under
-   it (the 2026-09-20 whole-corpus preview walked 3,613 units from the
-   corpus root, 900 of them not memory files).  A flat memory root (no
-   `memory/` prefix anywhere) and a staging root (`memory/` everywhere) are
-   both single-shaped and pass.  `rel-paths` is the enumeration
-   (`sandbar.projection/walk-markdown-rel-paths`), so the check costs a
-   directory walk and no parse."
+  "True when enumerated Markdown paths include both memory/ descendants and
+   paths outside memory/. The check needs only the directory walk, not parsing.
+   An all-memory/ staging tree and a flat tree without that prefix both pass."
   [rel-paths]
   (let [outside (count (sources-outside-memory rel-paths))]
     (and (pos? outside) (< outside (count rel-paths)))))
 
 (defn complete?
-  "True when every step that ran finished whole: the preview carries no
-   parse failure and no conflict, and a persist, when there was one,
-   persisted every previewed unit with no conflict, failure or refusal and
-   a reconciled report.  The exit code follows this, not the mere return."
-  [{:keys [preview persist]}]
+  "True when the import preview has no parse failures or conflicts and any
+   persist report is reconciled, has no conflicts/failures/refusals, and counts
+   every previewed unit as persisted. Optional retraction reports are not
+   inspected by this predicate."
+  [{:keys [preview persist stamp]}]
   (boolean
     (and (some? preview)
          (zero? (or (:parse-failed-count preview) 0))
          (zero? (or (:conflict-count preview) 0))
+         (or (nil? stamp) (true? (:complete? stamp)))
          (or (nil? persist)
              (and (true? (:reconciled? persist))
                   (zero? (or (:conflict-count persist) 0))
@@ -103,12 +97,17 @@
    (a directory), `:port` (the server port to check; default 8389; nil skips
    the check), `:uri` (the store uri whose transactor-side functions to
    install before a persist; nil skips the install), `:mode` (\"replace\"
-   default).  Returns `{:retract-dry-run :retract :preview :persist}` (the
-   absent steps nil).  Throws before any transaction when the server
+   default), `:stamp?` (bind newly imported UUIDs to their pinned canonical
+   source files; with persistence, requires `:receipts`). Returns
+   `{:retract-dry-run :retract :preview :persist}`, plus `:stamp` when run
+   (the other absent steps nil). Throws before any transaction when the server
    answers or the root is mixed; a mixed root leaves a `refused.edn`
    receipt naming what was walked."
-  [{:keys [from persist? exclude retract receipts port uri mode] :or {port 8389 mode "replace"}}]
+  [{:keys [from persist? exclude retract receipts port uri mode stamp?] :or {port 8389 mode "replace"}}]
   (when-not from (throw (ex-info "maintenance-import requires :from" {})))
+  (when (and stamp? persist? (str/blank? receipts))
+    (throw (ex-info "maintenance-import --stamp requires --receipts when persisting"
+                    {:reasons #{:maintenance/stamp-receipts-required}})))
   (when (and port (server-up? port))
     (throw (ex-info (str "the server answers on port " port "; stop it first — the maintenance import runs only on a quiescent store")
                     {:reasons #{:maintenance/server-up} :port port})))
@@ -145,8 +144,12 @@
                                                           "persist" true
                                                           "expect-basis" (:basis preview)
                                                           "expect-sources" (:sources-sha256 preview))))
-        _           (write-receipt! receipts "import-persist" persist)]
-    {:retract-dry-run retract-dry :retract retract-run :preview preview :persist persist}))
+        _           (write-receipt! receipts "import-persist" persist)
+        stamped     (when (and stamp? persist)
+                      (stamp/stamp! (db/db) from persist))
+        _           (write-receipt! receipts "identity-stamp" stamped)]
+    (cond-> {:retract-dry-run retract-dry :retract retract-run :preview preview :persist persist}
+      stamped (assoc :stamp stamped))))
 
 (defn- retraction-line [u]
   (format "  %s: sections %d, slots %s, carrier %s"
@@ -154,7 +157,7 @@
           (if (seq (:retracted-slot-attrs u)) (pr-str (:retracted-slot-attrs u)) (str (or (:retracted-slots u) 0)))
           (boolean (:retracted-carrier? u))))
 
-(defn- summarize [{:keys [retract-dry-run retract preview persist] :as result}]
+(defn- summarize [{:keys [retract-dry-run retract preview persist stamp] :as result}]
   (when retract-dry-run
     (println (format "retract dry run: %d targets; file effects %s"
                      (count (:targets retract-dry-run))
@@ -176,6 +179,11 @@
     (println (format "persist: persisted %d, conflicts %d, failed %d, refused %d, reconciled %s, final basis %s"
                      (:persisted-count persist) (:conflict-count persist) (:failed-count persist) (:refused-count persist)
                      (:reconciled? persist) (:final-basis persist))))
+  (when stamp
+    (println (format "identity stamp: %d stamped, %d already present, %d held — audit before starting writers"
+                     (:stamped-count stamp) (:already-present-count stamp) (:held-count stamp)))
+    (doseq [row (:results stamp) :when (= :held (:outcome row))]
+      (println "  HELD" (:source row) (:reason row))))
   (println (if (complete? result) "complete: every step finished whole" "INCOMPLETE: a report carries a parse failure, conflict, failure or refusal — read the receipts")))
 
 (defn- read-lines [f] (when f (remove str/blank? (str/split-lines (slurp f)))))
@@ -184,6 +192,7 @@
   (let [opts (loop [[a & more] args acc {}]
                (cond (nil? a) acc
                      (= a "--persist") (recur more (assoc acc :persist? true))
+                     (= a "--stamp") (recur more (assoc acc :stamp? true))
                      (= a "--from") (recur (rest more) (assoc acc :from (first more)))
                      (= a "--exclude-file") (recur (rest more) (assoc acc :exclude (read-lines (first more))))
                      (= a "--retract-file") (recur (rest more) (assoc acc :retract (read-lines (first more))))
@@ -192,7 +201,7 @@
                      (= a "--mode") (recur (rest more) (assoc acc :mode (first more)))
                      :else (recur more acc)))]
     (when-not (:from opts)
-      (println "Usage: lein maintenance-import -- --from <staging-root> [--persist] [--exclude-file f] [--retract-file f] [--receipts dir] [--port 8389] [--mode replace|additive]")
+      (println "Usage: lein maintenance-import -- --from <input-root> [--persist] [--stamp] [--exclude-file f] [--retract-file f] [--receipts dir] [--port 8389] [--mode replace|additive]")
       (System/exit 2))
     (let [result (try (run! (assoc opts :uri (db/db-uri)))
                       (catch clojure.lang.ExceptionInfo ex

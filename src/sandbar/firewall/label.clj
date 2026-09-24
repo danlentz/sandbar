@@ -463,16 +463,31 @@
     (label-of db ent)
     (unassigned-label db)))
 
+(defn- identity-only-placeholder?
+  "An unresolved reference carrier has identity facts only. Any content,
+   classification, ownership or other assertion keeps the ordinary fail-closed
+   label, even if its class is missing. Inspect attributes without pulling
+   or interpreting the target's values."
+  [db eid]
+  (let [identity-attrs (set (keep #(d/entid db %) [:db/ident :mm/id]))
+        facts          (d/datoms db :eavt eid)]
+    (and (seq facts)
+         (every? #(contains? identity-attrs (:a %)) facts))))
+
 (defn label-of-ref
   "Label for whatever ref shape `ref-val` names under `db` (eid / ident / entity
   / lookup-ref / upsert map) — `ref->eid`-normalized first, then `label-of-eid`.
-  Returns nil when the ref resolves to NO live entity, so the core's
+  Returns nil when the ref resolves to NO live entity or an identity-only
+  forward placeholder, so the core's
   `violating-governed-edges` records it as `:skipped` (the best-effort carrier /
   stub case, §4.4) rather than fabricating a label.  The EP-1 interactive
-  resolver instance."
+  resolver instance. A placeholder already created by a preceding import unit
+  is the same unresolved target as a newly encountered upsert reference.
+  Read/traverse/closure use label-of-eid and remain fail-closed."
   [db ref-val]
   (when-let [eid (ref/ref->eid db ref-val)]
-    (label-of-eid db eid)))
+    (when-not (identity-only-placeholder? db eid)
+      (label-of-eid db eid))))
 
 (defn label-from-props
   "Label for a pre-commit entity-spec `props` (the EP-1 author-time case: the

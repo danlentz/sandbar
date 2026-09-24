@@ -1,78 +1,17 @@
 (ns sandbar.schedule.dispatcher
-  "γ.2 Step 4 — native min-heap dispatcher fire-thread.
+  "Priority-queue scheduler dispatcher.
+   A fire thread waits for the earliest [next-fire-at, schedule-eid], emits
+   a Scheduled event, calculates the next occurrence and advances the queue.
+   Job execution belongs to the registered job-dispatcher subscriber.
 
-   The dispatcher is the heart of the γ scheduler arc.  A single fire-thread
-   parks until the head of a sorted-set priority queue (keyed by
-   `[next-fire-at-instant schedule-eid]`); when its sleep elapses, it
-   resolves the head schedule, emits a `:mm.event/Scheduled` event via
-   `sandbar.event/fire!`, computes the schedule's next-fire-at via
-   `sandbar.schedule.recurrence/iterate-from`, advances the queue, and
-   re-parks.
+   start!/stop! manage runtime resources; pause!/resume! retain queue state.
+   add-schedule!, remove-schedule!, snapshot-queue and
+   recompute-queue-from-db! manage and inspect queued work. Misfire policies
+   choose catch-up, skip or reschedule behavior. Clock-drift diagnostics
+   compare wall-clock and monotonic elapsed time.
 
-   The subscriber side (sandbar.schedule.job-dispatcher; γ.2 Step 5) is
-   NOT in this namespace — it lives separately + subscribes to
-   `:mm.event/Scheduled` via `sandbar.event/subscribe!`.  This namespace's
-   sole emission discipline is the `:mm.event/Scheduled` fire; everything
-   else (Run lifecycle, effect-spec validation, retries) is a downstream
-   concern.
-
-   ## Public surface
-
-     `start!`             — allocate handler-pool + start fire-thread + transition to :active
-     `stop!`              — transition to :draining; .interrupt fire-thread; join; shutdown pool; transition to :inactive
-     `pause!` / `resume!` — fire-thread halts but queue preserved (paused);
-                            resume re-parks on the head
-     `add-schedule!`      — compute next-fire-at from RRULE; conj queue; .interrupt re-park
-     `remove-schedule!`   — disj from queue; .interrupt re-park
-     `fire-schedule!`     — public for test access; usually called by fire-loop! only
-     `snapshot-queue`     — diagnostic; returns the queue's current contents (sorted)
-     `recompute-queue-from-db!` — rebuild queue from all live `:mm/Schedule` entities (recovery / startup)
-
-   ## Architecture (per γ.1 ADR §1.6, §2.4)
-
-     [fire-thread] →[event/fire! :mm.event/Scheduled]→ [job-dispatcher subscribers]
-                                                       (γ.2 Step 5; NOT this ns)
-
-     queue = sorted-set-by [next-fire-at-instant schedule-eid]
-     park  = Thread/sleep until (max 0 (Duration/between now next-fire-at))
-     wake  = either Thread/sleep elapsed (fire!) OR .interrupt (re-evaluate queue)
-
-   ## Q-checkpoint ratifications applied
-
-   - Q.γ.4 default misfire policy = `:misfire/fire-once-now` (conservative catch-up)
-   - Q.γ.5 default `:enabled?` = false (state ns initial-state)
-   - Q.γ.6 single fire-thread + bounded handler-thread-pool (handler-pool
-           is owned by THIS ns; subscribers run on it via job-dispatcher
-           in Step 5; for Step 4 the pool is initialized + held in state
-           but unused by the dispatcher itself)
-
-   ## Clock-drift detection (R.γ.2 mitigation)
-
-   Each loop iteration compares wall-clock elapsed (`System/currentTimeMillis`
-   delta) to monotonic-clock elapsed (`System/nanoTime` delta).  If wall
-   exceeds monotonic by more than `:clock-drift-threshold-ms` (default
-   5000ms), emit `:mm.event/SchedulerClockDrift` event with magnitude.
-   The drift magnitude is also persisted in `:clock-drift-ms` of state.
-
-   ## Misfire policies (R.γ.1 mitigation)
-
-   Applied when a fire is detected as 'missed' (e.g., scheduler-paused
-   period covered one or more scheduled fires; the next park-until would
-   sleep zero time because next-fire-at is in the past):
-
-   - `:misfire/fire-once-now` — fire one catch-up + advance to next-future
-   - `:misfire/ignore`        — skip the missed fire; advance to next-future
-   - `:misfire/reschedule`    — re-anchor schedule from now; emit one fire-event
-
-   Default = `:misfire/fire-once-now` per Q.γ.4.
-
-   ## See also
-
-   - γ.1 ADR: `:memory.decisions/gamma_1_scheduler_path_a_native_min_heap_dispatcher_q_gamma_1_through_6_resolved_2026_05_27`
-   - γ implementation plan-mode artifact: `~/.claude/plans/golden-squishing-flamingo.md` Step 4
-   - sandbar.schedule.state — state machine + queue comparator + dyn-var
-   - sandbar.schedule.recurrence — lib-recur boundary for RRULE iteration
-   - sandbar.event — class-hierarchical fire!/subscribe!"
+   Dispatcher timing does not establish exactly-once effects or atomic job
+   overlap admission. See doc/concepts/temporal-substrate.md."
   (:require [sandbar.schedule.state      :as state]
             [sandbar.schedule.recurrence :as recurrence]
             [sandbar.event               :as event]

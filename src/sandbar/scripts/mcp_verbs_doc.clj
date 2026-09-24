@@ -1,91 +1,72 @@
 (ns sandbar.scripts.mcp-verbs-doc
-  "Project the verb catalog -> the FULL per-verb mechanical reference
-   (doc/api/mcp-verbs.md): axis-grouped, one section per verb carrying the
-   wire name, safety class, arg schema, and all five prose sections
-   (WHICH / WHEN / HOW / ORDER / COMBINATION).
+  "Generate the complete MCP reference from the source catalog and an editorial
+   introduction. Rendering does not connect to or seed a database.
 
-   This is the detail-EAGER sibling of sandbar.scripts.affordance-map (which
-   is existence-eager / detail-lazy): where the affordance map gives one line
-   per verb, this doc gives the whole card — the file-backed equivalent of
-   calling `sandbar.tools.describe` on every verb.  It replaced the
-   hand-maintained doc/api/mcp-verbs.md, which had drifted to 53 sections
-   against an 82-verb catalog and carried stale claims (docs-pass manifest
-   item 4, DOCS-PASS-PROPOSAL 2026-07-08 §2).
-
-   Read-only projection (no writes).  DB-FREE: renders from
-   `sandbar.mcp.catalog-model/build-catalog-model` (a pure fn of the wire
-   `verb-catalog` def) — the same single-source model behind the affordance
-   map, so the two docs and the wire surface cannot disagree.  The drift gate
-   (sandbar.scripts.catalog-check) diffs this output against the committed
-   doc/api/mcp-verbs.md, so the file structurally cannot go stale again.
+   The catalog model supplies names, behavioral hints, complete input schemas
+   and per-operation descriptions. resources/catalog/reference-guide.edn owns
+   the introduction. catalog-check compares the rendered bytes with the file.
 
    Usage: lein mcp-verbs-doc > doc/api/mcp-verbs.md"
-  (:require [clojure.string            :as str]
+  (:require [cheshire.core              :as json]
+            [clojure.edn                :as edn]
+            [clojure.java.io            :as io]
+            [clojure.string             :as str]
+            [clojure.walk               :as walk]
             [sandbar.mcp.catalog-model :as model]))
 
-(def ^:private preamble
-  "Static invocation/naming prose ahead of the generated verb sections.
-   Editorial, not catalog-derived — verb-independent wire mechanics only, so
-   it never drifts with the catalog; anything per-verb must render from the
-   model instead."
-  (str
-   "All verbs are invoked via JSON-RPC 2.0 over HTTP at `/mcp`:\n\n"
-   "```json\n"
-   "{\n"
-   "  \"jsonrpc\": \"2.0\",\n"
-   "  \"id\": 1,\n"
-   "  \"method\": \"tools/call\",\n"
-   "  \"params\": {\"name\": \"<wire-name>\", \"arguments\": {...}}\n"
-   "}\n"
-   "```\n\n"
-   "Results are wrapped in the MCP content envelope:\n\n"
-   "```json\n"
-   "{\"result\": {\"content\": [{\"type\": \"text\", \"text\": \"<JSON-stringified payload>\"}]}}\n"
-   "```\n\n"
-   "Clients must `JSON.parse(result.content[0].text)` to extract the actual return value.\n\n"
-   "## Naming convention\n\n"
-   "Verbs follow the canonical form `sandbar.<axis>.<verb>` — one verb per *operation kind*, "
-   "parameterized by class via arguments (not per-class verb names).  This is the F-B-001 "
-   "resolution (see [`mcp-protocol.md`](../concepts/mcp-protocol.md#the-verb-catalog-operational-not-per-class)).  "
-   "On the wire (`tools/list` / `tools/call` `params.name`), dots become underscores "
-   "(`sandbar.entity.find` → `sandbar_entity_find`) per the 2026-07-04 wire-name rename; "
-   "each section below lists both forms.\n\n"))
+(defn- load-preamble []
+  (:preamble (edn/read-string
+              (slurp (io/resource "catalog/reference-guide.edn")))))
+
+(defn- schema-type [spec]
+  (or (:type spec)
+      (when-let [alternatives (or (:oneOf spec) (:anyOf spec))]
+        (str/join " or " (map schema-type alternatives)))
+      "see schema"))
 
 (defn- render-arg-lines
-  "Bullet lines for one verb's :input-schema, or the '(no args)' line.
-   Renders name + required-star + type + per-arg description straight from
-   the schema map so the doc can never disagree with the wire `tools/list`
-   inputSchema."
+  "Summarize top-level arguments; the complete schema follows each summary."
   [input-schema]
   (let [props (:properties input-schema)
         req   (set (map name (or (:required input-schema) [])))]
     (if (empty? props)
-      "**Args:** (no args)\n"
-      (str "**Args** (`*` = required):\n"
+      "**Arguments:** none.\n"
+      (str "**Arguments** (`*` = required):\n\n"
            (->> props
                 (map (fn [[k v]] [(name k) v]))
                 (sort-by first)
                 (map (fn [[pname pspec]]
                        (str "- `" pname "`" (when (contains? req pname) "\\*")
-                            (when-let [t (:type pspec)] (str " (" t ")"))
+                            " (" (schema-type pspec) ")"
                             (when-let [d (:description pspec)]
                               (str " — " (str/trim (str d)))))))
                 (str/join "\n"))
            "\n"))))
 
+(defn- render-schema
+  "Render every schema constraint, sorting map keys for reproducible bytes."
+  [input-schema]
+  (let [stable (walk/postwalk
+                 (fn [x]
+                   (if (map? x)
+                     (into (sorted-map-by #(compare (str %1) (str %2))) x)
+                     x))
+                 input-schema)]
+    (str "\n**Complete input schema:**\n\n```json\n"
+         (json/generate-string stable {:pretty true})
+         "\n```\n")))
+
 (def ^:private prose-sections
-  "Render order + labels for the five parsed :description sections."
   [[:which "WHICH"] [:when "WHEN"] [:how "HOW"]
    [:order "ORDER"] [:combination "COMBINATION"]])
 
-(defn- render-verb
-  "One `###` reference section for a single per-verb model map."
-  [v]
+(defn- render-verb [v]
   (let [sb (StringBuilder.)]
     (.append sb (format "### `%s`\n\n" (:name v)))
-    (.append sb (format "%s.  `[%s]` — wire name `%s`.\n\n"
+    (.append sb (format "%s. Catalog hint: `[%s]`. Wire name: `%s`.\n\n"
                         (:title v) (:safety v) (:wire-name v)))
     (.append sb (render-arg-lines (:input-schema v)))
+    (.append sb (render-schema (:input-schema v)))
     (doseq [[k label] prose-sections]
       (when-let [text (get v k)]
         (when-not (str/blank? text)
@@ -93,38 +74,37 @@
     (str sb)))
 
 (defn render
-  "Render the full mcp-verbs.md markdown from a catalog-model."
+  "Render the full MCP reference from a catalog model without database access."
   [m]
   (let [{:keys [verb-count axis-count]} (model/catalog-summary m)
         by-axis (into (sorted-map) (group-by :axis (:verbs m)))
         sb      (StringBuilder.)]
-    (.append sb (format (str "# MCP Verb Catalog\n\n"
-                             "_Generated by `lein mcp-verbs-doc` from the single-source verb catalog "
-                             "(`sandbar.mcp.tools/verb-catalog` via `sandbar.mcp.catalog-model`) — "
-                             "DO NOT HAND-EDIT.  Regenerate with "
-                             "`lein mcp-verbs-doc > doc/api/mcp-verbs.md`; "
-                             "`lein catalog-check` fails while this file is stale._\n\n"
-                             "> Layer 4 — mechanical reference for every verb in Sandbar's MCP "
-                             "`tools/list` catalog, grouped by axis.  For practical client patterns see "
-                             "[`doc/guides/writing-an-mcp-client.md`](../guides/writing-an-mcp-client.md); "
-                             "for the design rationale see "
-                             "[`doc/concepts/mcp-protocol.md`](../concepts/mcp-protocol.md).\n\n"
-                             "%d verbs across %d axes.  "
-                             "Safety: `[safe]` read-only · `[idem]` idempotent write · `[unsafe]` mutating.  "
-                             "For ranked task->verb retrieval use `sandbar.tools.search`; for one verb's "
-                             "card + composition edges use `sandbar.tools.describe`.\n\n")
+    (.append sb (str "# MCP tool reference\n\n"
+                    "_Generated from `sandbar.mcp.tools/verb-catalog` through "
+                    "`sandbar.mcp.catalog-model`, with editorial text in "
+                    "`resources/catalog/reference-guide.edn`. Regenerate with "
+                    "`lein mcp-verbs-doc > doc/api/mcp-verbs.md` or "
+                    "`lein catalog-regen`; verify with `lein catalog-check`._\n\n"))
+    (.append sb (load-preamble))
+    (.append sb (format (str "\n\n## Catalog inventory\n\n"
+                             "%d operations across %d axes. Catalog hints: "
+                             "`[safe]` classified read-only; `[idem]` classified idempotent write; "
+                             "`[unsafe]` classified mutating. These classifications are not "
+                             "authorization or a proof of every side effect. In particular, "
+                             "export writes files. The operation descriptions and "
+                             "[current release limits](../known-gaps-0.2.0.md) qualify use.\n\n")
                         verb-count axis-count))
-    (.append sb preamble)
     (doseq [[axis vs] by-axis]
-      (.append sb (format "## %s (%d)\n\n" (name axis) (count vs)))
+      ;; Preserve the previous generated axis anchor for incoming links.
+      (.append sb (format "<a id=\"%s-%d\"></a>\n\n## %s\n\n"
+                          (name axis) (count vs) (name axis)))
       (doseq [v (sort-by :name vs)]
         (.append sb (render-verb v))
         (.append sb "\n")))
-    ;; Trim the final blank line so the file ends with exactly one newline.
     (str (str/trimr (str sb)) "\n")))
 
 (defn -main
-  "Project the verb catalog (DB-free) and print the full verb reference."
+  "Print the generated reference; no files or database state are changed."
   [& _]
   (print (render (model/build-catalog-model)))
   (flush)

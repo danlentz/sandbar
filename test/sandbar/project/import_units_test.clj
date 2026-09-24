@@ -35,6 +35,7 @@
    claim is made that the otherwise valid input fails on its own."
   (:require [cheshire.core          :as json]
             [clojure.java.io        :as io]
+            [clojure.string         :as str]
             [clojure.test           :refer [deftest is testing use-fixtures]]
             [datomic.api            :as d]
             [sandbar.codec.markdown :as md]
@@ -107,6 +108,36 @@
   [title]
   (str "---\ntype: decision\nname: " title "\ndescription: a memory file for the import-units probe\n---\n"
        title " has a body without a heading.\n"))
+
+(deftest firewall-refusal-names-the-input-edge-without-returning-target-content
+  (let [dir (fresh-tmp-dir "firewall-report")]
+    (try
+      @(d/transact (db/conn)
+                   [{:db/id "public-context" :db/ident :context/import-report-public :dt/type :mm/Context
+                     :mm.context/firewall-class :public-bottom}
+                    {:db/ident :memory.projects/import_report_public :dt/type :mm/Project
+                     :mm.project/default-visibility :public
+                     :mm.project/firewall-class :public-bottom
+                     :mm.project/runs-in-context "public-context"}
+                    {:db/ident :memory.observations/private_target :dt/type :mm/Observation
+                     :mm.memory/name "Private target" :mm.memory/visibility :private
+                     :mm.memory/rel-path "observations/private_target.md"
+                     :mm.memory/body-raw "PRIVATE TARGET CONTENT MUST NOT APPEAR"}])
+      (write-corpus! dir {"observations/public_source.md"
+                          "---\ntype: observation\nname: Public source\nvisibility: public\nowning-project: projects/import_report_public.md\nrelated:\n  - observations/private_target.md\n---\nPublic body.\n"})
+      (let [report (call-import {"from" (.getPath dir) "persist" true})
+            violation (get-in report [:refused 0 :violations 0])]
+        (is (= 1 (:refused-count report)) (pr-str report))
+        (is (zero? (:persisted-count report)))
+        (is (zero? (:failed-count report)))
+        (is (:reconciled? report))
+        (is (= "firewall-violation" (:type violation)))
+        (is (= "flow-forbidden" (:reason violation)))
+        (is (= "mm.memory/related" (:slot violation)))
+        (is (= {:db/ident "memory.observations/private_target"} (:target-ref violation)))
+        (is (absent? :memory.observations/public_source))
+        (is (not (str/includes? (pr-str report) "PRIVATE TARGET CONTENT MUST NOT APPEAR"))))
+      (finally (rm-rf! dir)))))
 
 (def ^:private sectioned-doc
   "A decision whose body carries a title heading and two subsections —

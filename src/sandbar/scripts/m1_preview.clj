@@ -1,40 +1,13 @@
 (ns sandbar.scripts.m1-preview
-  "M.1 preview script — ingest a corpus markdown tree + run sandbar.audit.tag
-   against the populated DB.  Produces a real-world tag-inventory report
-   exercising the Stage 7 substrate against actual data.
+  "Preview tag invariants on Markdown loaded into an ephemeral database.
+   Usage: lein run -m sandbar.scripts.m1-preview <markdown-root>
+          [--limit N] [--out-edn <report.edn>]
 
-   Per the tag-modeling first-class arc Stage 8.A (`mem tag-audit` run
-   against current corpus produces clustering report) — this script is
-   the SANDBAR-side equivalent that anyone can run locally before sandbar
-   0.1.2 publishes to Clojars.
-
-   ## Usage
-
-     lein run -m sandbar.scripts.m1-preview \\
-              /Users/dan/claude/memory \\
-              [--limit N]
-             [--out-edn audit-results/m1-preview-<date>.edn]
-
-   Default --limit is 100 (a tractable preview slice).  Pass 0 for no cap.
-   Default --out-edn pretty-prints to stdout if absent.
-
-   ## Output
-
-     Stdout: per-invariant summary lines + total violation count.
-     EDN file: the full `sandbar.audit.tag/audit-all` report (when --out-edn).
-
-   ## Implementation notes
-
-     - In-memory Datomic; ephemeral DB per invocation.
-     - Walks `<root>/**/*.md` files via `file-seq` (no fs-enumeration of
-       memory/ — this script operates on the consumer's filesystem, not
-       sandbar's own; the consumer corpus IS the input).
-     - Parse uses `sandbar.codec.markdown/parse-document` with rel-path
-       derived from the file's path relative to <root>.  Per Stage 7.C
-       class-routing, `type: tag` frontmatter routes the entity to :mm/Tag;
-       everything else routes to :mm/Memory.
-     - Per-file parse errors logged + skipped (doesn't abort the pass).
-     - Run sandbar.audit.tag/audit-all over the populated DB."
+   The default limit is 100 files; zero removes the cap. Each file is parsed
+   with its path relative to the input root. Parse errors are logged and
+   skipped. The populated in-memory database is checked by audit.tag/audit-all;
+   print a summary and optionally write the full EDN report.
+   This exploratory ingest is not the maintenance-import replacement path."
   (:require [clojure.edn            :as edn]
             [clojure.java.io        :as io]
             [clojure.pprint         :as pp]
@@ -84,11 +57,9 @@
     @outcome))
 
 (defn run!
-  "Programmatic entry point.  `opts` keys:
-     :root      — corpus root (e.g., \"/Users/dan/claude/memory\")
-     :limit     — max files to ingest (0 = no cap; default 100)
-     :out-edn   — optional path to write the EDN audit report
-                  (relative to the cwd; created with parent dirs)"
+  "Run the preview with :root (Markdown input directory), :limit (maximum
+   files, default 100; zero means no cap), and :out-edn (optional report file).
+   Returns the tag-audit report."
   [{:keys [root limit out-edn]
     :or   {limit 100}}]
   (when (str/blank? (str root))

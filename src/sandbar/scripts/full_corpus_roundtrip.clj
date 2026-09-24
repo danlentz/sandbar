@@ -1,27 +1,11 @@
 (ns sandbar.scripts.full-corpus-roundtrip
-  "Stage 4.A onset — full-corpus inverse-projection round-trip check.
+  "Compare original Markdown with its parse-and-emit form across a tree.
+   Usage: lein run -m sandbar.scripts.full-corpus-roundtrip <corpus-root>
 
-   For each markdown memorial:
-     1. Read original source
-     2. parse → entity-specs (canonical-form via parse-document)
-     3. emit-document → emitted source
-     4. compare original vs emitted
-
-   Aggregates per-file match / mismatch + first-N mismatch samples.
-
-   Per parent 0.1.1 arc plan §2 Stage 4 (inverse projection: sandbar Datomic
-   → fs/markdown round-trip).  This is the FILESYSTEM round-trip check —
-   parse + emit are pure functions on a file's contents.  Datomic-round-trip
-   (transact + query + emit) is a follow-on Stage 4.B+.
-
-   ## Usage
-
-     lein run -m sandbar.scripts.full-corpus-roundtrip <corpus-root>
-
-   ## Output
-
-     Stdout: summary counts + first-N mismatch samples (showing how the
-     emitted differs from the original)."
+   Report per-file matches, mismatches, and bounded mismatch samples. The
+   script loads schema for codec support, but the tested cycle is file parsing
+   and emission; it does not transact the source and reconstruct it from a
+   database. Use the release gate for the separate database round-trip checks."
   (:require [clojure.java.io        :as io]
             [clojure.string         :as str]
             [datomic.api            :as d]

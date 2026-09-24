@@ -1,22 +1,12 @@
 (ns sandbar.scripts.w1-release-gate
-  "The W1.J standing composed release gate — the runnable G1 precondition.
+  "Run the composed fixture gate for database/Markdown round trips and
+   project-firewall attack cases. Both checks must pass for a green result.
+   Usage: lein w1-release-gate
 
-   G1 (W1 arc plan, mandatory graft): a green build requires BOTH
-     CHECK 1  round-trip semantic equivalence (DB→FS→[git seam]→DB, the
-              8-query §D.5 contract, modulo documented drift), AND
-     CHECK 2  the firewall attack scoreboard (directional attacks +
-              four absence probes with cleared-session negative controls).
-   GREEN = BOTH pass.  Round-trip green is a HARD PRECONDITION of the first
-   W1.F commit — this gate is authored EARLY (before W1.F exists) so that
-   precondition is enforceable, not aspirational.
-
-   Invoke:
-     lein w1-release-gate            ; the two committed fixture stores
-     lein run -m sandbar.scripts.w1-release-gate
-   Exit 0 iff GREEN; exit 1 otherwise (wire this exit into CI as the gate).
-
-   Every check runs against ephemeral datomic:mem fixtures — the live store
-   is never touched (dry-run/read-only discipline)."
+   The gate uses ephemeral in-memory fixtures. Its report distinguishes
+   implemented enforcement, deployment seams, and documented residuals; green
+   is not proof of live project enrollment, a configured filesystem sandbox,
+   or a portable backup/restore procedure. See doc/W1J-RELEASE-GATE.md."
   (:require [clojure.string :as str]
             [sandbar.gate.fixture   :as fx]
             [sandbar.gate.roundtrip :as rt]

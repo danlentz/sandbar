@@ -1,14 +1,13 @@
 (ns sandbar.scripts.drift-audit
-  "The stopped-server drift audit: `lein drift-audit -- --from <corpus-root> [--out <file.json>]`.
+  "Compare a configured store with a corpus after maintenance and before
+   restarting writers.
+   Usage: lein drift-audit -- --from <corpus-root> [--out <file.json>]
 
-   Runs `sandbar.audit.fs-substrate-drift/audit-all` in an admin JVM against
-   the configured store while the server is STOPPED, so a maintenance import's
-   result is audited before anything restarts and before any writer can move
-   the store.  The wrapper `bin/sandbar drift-audit` refuses while the server
-   runs; over the wire the same audit is `sandbar_audit_fs-substrate-drift`.
-   Prints the summary; writes the full report as JSON when `--out` is given.
-   Exit 0 when the audit ran; the report is the result, not the exit code —
-   every remaining row should carry a named reason (D7b/D8, 2026-09-20)."
+   The wrapper command checks that the server is stopped; direct Leiningen
+   invocation relies on the operator's stopped-writer procedure. Print the
+   audit summary and optionally write the complete JSON report. Exit 0 means
+   the audit ran, not that every discrepancy is resolved. Give each retained
+   discrepancy a reason and preserve ambiguous versions; see doc/operations.md."
   (:require [cheshire.core :as json]
             [sandbar.audit.fs-substrate-drift :as audit]
             [sandbar.codec.markdown :as md]))

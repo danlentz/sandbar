@@ -1,42 +1,14 @@
 (ns sandbar.logging.handlers
-  "Telemere handlers that bridge flagged signals into the sandbar
-   substrate as memorial entities (logging arc Stage D).
+  "Handlers for explicitly retained logging signals.
+   :first-class requests an :mm/EventLog, :db-only requests an
+   :event/SystemEvent, and :inline is reserved. Unflagged signals request no
+   database record. Ordinary logging filters and handler configuration still
+   affect delivery.
 
-   ## Memorial-flag routing
-
-   For signals carrying `:data {:memorial <policy>}`, the
-   `memorial-projection-handler` routes per policy:
-
-   - `:first-class` → `:mm/EventLog` instance.  The reactive
-     substrate's fs-projection sink writes the entity to
-     `memory/event-logs/<>.md`.
-   - `:db-only`     → `:event/SystemEvent` runtime instance under the
-     existing `:dt/Event` substrate hierarchy.  Operational audit;
-     covered by DB-dump arc; NOT FS-projected.
-   - `:inline`      → deferred (rare; not implemented in Stage D MVP).
-   -  nil / absent  → no-op (transient signal; handlers fire normally;
-     no DB persistence).
-
-   ## Anti-cycle defense (five-layer per logging arc plan §3.3)
-
-   - **Layer 2 (this ns)**: `*log-substrate-active?*` thread-local
-     reentry guard — set true on handler entry; checked at handler
-     entry; nested re-entry early-exits.
-   - **Layer 3 (Telemere)**: per-handler `:async {:mode :dropping
-     :buffer-size 4096}` (here we run `:async nil` to keep the
-     sandbar.reactive substrate owning async; for memorial-projection
-     this is appropriate since each handler invocation creates exactly
-     one entity).
-   - **Layer 4 (sandbar.reactive)**: this handler's namespace is in
-     `sandbar.reactive`'s class-skip-list inheritance pattern via the
-     reentry guard rather than direct class match.
-   - **Layer 5 (caller opt-out)**: callers may bind
-     `(binding [*log-substrate-active?* true] ...)` to suppress
-     memorial-projection for a scope.
-
-   ## Per:
-   - memory/decisions/mm_activity_prov_o_lift_cross_arc_unification_log_eventlog_run_2026_05_23.md
-   - memory/plans/sandbar_logging_discipline_and_strategy_arc_telemere_primary_csp_signals_anti_cycle_disciplines_2026_05_23.md §4.4 + §4.5"
+   A thread-local reentry guard limits recursive persistence. Handler errors
+   are caught and printed to stderr, so returning from a logging call does not certify
+   that a database record or projected file was retained. Use a checked
+   entity operation when persistence is required for correctness."
   (:require [sandbar.db.datatype :as dt]))
 
 
@@ -106,9 +78,8 @@
       :sandbar.event-log/untagged))
 
 (defn- resolve-source-ns
-  "Source namespace for the signal.  For SLF4J-bridged signals the
-   logger name lives at `:location :ns`; for native callsites at `:ns`.
-   Per memory/observations/slf4j_telemere_signal_shape_logger_name_lives_in_location_ns_not_ns_2026_05_23.md."
+  "Return a source namespace string, preferring [:location :ns], then :ns,
+   then unknown when neither is present."
   [signal]
   (str (or (get-in signal [:location :ns])
            (:ns signal)

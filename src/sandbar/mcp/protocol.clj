@@ -1,25 +1,15 @@
 (ns sandbar.mcp.protocol
-  "MCP (Model Context Protocol) protocol layer — JSON-RPC 2.0 envelope
-   handling + lifecycle methods (`initialize`) + method dispatch.
+  "MCP protocol methods over JSON-RPC 2.0.
 
-   Per decisions/sandbar_mcp_server_design_2026_05_12.md B.1.1-B.1.10
-   (Stage B design ADR of the Sandbar-as-MCP-Server arc per
-   plans/sandbar_as_mcp_server_arc_2026-05-12.md).
+   Declares server identity and capabilities, answers initialization, and
+   dispatches methods to the tool, resource, prompt and task adapters after
+   an operation-scope check. HTTP authentication and response transport live
+   in `sandbar.mcp.auth` and `sandbar.mcp.transport`.
 
-   Discipline: tool implementations call `dt/*` introspection + `util/*`
-   + `service/*` abstraction layers — NEVER raw `datomic.api` — per
-   interaction/target_sandbar_introspection_api_layer_not_raw_datomic_2026_05_12.md.
-
-   Stage C.1 foundation:
-   - JSON-RPC 2.0 envelope decode/encode
-   - `initialize` handshake (capabilities negotiation)
-   - Method dispatch table delegating to sub-namespaces
-   - Error response shaping per JSON-RPC spec
-
-   Subsequent stages:
-   - C.2 Bearer-token Pedestal interceptor (sandbar.mcp.auth)
-   - C.3 Notifications channel (sandbar.mcp.notifications)
-   - C.4 Resources + Prompts + Tasks support"
+   Tools come from an implementation-owned operation catalog. Model classes
+   and properties are discovered through those tools; adding a class does
+   not add a tool. Compatibility task methods are dispatched here, but the
+   server does not currently advertise the standard MCP Tasks capability."
   (:require [clojure.tools.logging :as log]
             [sandbar.mcp.authz     :as authz]
             [sandbar.mcp.envelope  :as envelope]
@@ -34,30 +24,24 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (def server-info
-  "Identity returned to clients in the `initialize` response.
-   `:version` tracks the sandbar 0.2.0 co-release and is held in agreement
-   with the project-export catalog projection (`:dump/sandbar-version` in
-   `sandbar.project.dump`, already \"0.2.0\") — the two client-visible version
-   surfaces must not drift.  Bumped 0.1.0 → 0.2.0 for the 0.2.0 co-release
-   per S11/Rec-2 (MCP-surface quick win)."
+  "Identity returned in `initialize`. The version identifies the server's
+   client-facing release line; it is distinct from the MCP protocol version
+   and does not establish that the corresponding library artifact is published."
   {:name    "sandbar"
    :title   "Sandbar"
    :version "0.2.0"})
 
 (def protocol-version
-  "MCP protocol version this server speaks.
-   Per libraries/mcp_protocol.md §1 — current spec version is 2025-11-25;
-   this server claims compatibility with that."
+  "Protocol version returned by initialization. Clients must check that they
+   support this version; specific transport differences are documented in
+   doc/guides/writing-an-mcp-client.md."
   "2025-11-25")
 
 (def server-capabilities
-  "Capabilities declared during initialize handshake.
-   Per decisions/sandbar_mcp_server_design_2026_05_12.md B.1.4 + B.1.5 + B.1.6:
-   - tools — bootstrap-by-discovery from dt/all-classes; supports listChanged
-     notifications (when new dt/Class instances land)
-   - resources — every Sandbar entity addressable; supports subscribe +
-     listChanged
-   - prompts — workflow templates as prompts; supports listChanged"
+  "Capabilities declared during initialization: operation tools, resources
+   with subscriptions, prompts, change notifications, and logging. These
+   advertise protocol facilities; they do not grant permission to an operation
+   or entity, nor imply that new model classes create new tools."
   {:tools     {:listChanged true}
    :resources {:subscribe   true
                :listChanged true}
@@ -65,13 +49,9 @@
    :logging   {}})
 
 (def server-instructions
-  "Free-text orientation returned in the `initialize` result's `instructions`
-   field (MCP spec InitializeResult.instructions) — the one natural-language
-   surface a connecting client's model sees, so it is kept deliberately terse
-   (token-bounded, ~1 short paragraph) to never dominate the client's context
-   budget.  Points at the workhorse retrieval verbs + the discover-then-describe
-   pattern for the long tail rather than enumerating the catalog.  Per S11/Rec-2
-   (MCP-surface quick win); the one surface Codex-family clients observe."
+  "Brief orientation returned in InitializeResult.instructions. Points clients
+   to common retrieval operations and catalog discovery without duplicating
+   the full tool list."
   (str "Sandbar is a typed-edge knowledge substrate (Datomic-backed) served over "
        "MCP.  Prefer its typed verbs over raw text scanning: sandbar.search.bm25f "
        "for content-relevance retrieval; sandbar.entity.find / sandbar.class.instances "
@@ -80,25 +60,19 @@
        "sandbar.tools.search + sandbar.tools.describe to discover and inspect any "
        "verb before calling it."))
 
-;; JSON-RPC 2.0 envelope shapes live in `sandbar.mcp.envelope` — extracted
-;; to a leaf namespace to break the protocol → notifications cycle per the
-;; F-M-001 resolution in
-;; audit-results/codex_sandbar_as_mcp_server_2026_05_12.md.
+;; Envelope helpers are a leaf namespace shared with notifications, avoiding
+;; a protocol → notifications dependency cycle.
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Lifecycle method — initialize
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (defn handle-initialize
-  "Respond to the MCP `initialize` request per
-   libraries/mcp_protocol.md §4. Negotiates protocol version + declares
-   server capabilities. Client follows up with `notifications/initialized`
-   to indicate readiness.
-
-   Per spec: if mutual protocol version is not negotiable the connection
-   SHOULD be terminated. Stage C.1 accepts any client version + returns
-   our protocol-version; downstream tightening lands when we observe
-   real client mismatches."
+  "Return a JSON-RPC initialization result with `protocol-version`, server
+   identity, capabilities and orientation. The supplied client version is
+   logged; this handler always returns the server version. A client must
+   decide whether it supports that result before sending
+   `notifications/initialized` and continuing."
   [id params]
   (let [client-version (:protocolVersion params)
         client-info    (:clientInfo params)]
@@ -118,25 +92,17 @@
 ;; Method dispatch table
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;
-;; Each method name maps to a handler fn of [id params] -> response-map.
+;; Each method name maps to a handler fn of [id params principal] -> response-map.
 ;; Notifications (no id) are dispatched but their responses are discarded
 ;; per JSON-RPC notification semantics.
 
 (def method-handlers
-  "Method dispatch table. Stages C.1+C.4 added initialize + tools/*;
-   Stage C.5 adds resources/*; subsequent stages add prompts/* +
-   tasks/*.
-
-   Every handler is `(fn [id params principal] -> response)`.  The dispatch
-   gate (`authz/method-scope-decision`, run in `dispatch` before the handler)
-   covers the principal-SCOPE axis for every method uniformly, so most rows
-   accept and ignore the principal (`_`).  The rows that ALSO need the
-   principal INSIDE the handler consume it explicitly: `tools/call` (the
-   read-only verb-class gate, Shape A′) and — per S5 charter item 3 — the
-   compartment-aware `resources/read` + `resources/subscribe` handlers, which
-   thread the principal to their EP-N3/EP-N1 compartment checks, and since D4b
-   (2026-09-19) `resources/list`, which applies the same read decision to the
-   catalog so a refused resource is not advertised."
+  "Map method names to handlers of `[id params principal] -> response`.
+   `dispatch` applies method-scope authorization before invocation. Tool calls
+   receive the principal for their operation gate; resource listing, reading
+   and subscription also receive it for entity visibility checks. Notifications
+   have no response. Compatibility task methods do not imply advertised
+   standard Tasks support."
   {"initialize"                  (fn [id params _] (handle-initialize id params))
    "notifications/initialized"   (fn [_ _ _] nil) ;; client confirms ready; no response
    "tools/list"                  (fn [id params _] (tools/handle-list id params))
@@ -155,27 +121,15 @@
   "Dispatch a single JSON-RPC message. Returns a response map (or nil for
    pure-notification messages with no response expected).
 
-   `principal` is the authenticated MCP principal (or nil on the
-   legacy/local path); it is threaded to the method handler so `tools/call`
-   can authorize the verb under the read-only token gate.  The 1-arity
-   overload dispatches with no principal (full access), preserving the
-   pre-gate call contract.
+   `principal` is the authenticated MCP principal. The one-argument overload
+   uses nil, the trusted in-process path with unrestricted operation scope;
+   remote adapters must supply their authenticated principal.
 
-   S5 dispatch-layer gate (principal-check-at-dispatch, S5-PLAN §2.2 item 4 /
-   §1.4 Shape A′): for every dispatchable method we compute the principal's
-   scope descriptor and run the pure `authz/method-scope-decision` BEFORE the
-   handler is invoked.  On a deny we return the JSON-RPC deny envelope (or nil
-   for a notification, which expects no response); on allow we proceed to the
-   handler unchanged.  The gate is ADDITIVE — it does NOT duplicate the
-   `tools/call` read-only verb-class check, which stays byte-identical inside
-   `tools/handle-call` (Shape A′).  This is the axis that did not exist before:
-   fail-closed unscoped-deny (AP-2) + family policy for the non-tools methods.
-
-   Error handling per JSON-RPC spec (codes via `sandbar.util.jsonrpc-status`):
-   - Unknown method → `method-not-found`
-   - Denied by scope → `invalid-params` deny envelope (via authz; AP-2 + family)
-   - Invalid params → `invalid-params` (handler may raise; we catch + map)
-   - Handler exception → `internal-error`"
+   A method-scope refusal returns the authorization error envelope before the
+   handler runs. Tool calls have an additional verb-level check in their
+   handler. Unknown methods return `method-not-found`; malformed envelopes
+   return `invalid-request`; uncaught handler exceptions become
+   `internal-error`. Individual handlers may return more specific envelopes."
   ([msg] (dispatch msg nil))
   ([msg principal]
    (let [{:keys [id method params]} msg]
@@ -188,7 +142,7 @@
 
        :else
        (if-let [handler (get method-handlers method)]
-         ;; S5 dispatch gate — run the pure scope decision before the handler.
+         ;; Run the pure scope decision before the handler.
          ;; On deny, short-circuit with the deny envelope (nil for a
          ;; notification); on allow, invoke the handler as before.
          (let [scope    (authz/principal->scope principal)

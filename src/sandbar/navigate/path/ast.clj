@@ -1,39 +1,18 @@
 (ns sandbar.navigate.path.ast
-  "Sandbar Path-Grammar — AST + Parser + Canonical-Form (Stage P-1 of
-  comprehensive memory-model MCP arc per
-  plans/sandbar_fulltext_search_substrate_arc_2026_05_13.md).
+  "EDN path expression parser, operator registry and abstract syntax tree.
 
-  This is the DSL-layer surface for Sandbar's Wilbur-lineage path-grammar.
-  Three concerns live in this namespace:
+  Atomic property keywords walk an edge; registered uppercase keywords name
+  operators; vectors provide an operator and its arguments. Nodes use :op
+  plus operator-specific fields, allowing normalization and execution to
+  operate independently of surface syntax.
 
-  1. The operator vocabulary registry — 21 committed operators per
-     syntheses/sandbar_path_grammar_substrate_design_research_2026_05_13.md
-     §1.2:
-       - Canonical-8 (Tier 1): :SEQ :OR :REP+ :REP* :INV :SELF :RESTRICT :ANY
-       - Tier 2 (production-safety + filtering): :NOT :OPT :REP :FILTER :TEST
-       - Tier 3 (deferred compilation; vocabulary registered for parse-
-         time recognition + future-proofing): :LANG :VALUE :DAEMON
-         :NOREWRITE :MEMBERS :PREDICATE-OF-SUBJECT :PREDICATE-OF-OBJECT
-
-  2. The canonical AST schema — each AST node is a map keyed by `:op`
-     plus operator-specific slots.  Uniform shape allows downstream
-     stages (IR rewriter at P-2, Datomic compiler at P-3) to dispatch
-     via `:op` without parsing-knowledge.
-
-  3. The parser — EDN form → canonical AST.  EDN form is the
-     stable user-visible surface:
-       atomic predicate keyword         (:cites)
-       nullary operator keyword         :SELF
-       operator form vector             [:SEQ [:REP* :cites] :evidences]
-     Per casing convention from
-     decisions/multi_axis_search_catalog_2026_05_08.md D4:
-     UPPERCASE combinators / lowercase predicates.  The registry
-     itself is the disambiguator — a keyword is an atomic predicate
-     iff it is NOT a registered operator.
-
-  Stage P-1 ships parse + arity validation; algebraic-identity
-  rewriting lives at P-2 (`sandbar.navigate.path.ir`).  Datomic
-  compilation lives at P-3 (`sandbar.navigate.path.datomic`)."
+  Core vocabulary: SEQ, OR, REP+, REP*, INV, SELF, RESTRICT and ANY.
+  Additional executable forms include OPT, bounded REP and endpoint-only
+  NOT, FILTER and TEST. LANG, VALUE, DAEMON, NOREWRITE, MEMBERS,
+  PREDICATE-OF-SUBJECT and PREDICATE-OF-OBJECT are recognized but not executed.
+  Parsing an operator does not establish a supported execution path.
+  Normalization lives in path.ir; witness evaluation and Datomic compilation
+  have distinct capability boundaries described in doc/concepts/path-grammar.md."
   (:refer-clojure :exclude [parse]))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;

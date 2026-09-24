@@ -125,3 +125,40 @@
       (fn []
         (is (= :project/UNASSIGNED
                (:db/ident (activate/active-project (db/db)))))))))
+
+(deftest active-project-resolves-stable-key-distinct-from-document-ident
+  (sup/seed-context! :ctx/stable :public-bottom)
+  (sup/seed-project! :memory.projects/figlet :public :ctx/stable :public-bottom)
+  (sup/raw-transact! [{:db/ident :memory.projects/figlet
+                       :mm.project/ident :project/clj-figlet}])
+  (with-surfaces {:cfg :project/clj-figlet}
+    (fn []
+      (is (= (sup/eid-of :memory.projects/figlet)
+             (:db/id (activate/active-project (db/db)))))
+      (is (= :project/clj-figlet (:project-key (activate/active-route (db/db)))))
+      (is (true? (:routes-to-public? (activate/active-route (db/db)))))))
+  (testing "legacy document-ident configuration still resolves the Project"
+    (with-surfaces {:cfg :memory.projects/figlet}
+      #(is (= (sup/eid-of :memory.projects/figlet)
+              (:db/id (activate/active-project (db/db))))))))
+
+(deftest active-project-never-activates-a-non-project
+  (sup/raw-transact! [{:db/ident :memory.observations/not-a-project
+                       :dt/type :mm/Observation
+                       :mm.project/ident :project/malformed
+                       :mm.memory/visibility :public}])
+  (doseq [key [:memory.observations/not-a-project :project/malformed]]
+    (with-surfaces {:cfg key}
+      (fn []
+        (is (= :project/UNASSIGNED (:db/ident (activate/active-project (db/db)))))
+        (is (false? (:routes-to-public? (activate/active-route (db/db)))))))))
+
+(deftest stable-project-key-precedes-another-projects-document-ident
+  (sup/seed-context! :ctx/precedence :project-isolated)
+  (sup/seed-project! :memory.projects/intended :private :ctx/precedence)
+  (sup/seed-project! :project/requested :private :ctx/precedence)
+  (sup/raw-transact! [{:db/ident :project/requested :mm.project/ident :project/other}])
+  (sup/raw-transact! [{:db/ident :memory.projects/intended :mm.project/ident :project/requested}])
+  (with-surfaces {:cfg :project/requested}
+    #(is (= (sup/eid-of :memory.projects/intended)
+            (:db/id (activate/active-project (db/db)))))))

@@ -1,26 +1,11 @@
 (ns sandbar.mcp.auth
-  "MCP Bearer-token Pedestal interceptor — composes with Sandbar's
-   existing `sandbar.util.auth/authenticate-api-key` via thin
-   Bearer-extraction layer.
+  "Bearer-token authentication for MCP requests.
 
-   Per decisions/sandbar_mcp_server_design_2026_05_12.md B.1.2:
-   - Authorization: Bearer <token> header on each MCP request
-   - Token format: `<service-name>:<api-key>` matching Sandbar's
-     existing X-API-Key convention (per sandbar.util.auth)
-   - Validation routes through authenticate-api-key (Buddy-hashers
-     under the hood)
-
-   Discipline per
-   interaction/target_sandbar_introspection_api_layer_not_raw_datomic_2026_05_12.md:
-   this interceptor calls Sandbar's auth abstraction layer (authenticate-api-key);
-   it does NOT reimplement password / api-key verification.
-
-   Stage C.2 of the Sandbar-as-MCP-Server arc.
-
-   Subsequent enhancements:
-   - C.2.1 OAuth 2.0 flow (deferred; see ADR §1 B.1.2 + arc plan §4 Q2)
-   - C.2.2 Dynamic-token / rotating-token support per Claude Code's
-     env-var-expansion semantics"
+   Extract Authorization: Bearer <service-name>:<api-key> and delegate key
+   verification to `sandbar.util.auth/authenticate-api-key`, the same account
+   abstraction used by REST X-API-Key authentication. The interceptor attaches
+   the authenticated identity; scope and memory clearance are separate checks.
+   See doc/auth.md."
   (:require [clojure.string                :as str]
             [clojure.tools.logging         :as log]
             [io.pedestal.interceptor       :as interceptor]
@@ -62,11 +47,8 @@
         (str/trim (subs trimmed 7))))))
 
 (defn parse-token
-  "Parse a Bearer token into [service-name api-key]. Returns nil if the
-   token doesn't match the expected `<service-name>:<api-key>` shape.
-
-   Per ADR B.1.2 + the existing X-API-Key convention in
-   sandbar.util.auth."
+  "Parse a Bearer token as [service-name api-key], using the same token
+   shape as REST X-API-Key authentication. Return nil for a malformed token."
   [token]
   (when token
     (let [colon (.indexOf ^String token ":")]
@@ -160,17 +142,10 @@
             context))))))
 
 (def bearer-interceptor
-  "Pedestal interceptor that extracts a Bearer token from the request's
-   Authorization header + validates via authenticate-api-key.
-   Attaches :identity to the context AND `[:request :identity]` on success.
-
-   The `:enter` delegates to `bearer-enter` (a top-level var) rather than
-   inlining the body, so a frozen route table / `defonce` connector stays
-   hot-reloadable — see the `bearer-enter` docstring for why this is the wire
-   enforcement contract's keystone.
-
-   Per ADR B.1.2: this is the canonical MCP auth path; OAuth 2.0 is a
-   future extension."
+  "Authenticate the request's Bearer token and attach :identity to both
+   the Pedestal context and request. The :enter callback delegates through
+   the `bearer-enter` var, so an existing route table observes reloaded
+   authentication code."
   (interceptor/interceptor
     {:name  ::bearer
      :enter (fn [context] (bearer-enter context))}))

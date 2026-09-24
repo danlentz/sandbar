@@ -74,15 +74,9 @@
             (db/db) (all-rules) dt)))
 
 (defn named-idents-of
-  "Returns the :db/ident KEYWORDS of all named entities that are
-  instances of class dt or any of its subclasses.
-
-  Return shape (idents) is explicit in the name.  When you need
-  entity maps, use `named-entities-of` instead.
-
-  Replaces the older `all-named-instances-of` (kept as deprecated alias
-  for one-release migration window per
-  decisions/sandbar_dt_star_explicit_ident_entity_helper_split_2026_05_13.md)."
+  "Return the :db/ident keywords of named instances of class dt, including subclasses.
+  Use named-entities-of when the caller needs entity values rather than idents.
+  Replaces the deprecated all-named-instances-of alias."
   [dt]
   (map first
        (d/q '[:find ?ident :in $ % ?dt :where
@@ -91,15 +85,8 @@
             (db/db) (all-rules) dt)))
 
 (defn named-entities-of
-  "Returns entity MAPS for all named entities that are instances of
-  class dt or any of its subclasses.
-
-  Return shape (entity maps) is explicit in the name.  Use this when
-  you need to read metadata off the entities (`:db/ident`,
-  `:dt/native-codec`, slot values, etc.).  When you only need idents,
-  use `named-idents-of` instead.
-
-  Per decisions/sandbar_dt_star_explicit_ident_entity_helper_split_2026_05_13.md."
+  "Return entity views for named instances of class dt, including subclasses.
+  Use named-idents-of when only the identifiers are needed."
   [dt]
   (map (comp db/entity first)
        (d/q '[:find ?ident :in $ % ?dt :where
@@ -108,13 +95,8 @@
             (db/db) (all-rules) dt)))
 
 (defn ^{:deprecated "0.1.0"} all-named-instances-of
-  "DEPRECATED: name does not disambiguate return shape.  Use:
-    - `named-idents-of`     when you want idents (current behavior)
-    - `named-entities-of`   when you want entity maps
-
-  Kept as an alias for `named-idents-of` for one-release migration window
-  per decisions/sandbar_dt_star_explicit_ident_entity_helper_split_2026_05_13.md.
-  Slated for removal post-0.1.x."
+  "Deprecated alias for named-idents-of. Returns ident keywords, not entities.
+  Use named-entities-of when entity values are required."
   [dt]
   (named-idents-of dt))
 
@@ -320,44 +302,16 @@
         (slots-of class-ident)))
 
 (defn make-all*
-  "Creates a batch of typed instances in a SINGLE atomic Datomic
-   transaction — WITHOUT validation.  Batch analog of `make*` extending
-   the `make` / `make*` validated / no-validation parallelism to the
-   batch shape; `make-all` (validated batch) reserved for future
-   addition.
+  "Create typed entity-specs in one Datomic transaction without class validation.
+  Each spec carries :dt/type and its entity properties. Returns the Datomic
+  transaction result, not a vector of entities. Cross-spec ident references
+  resolve in the same transaction.
 
-   Arguments:
-     entity-specs - vec of entity-spec maps; each carries `:dt/type` +
-                    sandbar / Datomic keys (`:db/ident`, slot idents).
-
-   Returns the Datomic transaction result map.
-
-   Use when multiple entities must be created atomically with cross-
-   references intact — e.g., an `mm/Memory` plus its child `mm/Section`
-   entities from one corpus markdown file.  Cross-entity refs resolve
-   via Datomic's `:db/ident` upsert semantics within the single tx;
-   forward references inside the batch resolve at transaction time.
-
-   For single-entity creation with pre-transaction validation, use
-   `make` instead.  For single-entity without validation, use `make*`.
-   For batch creation WITH validation, use `make-all` (TBD — not yet
-   defined).
-
-   Added 2026-05-20 per F#17 of memory/plans/sandbar_0_1_1_coevolution_-
-   arc_2026_05_20.md — `sandbar.project.import :persist? true` needs to
-   transact each markdown file's memory + sections atomically so that
-   `:mm.memory/first-section` and `:mm.section/parent` cross-refs
-   resolve via :db/ident upsert.
-
-   S7 (BU-4, §4.3): the NON-optional firewall batch floor fires INSIDE this
-   primitive, so `project.import`, `full-corpus-ingest`, and any FUTURE bulk
-   caller inherit it — a forbidden governed edge in ANY spec throws
-   \"Firewall violation in batch\" and NONE transact.  Firewall-ONLY (the
-   trust-caller bulk contract keeps required/type/cardinality the caller's
-   job, R5).  The 2-arity accepts a pre-built `spec-index` so the VALIDATED
-   `make-all` threads the SAME intra-batch index it built for its schema
-   ref-range pass (CA-6) — a same-batch forward-ref resolves against its
-   sibling instead of over-refusing on tx-ordering."
+  The non-optional batch firewall checks governed edges before transacting;
+  required slots, modeled ranges, cardinality checks and shape evaluation
+  remain the caller's responsibility. Use make-all for class data validation.
+  The second arity accepts an existing intra-batch spec-index for reference
+  resolution. Single-entity counterparts are make and make*."
   ([entity-specs]
    (make-all* entity-specs (fw-enforce/index-specs-by-ident entity-specs)))
   ([entity-specs spec-index]
@@ -650,48 +604,16 @@
      new-entity)))
 
 (defn make-all
-  "Creates a batch of typed instances in a SINGLE atomic Datomic
-   transaction WITH pre-transaction validation.  Batch analog of `make`
-   extending the `make` / `make*` validated / unvalidated parallelism
-   to the batch shape (symmetric with `make-all*` which is the
-   unvalidated batch counterpart).
+  "Validate each typed entity-spec with validate-data, then transact the batch
+  atomically. Returns the Datomic transaction result. A class data failure
+  throws ExceptionInfo with {:errors [{:errors [...] :index n :class ident} ...]
+  :total n} before any member is transacted. The batch firewall also applies.
 
-   Arguments:
-     entity-specs - vec of entity-spec maps; each carries `:dt/type` +
-                    sandbar / Datomic keys (`:db/ident`, slot idents).
-
-   Returns the Datomic transaction result map (same as `make-all*`).
-
-   Validates EVERY spec via `validate-data` before transacting; if ANY
-   spec fails validation, raises ex-info with `:errors` carrying per-
-   index per-class failure detail and transacts NONE of them (atomic
-   all-or-nothing).  The error envelope shape:
-
-     {:errors [{:errors [...] :index <int> :class <ident>} ...]
-      :total  <int>}
-
-   Cross-entity refs resolve via Datomic's `:db/ident` upsert semantics
-   within the single tx; forward references inside the batch resolve
-   at transaction time (same semantics as `make-all*`).
-
-   For batch creation WITHOUT validation (faster; trust-caller path,
-   e.g. corpus-bulk-import where the codec has pre-validated), use
-   `make-all*` instead.  For single-entity creation, use `make`
-   (validated) or `make*` (unvalidated).
-
-   Per Phase 1 B.4 of substrate-stabilization arc + Dan-directive
-   2026-05-22 — the validated-batch verb is `make-all` (NOT
-   `make-all-validated`); the naming convention is bare-name for
-   validated, `*` suffix for unvalidated.
-
-   Stage A.5 of SSE-reactive-projection arc (decision eid 17592186094347
-   + plan eid 17592186094359): added optional opts map carrying
-   `:project?` kwarg.  After the batch transaction commits, iterates
-   entity-specs + invokes `reactive/on-entity-changed!` per entity that
-   carries `:db/ident` or `:db/id` (anonymous specs are skipped —
-   reactive-projection requires a resolvable post-tx entity to operate
-   on).  Per-spec hook failures don't abort the batch (the substrate
-   already transacted; reactive side-effects are observability-grade)."
+  This validates class data; it does not run shape or custom class validators.
+  Cross-spec references use the same transaction as make-all*. Optional
+  :project? is forwarded to reactive notification after commit for resolvable
+  entities. Notification failures are logged and do not undo accepted data.
+  Use make-all* when the caller owns class data validation."
   ([entity-specs] (make-all entity-specs {}))
   ([entity-specs {:keys [project?]}]
    ;; S7 CA-6: build the intra-batch spec-index ONCE and thread it into the
@@ -731,40 +653,13 @@
          tx-result)))))
 
 (defn realize-with
-  "General-purpose entity realization helper — given a seed entity + a
-   `walk-fn`, returns a vector of entity-spec maps including the seed
-   plus all transitively-reachable related entities (BFS order).
+  "Realize a seed and the entities selected by walk-fn as a vector of entity
+  specification maps, in breadth-first order including the seed.
 
-   Arguments:
-     entity  - the seed entity (Datomic Entity record OR ident OR :db/id)
-     walk-fn - fn entity → coll of related entities; defines the walk shape
-               (e.g., for mm/Memory: (:mm.memory/first-section + walks); for
-               mm/Section: (:mm.section/next-sibling + :_mm.section/parent)).
-               walk-fn should return ALREADY-DEDUPLICATED related entities;
-               realize-with dedupes by :db/id across the BFS visited-set.
-
-   walk-fn's related items may be Datomic Entities OR ref-locators
-   (`:db/ident` keywords / eid longs).  A ref slot read off a LIVE
-   `db/entity` whose target carries a `:db/ident` reads back as the
-   IDENT KEYWORD, not an Entity (the corpus-wide ident-ref navigation
-   shape).  Both the seed AND every walked related item are coerced to
-   an Entity via `db/entity` before their `:db/id` is read, so an
-   ident-keyword / eid ref is FOLLOWED rather than silently dropped by
-   `(:db/id <keyword>) => nil`.  (Before this coercion the seed was
-   resolved but walked refs were not, so a sectioned memory read from a
-   live entity realized to `[memory]` only — its section chain lost —
-   and the caller's section-tree emit path was never taken.  Per
-   observations/live_sink_emits_derived_first_section_for_subclass_-
-   memorials_regenerating_debris_130_files_2026_07_10.)
-
-   Returns: vector of entity-spec maps; each map is `(into {:dt/type ...}
-   datomic-entity)` for the seed and each walked entity.
-
-   Codec arc Stage F Signal 6 per
-   plans/sandbar_codec_layer_arc_2026-05-12.md — addresses the friction
-   that `emit-entity`'s shallow `(into {} entity)` misses lazy-loaded
-   refs.  Composable with `sandbar.codec/emit` on collections + with
-   `sandbar.projection` entity-collection paths."
+  The seed and each related item may be a Datomic entity, ident keyword or
+  numeric eid. Each is resolved before traversal and deduplicated by eid.
+  walk-fn receives an entity and returns its related items; it defines the
+  representation boundary, so this is not a dump of every reachable reference."
   [entity walk-fn]
   (let [->entity (fn [x]
                    (if (or (keyword? x) (number? x))
@@ -796,26 +691,14 @@
           (recur new-acc new-visited @next-frontier))))))
 
 (defn emit-entity
-  "Emit an entity in its native representation via the codec mediator.
+  "Emit an entity through the codec mediator and return the representation.
+  Accepts an entity view, plain entity map or numeric eid. Resolve an ident
+  with find-by-ident before calling. Options include :format; other options
+  are forwarded to the selected codec. The default format comes from the
+  class's :dt/native-codec declaration.
 
-  Arguments:
-    entity - the entity (or entity map / entity ID)
-    opts   - optional codec opts:
-             :format — format keyword (default: from the class's
-                       :dt/native-codec attribute)
-             others  — forwarded to the codec's emit method
-                       (e.g., :pretty?, :include-id?)
-
-  Returns the native-representation string (typically markdown / JSON
-  / TTL depending on the resolved codec).
-
-  Per codec arc Stage F (plans/sandbar_codec_layer_arc_2026-05-12.md):
-  the inverse of `dt/make` with `:format` opt — together they form a
-  full codec round-trip surface at the model layer.
-
-  Example:
-    (emit-entity my-memory)               ; uses :dt/native-codec default
-    (emit-entity my-memory {:format :json})"
+  Parsing and emitting form a supported codec round trip, with preservation
+  determined by the selected codec rather than by this wrapper."
   ([entity] (emit-entity entity {}))
   ([entity opts]
    (let [emit-fn (requiring-resolve 'sandbar.codec/emit)
@@ -923,40 +806,22 @@
    slot-updates))
 
 (defn update-entity!
-  "Update slot values on an existing entity.
+  "Update an entity view, ident or eid and return the refreshed entity.
+  With :validate? true (the default), validate the merged class data before
+  transacting. This does not by itself invoke custom class or shape validators.
 
-  Arguments:
-    entity        - the entity (entity-map / :db/id / :db/ident keyword)
-    slot-updates  - map of {:slot-ident new-value ...}
-    opts          - optional:
-                    :validate? - default true; if false, skips validation
-                    :additive? - default false.  When true, cardinality-many
-                                 slots UNION (append) instead of REPLACE.
-                    :pre-commit - a fn of the SPECULATIVE db and the eid, run
-                                 before the transaction (`transact-with-preflight!`);
-                                 when it throws, nothing is transacted (RT-01,
-                                 D6 2026-09-19)
-
-  Behavior:
-  - Resolves entity to its current entity-map shape
-  - Merges slot-updates onto the existing slot values
-  - When `:validate? true` (default), runs validate-data against the
-    merged shape using the entity's class; throws ex-info on failure
-  - Transacts {:db/id <eid> slot-updates...} via Datomic
-  - Returns the refreshed entity map
-
-  Cardinality-many slots: the supplied value REPLACES the prior set by
-  default — prior members absent from the supplied value are retracted in
-  the same transaction (retract (prior - desired) + assert desired).  Pass
-  `{:additive? true}` to keep the legacy additive UNION (append without
-  retracting).  Card-one slots are unaffected either way (Datomic
-  auto-retracts the prior single value on assert).  Per
-  decisions/entity_update_card_many_replace_by_default_opt_in_additive_2026_06_30.
-
-  Per codex SHOULD-FIX #5 — `sandbar.entity.update` MCP verb advertised
-  in the catalog but threw not-yet-implemented; this primitive closes
-  that gap.  Per the improve-abstraction-not-bypass discipline (the
-  prior gap-throw lampshade pointed exactly here)."
+  Cardinality-many values replace the supplied slot's prior set atomically;
+  :additive? true requests union instead. Cardinality-one follows Datomic's
+  replacement behavior. :project? controls reactive projection participation.
+  A :pre-commit callback receives the speculative database and eid;
+  throwing refuses the proposal before commit.
+  For a Memory whose native body is :mm.memory/body-raw, a whole-body edit
+  reconciles its section tree in the same transaction. Removed sections with
+  outside references refuse the edit. Sectioned edits require a stable ident.
+  A body plan is valid at one database basis only: a moved basis refuses the
+  edit with :body-update/basis-moved, for the caller to reread and retry.
+  Other strict updates retain transact-with-preflight!'s bounded retries.
+  Accepted updates notify the reactive mechanism after the transaction."
   ([entity slot-updates] (update-entity! entity slot-updates {}))
   ([entity slot-updates {:keys [validate? project? additive? pre-commit] :or {validate? true}}]
    (when-not (map? slot-updates)
@@ -997,6 +862,11 @@
      ;; block an unrelated update (it is corrected by re-stamping through this
      ;; very verb).  Unconditional, like the firewall floor above.
      (future-timestamp-guard! class-ident slot-updates :update)
+     ;; Physical destinations are operator authority. An ordinary entity edit
+     ;; is not a file migration; reject target changes before accepting them.
+     ((requiring-resolve 'sandbar.project.destination/assert-stable-update!)
+      (db/db) ent slot-updates
+      ((requiring-resolve 'sandbar.project.destination/global-root)))
      (when validate?
        (when-let [errors (validate-data class-ident (dissoc merged :db/id :dt/type))]
          (log/debug :DT/UPDATE-VALIDATION-FAILED {:class class-ident :errors errors})
@@ -1009,12 +879,44 @@
      ;; auto-retracts the prior value on assert).  Per
      ;; decisions/entity_update_card_many_replace_by_default_opt_in_additive_2026_06_30.
      (let [retracts (when-not additive?
-                      (card-many-replace-retracts ent eid slot-updates))]
+                      (card-many-replace-retracts ent eid slot-updates))
+           ;; Whole-body edits replace their derived section representation in
+           ;; the SAME transaction. Otherwise reads/search show the new body
+           ;; while the filesystem/export emits old sections. Load the codec
+           ;; planner lazily: it depends on datatype introspection.
+           body-plan (when (and (contains? slot-updates :mm.memory/body-raw)
+                                (type-isa? :mm/Memory class-ident))
+                       ((requiring-resolve 'sandbar.import/plan-body-update)
+                        (db/db) eid slot-updates))
+           sections (:sections body-plan)
+           _ (when (seq sections)
+               (firewall-batch-guard! sections (fw-enforce/index-specs-by-ident sections)))
+           tx (-> (cond-> [] body-plan (conj [:assert-basis (:basis body-plan)]))
+                  (into retracts)
+                  (into (:ops body-plan))
+                  (into sections)
+                  (conj (merge slot-updates (:host-updates body-plan) {:db/id eid})))]
        (when (seq retracts)
          (log/info :DT/UPDATE-CARD-MANY-REPLACE
                    {:eid eid :class class-ident :retract-count (count retracts)}))
-       (transact-with-preflight! (into (vec retracts) [(assoc slot-updates :db/id eid)])
-                                 eid pre-commit))
+       (if body-plan
+         ;; A section diff contains removals justified at ONE basis. Reusing
+         ;; that diff in the generic strict-write retry loop cannot replan it.
+         ;; Check once and commit once under the plan's existing guard; any
+         ;; intervening transaction is an actionable refusal, never an outage.
+         (try
+           (when pre-commit
+             (pre-commit (:db-after (d/with (db/db) tx)) eid))
+           @(d/transact (db/conn) tx)
+           (catch Throwable ex
+             (if (basis-moved? ex)
+               (throw (ex-info "The database changed while this body edit was being planned; read the memory again and retry"
+                               {:type :body-update/basis-moved
+                                :retryable? true
+                                :expected-basis (:basis body-plan)}
+                               ex))
+               (throw ex))))
+         (transact-with-preflight! tx eid pre-commit)))
      ;; Stage A.5 of SSE-reactive-projection arc (decision eid
      ;; 17592186094347 + plan eid 17592186094359): on successful update,
      ;; fire the reactive-projection hook.  `:project?` participates in
@@ -1025,131 +927,51 @@
        updated-entity))))
 
 (defn class-ident-of
-  "Returns the class IDENT (keyword) for entity e — the `:dt/type`
-  value as an ident.
-
-  Return shape (ident keyword) is explicit in the name.  When you
-  need the class's full entity map (to read class-level metadata
-  like `:dt/native-codec`, `:dt/slots`, `:dt/aliases`), use
-  `class-entity-of` instead.
-
-  For an instance:  returns the class the instance is in.
-  For a class itself: returns the meta-class (`:dt/Class`).
-  For a property: returns `:dt/Property`.
-
-  Per decisions/sandbar_dt_star_explicit_ident_entity_helper_split_2026_05_13.md."
+  "Return an entity's declared class ident from :dt/type.
+  An instance yields its class; a class entity yields its metaclass.
+  Use class-entity-of on the returned ident to inspect class metadata."
   [e]
   (-> e entity :dt/type))
 
 (defn class-entity-of
-  "Returns the class ENTITY map for class-ident.
-
-  Resolves a class-ident keyword (e.g., `:mm/Memory`) to its entity
-  for reading class-level metadata: `:dt/native-codec`, `:dt/slots`,
-  `:dt/aliases`, `:dt/abstract?`, `:dt/subclass-of`.
-
-  IMPORTANT: this does NOT follow `:dt/type` — it returns the entity
-  for the class itself.  If you have an instance and want its class's
-  metadata, compose: `(-> instance class-ident-of class-entity-of)`.
-
-  This explicit helper exists because the duplicate `(-> x entity
-  :dt/type)`-then-read pattern was the source of the codex MUST-FIX
-  #1 + ultrareview bug class at `codec.clj:116`.
-
-  Per decisions/sandbar_dt_star_explicit_ident_entity_helper_split_2026_05_13.md."
+  "Resolve a class ident to its entity view for reading class metadata.
+  This looks up the class itself; it does not follow an instance's :dt/type.
+  For an instance, compose class-ident-of with class-entity-of."
   [class-ident]
   (db/entity class-ident))
 
 (defn ^{:deprecated "0.1.0"} class-of
-  "DEPRECATED: name does not disambiguate return shape.  Use:
-    - `class-ident-of`   when you want the class ident (current behavior)
-    - `class-entity-of`  when you want the class entity (for metadata)
-
-  Kept as an alias for `class-ident-of` for one-release migration window
-  per decisions/sandbar_dt_star_explicit_ident_entity_helper_split_2026_05_13.md.
-  Slated for removal post-0.1.x."
+  "Deprecated alias for class-ident-of. Returns a class ident, not its entity.
+  Use class-entity-of to inspect a known class's metadata."
   [e]
   (class-ident-of e))
 
 (defn find-by-ident
-  "Returns the entity map for the given `:db/ident`, or nil if no
-  entity has that ident.
-
-  Convenience helper used when callsites have an ident in hand and
-  need the entity (most often: realizing idents returned by
-  `named-idents-of` into entities suitable for projection).
-
-  Per decisions/sandbar_dt_star_explicit_ident_entity_helper_split_2026_05_13.md."
+  "Return the entity view for an ident, or nil when absent.
+  Use to resolve names returned by named-idents-of before reading their values."
   [ident]
   (db/entity ident))
 
 (defn native-codec-of-class
-  "Returns the `:dt/native-codec` format keyword declared on the class,
-  or nil if none.
-
-  Resolves the per-class default codec for the codec mediator's
-  class-default routing path (`sandbar.codec/native-codec-for-class`).
-  Purpose-built helper that does NOT traverse `:dt/type` — it reads
-  the codec directly off the class entity.
-
-  Replaces the buggy `(:dt/native-codec (entity (dt/class-of class)))`
-  pattern that triggered codex MUST-FIX #1 (the `class-of` call
-  resolved to `:dt/Class`, and `:dt/Class` has no `:dt/native-codec`).
-
-  Per decisions/sandbar_dt_star_explicit_ident_entity_helper_split_2026_05_13.md."
+  "Return the class's directly declared :dt/native-codec keyword, or nil.
+  Reads the class entity itself rather than following its :dt/type."
   [class-ident]
   (:dt/native-codec (db/entity class-ident)))
 
 (defn codec-aliases-of
-  "Returns the codec-layer alias map declared on the class via the
-  `:dt/codec-aliases` schema attribute, or `{}` if none.
-
-  Schema shape: `:dt/codec-aliases` is cardinality-many; each entry
-  is a `[short-key slot-ident]` keyword-pair tuple.  This function
-  reconstructs the map for codec consumers.
-
-  IMPORTANT — these are NOT `owl:sameAs`-shaped identity aliases.
-  They are context-specific naming conventions for the codec layer
-  ONLY: when a class is encoded via a codec, the short-key surfaces
-  in the wire form as a stand-in for the canonical namespaced slot
-  ident.  The slot retains its full canonical identity in the model;
-  only the wire-form name is `short-key`.  Per
-  interaction/check_substrate_schema_attribute_names_against_rdf_owl_semantics_2026_05_13.md
-  the attribute is named `:dt/codec-aliases` (not `:dt/aliases`) to
-  disambiguate from OWL identity-relation semantics + to match the
-  `:dt/native-codec` sister-attribute naming pattern.
-
-  Used by codecs (e.g., `sandbar.codec.markdown/frontmatter-key->slot`)
-  for class-declared alias resolution — replaces the prior hardcoded
-  `known-class-slot-aliases` map in the codec implementation, per
-  interaction/no_hardcoded_consumer_class_knowledge_in_substrate_2026_05_13.md.
-
-  Per decisions/sandbar_dt_star_explicit_ident_entity_helper_split_2026_05_13.md."
+  "Return the class's directly declared codec alias map, or {}.
+  The schema stores cardinality-many [short-key slot-ident] keyword tuples.
+  Aliases are names used in a representation, not identity equivalence such
+  as owl:sameAs. The model property keeps its qualified identity. Codecs use
+  these declarations instead of hardcoding a domain's property names."
   [class-ident]
   (into {} (or (:dt/codec-aliases (db/entity class-ident)) [])))
 
 (defn codec-slot-order-of
-  "Returns the canonical slot ordering declared on the class via the
-  `:dt/codec-slot-order` schema attribute, as a vec of slot-idents in
-  emit order; or `[]` if none declared.
-
-  Schema shape: `:dt/codec-slot-order` is cardinality-many; each entry
-  is a `[slot-ident position]` heterogeneous tuple (declared via
-  `:db/tupleTypes [:db.type/keyword :db.type/long]`).  This function
-  sorts by position and projects to slot-idents.
-
-  Used by codecs (e.g., `sandbar.codec.markdown/emit-frontmatter`) for
-  class-declared canonical ordering — replaces the prior `:codec/key-order`
-  metadata threading pattern that carried source-text order through
-  parse → entity → emit.  The class declaration is the introspectable
-  source of truth; source-text accident is not preserved.
-
-  Sister to `codec-aliases-of` / `codec-type-keyword-of` — same
-  introspection-via-schema pattern, different attribute.
-
-  Per decisions/slot_order_declared_by_class_introspectable_2026_05_20.md
-  (Dan-directive 2026-05-20: 'slot order should be declared by the class
-  and introspectable')."
+  "Return directly declared codec slot idents in emission order, or [].
+  The schema stores [slot-ident position] tuples; this function sorts by
+  position. effective-codec-slot-order-of includes inherited declarations.
+  Canonical emission follows model order, not arbitrary source text order."
   [class-ident]
   (->> (db/entity class-ident)
        :dt/codec-slot-order
@@ -1157,40 +979,16 @@
        (mapv first)))
 
 (defn codec-type-keywords-of
-  "Returns the SET of `:dt/codec-type-keyword` values declared on the
-  class, or #{} if none.
-
-  Per-class CLASS-ROUTING keyword set: when a markdown document's
-  frontmatter carries `type: <kw>`, the codec routes to the class
-  whose `:dt/codec-type-keyword` set CONTAINS `<kw>`.  Cardinality-
-  many so one class can claim multiple routing keywords (e.g.,
-  :mm/Actor claims both :ai-actor and :human-actor).  Example:
-  :mm/Tag declares `:dt/codec-type-keyword :tag` so files with
-  `type: tag` parse as :mm/Tag entities.
-
-  Per decisions/tag_as_first_class_introspectable_type_in_metamodel_2026_05_20.md
-  Stage 7.C codec class-routing + decisions/actor_as_first_class_metamodel_class_with_mm_actor_slots_2026_05_20.md
-  (cardinality bumped to :many for multi-keyword class routing)."
+  "Return the set of directly declared :dt/codec-type-keyword values, or #{}.
+  A document's type keyword selects the class that declares it. The property
+  is cardinality-many so one class can support several representation labels."
   [class-ident]
   (or (:dt/codec-type-keyword (db/entity class-ident)) #{}))
 
 (defn class-for-codec-type-keyword
-  "Returns the class-ident whose `:dt/codec-type-keyword` matches
-  `type-kw`, or nil if no class claims that type-keyword.
-
-  Used by `sandbar.codec.markdown/parse-document` for metamodel-driven
-  class routing — when a frontmatter's `type:` value matches a class's
-  declared type-keyword, the codec parses the document as that class.
-
-  Schema-attribute is `:db.unique/identity` per meta.edn, so the lookup
-  is an O(1) resolution via Datomic's unique-identity index.  Bypasses
-  `sandbar.db.datomic/entity` because that wrapper treats vectors as
-  already-associative and short-circuits before `d/entity` runs — the
-  lookup-ref shape would never reach Datomic.  We call `d/entity`
-  directly with the lookup-ref instead.
-
-  Per decisions/tag_as_first_class_introspectable_type_in_metamodel_2026_05_20.md
-  Stage 7.C."
+  "Return the class ident selected by type-kw, or nil when no class claims it.
+  Resolves the unique-identity :dt/codec-type-keyword attribute with a Datomic
+  lookup ref. Used for model-driven document class selection."
   [type-kw]
   (when type-kw
     (when-let [e (d/entity (db/db) [:dt/codec-type-keyword type-kw])]
@@ -1211,42 +1009,18 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (defn bm25f-weights-of
-  "Returns the per-class BM25F field-weight map declared on the class via
-  the `:dt/bm25f-weights` schema attribute, or `{}` if none.
-
-  Schema shape: `:dt/bm25f-weights` is cardinality-many; each entry is a
-  `[slot-ident weight-double]` heterogeneous tuple (declared via
-  `:db/tupleTypes [:db.type/keyword :db.type/double]`).  This function
-  reconstructs the map for fulltext consumers.
-
-  Used by `sandbar.search/search-bm25f` (Stage 4) as the default
-  field-weights when no `:field-weights` opt is supplied at query
-  time.  A per-query `:field-weights` opt overrides; this getter
-  surfaces the class-declared baseline.
-
-  Sister to `codec-aliases-of` — same shape pattern, different attribute.
-  The naming follows the algorithm-specific convention (`bm25f-weights`
-  not `weights`) per
-  interaction/check_substrate_schema_attribute_names_against_rdf_owl_semantics_2026_05_13.md
-  to disambiguate from any RDF/OWL weighted-axiom semantics.
-
-  Per fulltext arc Stage 2 of
-  plans/sandbar_fulltext_search_substrate_arc_2026_05_13.md."
+  "Return directly declared BM25F field weights as {slot-ident weight}, or {}.
+  The schema stores [slot-ident weight-double] tuples. Use
+  effective-bm25f-weights-of for inheritance. The declaration selects fields
+  and their weights for Sandbar's own analyzer and multi-field scoring."
   [class-ident]
   (into {} (or (:dt/bm25f-weights (db/entity class-ident)) [])))
 
 (defn memorial-policy-of
-  "Returns the `:dt/memorial-policy` keyword declared directly on `class-ident`,
-  or nil if undeclared.  One of `:first-class` / `:db-only` / `:inline`.
-
-  Does NOT walk ancestors — call `effective-memorial-policy-of` for
-  inheritance.  Sister to `bm25f-weights-of` / `codec-aliases-of` —
-  same single-class shape, different attribute.
-
-  Per `decisions/option_b_plus_c_ratified_spec_vs_state_criterion_pivot_to_first_class_memorialization_2026_05_23.md`
-  + first-class-memorialization arc Stage B.3 (substrate enforcement
-  wiring).  Consumed by `sandbar.reactive.sinks/fs-projection-sink`
-  + (future) `sandbar.project.dump-db-only` worker."
+  "Return the class's directly declared :dt/memorial-policy keyword, or nil.
+  Values are :first-class, :db-only and :inline. This does not walk ancestors;
+  effective-memorial-policy-of supplies inherited policy. A policy declaration
+  alone does not establish a complete file representation or active sink."
   [class-ident]
   (:dt/memorial-policy (db/entity class-ident)))
 
@@ -1272,20 +1046,9 @@
   (:dt/recency-slot (db/entity class-ident)))
 
 (defn fulltext-indexed?
-  "Returns true if `attribute` (a slot/property ident) is declared with
-  `:db/fulltext true`, false otherwise.
-
-  Substrate-level predicate; consumers use this to validate that an
-  attribute is fulltext-searchable before invoking `search-fulltext`,
-  or to enumerate the fulltext-indexed slots of a class via
-  `(filter fulltext-indexed? (slots-of class))`.
-
-  Reads directly off the property entity — no traversal of `:dt/type`
-  or domain/range; the `:db/fulltext` Datomic-native flag is the
-  source of truth.
-
-  Per fulltext arc Stage 2 of
-  plans/sandbar_fulltext_search_substrate_arc_2026_05_13.md."
+  "Return true when the property's Datomic :db/fulltext flag is enabled.
+  This tests the native single-attribute index, independently of participation
+  in Sandbar's class-declared BM25F field analysis."
   [attribute]
   (boolean (:db/fulltext (db/entity attribute))))
 
@@ -1305,16 +1068,9 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (defn count-of
-  "Count instances of `class-ident` (including subclasses) matching the
-  optional `where-clauses`.  Returns a non-negative integer.
-
-  The 1-arity counts all instances; the 2-arity adds Datalog clauses
-  (which must reference `?e` as the entity variable) for further
-  restriction.  Substrate-quality: class-agnostic; the class binding
-  drives the query.
-
-  Per fulltext arc Stage 13 of
-  plans/sandbar_fulltext_search_substrate_arc_2026_05_13.md."
+  "Count instances of class-ident, including subclasses, optionally restricted
+  by where-clauses using ?e as the entity variable. Returns a non-negative
+  integer. Clauses pass through the supported query sanitizer."
   ([class-ident]
    (count-of class-ident nil))
   ([class-ident where-clauses]
@@ -1331,14 +1087,10 @@
      (or result 0))))
 
 (defn group-by-of
-  "Group instances of `class-ident` by `group-slot` value; return
-  `{slot-value count}` map.  Optional `where-clauses` restrict the
-  candidate set before grouping.
-
-  Skips entities where the slot is unset (does not appear in any group).
-
-  Per fulltext arc Stage 13 of
-  plans/sandbar_fulltext_search_substrate_arc_2026_05_13.md."
+  "Group subclass-inclusive instances by group-slot; return {value count}.
+  Optional where-clauses restrict the population before grouping. Missing
+  values produce no bucket, and a many-valued slot can contribute to several
+  buckets. Clauses pass through the supported query sanitizer."
   ([class-ident group-slot]
    (group-by-of class-ident group-slot nil))
   ([class-ident group-slot where-clauses]
@@ -1356,17 +1108,11 @@
      (into {} rows))))
 
 (defn assert-where-eids-allowed!
-  "Read-plane firewall for NUMERIC entity-id references in a `:where` clause
-  vector — the eid-form bypass of the keyword-only `secq/assert-where-namespaces!`
-  (which is pure/db-free and inspects only keywords).  For every integer anywhere
-  in `where-clauses`, db-resolve it to its `:db/ident` and reject (loud ex-info)
-  if that ident is firewalled — an eid in ATTRIBUTE position
-  (`[[?e <auth-attr-eid> ?h]]`) OR VALUE position
-  (`[[?e :dt/type <auth-class-eid>]]`) is a firewalled attribute/class selector.
-  Memory-aware (a corpus `:memory.*` entity eid passes).  db-aware companion to
-  the pure namespace guard; the read-plane wrappers call it alongside
-  `secq/assert-where-namespaces!`.  Per
-  observations/read_plane_where_firewall_bypassed_by_numeric_eid_forms_...2026_07_07."
+  "Check numeric entity references in where-clauses against the read-plane
+  namespace guard. Recursively resolves integer values to idents and rejects
+  protected attributes or classes with ExceptionInfo. This is the database-
+  aware companion to secq/assert-where-namespaces!, which checks keywords.
+  Returns the clauses when no forbidden reference is found."
   [where-clauses]
   (when (seq where-clauses)
     (letfn [(walk [form]
@@ -1381,17 +1127,157 @@
   where-clauses)
 
 (defn read-plane-group-key-firewalled?
-  "True iff an aggregate.group-by result KEY resolves to a firewalled namespace.
-  A `:group-by` on a ref-typed slot (e.g. `:dt/type`) yields raw eid keys; a
-  scalar slot yields keyword/value keys.  Used to DROP firewalled-class buckets
-  from a read-plane group-by result — otherwise `:group-by :dt/type` over an
-  allowed superclass leaks per-`:auth/*`-class instance counts as
-  `{<auth-class-eid> N}`."
-  [k]
-  (let [id (cond (keyword? k) k
-                 (integer? k) (:db/ident (db/entity k))
-                 :else        nil)]
-    (boolean (and id (not (secq/read-plane-ident-allowed? id))))))
+  "Filter identity buckets by their resolved target, not its ident spelling.
+   Ref slots and db/ident carry identities; other slots carry scalar data and
+   are not resolved (even keywords or numbers that happen to name entities).
+   Ordinary targets require an allowed actual class and caller readability.
+   Metamodel definitions retain the namespace guard on the definition's own
+   ident: an allowed class bucket is useful, a protected class bucket leaks
+   instance counts. Untyped named targets retain the existing ident allowlist
+   (including Datomic enums); unnamed or unresolved identity keys fail closed.
+
+   The one-arity form assumes identity keys and unrestricted in-process reads;
+   read adapters must supply both the slot and the caller's readability check.
+   This checks targets, not the aggregate's source population; S-2 stays open."
+  ([k] (read-plane-group-key-firewalled? nil k (constantly true)))
+  ([group-slot k readable?]
+   (let [slot-type (:db/valueType (when group-slot (db/entity group-slot)))
+         identity-slot? (or (nil? group-slot) (= :db/ident group-slot)
+                            (= :db.type/ref
+                               (if (keyword? slot-type) slot-type (:db/ident slot-type))))]
+     (if-not identity-slot?
+       false
+       (let [target (some->> (ref/ref->eid (db/db) k) (db/entity))
+             id     (:db/ident target)
+             type   (:dt/type target)
+             cls    (if (keyword? type) type (:db/ident type))
+             definition? (or (:db/valueType target)
+                             (= "dt" (some-> cls namespace (.split "\\.") first)))]
+         (boolean
+           (cond
+             (and cls (not (secq/read-plane-namespace-allowed? cls))) true
+             definition? (not (and id (secq/read-plane-ident-allowed? id)))
+             cls (not (readable? target))
+             id (not (secq/read-plane-ident-allowed? id))
+             :else true)))))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Read-plane identity guard over :where clauses (readable identity filters,
+;; 2026-09-21).  The two older guards judge every keyword by the attribute
+;; namespace list and every integer by the ident list, so a filter could never
+;; name a memorial, actor, project or tag by its keyword identity while the
+;; numeric spelling of the same identity passed without any readability
+;; decision.  This guard tells identity POSITIONS apart from everything else:
+;; an identity constant is judged by its resolved target under the revision-3
+;; group-key policy; every other position keeps the older checks unchanged.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(def ^:private where-identity-placeholder
+  "The symbol that stands in for an identity constant when the older checks
+   run over a clause: a plain logic variable, which those walks ignore."
+  '?read-plane-identity)
+
+(defn- refuse-where-identity!
+  "The one non-echoing refusal for an identity constant that resolves to no
+   entity, to an entity the caller may not read, or to an instance of a
+   firewalled class.  Reason, message and details are identical in the three
+   cases so the filter surface answers the not-found parity of the entity
+   reads: nothing here names the constant, the clause or what it resolved to."
+  []
+  (throw (ex-info "Rejected :where identity — the value names no entity this principal may filter by."
+                  {:sanitizer 'sandbar.db.datatype/assert-where-identities-allowed!
+                   :reason    :filter-identity-unavailable
+                   :kind      :where-identity})))
+
+(defn- ref-attribute?
+  "True when `a` is a keyword naming an installed attribute of value type ref."
+  [a]
+  (and (keyword? a)
+       (let [vt (:db/valueType (entity a))]
+         (= :db.type/ref (if (keyword? vt) vt (:db/ident vt))))))
+
+(defn- identity-constant?
+  "A keyword, an integer, or a two-element lookup ref led by a keyword."
+  [x]
+  (or (keyword? x) (integer? x)
+      (and (vector? x) (= 2 (count x)) (keyword? (first x)))))
+
+(defn- data-pattern-positions
+  "For a data-pattern clause, `{:e :a :v}` of its entity, attribute and value
+   elements after an optional leading `$` source; nil for any other clause
+   shape (predicate, binding, rule invocation)."
+  [clause]
+  (when (and (vector? clause) (seq clause) (not (seq? (first clause))))
+    (let [[e a v] (if (= '$ (first clause)) (rest clause) clause)]
+      {:e e :a a :v v})))
+
+(defn- identity-target-kind
+  "Resolve one identity constant and say what it names: `:definition` (a
+   class, an attribute, or an untyped named entity such as a Datomic enum —
+   judged by its spelling exactly as today), `:instance` (a typed entity) or
+   `:absent` (nothing).  A lookup ref's key is an attribute and passes the
+   attribute policy before anything is resolved."
+  [value]
+  (when (vector? value)
+    (secq/assert-attribute-allowed! (first value)))
+  (let [target (some->> (ref/ref->eid (db/db) value) (entity))
+        type   (:dt/type target)
+        cls    (if (keyword? type) type (:db/ident type))]
+    (cond
+      (nil? target) :absent
+      (or (:db/valueType target)
+          (= "dt" (some-> cls namespace (.split "\\.") first))
+          (and (nil? cls) (:db/ident target))) :definition
+      cls :instance
+      :else :absent)))
+
+(defn- authorize-where-identity!
+  "Judge an instance-or-absent identity constant in `slot` (an attribute
+   keyword, or nil for the entity position) by its resolved target under the
+   revision-3 policy: an allowed actual class and caller readability.  Absent,
+   hidden and firewalled instances all receive the one non-echoing refusal."
+  [slot value readable?]
+  (when (read-plane-group-key-firewalled? slot value readable?)
+    (refuse-where-identity!)))
+
+(defn assert-where-identities-allowed!
+  "Position-aware read-plane guard over parsed `:where` clauses; returns them
+   unchanged.  In a data pattern, a constant in entity position, a constant
+   value of a ref-typed attribute (keyword ident, numeric eid or lookup ref —
+   three spellings of one identity) and a keyword value of `:db/ident` are
+   identity constants.  One that names an INSTANCE, or nothing, is resolved
+   and judged by the revision-3 target policy with the caller-supplied
+   `readable?` (the same decision the group-by keys and the search hits use)
+   and is hidden from the older checks behind a logic variable.  One that
+   names a DEFINITION (a class, an attribute, an enum) is left in place, so
+   the older keyword and numeric checks judge its spelling exactly as today
+   and a firewalled definition keeps the refusal that names it.  Every other
+   position — attributes, scalar values, values under a variable attribute,
+   predicate and rule arguments, integers and lookup refs under `:db/ident` —
+   keeps the older checks unchanged; the call-form sanitizer inside the
+   splice sites is untouched.  Counting and grouping populations are still
+   not clearance-filtered (S-2): this guard makes the SELECTOR readable, not
+   the population."
+  [where-clauses readable?]
+  (when (seq where-clauses)
+    (doseq [clause where-clauses]
+      (let [{:keys [e a v]} (data-pattern-positions clause)
+            shift      (if (and (vector? clause) (= '$ (first clause))) 1 0)
+            e-kind     (when (and (some? e) (not (symbol? e)) (identity-constant? e))
+                         (identity-target-kind e))
+            v-kind     (when (and (some? v) (identity-constant? v)
+                                  (or (ref-attribute? a)
+                                      (and (= :db/ident a) (keyword? v))))
+                         (identity-target-kind v))
+            judge?     #(contains? #{:instance :absent} %)
+            masked     (cond-> clause
+                         (judge? e-kind) (assoc shift where-identity-placeholder)
+                         (judge? v-kind) (assoc (+ shift 2) where-identity-placeholder))]
+        (secq/assert-where-namespaces! [masked])
+        (assert-where-eids-allowed! [masked])
+        (when (judge? e-kind) (authorize-where-identity! nil e readable?))
+        (when (judge? v-kind) (authorize-where-identity! a v readable?)))))
+  where-clauses)
 
 (defn degree-of
   "Total ref-attribute count for `entity-ident` — number of (attribute,
@@ -1402,9 +1288,7 @@
   Direction options:
     :forward       — outbound only
     :inverse       — inbound only
-    :bidirectional — sum of both (default)
-
-  Per fulltext arc Stage 13."
+    :bidirectional — sum of both (default)"
   ([entity-ident]
    (degree-of entity-ident {:direction :bidirectional}))
   ([entity-ident {:keys [direction predicates]
@@ -1445,15 +1329,9 @@
         (count (filter match? in-rows))))))
 
 (defn backlink-density-of
-  "Inbound ref-attribute count for `entity-ident`.  Counts entities
-  that have any ref-typed attribute pointing at this entity.
-
-  Equivalent to `(degree-of entity-ident {:direction :inverse})`;
-  named separately because backlink-density is a distinct retrieval
-  axis from edge-degree per
-  `decisions/multi_axis_search_catalog_2026_05_08.md` axes 6 vs 7.
-
-  Per fulltext arc Stage 13."
+  "Count incoming reference edges, optionally restricted to predicates.
+  Equivalent to degree-of with :direction :inverse. Several predicates from
+  one entity count as several edges; this is not a distinct-source count."
   ([entity-ident]
    (backlink-density-of entity-ident nil))
   ([entity-ident predicates]
@@ -1466,9 +1344,7 @@
   `(map first ...)`.
 
   Caller supplies `temporal-slot` (e.g., `:mm.memory/last-touched`) —
-  substrate does not hardcode class-specific temporal axes.
-
-  Per fulltext arc Stage 13."
+  substrate does not hardcode class-specific temporal axes."
   [class-ident temporal-slot]
   (->> (d/q '[:find ?e ?t
               :in $ % ?class ?slot
@@ -1487,9 +1363,7 @@
   pairs.
 
   Caller supplies `temporal-slot` (typically a `:last-reviewed`-style
-  attribute) — substrate does not hardcode class-specific axes.
-
-  Per fulltext arc Stage 13."
+  attribute) — substrate does not hardcode class-specific axes."
   [class-ident temporal-slot]
   (->> (d/q '[:find ?e ?t
               :in $ % ?class ?slot
@@ -1522,7 +1396,7 @@
                    is an instance-of the class (via `instance-of` rule)
 
   Substrate-quality: class-agnostic; predicate-set + target-type are
-  caller-supplied.  Per fulltext arc Stage 16."
+  caller-supplied."
   ([entity-ident]
    (outbound-edges-of entity-ident nil))
   ([entity-ident {:keys [predicate target-type]}]
@@ -1577,7 +1451,7 @@
                    is an instance-of the class (via `instance-of` rule)
 
   Substrate-quality: class-agnostic; predicate-set + source-type are
-  caller-supplied.  Per fulltext arc Stage 16."
+  caller-supplied."
   ([entity-ident]
    (inbound-edges-of entity-ident nil))
   ([entity-ident {:keys [predicate source-type]}]
@@ -1629,31 +1503,12 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (defn library-card-of
-  "Multi-axis typed-edge neighborhood view of an entity.
-
-  `axis-specs` is a vec of axis declarations.  Each axis:
-
-    {:name       <string-or-keyword>     ; label for this axis in result
-     :direction  :forward | :inverse     ; outbound from entity / inbound to entity
-     :predicates [<pred-ident>...]       ; restrict to these typed-edge predicates
-                                          ; (or omit for no restriction)
-     :target-type <class-ident>           ; restrict :forward axes by target's class
-     :source-type <class-ident>           ; restrict :inverse axes by source's class
-     :limit      <int>                    ; cap per-axis result count (default 0 = no cap)}
-
-  Returns:
-
-    {:entity <entity-map>
-     :axes   {<axis-name> [<edge-record>...]  ...}}
-
-  Each edge-record is the same shape as `inbound-edges-of` / `outbound-edges-of`
-  returns: `{:predicate <pred-ident> :target/source <entity-map>}` (target for
-  :forward axes; source for :inverse axes).
-
-  Substrate-quality: class-agnostic; axis-specs are caller-supplied.  No
-  hardcoded knowledge of any domain class's predicate vocabulary.  Per
-  fulltext arc Phase O scope-narrowed to library-card-only per
-  `decisions/sandbar_phase_o_substrate_quality_scope_library_card_only_2026_05_14.md`."
+  "Return {:entity entity :axes {axis-name [edge ...]}} for caller-defined axes.
+  Each axis has :name, :direction (:forward or :inverse), optional :predicates,
+  :target-type or :source-type, and :limit (default 0, no cap).
+  Forward edges carry :predicate and :target; inverse edges carry :predicate
+  and :source. Axes express the caller's vocabulary without domain-specific
+  navigation code."
   [entity-ident axis-specs]
   (let [entity (db/entity entity-ident)]
     {:entity entity
@@ -1679,25 +1534,9 @@
                    axis-specs)}))
 
 (defn siblings-of
-  "Same-directory peers of `entity-ident` via `path-slot` — entities
-  whose `path-slot` value shares the same directory prefix as the
-  given entity's, excluding the entity itself.
-
-  Filesystem-style semantics: 'decisions/foo.md' is a sibling of
-  'decisions/bar.md' (same dir prefix 'decisions/'); not a sibling of
-  'decisions/sub/baz.md' (one level deeper) or of 'patterns/foo.md'
-  (different dir).
-
-  Required:
-    entity-ident — keyword ident or eid; must have `path-slot` populated
-    path-slot    — slot ident (e.g., `:mm.memory/rel-path`) carrying
-                   the filesystem-style path string
-
-  Returns a vec of entity-maps; empty if the entity is at the root (no
-  parent directory) or has no peers.
-
-  Substrate-quality: class-agnostic; `path-slot` is caller-supplied.
-  Per fulltext arc Stage 22."
+  "Return entities sharing the seed's directory prefix in path-slot.
+  Paths in the same directory are siblings; a deeper subdirectory is not.
+  path-slot is the caller-selected property containing each relative path."
   [entity-ident path-slot]
   (let [entity     (db/entity entity-ident)
         rel-path   (get entity path-slot)]
@@ -1752,7 +1591,7 @@
                   / :bidirectional (union).  Default :forward.
     :include    — coll-of opts; `:paths` attaches step sequence.
 
-  Substrate-quality: class-agnostic.  Per fulltext arc Stage 17."
+  The operation uses caller-supplied predicates and class filters."
   ([seed-ident]
    (graph-walk-from seed-ident nil))
   ([seed-ident {:keys [hops predicates direction include]
@@ -1892,26 +1731,11 @@
                     (reduce conj! $ blocked-rows)))))))))
 
 (defn search-fulltext
-  "Single-attribute fulltext search via Datomic + Lucene.
-
-  Returns a seq of `[eid score]` tuples for entities whose `attribute`
-  value matches `query` per Lucene's tokenization + BM25 single-field
-  scoring (Lucene's default Similarity since v6).
-
-  `attribute` must be declared with `:db/fulltext true` in the schema
-  for the query to return hits; absent that, Datomic returns an empty
-  result.  Use `fulltext-indexed?` to validate before calling.
-
-  Query syntax supports Lucene's query-parser shapes: phrase
-  (`\"exact phrase\"`), boolean (`AND` / `OR` / `NOT`), wildcard
-  (`term*`), fuzzy (`term~`), etc.
-
-  Returns raw `[eid score]` tuples; higher-level concerns (limit,
-  result-shape projection, snippet generation, multi-field
-  weighting) live at the `sandbar.search/*` layer (Stage 3+).
-
-  Per fulltext arc Stage 2 of
-  plans/sandbar_fulltext_search_substrate_arc_2026_05_13.md."
+  "Query Datomic's native single-attribute fulltext index and return [eid score]
+  tuples. The score is Datomic/Lucene relevance, not Sandbar's BM25F score.
+  attribute must have :db/fulltext enabled; use fulltext-indexed? first.
+  Query syntax follows Datomic's native fulltext query support.
+  Projection, limits and multi-field scoring belong to sandbar.search."
   [attribute query]
   (d/q '[:find ?e ?score
          :in $ ?attr ?q
@@ -1934,20 +1758,8 @@
               (mapcat ancestors-of direct-parents)))))
 
 (defn effective-codec-aliases-of
-  "Returns the codec-aliases map merged across the class hierarchy.
-  Walks `:dt/subclass-of` ancestors; leaf-class aliases shadow ancestors
-  for shared keys (specificity wins).
-
-  Used by codecs to handle alias inheritance — e.g., :mm/Decision
-  (subclass of :mm/Memory) inherits :mm/Memory's `:type →
-  :mm.memory/memory-type` alias.  Without this, codec routing to a
-  Memory-subclass loses the :type→:memory-type aliasing because
-  `codec-aliases-of` only consults the leaf class.
-
-  Added 2026-05-21 per
-  plans/codec_subclass_routing_follow_up_arc_2026_05_21.md Stage 1.5
-  (codec slot-inheritance fix).  Sister to `slots-of` which already
-  walks inheritance via the `effective-slot` Datalog rule."
+  "Merge codec alias maps over the class and its ancestors. The leaf class
+  overrides inherited values for shared keys. Empty when no aliases exist."
   [class-ident]
   (let [chain (cons class-ident (ancestors-of class-ident))]
     (reduce (fn [acc c] (merge acc (codec-aliases-of c)))
@@ -1955,42 +1767,17 @@
             (reverse chain))))
 
 (defn effective-codec-slot-order-of
-  "Returns the codec-slot-order vector merged across the class hierarchy.
-  Leaf class's declared order comes first; ancestor classes' orders follow
-  in walked order; duplicate slots are deduplicated keeping the FIRST
-  (leaf-closest) occurrence.
-
-  Used by `sandbar.codec.markdown/emit-frontmatter` so that emit respects
-  the canonical ordering declared on ancestors (e.g., :mm/Decision inherits
-  :mm/Memory's slot-order over :mm.memory/* slots that are populated via
-  inheritance).  Without this, emission of Memory-subclass entities would
-  use an unstable iteration-order for inherited slots, breaking round-trip
-  stability.
-
-  Added 2026-05-21 per
-  plans/codec_subclass_routing_follow_up_arc_2026_05_21.md Stage 1.5
-  (codec slot-inheritance fix).  Sister to `effective-codec-aliases-of`."
+  "Return codec slot order across the class and its ancestors: the leaf's
+  declared order first, then ancestors in walked order. Repeated slots retain
+  their first occurrence. Empty when no ordering is declared."
   [class-ident]
   (let [chain (cons class-ident (ancestors-of class-ident))]
     (vec (distinct (mapcat codec-slot-order-of chain)))))
 
 (defn effective-bm25f-weights-of
-  "Returns the BM25F field-weight map merged across the class hierarchy.
-  Walks `:dt/subclass-of` ancestors; leaf-class weights shadow ancestors
-  for shared slot keys (specificity wins).
-
-  Used by `sandbar.search/search-bm25f` so subclasses of a class declaring
-  `:dt/bm25f-weights` (e.g., the consumer's memorial-subclass family)
-  inherit the parent's declared weights without having to redeclare them.
-  Without this, `search.bm25f` against a subclass fails with
-  'No :dt/bm25f-weights declared on class'.
-
-  Added 2026-05-23 per Gap 13 fix
-  (plans/sandbar_mcp_end_to_end_correctness_pass_substrate_stabilization_arc_2026_05_22.md
-  Stage C — subclass inheritance for class-metadata helpers).  Sister to
-  `effective-codec-aliases-of` / `effective-codec-slot-order-of` — same
-  ancestor-walk pattern, different attribute.  Class-agnostic per
-  interaction/no_hardcoded_consumer_class_knowledge_in_substrate_2026_05_13.md."
+  "Merge BM25F field weights across the class and its ancestors. The leaf
+  overrides inherited weights for shared slot keys. This is the default
+  field selection used by search-bm25f when no override is supplied."
   [class-ident]
   (let [chain (cons class-ident (ancestors-of class-ident))]
     (reduce (fn [acc c] (merge acc (bm25f-weights-of c)))
@@ -1998,12 +1785,9 @@
             (reverse chain))))
 
 (defn effective-superseded-when-of
-  "Returns the union of `:dt/superseded-when` declarations across the
-   class hierarchy (the class and every `:dt/subclass-of` ancestor), as a
-   set of `[slot-ident value]` pairs.  Empty when nothing in the chain
-   declares one, which keeps the search surface on pure relevance order
-   for that class.  Sister to `effective-bm25f-weights-of`; class-agnostic
-   per interaction/no_hardcoded_consumer_class_knowledge_in_substrate_2026_05_13.md."
+  "Return the union of [slot-ident value] supersession declarations from the
+  class and all ancestors, or #{}. Search uses these declarations for default
+  status-aware ordering; no domain-specific status vocabulary is hardcoded."
   [class-ident]
   (into #{} (mapcat superseded-when-of) (cons class-ident (ancestors-of class-ident))))
 
@@ -2015,36 +1799,10 @@
   (some recency-slot-of (cons class-ident (ancestors-of class-ident))))
 
 (defn effective-memorial-policy-of
-  "Returns the `:dt/memorial-policy` declaration nearest to `class-ident` in
-  the `:dt/subclass-of` ancestry chain, or nil if no declaration is found
-  anywhere in the chain.  One of `:first-class` / `:db-only` / `:inline`.
-
-  Unlike `effective-bm25f-weights-of` (which MERGES across the chain),
-  memorial-policy is scalar — nearest-declaration wins (specificity).
-  `:mm/Memory` declares `:first-class` once; all descendants inherit
-  unless they override (e.g., `:event/HttpRequest` declares `:db-only`).
-
-  Composes with `ancestors-of` (substrate primitive — not yet memoized
-  upward, parallel to memoized downward `subclasses-of-cached`; future
-  optimization if projection hot-path warrants).  Used by
-  `sandbar.reactive.sinks/fs-projection-sink` (Stage B.3 enforcement)
-  + (future) `sandbar.project.dump-db-only` (DB-dump arc Stage B).
-
-  nil return means the class is policy-undeclared.  Caller decides
-  default — current MVP at the fs-projection sink treats nil as
-  `:db-only` (conservative: skip projection rather than spuriously
-  emit).  Stage G of the first-class-memorialization arc will turn
-  policy-undeclared into a class-registration-time loud-fail.
-
-  Added 2026-05-23 per
-  `decisions/option_b_plus_c_ratified_spec_vs_state_criterion_pivot_to_first_class_memorialization_2026_05_23.md`
-  + the SPEC-vs-STATE pivot's substrate-enforcement requirement.
-  Sister to `effective-bm25f-weights-of` — same ancestor-walk pattern
-  but scalar reduction (first-match) rather than map-merge.  Mirrors
-  the `:dt/*` substrate-primitive discipline per
-  `interaction/build_on_type_system_reflectively_and_prospectively_dont_reinvent_in_parallel_due_to_tactical_concerns_2026_05_23.md`
-  — replaces a private hierarchy-walking helper that had been
-  authored inside `sandbar.reactive.sinks`."
+  "Return the first declared memorial policy in the class/ancestor walk, or nil.
+  This scalar policy is selected rather than merged. Values are :first-class,
+  :db-only and :inline. With no declaration, the caller chooses its default;
+  the filesystem sink conservatively skips undeclared classes."
   [class-ident]
   (let [chain (cons class-ident (ancestors-of class-ident))]
     (some memorial-policy-of chain)))
@@ -2187,11 +1945,10 @@
 (db/register-post-schema-reload-handler! clear-type-relation-cache!)
 
 (defn subclasses-of-cached
-  "Returns the cached set of all transitive subclasses of class-ident
-  (NOT including class-ident itself).  Populates cache on miss via
-  `subclasses-of` (which runs the recursive Datalog query).
-
-  Per `decisions/dt_layer_exposes_memoized_type_relation_ops_with_schema_invalidation_2026_05_22.md`."
+  "Return the cached set of transitive subclass idents, excluding class-ident.
+  Populates a missing entry from the recursive subclasses-of query. Full schema
+  loading clears the cache through its registered callback; single-file schema
+  loading and ordinary class mutations do not reliably invalidate it."
   [class-ident]
   (or (get @type-relation-cache class-ident)
       (let [computed (set (subclasses-of class-ident))]
@@ -2199,39 +1956,23 @@
         computed)))
 
 (defn descendants-of
-  "Returns the set of all class-idents that are `class-ident` OR a
-  transitive subclass.  Substrate primitive for entity-filtering by
-  is-instance-of-class-or-descendant.
-
-  Use this when iterating a collection asking 'is this entity an X
-  descendant?' — `(contains? (descendants-of X) (:dt/type entity))` is
-  O(1) per call.  Compared to per-call `type-isa?` which (before this
-  cache) ran a recursive Datalog query per invocation.
-
-  Per `decisions/dt_layer_exposes_memoized_type_relation_ops_with_schema_invalidation_2026_05_22.md`."
+  "Return the cached set containing class-ident and its transitive subclasses.
+  Suitable for repeated membership checks. Has the same model-change freshness
+  boundary as subclasses-of-cached; this is not a fresh query on every call."
   [class-ident]
   (conj (subclasses-of-cached class-ident) class-ident))
 
 (defn subclass-of?
-  "Returns true if c is a subclass of dt (direct or transitive).
-  Uses the cached `subclasses-of-cached` set; O(1) lookup once warm."
+  "Return whether c is a transitive subclass of dt, using the cached class set.
+  Exact identity is handled by type-isa?. See subclasses-of-cached for freshness."
   [dt c]
   (contains? (subclasses-of-cached dt) c))
 
 (defn type-isa?
-  "Map-friendly type-membership predicate: returns true if `entity-type`
-  is `dt` exactly OR a transitive subclass of `dt`.  Sister to
-  `instance-of?` which expects a transacted entity (and does an entity
-  lookup); `type-isa?` takes a class-keyword directly and is safe to
-  call on entity-spec MAPS where `:dt/type` is just a keyword.
-
-  Use at substrate boundaries where exact `(= :mm/Memory (:dt/type e))`
-  would miss legitimate subclass instances (e.g., :mm/Decision via
-  :dt/subclass-of :mm/Memory).  Added 2026-05-21 per
-  plans/codec_subclass_routing_follow_up_arc_2026_05_21.md Stage 1.5
-  — same substrate-pure pattern as `memory-class?` in the codec but
-  promoted to dt/* so projection + codec + future consumers share the
-  helper."
+  "Return whether entity-type is dt or a transitive subclass of dt.
+  Both arguments are class idents, so it also applies to an untransacted map's
+  :dt/type value. Uses cached subclass relations and returns false if that
+  lookup throws; see subclasses-of-cached for the model-change limitation."
   [dt entity-type]
   (or (= dt entity-type)
       (try (subclass-of? dt entity-type)
@@ -2246,13 +1987,10 @@
   - Datomic Entity form (post-DB-read; ref-slot resolution returns
     the target entity rather than its ident)
 
-  Gap 20 fix (2026-05-22): the prior implementation `(= dt t)` /
-  `(subclass-of? dt t)` worked when `t` was a keyword but silently
-  returned false when `t` was an EntityMap — because the keyword-
-  vs-EntityMap comparison is always false + the subclass cache stores
-  keyword idents.  Surfaced via entity.update flow which validates
-  the merged slot map: DB-read ref values fail the type check even
-  though they're already-resolved valid refs."
+  Normalize a resolved type entity to its ident before comparison, so
+  validating stored reference values uses the same representation as new
+  entity maps. Subclass membership uses the process-local hierarchy cache;
+  ordinary hot model edits do not yet invalidate every cached relation."
   [dt e]
   (let [t-val   (-> e entity :dt/type)
         t-ident (cond
@@ -2452,12 +2190,14 @@
           (and (:db/id e)
                (nil? (:dt/type e)))))))
 
-(defn required? [prop]
-  "Check if a property is required"
+(defn required?
+  "Return the property's declared :dt/required? value, or nil if absent."
+  [prop]
   (:dt/required? (entity prop)))
 
-(defn cardinality-of [prop]
-  "Get the cardinality of a property"
+(defn cardinality-of
+  "Return the property's Datomic cardinality ident, or nil if absent."
+  [prop]
   (:db/cardinality (entity prop)))
 
 (defn cardinality-one?
@@ -2470,12 +2210,14 @@
   [prop]
   (= :db.cardinality/many (cardinality-of prop)))
 
-(defn required-slots-of [dt]
-  "Get all required slots for a class (including inherited)"
+(defn required-slots-of
+  "Return a sequence of effective slot idents marked required, including inherited slots."
+  [dt]
   (filter required? (slots-of dt)))
 
-(defn validator-of [dt]
-  "Get the custom validator function for a class, if any"
+(defn validator-of
+  "Resolve the class's :dt/validator symbol to a var; return nil if absent or unresolvable."
+  [dt]
   (when-let [sym (:dt/validator (entity dt))]
     (try
       (requiring-resolve sym)

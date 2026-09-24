@@ -1,27 +1,9 @@
 (ns sandbar.logging.init
-  "Canonical Telemere reconfiguration site for sandbar.
-
-   `start!` runs BEFORE any other startup work in `sandbar.core/start`
-   so callsites produce output instead of dispatching to a no-handler
-   void.
-
-   ## Handler design (Phase 1 easy-wins; per Dan-directive 2026-05-23)
-
-   - **`:default/console` retained** — Telemere's kiwi formatter (verbose
-     but informative) writes to *out*, captured by `bin/sandbar`'s
-     nohup redirect into `.sandbar/sandbar.log`.
-   - **`:sandbar/file` added** — same kiwi format mirrored into
-     `.sandbar/logs/sandbar.log` (rolling+gzip; machine-parseable
-     longitudinal archive).
-   - **Middleware `:xfn` installed** — `sandbar.logging.format/middleware`
-     strips the noisy `ctx: {pid X}` footer from every line AND drops
-     Datomic `:MetricsReport` periodic floods.  Other Datomic events
-     pass through.
-
-   Phase 2 (custom formatter with source-attribution + shorter timestamp
-   + content curation) is deferred per the
-   memory/authorizations/logging_curation_sequence_easy_wins_then_deep_telemere_study_then_arc_alignment_dan_directive_2026_05_23.md
-   sequence."
+  "Configure the service's Telemere handlers before other startup work.
+   start! installs console, rolling-file and memorial handlers with the
+   configured filters and formatting middleware. Log destinations and handler
+   levels are process configuration; repeated initialization changes global
+   logging behavior. See doc/concepts/logging-substrate.md."
   (:require [clojure.tools.logging   :as log]
             [sandbar.logging.config  :as logging-config]
             [sandbar.logging.format  :as fmt]

@@ -69,12 +69,8 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (def valid-terminal-kinds
-  "Closed set of terminal-kind classifications per
-   decisions/sandbar_workflow_cancellation_modeled_as_terminal_kind_on_states_2026_05_12.md.
-
-   :success — process completed its intended purpose
-   :failure — process encountered an outcome-blocking problem
-   :cancel  — process was deliberately stopped"
+  "Terminal outcome classifications: :success for the intended outcome,
+   :failure for an outcome-blocking problem, and :cancel for deliberate stop."
   #{:success :failure :cancel})
 
 (defn- validate-terminal-kind!
@@ -102,25 +98,11 @@
                      :allowed       valid-terminal-kinds}))))
 
 (defn create-state!
-  "Create a workflow state.
-
-   Arguments:
-     state-name - Keyword identifier (e.g., :order/pending)
-
-   Options:
-     :label         - Human-readable name
-     :initial?      - Is this the starting state?
-     :terminal?     - Is this a final state (no outgoing transitions)?
-     :terminal-kind - Classification of terminal outcome: :success / :failure / :cancel.
-                      REQUIRED when :terminal? is true; rejected otherwise.
-     :metadata      - Additional state data (any EDN-serializable value)
-
-   Returns the created state entity.
-
-   Throws ex-info if :terminal? is true without :terminal-kind, or if
-   :terminal-kind is not in #{:success :failure :cancel}, or if
-   :terminal-kind is supplied when :terminal? is not true.  Per
-   decisions/sandbar_workflow_cancellation_modeled_as_terminal_kind_on_states_2026_05_12.md."
+  "Create a named workflow state and return its entity.
+   Options: :label, :initial?, :terminal?, :terminal-kind and EDN :metadata.
+   A terminal state requires :terminal-kind in #{:success :failure :cancel};
+   a nonterminal state may not declare one. Invalid combinations throw
+   ExceptionInfo before creating the state."
   [state-name & {:keys [label initial? terminal? terminal-kind metadata]}]
   (validate-terminal-kind! state-name terminal? terminal-kind)
   (dt/make :workflow/State
@@ -204,23 +186,12 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (defn define-workflow!
-  "Define a complete workflow with states and transitions.
-
-   Arguments:
-     definition-name - Keyword identifier (e.g., :workflow/order-fulfillment)
-     spec            - Map containing:
-                       :states      - Vector of state specs
-                       :transitions - Vector of transition specs
-                       :version     - Optional version number
-
-   State spec: {:name :state-name :label \"Label\" :initial? bool :terminal? bool
-                :terminal-kind :success|:failure|:cancel}
-   Transition spec: {:name :action :from :state :to :state :guard 'fn :requires-reason? bool}
-
-   Terminal state specs MUST declare :terminal-kind per
-   decisions/sandbar_workflow_cancellation_modeled_as_terminal_kind_on_states_2026_05_12.md.
-
-   Returns the created workflow definition entity."
+  "Define a reusable workflow from :states and :transitions vectors, with
+   optional :version. States use :name, :label, :initial?, :terminal? and
+   :terminal-kind; terminal states require success, failure or cancel.
+   Transitions use :name, :from, :to, optional :guard and :requires-reason?.
+   Returns the created definition entity. Definition installation does not
+   add concurrency guarantees to transition execution."
   [definition-name {:keys [states transitions version] :or {version 1}}]
   ;; Create states first
   (let [state-entities (into {}
@@ -370,19 +341,10 @@
         entity))))
 
 (defn update-process-data!
-  "Replace a workflow process's `:workflow/process-data` payload.
-
-   Encapsulates the raw Datomic transact for process-data updates,
-   so service-layer code can stay at the workflow boundary instead of
-   reaching into Datomic directly.  Per
-   interaction/target_sandbar_introspection_api_layer_not_raw_datomic_2026_05_12.md
-   + codex SHOULD-FIX #1 (validation-as-workflow leaks raw transact).
-
-   The value is `pr-str`'d on write (Sandbar's current process-data
-   shape; per codex DEFER #1 this is the EDN-string substrate that
-   may evolve post-0.1.0 into typed slot decomposition).
-
-   Returns the refreshed process entity after the transact completes."
+  "Replace :workflow/process-data with the pr-str encoding of the value.
+   Encapsulate the transaction behind the workflow API and return the
+   refreshed process entity after completion. This EDN payload is distinct
+   from typed process slots and must follow the application's trust policy."
   [process data]
   (let [process-id (or (:db/id process) process)]
     (when-not (number? process-id)
@@ -567,7 +529,11 @@
      :reason  - Reason/comment for the transition
 
    Returns the updated process entity.
-   Throws if transition is not available or reason is required but not provided."
+   Throws if transition is not available or reason is required but not provided.
+   History is created in a separate transaction. The state update has no
+   compare-and-set guard, and hook exceptions are logged without necessarily
+   preventing that update. Use serialized callers and re-fetch between steps;
+   this function does not provide exactly-once effects."
   [process transition-name & {:keys [context actor reason]}]
   (let [current-state (get-current-state process)
         workflow (get-process-workflow process)
@@ -634,16 +600,11 @@
                              [:db/add (:db/id process) :workflow/history (:db/id history)]]
                       is-terminal?
                       (conj [:db/add (:db/id process) :workflow/completed-at now]))
-            ;; Run on-transition hook + CAPTURE its returned tx-data.  Effects
-            ;; (e.g. sandbar.workflow.session/on-fail) return a tx-data vector to
-            ;; be applied ALONGSIDE the state CAS; the prior code discarded the
-            ;; return, so those effects (e.g. :mm.session-process/failure-reason
-            ;; / failure-instant, :paused-from-state) were silent no-ops.  Fixed
-            ;; 2026-05-29 (session-lifecycle-hardening arc): merge the effect's
-            ;; tx-data into the SAME transaction as the CAS so state-change +
-            ;; effect commit atomically.  Guarded — only a vector of tx-forms is
-            ;; merged; a scalar / nil / non-tx return is ignored (back-compat for
-            ;; effects that only log).
+            ;; Include a nonempty sequential collection of tx-forms returned
+            ;; by the hook in the state-update transaction. This is a plain
+            ;; assertion, not a state CAS. The history entity above has already
+            ;; been committed separately. Non-tx returns are ignored; the hook
+            ;; wrapper logs exceptions and returns nil on failure.
             effect-tx (run-on-transition transition process
                                          (merge context {:actor actor :reason reason}))
             all-tx    (cond-> tx-data
@@ -1247,23 +1208,10 @@
     (throw (ex-info "Workflow resource not found" {:path resource-path}))))
 
 (defn- list-classpath-resources
-  "List filenames of resources inside a classpath directory.  Works
-   uniformly for both filesystem-backed (lein dev) and JAR-backed
-   (uberjar / Clojars-consumed dependency) classloader URLs.
-
-   The legacy `(file-seq (io/file (io/resource dir)))` idiom fails on
-   JAR URLs (`jar:file:.../X.jar!/dir`) because `java.io.File` cannot
-   traverse JAR internals.  This helper dispatches on the URL protocol:
-
-   - `file:` (development) — use `file-seq` over the directory
-   - `jar:` (production / Clojars consumer) — walk JarFile entries via
-     `JarURLConnection`
-
-   Per Phase U Stage U-2 fix for ultrareview UR-1
-   (`observations/sandbar_workflow_resource_load_jar_uberjar_break_2026_05_14.md`).
-
-   Returns: vector of filename strings (basename only, no directory
-   prefix).  Empty vector when the resource directory is absent."
+  "List resource basenames from a classpath directory.
+   For file URLs walk the directory; for jar URLs inspect JarFile entries
+   through JarURLConnection. Return a vector, or an empty vector when the
+   directory is absent. This avoids treating a JAR URL as a filesystem path."
   [dir]
   (let [url (io/resource dir)]
     (cond
@@ -1357,25 +1305,11 @@
          first)))
 
 (defn cancel-process!
-  "Cancel a running workflow process. Finds an available transition that
-   targets a state classified :workflow/terminal-kind :cancel and executes
-   it via transition!.
-
-   Arguments:
-     process - The process entity (or eid; resolved via find-process)
-
-   Options:
-     :actor  - User/principal performing the cancellation
-     :reason - Reason/comment for the cancellation (passed to transition!)
-
-   Returns the updated process entity.
-
-   Throws ex-info with :reason :no-cancel-transition when the workflow
-   doesn't declare a cancellation path from the current state.
-
-   This is the discipline-correct cancellation path per
-   interaction/target_sandbar_introspection_api_layer_not_raw_datomic_2026_05_12.md
-   — consumers call this instead of constructing raw transact data."
+  "Cancel through an available transition to a :cancel terminal state.
+   Accept a process entity or eid; optional :actor and :reason pass through
+   to transition!. Return the updated process. Throw ExceptionInfo with
+   :reason :no-cancel-transition when no path is available. Cancellation
+   retains the transition implementation's state/effect limitations."
   [process & {:keys [actor reason]
               :or   {reason "Cancelled by consumer (via workflow/cancel-process!)"}}]
   (let [process-entity (if (number? process) (find-process process) process)

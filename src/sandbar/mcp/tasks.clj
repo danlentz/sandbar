@@ -1,31 +1,11 @@
 (ns sandbar.mcp.tasks
-  "MCP Tasks primitive (experimental) — durable execution wrappers for
-   long-running operations. Per
-   decisions/sandbar_mcp_server_design_2026_05_12.md B.1.10:
-
-   MCP's Tasks primitive composes naturally with Sandbar's workflow
-   substrate (validation-as-workflow pattern from sandbar.service.validation).
-   A long-running tool-call returns a TASK HANDLE instead of immediate
-   content; the client polls `tasks/get <handle>` for status; receives
-   the terminal result when the workflow process reaches a terminal state.
-
-   Discipline per
-   interaction/target_sandbar_introspection_api_layer_not_raw_datomic_2026_05_12.md:
-   targets `sandbar.util.workflow/*` abstraction — start-process!,
-   find-process, get-current-state, process-completed?,
-   process-in-terminal-state?, get-process-data, get-process-history.
-   NEVER raw datomic.api.
-
-   Stage C.7 foundation:
-   - tasks/get returns current workflow process state
-   - tasks/cancel terminates a running process
-   - start-task! helper for tools that initiate long-running ops
-
-   Subsequent stages:
-   - C.7.1 progress notifications via notifications/progress
-   - C.7.2 result projection (terminal-state outputs → MCP task result)
-   - C.7.3 tools/call auto-dispatching to Task when expected duration
-     exceeds threshold"
+  "Experimental task adapter backed by workflow processes.
+   Task IDs are string forms of process eids. List/get project the stored
+   lifecycle state; cancel delegates to the workflow's declared cancellation
+   path. start-task! creates a process and emits a progress-style notification.
+   This adapter does not implement the full standard MCP Tasks contract or
+   automatically convert long-running tool calls into standard tasks.
+   See doc/concepts/mcp-protocol.md for compatibility limits."
   (:require [clojure.tools.logging  :as log]
             [sandbar.mcp.notifications :as notifications]
             [sandbar.util.jsonrpc-status :as jsonrpc-status]
@@ -58,10 +38,8 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Task status projection
 ;;
-;; Per the MCP Tasks (experimental) shape — map a workflow process state
-;; to a Task status string by reading the current state's
-;; :workflow/terminal-kind classification per
-;; decisions/sandbar_workflow_cancellation_modeled_as_terminal_kind_on_states_2026_05_12.md:
+;; Map a workflow process state to this adapter's task status using the
+;; current state's :workflow/terminal-kind classification:
 ;;
 ;;   :workflow/terminal-kind :success → "completed"
 ;;   :workflow/terminal-kind :failure → "failed"
@@ -69,8 +47,7 @@
 ;;   (terminal? true, no kind)        → "completed" (graceful degradation + warn)
 ;;   (terminal? false)                → "running"
 ;;
-;; Resolves F-S-003 (task status projection previously collapsed all
-;; terminal outcomes into "completed").
+;; The adapter distinguishes terminal outcomes instead of collapsing them.
 
 (def ^:private terminal-kind->task-status
   {:success "completed"
@@ -78,9 +55,9 @@
    :cancel  "cancelled"})
 
 (defn process->task-status
-  "Project a workflow process to an MCP Task status map.  Reads
+  "Project a workflow process to this adapter's task status map. Reads
    :workflow/terminal-kind on the current state to distinguish
-   success / failure / cancellation outcomes per F-B-002 ADR.
+   success, failure and cancellation outcomes.
 
    Returns a map with :status (one of \"missing\" / \"running\" /
    \"completed\" / \"failed\" / \"cancelled\") + :state (the current
@@ -125,23 +102,19 @@
                  "Process data: " (pr-str data))}]))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; tasks/list handler — UR-5 (Phase U Stage U-4) closing the
-;; documented-but-unregistered gap surfaced by the 2026-05-14 ultrareview.
+;; tasks/list handler
 
 (defn handle-list
-  "MCP `tasks/list` — enumerate workflow processes as MCP tasks.
+  "Enumerate workflow processes through the experimental tasks/list adapter.
 
-   Response shape per MCP Tasks (experimental):
+   Adapter response shape:
    - `:tasks` is a vector of `{:taskId :status :state}` maps; terminal
      tasks additionally carry `:content`.
 
    Optional `:active-only` arg filters out terminal-state processes
    (via `workflow/list-active-processes`); default lists all processes
-   (via `workflow/list-processes`).
-
-   Per Dan-directive 2026-05-14 PM endorsing process-enumeration as a
-   substrate-quality feature.  Closes ultrareview UR-5 (documented
-   verb without dispatch entry)."
+   (via `workflow/list-processes`). This is not the full standard MCP
+   Tasks result schema; see doc/concepts/mcp-protocol.md."
   [id params]
   (try
     (let [active-only? (boolean (:active-only params))
@@ -174,12 +147,11 @@
 ;; tasks/get handler
 
 (defn handle-get
-  "MCP `tasks/get` — return current status (+ result if terminal) for
-   a task-id.
+  "Return current adapter status and terminal content for a task-id.
 
-   Response shape per MCP Tasks (experimental):
+   Adapter result shape:
    - Running: {:taskId :status \"running\" :state <workflow-state>}
-   - Completed: {:taskId :status \"completed\" :content [...]}
+   - Terminal: {:taskId :status <terminal-status> :state :content [...]}
    - Missing: error -32602"
   [id params]
   (try
@@ -230,18 +202,15 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; tasks/cancel handler
 ;;
-;; Stage C.7: cancellation maps to terminating the underlying workflow
-;; process. The workflow substrate doesn't yet expose a direct
-;; cancel-process! — Sandbar's service.validation/cancel-validation!
-;; pattern is class-specific. Stage C.7.4 follow-up: extend the workflow
-;; abstraction with `workflow/cancel-process!` per layer-targeting
-;; discipline (improve-abstraction-not-bypass).
+;; Cancellation delegates to the workflow's modeled cancellation path.
+;; It does not interrupt an arbitrary running function or thread.
 
 (defn handle-cancel
-  "MCP `tasks/cancel` — terminate a running task. Stage C.7 returns a
-   not-yet-implemented error pointing at the workflow-abstraction gap
-   per the layer-targeting discipline; C.7.4 lands the
-   workflow/cancel-process! function upstream."
+  "Request cancellation through workflow/cancel-process!.
+   A missing task is a JSON-RPC invalid-params error. A workflow refusal
+   returns result.isError with explanatory content; other failures return
+   an internal-error response. A successful response reports the resulting
+   workflow state, not proof that external work has been interrupted."
   [id params]
   (let [task-id (:taskId params)
         process (task-id->process task-id)]
@@ -290,9 +259,8 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Task initiator — helper for tools that start long-running ops
 ;;
-;; Per B.1.10: tools that operate on potentially-large entity sets
-;; (export-all, validate-all-instances, bulk-ingest) call this to start
-;; a workflow process + return a task-id immediately.
+;; Explicit callers may start a workflow process and return its task-id.
+;; Long-running tools are not automatically routed through this helper.
 
 (defn start-task!
   "Initiate a long-running task backed by a workflow process. Returns

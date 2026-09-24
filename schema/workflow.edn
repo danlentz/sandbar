@@ -105,12 +105,11 @@
    :dt/range :db.type/keyword
    :db/valueType :db.type/keyword
    :db/cardinality :db.cardinality/one
-   :db/doc "Classification of terminal state outcome: :success / :failure / :cancel.
-            Only meaningful when :workflow/terminal? is true.  Required for terminal
-            states (enforced at create-state! / define-workflow! call boundaries);
-            absent for non-terminal states.  Consumed by can-cancel? + cancel-process!
-            + sandbar.mcp.tasks/process->task-status per
-            decisions/sandbar_workflow_cancellation_modeled_as_terminal_kind_on_states_2026_05_12.md"}]
+   :db/doc "Terminal-state outcome: :success, :failure, or :cancel. Meaningful only
+            when :workflow/terminal? is true. Workflow construction checks terminal
+            states at create-state! and define-workflow! boundaries. Cancellation
+            and Sandbar task-status projection use this outcome classification;
+            it does not establish a standard MCP Tasks interface."}]
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Transition Properties
@@ -382,7 +381,11 @@
    :dt/context "workflow"
    :dt/label "Definition"
    :dt/memorial-policy :first-class       ;; user-visible behavioral spec — projects to memory/workflows/<name>.md per first-class-memorialization arc Stage E migration
-   :db/doc "A complete workflow specification with states and transitions.  Per Stage C of `plans/sandbar_first_class_memorialization_arc_workflows_schedules_contexts_dt_memorial_policy_2026_05_23.md` — class now inherits from `:mm/Meta` (a `:mm/Memory` descendant) so workflow definitions are first-class memorialized like sessions / decisions / plans.  Codec emit (states + transitions sections) lands in Stage D; until then projection sink skips workflows with `:no-native-codec` reason."
+   :db/doc "Workflow definition containing states and transitions. Inherits memory
+            metadata through :mm/Meta and declares :first-class projection policy.
+            Workflow codecs can render structural states and transitions; runtime
+            workflow processes remain separate database entities. A policy
+            declaration alone does not guarantee a valid projected file."
    :dt/slots [:workflow/definition-name
               :workflow/states
               :workflow/transitions

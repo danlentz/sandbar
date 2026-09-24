@@ -1,62 +1,13 @@
 (ns sandbar.schedule.system
-  "Sandbar's default-provided SYSTEM jobs — operational observability that
-   ships with the platform and runs by default (per Dan-directive
-   2026-05-28, renaming the prior 'demo' framing).
+  "Default system jobs for database and reactive-queue observability.
+   db-stats and reactive-queue-health emit hourly log signals. Their handlers
+   do not themselves create retained telemetry records. Any scheduler Run
+   recording is a separate lifecycle policy.
 
-   Two system jobs at present, both emitting LOG LINES ONLY — no database
-   row, no memorial (see MEMORIAL POLICY below):
-
-     - db-stats              (FREQ=HOURLY;INTERVAL=1) — substrate counts
-       {:memorials :classes :properties :total-entities}
-     - reactive-queue-health (FREQ=HOURLY;INTERVAL=1) — the 13-key
-       sandbar.reactive.queue/health snapshot
-
-   ## Memorial policy — log lines only (Dan's retention-review ruling 2026-09-19)
-
-   These are LOW-CONTENT operational signals, HOURLY (≈ 48/day for the
-   pair).  They emit plain Telemere signals: printed to `sandbar.log` by
-   the LOG handler, persisted nowhere.  History:
-
-   - 2026-05-28: emitted `:db-only` — an `:event/SystemEvent` row per fire
-     rather than a `:first-class` `:mm/EventLog` (a `:mm/Memory` subtype,
-     which would have inflated the memory count, fed BM25F and been
-     FS-projected).  The row was meant as queryable operational history.
-   - 2026-09-19: nobody ever read those rows from the database (13,751 of
-     them at the census, plus one `:mm/Run` per fire at the old ten- and
-     fifteen-minute cadence), the log file carried the same numbers, and
-     Dan ruled that telemetry is retained only where its value exceeds the
-     code needed to keep it.  So: log lines only, hourly, and the
-     accumulated rows deleted with the backlog.
-   - `:mm/Run` records are still minted per fire by the job-dispatcher (the
-     scheduler's audit trail); at hourly cadence that is 48 a day.
-
-   These are the 'system jobs' umbrella — distinct from user-defined jobs.
-   Future system jobs (scheduled tag.audit / Gate-2 verify-restore / SHACL
-   conformance-report / project.dump-db / health-check per the γ.6 future-
-   pattern docs) join the same `:sandbar.system/*` namespace.
-
-   Exercises the full scheduler pipeline end-to-end:
-     - sandbar.schedule.dispatcher (fire-thread + queue)
-     - sandbar.schedule.job-dispatcher (event subscriber + Run lifecycle)
-     - sandbar.event (class-hierarchical dispatch)
-     - sandbar.logging (Telemere signal → the LOG handler; no memorial)
-     - sandbar.db.datatype + sandbar.reactive.queue (the observed substrate)
-
-   per γ.1 ADR §1.4 + the γ scheduler arc plan.
-
-   ## Boot wiring (γ.5b)
-
-   When `:scheduler/enabled?` + `:scheduler/system-jobs?` are true (the
-   shipped default), `sandbar.core/start` invokes `seed-system-jobs!` →
-   upserts the 2 :mm/Fn + 2 :mm/Job + 2 :mm/Schedule entities (stable
-   :db/ident; idempotent across boots; dtstart re-anchored at boot) → adds
-   the returned schedule eids to the live scheduler queue.
-
-   ## See also
-
-   - γ.1 ADR §1.4: `:memory.decisions/gamma_1_scheduler_path_a_native_min_heap_dispatcher_q_gamma_1_through_6_resolved_2026_05_27`
-   - γ scheduler arc plan:
-     `:memory.plans/gamma_scheduler_live_integration_arc_path_a_native_min_heap_dispatcher_demo_db_stats_job_5_mcp_verbs_pre_0_2_0_phase_gamma_sub_plan_2026_05_27`"
+   With scheduler and system-job configuration enabled, startup seeds the
+   stable function/job/schedule entities and adds schedules to the runtime.
+   Inspect both configuration and installed schedule state when diagnosing
+   a deployment. Ordinary telemetry is not automatically authored memory."
   (:require [sandbar.db.datatype  :as dt]
             [sandbar.logging      :as logging]
             [sandbar.reactive.queue :as reactive-queue])
@@ -122,14 +73,14 @@
 (defn log-reactive-queue-health
   "System job fn — reactive-projection queue health snapshot.
 
-   Same shape as `log-db-stats` but reports the 13-key health map from
+   Same shape as `log-db-stats` but reports the health map from
    `sandbar.reactive.queue/health` (the backing fn for the
    `sandbar.reactive.health` MCP verb).  Emits ONE plain
    operational-telemetry signal per fire (a log line, no database row;
    see ns MEMORIAL POLICY) carrying:
 
      {:worker-running?        bool
-      :buffer-size            int (sliding-buffer capacity)
+      :buffer-size            int (dirty-map soft pressure threshold)
       :dirty-entity-count     int (entities pending projection)
       :oldest-pending-age-ms  int or nil
       :enqueue-total          int (cumulative since startup)
@@ -230,7 +181,7 @@
 
 (defn- system-schedule-specs
   "The 2 system :mm/Schedule entity specs, dtstart anchored at `now-date`.
-   db-stats fires every 15 min; reactive-queue-health every 10 min.
+   Both db-stats and reactive-queue-health fire hourly.
    `:mm.schedule/target` carries the target Job's :db/ident keyword;
    Datomic resolves it to a proper :db.type/ref on transact."
   [^Date now-date]

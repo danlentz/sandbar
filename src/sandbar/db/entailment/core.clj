@@ -1,47 +1,23 @@
 (ns sandbar.db.entailment.core
-  "RDFS + OWL 2 RL property-characteristic entailment via Datomic-native Datalog rules.
+  "Selected RDFS and OWL property rules expressed as Datomic Datalog data.
 
-  This namespace implements the substrate-layer entailment described in the
-  2026-05-21 ADR (`decisions/sandbar_rdfs_entailment_via_datomic_native_
-  datalog_rules_with_swclos_style_metaclass_property_characteristics_2026_05_21.md`).
+  rdfs-rules contains domain/range, subclass, subproperty and membership rules.
+  owl-rl-rules contains selected transitive, symmetric, inverse, asymmetric,
+  irreflexive, functional and inverse-functional property relations. Pass the
+  selected rules through a query's % input, or call apply-entailment.
 
-  ## Architecture
+  Property characteristics are classes such as :dt/TransitiveProperty.
+  A combination class can inherit several characteristics; rule queries use
+  that hierarchy when determining which property behavior applies.
 
-  Six RDFS entailment rules (rdfs2 / rdfs3 / rdfs5 / rdfs7 / rdfs9 / rdfs11)
-  plus selected OWL 2 RL property-characteristic rules (prp-trp / prp-symp /
-  prp-asyp / prp-irp / prp-fp / prp-ifp / prp-inv1 / prp-inv2) are encoded as
-  static Datomic Datalog rule-sets — `rdfs-rules` and `owl-rl-rules`.  The
-  composite `all-rules` is the concatenation; consumers pass it (or a
-  subset) to Datomic queries via the `%` binding.
-
-  Property characteristics follow the SWCLOS-style metaclass pattern (ADR D3):
-  characteristics are classes (e.g., `:dt/TransitiveProperty`).  Orthogonal
-  combinations (e.g., transitive + asymmetric + irreflexive) compose via
-  intersection classes whose `:dt/subclass-of` chain declares all
-  components (ADR D4).  RDFS rdfs9 then entails membership in each component
-  class from the property's single declared `:dt/type`.
-
-  ## Substrate-transparency
-
-  Per ADR D1 + synthesis §3.6, this module is OPAQUE to codec / projection /
-  MCP / render — they continue to query Datomic with their existing patterns
-  and see derived facts as ordinary facts when they pass `all-rules`.  The
-  bridge for the dt/type-isa? subsumption check is in
-  `sandbar.db.datatype` (augmented in Stage 5).
-
-  ## Query-time default
-
-  Per ADR D6, query-time inference is the default execution mode.  Selective
-  materialization (Stage 6) is opt-in for hot-path closures via
-  `sandbar.db.entailment.materialize` (not yet implemented).
-
-  ## Stage 1 status
-
-  This is the Stage 1 module skeleton — rule-set placeholders are empty
-  vectors; `apply-entailment` is the consumer helper.  Stages 2-3 land the
-  actual rule bodies; Stage 4 declares the intersection classes; Stage 5
-  augments `dt/type-isa?`.  See `plans/sandbar_dt_entailment_implementation_
-  arc_2026_05_21.md` for the full stage breakdown."
+  Derivations happen at query time and are not automatically materialized.
+  A normal raw pattern does not acquire these rules implicitly. The datatype
+  namespace has its own recursive rules for core class membership and slots.
+  Selecting multiple named property rules does not guarantee complete closure
+  across their conclusions. Integrity findings do not by themselves reject a
+  write, and functional-property conflicts do not merge identities.
+  This is a supported entailment fragment, not complete RDF Schema or OWL
+  conformance. See doc/concepts/rdfs-entailment.md."
   (:require [datomic.api :as d]))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;

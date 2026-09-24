@@ -55,7 +55,12 @@
    :dt/context       "mm"
    :dt/label         "Meta"
    :dt/abstract?     true
-   :db/doc "Abstract supertype for memorial types describing the memory system itself — schema-facing memorials.  Per memory/types/meta.md.  Direct concrete subtypes: :mm/Type, :mm/Predicate, :mm/Inbox, :mm/Task, :mm/Event, :mm/Engine, :mm/Organization, :mm/Context, :mm/Rule.  Sub-abstracts: :mm/Actor + :mm/MetaType.  Category-level invariants: schema-facing (validation rules apply differently than to artifacts); :mm/Meta memorials don't carry :supersedes.  Per decisions/sandbar_memorial_type_substrate_layering_2026_05_21.md D2 + corrections R1/R5.  Not instantiated directly."}]
+   :db/doc "Abstract category for memories describing or organizing the memory system:
+            types, predicates, actors, contexts, rules, tasks, Inbox records, and
+            related metadata. Their interpretation depends on schema and client
+            conventions rather than the authoring rules for ordinary artifacts.
+            Instantiate a concrete subtype and inspect the live class hierarchy
+            for its current descendants."}]
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; :mm.type/* Properties — captureability metadata family + tier + subtree routing
@@ -94,7 +99,9 @@
   {:db/ident :mm.type/subtree
    :dt/type :dt/Property :dt/domain :mm/Type :dt/range :db.type/string
    :db/valueType :db.type/string :db/cardinality :db.cardinality/one
-   :db/doc "Canonical corpus subtree where instances land (e.g., 'interaction/' for Feedback)."}
+   :db/doc "Consumer-defined corpus subtree used to organize instances of this type,
+            expressed as a relative directory. This metadata is not a general
+            filesystem permission or path-isolation rule."}
 
   {:db/ident :mm.type/subtree-aliases
    :dt/type :dt/Property :dt/domain :mm/Type :dt/range :db.type/string
@@ -201,7 +208,8 @@
   {:db/ident :mm.task/triggered-by
    :dt/type :dt/DirectedBinaryRelationProperty :dt/domain :mm/Task :dt/range :db.type/string
    :db/valueType :db.type/string :db/cardinality :db.cardinality/one
-   :db/doc "Free-text origin (Dan-directive, arc, inbox promotion, prior task completion)."}
+   :db/doc "Free-text origin of the task, such as a user request, plan, Inbox
+            promotion, or completion of an earlier task."}
 
   {:db/ident :mm.task/blockers
    :dt/type :dt/Property :dt/domain :mm/Task :dt/range :db.type/string
@@ -483,7 +491,12 @@
    :dt/label         "Fn"
    :dt/native-codec  :markdown
    :dt/abstract?     false
-   :db/doc "First-class function memorial.  A :mm/Fn entity carries a function definition as a memorial citizen (markdown body + optional EDN-data-blocks; BM25F-searchable; FS-projected to memory/fns/<slug>.md; hook-retrievable).  Slot vocabulary inherits :mm.memory/* from :mm/Memory (via :mm/Meta) plus the :dt.fn/* vocabulary from schema/fn.edn (parameters / return-type / body / lang / purpose / purity / cost-class / source-ns / source-var / version / installed-as / implementation).  Composes with metamodel-level :dt/Fn (instances declare :dt/type :mm/Fn AND conform to :dt/Fn semantics).  :mm/Rule is a subtype-of :mm/Fn with constrained dispatch-spec signature.  Per Stage B.5 ADR 2026-05-23 (decisions/mm_fn_memorial_level_first_class_function_type_companion_to_dt_fn_metamodel_class_2026_05_23.md)."
+   :db/doc "Function definition recorded as a memory with Markdown narrative and
+            optional EDN content. :mm/Fn inherits from both :mm/Spec and :mm/Meta
+            and declares the :dt.fn/* signature and implementation fields from
+            schema/fn.edn. Rules specialize this function-memory model with a
+            dispatch-spec signature. Recording a function and installing or
+            executing its implementation are separate operations."
    :dt/slots [;; signature axis (Stage C vocabulary; inherited via :dt/Fn):
               :dt.fn/parameters
               :dt.fn/return-type
@@ -523,7 +536,9 @@
    :dt/label         "AIActor"
    :dt/native-codec  :markdown
    :dt/abstract?     false
-   :db/doc "Versioned AI model performing actions — Claude version, codex version, etc.  Per memory/types/ai_actor.md.  Inherits existing flat :mm.actor/* slots (model-family / version / context-window / capabilities / runs-in-context / belongs-to)."}
+   :db/doc "Versioned AI model represented as an actor. Inherits the :mm.actor/*
+            fields for model family, version, context window, capabilities,
+            runtime context, and organization membership."}
 
   {:db/ident         :mm/HumanActor
    :dt/type          :dt/Class
@@ -571,7 +586,13 @@
                       :mm.session/log
                       :mm.session/previous-session]
    :dt/abstract?     false
-   :db/doc "A unit of AI-collaboration work — opens at session-start, closes at session-close.  Hybrid representation per session-lifecycle-rebuild ADR cluster 2026-05-22 Q1 (a+c): the :mm/Session memorial is the human handle (carries started-at + ended-at + workflow-process + log + previous-session); the linked :workflow/Process is the state machine + history.  Session-workflow states: :session/opening (initial) → :session/active → :session/closing → :session/closed (terminal :success).  Transitions: :session/start (opening → active), :session/pause (active → opening), :session/resume (opening → active), :session/close (active → closing), :session/finalize (closing → closed).  Per decisions/session_lifecycle_mcp_native_rebuild_q1_q2_q3_q4_resolved_plus_slash_command_deprecation_dan_directive_2026_05_22.md.  Introduced-in: 0.8.x."}]
+   :db/doc "Record of one collaboration session, with start/end instants and links
+            to its workflow process, log, and previous session. The memory is the
+            human-facing record; the linked :workflow/Process carries runtime
+            state and transition history. The standard session workflow uses
+            opening, active, closing, and closed states. Discover its current
+            transitions from the workflow definition rather than treating this
+            description as a second executable lifecycle specification."}]
 
  ;; :dt/codec-type-keyword routing — frontmatter `type: <keyword>` maps to the concrete class.
 

@@ -118,7 +118,12 @@
           (testing "the re-emission oracle: the emitted body equals the normalized body text"
             (is (= (md/normalize-body (body-of nested-doc)) (body-of text))))))
       (testing "the resource rendering uses the same walk"
-        (is (= nested-headings (headings (#'resources/render-entity-content (db/entity ident) nil)))))
+        (let [uri (resources/entity->uri (db/entity ident))
+              response (resources/handle-read 1 {:uri uri} {:auth/full-clearance? true})
+              content (get-in response [:result :contents 0])]
+          (is (nil? (:error response)) (pr-str response))
+          (is (= "text/markdown" (:mimeType content)))
+          (is (= nested-headings (headings (:text content))))))
       (testing "the export over plain entity maps, unfiltered and filtered by class"
         (doseq [opts [{:to (.getPath dir)} {:to (.getPath dir) :filter {:class :mm/Decision}}]]
           (let [written (pg/project-graph specs opts)

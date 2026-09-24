@@ -1,20 +1,9 @@
 (ns sandbar.scripts.list-dbs
-  "Enumerate Datomic databases on the configured transactor.
-
-   Usage:
-
-       bin/sandbar list-dbs
-
-   Shows ALL consumers' databases on the shared transactor — the
-   foundational view for the F2 cohabitability model (one transactor;
-   N consumer DBs per ADR D.F).
-
-   Reads the transactor URI from the layered config's `:db :url` —
-   `(sandbar.config/value :db :url)` resolved via 3-layer merge.
-   Connects without instantiating sandbar.core, so this script doesn't
-   stand up the full sandbar stack just to enumerate.
-
-   Per memory/decisions/sandbar_deployment_consumption_cohabitability_strategy_2026_05_24.md D.G."
+  "List databases visible through the configured transactor URI.
+   Usage: bin/sandbar list-dbs
+   Resolve :db :url through the layered config and enumerate directly,
+   without starting the HTTP component system. A shared transactor may list
+   databases belonging to more than one consumer."
   (:require [datomic.api    :as d]
             [sandbar.config :as cfg])
   (:gen-class))
