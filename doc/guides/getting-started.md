@@ -1,240 +1,162 @@
-# Getting Started with Sandbar
+# Getting started with Sandbar
 
-> The proper onboarding path.  Reading time: 10–15 minutes.  By the end you'll have Sandbar running, you'll have made your first MCP call, you'll have created your first memorial entity, and you'll know where to read next.  For the 5-minute hands-on speed run, see [`quickstart.md`](quickstart.md); for the conceptual foundations, see [`doc/concepts/metamodel.md`](../concepts/metamodel.md).
+A useful memory needs more than somewhere to put its text. It needs a type, an identity, ways to find it again, and relationships that explain where it belongs. This guide creates a small observation, reads it back, finds it by content, and follows one of its typed relationships.
 
 ## What is Sandbar?
 
-Sandbar is a metamodel platform for structured memory.  At its core is a small RDFS-inspired type system — classes, properties, inheritance, slot-typed validation — implemented inside Datomic, served simultaneously through HTTP REST and the Model Context Protocol (MCP).  The type system describes itself with its own constructs: `:dt/Class` is an instance of `:dt/Class`.  Schema is data; data is queryable through the same API; new classes land via the same transaction shape as new instances.
+Sandbar stores typed knowledge in Datomic and exposes it through MCP, REST and Clojure. Its metamodel describes classes, properties and their relationships as queryable data. Inference supplies inherited membership and slots, so an observation can use the common memory vocabulary while keeping its more specific meaning.
 
-Layered on the metamodel is `mm/*`, the memory-system schema — `:mm/Memory` (a markdown document as a typed entity), `:mm/Section` (an addressable subdivision with sibling-chain navigation), `:mm/Tag` (first-class, with structured aliasing and equivalence), `:mm/Workflow` (state machines whose runs are typed Processes), `:mm/Activity` (PROV-O-style provenance lifts), and the rest of the memorial vocabulary.  This is the substrate behind the corpus of memories at `memory/` — decisions, plans, observations, patterns, libraries — and behind the LLM memory store design more broadly.
+The built-in memory model includes decisions, observations, plans, tags and other kinds of durable knowledge. Markdown is one representation of that knowledge: the codec turns a document into typed entities and can emit documents from the model. See the [metamodel](../concepts/metamodel.md) and [memory model](../concepts/memory-model.md) for the larger design.
 
-What Sandbar is *for*: building a substrate where "find by content," "walk the typed-edge graph from this seed," "rank by structural prominence," and "describe yourself" are one-line queries against one coherent model.  Concretely: BM25F fulltext with per-field weights declared at the schema layer; `count` / `group-by` / structural-rank as first-class verbs across four ranking axes; a Wilbur-lineage path-grammar that compiles Kleene-algebra-over-binary-relations to Datomic recursive rules; bootstrap-by-discovery so every class auto-surfaces as MCP tool, MCP resource, and REST endpoint without a registration step.
+## First connection
 
-## Five-minute first run
+Complete the [quickstart](quickstart.md) first. It covers the running service, authentication, MCP initialization, tool discovery and a first class query. Keep its `sandbar_mcp` shell helper available for the requests below. To build the service yourself, start with [development](../development.md) and [operations](../operations.md).
 
-You need Java 11+, [Leiningen](https://leiningen.org), and a Datomic Peer transactor reachable at `datomic:dev://localhost:4334/`.  See [`quickstart.md`](quickstart.md) for the prerequisite walkthrough.
+This next step writes an example memory. Use a development collection and a service-account token with permission for creation and the subsequent memory reads. A token that can inspect the schema may still be read-only or lack memory clearance. For this isolated development collection, the operator needs to configure the current full-clearance mechanism explicitly; that is not project-restricted access. See [account setup](../auth.md). You will also need `jq` to build requests and inspect responses.
 
-Clone, build, start:
+Tool results have an outer JSON-RPC envelope and an inner MCP result. Define this helper to reject errors before unwrapping a JSON tool payload:
 
-```bash
-git clone <repository-url> ~/src/sandbar && cd ~/src/sandbar
-lein deps
-bin/sandbar start
-```
-
-`bin/sandbar start` is the supported entrypoint.  It launches `lein run` in the background, polls `/mcp` until Pedestal answers (typical cold-start ≈30s), and then auto-imports `memory/` from a sibling corpus directory if the database is empty.  The script writes its PID to `~/claude/.sandbar/sandbar.pid` and the server log to `~/claude/.sandbar/sandbar.log`.
-
-Verify:
-
-```bash
-bin/sandbar status
-```
-
-Expected output, give or take counts:
-
-```
-RUNNING — port 8389 (PID 47213)
-TOKEN  — present (/Users/<you>/claude/.sandbar/token)
-MEMORY — 4827 :mm/Memory entities in DB
-```
-
-If `TOKEN — MISSING` shows up, issue one:
-
-```bash
-bin/sandbar rotate-token corpus my-key
-```
-
-The token is written to `~/claude/.sandbar/token`.  Export it for shell-driven curls:
-
-```bash
-export SANDBAR_TOKEN="$(cat ~/claude/.sandbar/token)"
-```
-
-A raw HTTP sanity check confirms the surface is live:
-
-```bash
-curl -s http://localhost:8389/api/status
-```
-
-Response:
-
-```json
-{"time":"2026-05-23T12:00:00.000Z","clojure":{"major":1,"minor":12,"incremental":4}}
-```
-
-If you reached `RUNNING` and `/api/status` answered, Sandbar is serving REST on `:8389/api/*` and MCP on `:8389/mcp`, sharing the same metamodel.  (8389 is the default port — layered config: `SANDBAR_PORT` env > client `.sandbar/config.edn` `:port` > bundled config > the `8389` fallback.)
-
-## First memorial
-
-Memorials are markdown documents with YAML frontmatter — the canonical form a corpus author works in.  Create one on disk:
-
-```bash
-cat > /tmp/hello.md <<'EOF'
----
-name: My first memorial
-type: idea
-tags:
-  - getting-started
-  - sandbar
-created: 2026-05-23
----
-
-# Context
-
-A quick thought to test the projection pipeline.  The memorial is canonical
-on disk; Sandbar projects it into the typed metamodel.
-
-# Why it matters
-
-The filesystem is ground-truth; the database is a fast index.  Edit the
-markdown, re-project, observe the change.
-EOF
-```
-
-Project it into the running DB through the codec layer.  Markdown is the `:mm/Memory` class's native codec — pass `format: markdown` and the codec mediator handles the parse, the section tree, the sibling chain, the tag entity creation.  (Tool-name note: MCP wire names are underscore-joined — `sandbar_entity_create`, `sandbar_search_bm25f` — with hyphens preserved inside leaf tokens, e.g. `sandbar_navigate_path-via`.  The older dotted spellings remain accepted for one release as a deprecation alias; teach yourself the underscore forms.)
-
-```bash
-curl -s -X POST http://localhost:8389/mcp \
-  -H "Authorization: Bearer $SANDBAR_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d "$(jq -nR --arg src "$(cat /tmp/hello.md)" '{
-        jsonrpc: "2.0",
-        id: 1,
-        method: "tools/call",
-        params: {
-          name: "sandbar_entity_create",
-          arguments: {
-            class: ":mm/Memory",
-            format: "markdown",
-            source: $src
-          }
-        }
-      }')"
-```
-
-The result envelope wraps the entity payload inside `content[0].text` per MCP spec.  Pipe through `jq` to unwrap:
-
-```bash
-... | jq -r '.result.content[0].text' | jq .
-```
-
-Expected (truncated):
-
-```json
-{
-  "entity-id": 17592186045842,
-  "ident": ":memory/my-first-memorial",
-  "class": ":mm/Memory",
-  "section-count": 2,
-  "tags": [":tag/getting-started", ":tag/sandbar"]
+```sh
+sandbar_tool_payload() {
+  jq -e '
+    if .error then error(.error | tojson)
+    elif .result.isError == true then error(.result | tojson)
+    elif .result.structuredContent != null then .result.structuredContent
+    else ([.result.content[]? | select(.type == "text")][0].text | fromjson)
+    end'
 }
 ```
 
-The memorial is now in the metamodel.  Validation ran during creation; the section tree was built; tags were resolved to `:mm/Tag` entities (existing ones reused, new ones created); links and frontmatter scalars were lifted.
+Check each command's result before continuing. The [MCP client guide](writing-an-mcp-client.md#error-handling) covers transport errors, response media types and uncertain write outcomes.
 
-## First substrate query
+## First memorial
 
-Find the memorial you just created via BM25F fulltext.  The `sandbar_search_bm25f` verb takes a class scope, a query string, and projection options; the ranking uses the canonical Robertson-Zaragoza form with per-field weights declared on the class:
+A memorial is a durable knowledge record. This fictional observation records what happened during a cache experiment without prematurely turning it into a general rule. Create a temporary input file and give this run its own relative path:
 
-```bash
-curl -s -X POST http://localhost:8389/mcp \
-  -H "Authorization: Bearer $SANDBAR_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "jsonrpc": "2.0",
-    "id": 2,
-    "method": "tools/call",
-    "params": {
-      "name": "sandbar_search_bm25f",
-      "arguments": {
-        "class": ":mm/Memory",
-        "query": "projection pipeline ground-truth",
-        "limit": 5,
-        "include": ["snippets", "field-scores"]
-      }
-    }
-  }' | jq -r '.result.content[0].text' | jq .
+```sh
+SANDBAR_EXAMPLE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/sandbar-example.XXXXXX")"
+SANDBAR_EXAMPLE_PATH="examples/${SANDBAR_EXAMPLE_DIR##*/}.md"
+
+cat > "$SANDBAR_EXAMPLE_DIR/observation.md" <<'MARKDOWN'
+---
+name: Cache freshness observation
+type: observation
+tags:
+  - cache-policy
+---
+
+# Observation
+
+After changing the source record, a warm cache lookup returned the old value.
+
+# Next check
+
+Compare the source revision with the cached revision before choosing a
+refresh policy.
+MARKDOWN
 ```
 
-You should see the new memorial at the top of the results, with a snippet drawn from the body and a numeric BM25F score.  Try a query that's not in the memorial to confirm it ranks below others; try the exact title to see the title-weight dominate.  Per-class weights live in `schema/mm.edn` under `:dt/bm25f-weights` on `:mm/Memory`.
+Create a typed `:mm/Observation` using the Markdown codec. Supply the relative path in `slots`; it lets the creation boundary derive a durable identity and a projection path. The source file's temporary location is only where this client reads the input.
 
-BM25F search is exposed as an MCP verb only — there is no REST route for it.  The REST API (`/api/*`) surfaces the store *introspection* endpoints (`/api/store/schema`, `/api/store/classes`, `/api/store/properties`, `/api/store/entities`) plus the `/api/aggregate`, `/api/navigate`, and `/api/orient` query verbs; see [`writing-a-rest-client.md`](writing-a-rest-client.md) for that surface.
+```sh
+jq -n \
+  --arg path "$SANDBAR_EXAMPLE_PATH" \
+  --rawfile source "$SANDBAR_EXAMPLE_DIR/observation.md" \
+  '{jsonrpc:"2.0", id:10, method:"tools/call", params:{
+    name:"sandbar_entity_create", arguments:{
+      class:":mm/Observation",
+      slots:{"mm.memory/rel-path":$path},
+      format:"markdown", source:$source
+    }
+  }}' | sandbar_mcp > "$SANDBAR_EXAMPLE_DIR/created.response.json"
+
+sandbar_tool_payload < "$SANDBAR_EXAMPLE_DIR/created.response.json" \
+  > "$SANDBAR_EXAMPLE_DIR/created.json"
+
+jq '.entity | {ident: .["db/ident"], name: .["mm.memory/name"], path: .["mm.memory/rel-path"]}' \
+  "$SANDBAR_EXAMPLE_DIR/created.json"
+```
+
+The successful tool payload contains an `entity` map with namespaced fields. It may also contain a separate `shape-validation` report. Inspect the actual returned identity rather than guessing it from the title. Typed slot validation and declared shape reports answer different questions; [authoring shapes](authoring-shapes.md) explains those contracts.
+
+The Markdown representation supplies the body and its document structure, while the creation boundary supplies memory identity conventions. A database response establishes the creation result; file projection is a separate operation with its own completion state. See [projection](../concepts/projection.md) when you need a file to reflect a change.
+
+## Read back the record
+
+Look up the path you supplied, and explicitly request the full body:
+
+```sh
+jq -n --arg path "$SANDBAR_EXAMPLE_PATH" \
+  '{jsonrpc:"2.0", id:11, method:"tools/call", params:{
+    name:"sandbar_entity_find-by-rel-path",
+    arguments:{"rel-path":$path, projection:"full"}
+  }}' | sandbar_mcp | sandbar_tool_payload
+```
+
+Check the returned name, relative path and `mm.memory/body-raw`, not just the presence of an entity ID. Exact lookup is the right operation when you already know a record's identity or path. Search is useful when you know the subject instead.
+
+## First content query
+
+Search the observation class for the experiment's subject:
+
+```sh
+sandbar_mcp <<'JSON' | sandbar_tool_payload
+{
+  "jsonrpc": "2.0",
+  "id": 12,
+  "method": "tools/call",
+  "params": {
+    "name": "sandbar_search_bm25f",
+    "arguments": {
+      "class": ":mm/Observation",
+      "query": "cache freshness old value",
+      "limit": 5,
+      "projection": "full"
+    }
+  }
+}
+JSON
+```
+
+BM25F combines evidence from configured fields such as a memory's name, description and body. In a fresh example collection, this record gives the query a relevant candidate. In a larger collection, inspect the returned candidates and read their contents; a high score does not establish that a statement is correct, current or governing. The [search guide](searching-the-corpus.md) explains field weighting, query scope and evaluation.
 
 ## First typed-edge walk
 
-The memorial carries typed edges: `:mm.memory/tags` to its `:mm/Tag` entities, `:mm.memory/cites` to other memorials (when the markdown body contains `[[wikilinks]]`), `:mm.memory/first-section` to the section tree, and so on.  Walk outbound edges with `sandbar_navigate_outbound-edges`:
+The observation's `mm.memory/tags` relation connects it to a Tag entity. Take the identity from the creation result and follow that predicate:
 
-```bash
-curl -s -X POST http://localhost:8389/mcp \
-  -H "Authorization: Bearer $SANDBAR_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "jsonrpc": "2.0",
-    "id": 3,
-    "method": "tools/call",
-    "params": {
-      "name": "sandbar_navigate_outbound-edges",
-      "arguments": {
-        "from": ":memory/my-first-memorial",
-        "predicates": [":mm.memory/tags"]
-      }
+```sh
+SANDBAR_EXAMPLE_IDENT="$(jq -er '.entity["db/ident"]' "$SANDBAR_EXAMPLE_DIR/created.json")"
+
+jq -n --arg entity "$SANDBAR_EXAMPLE_IDENT" \
+  '{jsonrpc:"2.0", id:13, method:"tools/call", params:{
+    name:"sandbar_navigate_outbound-edges", arguments:{
+      entity:$entity, predicate:":mm.memory/tags", projection:"full"
     }
-  }' | jq -r '.result.content[0].text' | jq .
+  }}' | sandbar_mcp | sandbar_tool_payload
 ```
 
-You'll see two tag entities returned — `:tag/getting-started` and `:tag/sandbar`.  Drop the `:predicates` filter and you'll see every outbound edge: tags, sections, frontmatter, etc.  Walk the inverse direction with `sandbar_navigate_inbound-edges` from a tag to discover every memorial that uses it.
+The result has an `edges` collection, with the predicate and projected target for each edge. This follows an explicit relationship. Content search found a likely record; navigation now asks what that record is connected to. [Navigating with paths](navigating-with-paths.md) extends this to multi-step questions.
 
-For multi-hop traversal — "every memorial cited from this decision's transitive citation graph, filtered to decisions only" — reach for `sandbar_navigate_path-via`, which compiles a Wilbur-style path expression to a Datomic recursive rule.  The path-grammar concept doc ([`doc/concepts/path-grammar.md`](../concepts/path-grammar.md)) covers the 21-operator vocabulary; the [`navigating-with-paths.md`](navigating-with-paths.md) guide walks worked examples.
+## Working from a project repository
 
-## The metamodel in 60 seconds
+The example above ran against a development collection. Real use starts in a code repository: an AI client is launched from that checkout with the repository's own settings, talks to one shared Sandbar service, and captures knowledge that names its project. A later session, from the same checkout or another clone, reopens the same store and finds the same records. Have the operator [enroll the Context and Project and authorize the destination](../operations.md#serve-a-project-repository) before ordinary capture; installing client settings does not perform those steps.
 
-The whole substrate is introspectable through the same surface.  Ask the metamodel to describe itself:
+**Install the binding; keep settings with the repository.** The corpus's `mem onboard-project` verifies an existing Project and prepares a local Codex or Claude Code binding. Follow its [installation guide](https://github.com/danlentz/claude/blob/master/doc/project-onboarding.md): provide the repository root, Project key and document ident, explicit `public` or `private` declaration, MCP URL and credential environment-variable name; preview, inspect, then repeat with `--apply`. Existing instruction text and compatible settings are retained. Conflicting MCP configuration requires manual merge. The command stores a credential reference, never the value, and leaves global settings and client trust decisions to you.
 
-```bash
-curl -s -X POST http://localhost:8389/mcp \
-  -H "Authorization: Bearer $SANDBAR_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "jsonrpc": "2.0",
-    "id": 4,
-    "method": "tools/call",
-    "params": {
-      "name": "sandbar_class_describe",
-      "arguments": {"class": ":mm/Memory"}
-    }
-  }' | jq -r '.result.content[0].text' | jq .
-```
+The installed `.sandbar/config.edn` records the verified binding for the client. Sandbar's server configuration loader does not consume the remote checkout or its `.claude/`, `.codex/`, `CLAUDE.md`, `AGENTS.md` or `.mcp.json`. Launch your client from the code checkout with the named credential available, then review its ordinary project/MCP trust prompts. `mem setup-project` remains a quarantined legacy public-corpus tool; use `mem onboard-project` for this journey.
 
-You get back the class's ident, its ancestry up to `:dt/Resource`, its direct subclasses, the effective slot set (inherited + declared), per-slot ranges and cardinalities, the `:dt/native-codec` declaration, the `:dt/bm25f-weights` map, and the workflow definitions that consume it.
+The `bin/sandbar` wrapper's `init` command is a legacy database-import helper with a mismatched path filter at this revision; it does not install project settings. Follow the [explicit startup procedure](../operations.md#start-inspect-and-stop).
 
-This is what *bootstrap-by-discovery* means.  The MCP tool catalog, the JSON Schema for each tool's arguments, the REST endpoint surface, the resource URIs — every protocol projection is a function of the metamodel state, recomputed per request.  Add a class to `schema/` + restart; the new class auto-surfaces through every protocol with no registration step, no mapping table, no code change.
+**The service is shared; the client names the project.** A `:project` key in the service's own client directory selects that service's logical project (see [operations](../operations.md#make-configuration-explicit)). A remote client's `.sandbar/config.edn` does not travel with its requests: the service cannot see the directory your client was started from, so the client supplies ownership itself. Before the first capture, read the enrolled Project record in full (`sandbar_entity_find` on its document ident), compare its class, stable `mm.project/ident`, `mm/id` and declared privacy with the installed binding, and refuse to continue on a mismatch. Then pass that entity reference as `mm.memory/owning-project` and set the intended `mm.memory/visibility` on each `sandbar_entity_create`. A capture that names the wrong project is a policy error, not a routing accident, so make the check explicit rather than trusting a local label. Private projects may use public memories; public memories must not refer to private ones. The installer verifies the privacy declaration without provisioning a restricted account. [Projects and directional information flow](../firewall-and-projects.md#enroll-a-project-and-declare-its-privacy) describes the enrollment records and the separate read and directional checks.
 
-The composition is straightforward to keep in mind:
+**Capture, edit, project.** Creation is the `sandbar_entity_create` call shown earlier, with the owning project and explicit visibility added to `slots`. Read the result back in full and record the returned eid, document ident and `mm/id`; those three identify the record across sessions, and none of them is the title. Projection is asynchronous: `sandbar_reactive_health` reports pending work and sink errors, and the file's content proves that a write settled. The service's operator-owned `:project-roots` map selects a project's persistence tree; unmapped projects retain the global root. The [operator procedure](../operations.md#install-or-change-a-project-destination) covers enrollment and manual existing-file migration. Editing `mm.memory/body-raw` replaces the stored body and its derived sections in one transaction on this branch. Verify that the deployed build includes that repair, and read the edited file after projection. Creation stores the body without decomposing it into sections.
 
-- **`:dt/*`** is the substrate — `:dt/Class`, `:dt/Property`, `:dt/Resource`, `:dt/Literal`, `:dt/native-codec`, the introspection API.  Five core idents anchor everything.
-- **`:mm/*`** is the memorial layer built on top — `:mm/Memory`, `:mm/Section`, `:mm/Tag`, `:mm/Workflow`, `:mm/Decision`, `:mm/Plan`, `:mm/Activity`, and the rest.  Every `:mm/*` class is a `:dt/Class` instance; every `:mm/*` slot is a `:dt/Property` instance.
-- **Domain layers** (your application's classes, or `:zorp/*` from the tutorial, or `:order/*` from the README) compose the same way — they declare a `:dt/subclass-of` chain into `:dt/Resource` and the substrate handles validation, projection, retrieval, navigation.
+**Reopen normally.** A new session reads the existing store. Look the record up by ident or path, or search for its subject, and compare the eid, ident, `mm/id`, owning project and citations with what you recorded. No export, import or database replacement is part of an ordinary reopen; the maintenance import in [operations](../operations.md#maintenance-import-into-the-existing-store) is for edited canonical files with every writer stopped, and nothing in this journey needs it. In the September 2026 installer rehearsal, three fresh Codex sessions used native MCP to capture, edit and reopen a synthetic record from a second checkout. Identity, edited body, owner, citation, BM25F, graph navigation, projected content and retained repository settings passed against one retained in-memory database and its configured project root. This used a fully cleared account without restarting the service. Claude Code binding installation passed checks, but its actual model run stopped at an OAuth refresh failure before native MCP use. Neither result establishes restricted-account privacy or controlled AI-comparison isolation; see [known boundaries](../known-gaps-0.2.0.md#provisioning-and-routing-remain-explicit).
 
-That's the whole shape.  Everything else is depth on one of those three layers.
+**Publication is a separate act.** Nothing above publishes anything. Export renders into a staging directory for review; a destination-aware filter that checks content, references and provenance before writing into a public destination, a checkpoint/git layer and a guarded restore are unbuilt (the [operations guide](../operations.md#choose-the-right-recovery-artifact) names them). A project label or a fully cleared account proves nothing about whether a rendered file is safe to publish.
 
-## What to read next
+## Where to go next
 
-Pick the path that matches your goal.
+Use [class inspection](quickstart.md#inspect-a-decision) to learn a model before authoring against it. Use [defining new classes](defining-new-classes.md) when your application needs a new kind of knowledge, and [implementing a codec](implementing-a-codec.md) when it needs another representation. The client guides cover [MCP](writing-an-mcp-client.md), [REST](writing-a-rest-client.md) and [embedded Clojure](writing-a-clojure-client.md).
 
-- **Build intuition for the type system.** Read [`doc/concepts/metamodel.md`](../concepts/metamodel.md) — the lineage (RDFS, KL-ONE, CLOS metaobject protocol) and the metacircular core.  Then walk the [`zorp-tutorial.md`](zorp-tutorial.md) for a worked domain ontology.
-- **Author your own classes.** [`defining-new-classes.md`](defining-new-classes.md) — the schema-edn shape, the `:dt/slots` declaration, the validation hook.
-- **Connect Claude or another AI client.** [`writing-an-mcp-client.md`](writing-an-mcp-client.md) — initialization handshake, tool discovery, resource subscriptions, the MCP Tasks surface for long-running operations.
-- **Embed Sandbar in a Clojure application.** [`writing-a-clojure-client.md`](writing-a-clojure-client.md) for the in-process `dt/*` API.  Then [`sandbar-as-substrate.md`](sandbar-as-substrate.md) for the embedding patterns (library mode vs server mode), schema evolution, and the multi-store topology choices.
-- **Consume Sandbar over plain HTTP.** [`writing-a-rest-client.md`](writing-a-rest-client.md) — the REST projection of the same metamodel.
-- **Master retrieval.** [`searching-the-corpus.md`](searching-the-corpus.md) for BM25F patterns; [`navigating-with-paths.md`](navigating-with-paths.md) for the path-grammar; the concept doc [`doc/concepts/aggregation.md`](../concepts/aggregation.md) for `count` / `group-by` / `rank-by`.
-- **Add a new wire format.** [`implementing-a-codec.md`](implementing-a-codec.md) walks the codec protocol; [`doc/concepts/codec-layer.md`](../concepts/codec-layer.md) explains the mediator design.
-- **Model long-running operations.** [`designing-workflows.md`](designing-workflows.md) for authoring `:mm/Workflow` state machines; [`doc/concepts/workflow-substrate.md`](../concepts/workflow-substrate.md) for the terminal-kind classification design.
-
-## See also
-
-- [`quickstart.md`](quickstart.md) — the 5-minute speed run if you want fewer words and more commands
-- [`doc/concepts/`](../concepts/) — theoretical reference layer; each file leads with a thesis and shows it carried out
-- [`doc/api/`](../api/) — mechanical reference for `dt/*`, REST endpoints, MCP verbs, and the codec protocol
-- [`auth.md`](../auth.md) — service-account token issuance and the auth model
-- [`firewall-and-projects.md`](../firewall-and-projects.md) — `:mm/Project`, contexts, and the directional firewall (the 0.2.0 centerpiece)
-- [`development.md`](../development.md) — running tests, the in-memory fixture, schema-reload workflows
+The example remains in the development database. Its temporary input and response files are separate from the server's configured projection destination; deleting those local files does not retract the entity.

@@ -1,228 +1,44 @@
-# Workflows as Substrate
+# Workflows: distinguish a reusable process from its execution
 
-> Sandbar treats workflows — state machines, running processes, terminal outcomes, cancellation — as **first-class entities in the metamodel**, not as ad-hoc plumbing per long-running operation.  State machines are `:mm/Workflow` instances (the memorial-face classifier); running processes are `:workflow/Process` instances (substrate-runtime; carries PROV-O Activity semantics through its history); cancellation is encoded as a terminal-kind on the workflow's state nodes.  MCP Tasks (long-running operations in the Model Context Protocol) are workflow processes — `task-id` IS `:db/id`, no parallel registry.
+**A workflow makes progress inspectable by naming the states and transitions of a task.** Its definition describes what can happen. A process records one execution against a subject, including its current state and transition history.
 
-## Thesis
+A document-review workflow can be reused for many documents. Each document's review has its own process, history, and outcome. This avoids hiding lifecycle state in a client-local flag that other tools cannot inspect.
 
-Long-running operations need three things consistently:
+## Definitions, activities, and observations
 
-1. **History** — what happened, in what order, when.
-2. **Cancellation** — the ability to abort a running operation cleanly.
-3. **Outcome classification** — terminal states with a clear "kind of done" — success, failure, or cancel.
+Sandbar's model separates several roles:
 
-The naive shape is to reinvent each of these per tool — every long-running operation grows its own status table, its own cancellation flag, its own ad-hoc completion semantics.  Eventually consumers reinvent classification logic too: "this tool returned `:done`, but does that mean success or failure?"  The pattern repeats per operation; the inconsistency multiplies per consumer.
+| Role | Examples | Question |
+| --- | --- | --- |
+| Reusable specification | `:mm/Workflow`, `:mm/Job`, `:mm/Schedule`, `:mm/Fn` | What should be done? |
+| Execution activity | `:workflow/Process`, `:mm/Run` | What execution is taking place? |
+| Observation or event | Event records and emitted event maps | What happened? |
+| Durable transition history | `:workflow/History` | How did this process reach its state? |
 
-Sandbar's commitment: **workflow state machines are a substrate, not a plumbing.**  They are stored as data using the same metamodel; running instances are typed entities; cancellation is a property of the state design, not the per-tool code.  Every long-running operation inherits the discipline.  Consumers learn one shape and reuse it everywhere.
+The distinction between an activity and a plan is also useful in [PROV-O](https://www.w3.org/TR/prov-o/#Activity), which provides vocabulary for describing provenance. Sandbar uses its own model and execution mechanisms; a similar vocabulary does not establish complete PROV conformance.
 
-## Lineage
+<a id="terminal-kind-classification"></a>
 
-### Finite-state machines
+## A state machine with explicit outcomes
 
-The substrate is a directed graph of states linked by named transitions.  This is the classical Mealy/Moore machine (Mealy 1955; Moore 1956) extended with action handlers attached to transitions.  Workflows in this sense are FSMs whose state space and transition relation are recorded in the database.
+A workflow definition contains states, transitions, and an initial state. A transition names its source and target and may declare a guard, a required reason, and a callback. A process refers to the definition and its subject.
 
-Petri nets (Petri 1962) generalize FSMs with concurrent token-flow semantics; Sandbar's substrate stops short of full Petri net expressiveness — each process holds a single current state, not a marking — but the Petri-net mindset (states as places, transitions as named events) informs the vocabulary.
+Terminal states carry one of three `:workflow/terminal-kind` values: `:success`, `:failure`, or `:cancel`. This gives consumers a stable outcome vocabulary without interpreting names such as “approved” or “abandoned.” A workflow supports cancellation by declaring a transition to a terminal cancel state; cancellation is not an arbitrary rewrite of the process's status.
 
-### Harel statecharts
+`sandbar.util.workflow` provides definition, process, transition, cancellation, and history operations. State inspection uses `get-current-state`; the returned state contains its name and terminal classification. These properties are not flattened onto every process result.
 
-Statecharts (Harel 1987) extend FSMs with hierarchy, orthogonal regions, and history pseudostates.  Sandbar's workflow substrate is flat — no nested states, no parallel regions — but the *vocabulary* (state, transition, action, terminal) is statechart-shaped, and a future hierarchical extension would compose naturally.
+## Effects need their own contract
 
-### Pi-calculus and process algebras
+A transition guard receives the process and context and decides whether the transition is available. A callback may produce transaction data associated with the state change. Arbitrary external actions performed inside a callback are outside the database transaction and need explicit retry and failure semantics.
 
-Process algebras (Milner 1980, *A Calculus of Communicating Systems*; Hoare 1985, *Communicating Sequential Processes*) give the formal account of concurrent processes communicating over channels.  Sandbar's workflow substrate is sequential — each process is a single chain of state transitions — but the concept of a *process* as a first-class runtime artifact derives from this tradition.
+The current transition implementation has important limits: it records history separately from the state/effects transaction, does not compare-and-set the expected state, and logs callback exceptions without necessarily refusing the transition. Competing or stale callers can therefore accept incompatible steps, and recorded history does not prove that the corresponding effects committed. Serialize calls per process and fetch fresh state; do not use this API as an atomic enforcement boundary or a guarantee of successful callback effects. Atomic acceptance and explicit callback-failure handling remain release work.
 
-### Saga pattern
+A process reaching a terminal state is evidence of its recorded lifecycle outcome. It is not independent proof that every external effect happened exactly once. Applications should attach evidence or results where completion has consequences beyond the graph.
 
-Garcia-Molina & Salem (1987) introduced the *saga* for long-running database transactions: a sequence of local operations, each with a compensating reverse operation, providing eventual consistency in lieu of distributed transactions.  Sandbar's workflow substrate is saga-shaped at a higher level — transitions can carry compensating actions; terminal states distinguish completion modes (`:success` continues forward; `:failure` may trigger compensation; `:cancel` indicates the consumer pulled the plug).
+## Client and operator use
 
-### BPMN 2.0
+Sandbar's experimental MCP task adapter uses workflow processes: task identity is based on the process entity rather than a second task database. It maps workflow terminal kinds into task-like status responses. This limited adapter does not establish conformance to the complete MCP Tasks extension. See [MCP](mcp-protocol.md) for the compatibility boundary.
 
-Business Process Model and Notation (OMG 2011) standardizes process modeling for enterprise workflows.  Sandbar does not target BPMN as a wire format but borrows its discipline: terminal events are *categorized* (end event, error end event, cancel end event); the cancel end event in particular is recognized as a first-class shape.  Sandbar's `terminal-kind :cancel` is the BPMN cancel-end-event idea, recorded as data.
+Operators can inspect active processes and their history. Session recovery is a particular workflow policy, not the generic state machine: the current stale-session procedure reports candidates, preserves explicit maintenance holds, and rechecks eligibility when applying a close path. Review the [operations guide](../operations.md) before applying such a procedure.
 
-## The substrate
-
-Three classes anchor the workflow substrate.  Two layers are present in the naming convention.  The classifier — the workflow *definition* — lives in the memorial namespace as `:mm/Workflow` (under `:mm/Meta → :mm/Memory`).  Substrate-runtime entities — running processes and per-step history — stay in their own `:workflow/*` namespace (`:workflow/Process`, `:workflow/History`) alongside sibling substrate-runtime hierarchies like `:event/*` under `:dt/Event`.  This separation is the corpus's standing convention: memorial-classifiers carry the `:mm/` prefix; substrate-runtime carries a domain prefix.  See `decisions/memorial_class_naming_convention_mm_prefix_workflow_definition_to_mm_workflow_2026_05_23.md` for the ratification.
-
-### `:mm/Workflow`
-
-A workflow definition — a named state machine.  The memorial-classifier (under `:mm/Meta → :mm/Memory`); one entity per workflow shape, not per running instance.  Its slots:
-
-| Slot                       | Meaning                                                                                        |
-|----------------------------|------------------------------------------------------------------------------------------------|
-| `:workflow/states`         | Set of `:workflow/State` entities (the nodes of the FSM).                                      |
-| `:workflow/initial-state`  | Reference to the state where a fresh process starts.                                           |
-| `:workflow/transitions`    | Set of `:workflow/Transition` entities (the edges of the FSM).                                 |
-
-The slot vocabulary stays in the `:workflow/*` namespace pending a Phase-2 cleanup to `:mm.workflow/*` (deferred — the visible class-level inconsistency was the load-bearing concern).
-
-### `:workflow/State`
-
-A node in the workflow graph.  Substrate-runtime.  Its slots:
-
-| Slot                       | Meaning                                                                                        |
-|----------------------------|------------------------------------------------------------------------------------------------|
-| `:workflow/state-name`     | The state's name (keyword or string, namespaced under the workflow).                          |
-| `:workflow/terminal?`      | Boolean — is this an accepting (final) state?                                                 |
-| `:workflow/terminal-kind`  | If terminal, one of `:success` / `:failure` / `:cancel` — the *kind of done* classification.   |
-
-### `:workflow/Process`
-
-A running (or terminated) instance of a workflow.  Substrate-runtime — analogous to `:event/HttpRequest` under `:dt/Event`.  Its slots:
-
-| Slot                       | Meaning                                                                                        |
-|----------------------------|------------------------------------------------------------------------------------------------|
-| `:workflow/definition`     | Reference to the `:mm/Workflow` this process instantiates.                                     |
-| `:workflow/current-state`  | Reference to the `:workflow/State` the process currently occupies.                            |
-| `:workflow/history`        | Ordered sequence of state-transition records — what happened, in what order, when.            |
-
-The history is itself an entity sequence (each transition record is a `:workflow/Transition-Record` with `:workflow/transition-at` timestamp and `:workflow/transition-via` reference to the transition that fired).  The full history is queryable as data — no parallel log, no out-of-band telemetry.
-
-### PROV-O Activity inheritance
-
-`:mm/Workflow` is itself a memorial under `:mm/Meta`; running processes (`:workflow/Process`) carry the substrate-runtime burden.  When a workflow process completes, it is observable as a `prov:Activity`-shaped artifact through the `:mm/Activity` hierarchy — `:mm/Activity` declares the shared PROV-O slot vocabulary (`:mm.activity/started-at`, `:mm.activity/ended-at`, `:mm.activity/agent`, `:mm.activity/was-informed-by`, `:mm.activity/generated`, `:mm.activity/used`, `:mm.activity/status`) that all activity-shaped memorials inherit.  See [`activity-hierarchy.md`](activity-hierarchy.md) for the cross-arc PROV-O lift that unified `:mm/Log` / `:mm/EventLog` / `:mm/Run` under one Activity supertype.
-
-## Terminal-kind classification
-
-Every terminal state declares its kind.  The three valid values:
-
-| Kind         | Meaning                                                                                  |
-|--------------|------------------------------------------------------------------------------------------|
-| `:success`   | The operation completed and produced its intended result.                                |
-| `:failure`   | The operation completed but did not produce its intended result (error, validation, etc).|
-| `:cancel`    | The operation was aborted by a consumer before reaching success or failure.              |
-
-This classification is **not derived** from per-tool conventions like "the result map had `:error`" or "the response was 4xx."  It is a property of the workflow's state design — at the time a workflow is authored, the author decides which terminal states are which kind, and the substrate enforces the classification.
-
-The consequence: consumers don't need to interpret tool-specific result conventions to know whether an operation succeeded.  `process->task-status` reads `:workflow/terminal-kind` directly.  The MCP `tasks/get` response includes the kind verbatim.  Cross-tool consumers learn one shape.
-
-### Why three kinds and not two
-
-The distinction between failure and cancel is operationally meaningful.  A failure represents a problem with the operation — an error, a validation mismatch, an unreachable dependency.  A cancel represents the consumer's choice — "I no longer want this; stop."  These produce different downstream behaviors: failures often warrant retry or escalation; cancels typically do not.  Collapsing them into one "not success" bucket loses information that consumers need.
-
-This is the BPMN insight (OMG 2011): cancel-end-events are distinct from error-end-events.  Sandbar adopts the same distinction.
-
-## Cancellation as a property of the state design
-
-Cancellation is not a per-tool flag.  It is implemented as: *a transition exists from the current state to a terminal state whose `:terminal-kind` is `:cancel`*.
-
-When a consumer requests cancellation:
-
-1. The substrate looks up whether the current state has an outbound transition to a terminal `:cancel` state.
-2. If yes, the substrate fires that transition.  The process terminates.  History records the cancellation.
-3. If no, the cancellation is refused — the workflow's author did not declare cancellation valid at this state.
-
-This is the F-B-002 design — captured in [`decisions/sandbar_workflow_cancellation_modeled_as_terminal_kind_on_states_2026_05_12`](../../memory/decisions/sandbar_workflow_cancellation_modeled_as_terminal_kind_on_states_2026_05_12.md) — and it is what `cancel-process!` and `can-cancel?` in `sandbar.util.workflow` resolve to.
-
-The consequence: cancellation semantics are **workflow-substrate-level**.  Authoring a workflow with an unconditional `:cancel` terminal makes that workflow cancellable from any state; authoring without one makes it uncancellable; authoring with a mid-workflow `:cancel` makes it cancellable only at specific states.  The author makes the call; the substrate enforces.
-
-## MCP Tasks composition
-
-MCP (Model Context Protocol) defines a *Task* surface for long-running operations: `tasks/list`, `tasks/get`, `tasks/cancel`, with per-task status and outcome.
-
-In Sandbar, **MCP Tasks ARE workflow Processes**.  `task-id` IS `:db/id`.  There is no parallel registry, no translation table between MCP-tasks and workflow-processes.  When an MCP client calls `tasks/get task-123`:
-
-1. The handler resolves `task-123` as a `:workflow/Process` entity.
-2. It reads the process's `:workflow/current-state` and `:workflow/terminal-kind`.
-3. It projects those into the MCP Task status shape (`pending` / `running` / `success` / `failure` / `canceled`).
-
-When the client calls `tasks/cancel task-123`, the handler calls `cancel-process! task-123` on the substrate.
-
-This composition is the operational consequence of "workflows as substrate."  Without it, MCP Tasks would need their own status table, their own cancellation flag, their own classification — duplicating what the workflow substrate already provides.  With it, the MCP surface is a thin projection.
-
-## Validation as workflow
-
-A separate-but-symmetric application of the substrate: bulk validation of every instance of a class is modeled as a workflow.
-
-The pattern:
-
-- `:validation/Workflow` — defines states like `:starting → :running → :results-pending → :complete`.
-- `:validation/Process` — an instance, started when an MCP client calls `sandbar.validation.start`.
-- Per-instance validation runs as a state transition; errors accumulate into the process's history.
-- Terminal states classify the run: `:success` (all instances valid), `:failure` (any instance invalid), `:cancel` (consumer aborted mid-run).
-
-The consumer gets:
-
-- A task they can poll (`sandbar.validation.run` → status).
-- A task they can cancel (`sandbar.validation.cancel`).
-- A task whose terminal kind tells them what kind of done it was.
-- A task whose history tells them which instances were checked and what was found.
-
-All inherited from the substrate.  No per-tool plumbing.
-
-## Cross-tool consistency dividend
-
-The substrate produces a consistency dividend across all long-running tools.  A consumer learns one shape — *workflows have states; running processes have current-state and history; terminal states have a kind* — and applies it everywhere:
-
-- Bulk validation
-- MCP Tasks
-- Service-account issuance (planned, see `ideas/service_account_issuance_rotation_should_be_first_class_workflow`)
-- Background indexing
-- Schema migration
-
-Each is a workflow.  Each gets cancellation by declaring a `:cancel` terminal.  Each gets history by virtue of being a Process.  Each gets outcome classification by virtue of typed terminal states.
-
-The cost of *not* using the substrate would be 5 ad-hoc status/cancellation/history implementations, each subtly different.  The cost of using it is one substrate to learn.
-
-## Comparison with adjacent patterns
-
-### vs. Promises / Futures
-
-Promises encapsulate an eventual single value.  Workflows encapsulate a *trajectory through states* with intermediate observable status, cancellation, and history.  Promises are the right shape for "compute this and return the result"; workflows are the right shape for "run this for a while and let consumers observe progress and intervene."
-
-### vs. Job queues (Sidekiq / Resque / Celery)
-
-Job queues handle scheduling, retry, and worker dispatch.  They typically expose minimal status — "queued / running / done / failed" — with no formal state model and no first-class cancellation.  Sandbar's workflow substrate is one level above: a job-queue's "running" state could be modeled as a workflow process, and the substrate would give it the typed state space the queue lacks.
-
-### vs. Step Functions / Cadence / Temporal
-
-AWS Step Functions, Cadence, and Temporal (Uber → io.temporal) are workflow engines proper — they have the state-machine vocabulary, persistence, and replay semantics.  Sandbar's workflow substrate is similar in shape but smaller in scope: no distributed coordination, no time-skewed replay, no built-in retry logic.  Sandbar's value-add is the *integration with the metamodel* — workflows are typed entities; processes can carry domain references; the same `dt/*` API queries them.  A workflow engine like Temporal could be the execution backend; Sandbar would be the modeling and observation surface.
-
-### Cross-cutting event emission
-
-Workflow transitions are also published to the event substrate (see `decisions/sandbar_event_substrate_architecture_*_2026_05_23.md`).  Each transition emits a `:mm.event/WorkflowTransition` instance on the in-process bus alongside its durable record in `:workflow/History`.  The two are distinct on purpose: `:workflow/History` is the authoritative Process Manager log; `:mm.event/WorkflowTransition` is the cross-cutting notification that arbitrary subscribers — observability, projection, SSE notifiers — can hook without coupling to the workflow Process Manager.
-
-### vs. Actor models (Erlang / Akka)
-
-Actors encapsulate state and process messages sequentially; the actor's behavior may be modeled as an FSM.  Sandbar's workflows are *observable from outside* in a way actors typically aren't: the process's current state and history are queryable directly via Datalog, no message-passing required.  This is the price of explicit state-as-data — visibility is high; encapsulation is lower.
-
-## References
-
-**Finite-state machines and statecharts**
-
-- Mealy, G.H. (1955). *A Method for Synthesizing Sequential Circuits.* Bell System Technical Journal, 34(5), 1045–1079.
-- Moore, E.F. (1956). *Gedanken-experiments on Sequential Machines.* Automata Studies, Princeton.
-- Harel, D. (1987). *Statecharts: A Visual Formalism for Complex Systems.* Science of Computer Programming, 8(3), 231–274.
-
-**Petri nets and process modeling**
-
-- Petri, C.A. (1962). *Kommunikation mit Automaten.* Doctoral dissertation, University of Hamburg.
-
-**Process algebras**
-
-- Milner, R. (1980). *A Calculus of Communicating Systems.* Lecture Notes in Computer Science, Springer.
-- Hoare, C.A.R. (1985). *Communicating Sequential Processes.* Prentice-Hall.
-
-**Saga pattern**
-
-- Garcia-Molina, H. & Salem, K. (1987). *Sagas.* ACM SIGMOD Conference 1987.
-
-**BPMN and enterprise workflow modeling**
-
-- Object Management Group (2011). *Business Process Model and Notation (BPMN) Version 2.0.*  https://www.omg.org/spec/BPMN/2.0/
-
-**Modern workflow engines (for comparison)**
-
-- Hightower, K. & contributors (2018–). *Temporal — open-source workflow orchestration.* (Forked from Uber Cadence.)
-- AWS (2016–). *AWS Step Functions Developer Guide.*
-
-**Temporal logic of programs (for verification of workflows)**
-
-- Pnueli, A. (1977). *The Temporal Logic of Programs.* 18th Annual Symposium on Foundations of Computer Science (FOCS).
-
-## See also
-
-- [`metamodel.md`](metamodel.md) — workflows + states + processes are typed metamodel entities
-- [`mcp-protocol.md`](mcp-protocol.md) — how MCP Tasks compose with workflow processes
-- [`activity-hierarchy.md`](activity-hierarchy.md) — `:mm/Activity` PROV-O Activity supertype that unifies workflows, runs, logs, and event-logs under one shape
-- [`event-substrate.md`](event-substrate.md) — workflow transitions also emit `:mm.event/WorkflowTransition` on the in-process bus
-- [`doc/api/mcp-verbs.md`](../api/mcp-verbs.md) — the workflow + task verb catalog
-- [`doc/guides/designing-workflows.md`](../guides/designing-workflows.md) — hands-on authoring guide
+Build a small working definition in [Designing workflows](../guides/designing-workflows.md). Source: [`sandbar.util.workflow`](../../src/sandbar/util/workflow.clj), [`workflow schema`](../../schema/workflow.edn), and [`temporal/activity vocabulary`](../../schema/mm-temporal.edn).

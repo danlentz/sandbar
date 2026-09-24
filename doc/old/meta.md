@@ -1,4 +1,8 @@
-# Metamodel Reference
+# Historical metamodel reference
+
+> **Historical — superseded.** For current use, see [metamodel](../concepts/metamodel.md), [RDFS entailment](../concepts/rdfs-entailment.md), and [`dt/*` reference](../api/dt-star.md).
+>
+> This is an earlier vocabulary and API snapshot. The closed class tree, aggregate-generation claims, predicate ordering, and validation examples must not be used as the current schema contract. Examples and reported results below have not been revalidated for 0.2.0; abbreviated payloads are schematic.
 
 Complete reference for the Sandbar type system and metamodel.
 

@@ -1,296 +1,154 @@
-# Authoring Shapes
+# Authoring shapes
 
-> How to author `:mm/Shape` invariants over your domain classes and validate entities against them.  Shapes are first-class memorials — searchable, version-controlled, FS-projected — and the walker is a family of `:mm/Fn` instances composed into a conformance report.  This guide is the practical companion to [`doc/concepts/shape-validation.md`](../concepts/shape-validation.md) (theoretical thesis) and the implementation arc at `memory/plans/sandbar_shacl_deeply_incorporated_capstone_activation_arc_2026_05_23.md`.
+This guide creates a shape requiring a decision to have a nonblank description, then checks both a valid and an invalid example. Use a disposable development database with Sandbar's required schemas loaded. The examples use a connected Clojure REPL and fictional data.
 
-## What a shape is
+For the distinction between a constraint, its target population, and write acceptance, see [Shape validation](../concepts/shape-validation.md).
 
-A `:mm/Shape` is a memorial entity that declares **invariants** over a target class — which properties must be present, what cardinality each may carry, what regex pattern (or datatype) values must satisfy, whether the entity is closed to extra slots, and which custom validator function (if any) supplies the rest.  Each constraint type maps directly to a SHACL primitive:
+## Create the constraint and shape
 
-| Sandbar slot                                 | SHACL analog                              |
-|----------------------------------------------|-------------------------------------------|
-| `:mm.shape/applies-to`                       | `sh:targetClass`                          |
-| `:mm.shape/required-property`                | `sh:property` + `sh:minCount 1`           |
-| `:mm.shape/cardinality-constraints`          | `sh:minCount` / `sh:maxCount`             |
-| `:mm.shape/pattern-constraints`              | `sh:pattern` / `sh:flags`                 |
-| `:mm.shape/datatype-constraints`             | `sh:datatype`                             |
-| `:mm.shape/closed?`                          | `sh:closed`                               |
-| `:mm.shape/severity`                         | `sh:Violation` / `sh:Warning` / `sh:Info` |
-| `:mm.shape/validator-fn`                     | `sh:SPARQLFunction` (sandbar `:mm/Fn` ref)|
+Constraints with several fields are separate typed entities. Create the pattern constraint first, then refer to it from the shape:
 
-Shapes compose `:mm/Fn` instances by **reference, not subtype** — the SHACL-AF separation of `sh:NodeShape` from `sh:SPARQLFunction` is the precedent.
+```clojure
+(require '[sandbar.db.datomic :as db]
+         '[sandbar.db.datatype :as dt]
+         '[sandbar.shape :as shape])
 
-## A first shape, in markdown
+(def nonblank
+  (dt/make :mm.shape/PatternConstraint
+    {:db/ident :shape.examples/nonblank-description
+     :mm.shape.pattern/property :mm.memory/description
+     :mm.shape.pattern/regex "\\S"}))
 
-Shapes are codec-routed through `:codec/markdown` like any other `:mm/*` memorial.  Author one at `memory/shapes/event-booking-required.md`:
-
-```markdown
----
-name: Event Booking Required Slots
-type: shape
-description: Every :event/Booking must carry a title, start instant, end instant, and owner.
-mm.shape/shape-id: :event-booking/required
-mm.shape/applies-to: :event/Booking
-mm.shape/required-property:
-  - :event.booking/title
-  - :event.booking/starts-at
-  - :event.booking/ends-at
-  - :event.booking/owner
-mm.shape/severity: :violation
----
-
-## Context
-
-The booking entity is the unit of work for the scheduling subsystem.  Without all four
-required slots the downstream calendar projection has nothing to render.
-
-## See also
-
-- [`doc/concepts/shape-validation.md`](../doc/concepts/shape-validation.md)
-- [`doc/guides/authoring-shapes.md`](../doc/guides/authoring-shapes.md)
+(def description-shape
+  (dt/make :mm/Shape
+    {:db/ident :shape.examples/decision-description
+     :mm.memory/name "Decisions have an explanation"
+     :mm.memory/memory-type :shape
+     :mm.memory/scope :project
+     :mm.shape/shape-id "decision-description"
+     :mm.shape/applies-to :mm/Decision
+     :mm.shape/severity :violation
+     :mm.shape/required-property [:mm.memory/description]
+     :mm.shape/pattern-constraints [(:db/id nonblank)]}))
 ```
 
-Project the file into the substrate:
+The presence requirement detects an absent value. The regular expression detects whether a present value contains a non-whitespace character. This is only a structural check: “Because” would pass, even if it were an inadequate explanation of a real decision.
 
-```bash
-mem project import memory/shapes/event-booking-required.md
+`:mm.shape/shape-id` is a string. The property and constraint fields are references. Supplying the created constraint's entity id keeps the relationship explicit; an explanatory paragraph in a shape's Markdown body does not install these fields.
+
+## Check a passing example
+
+```clojure
+(def decision
+  (dt/make :mm/Decision
+    {:db/ident :memory.examples/explained-refresh
+     :mm.memory/name "Refresh after accepted writes"
+     :mm.memory/description "Readers need the newly accepted value."
+     :mm.memory/memory-type :decision
+     :mm.memory/scope :project}))
+
+(shape/walk-entity (db/db) (:db/id decision) (:db/id description-shape))
+;; => {:status :pass, :entity ..., :shape ..., :checks-passed 7}
+
+(shape/validate (db/db) (:db/id decision) :audit)
+;; one result for each applicable shape
 ```
 
-Or via MCP — `sandbar.shape.create` with `:format "markdown"`:
+`walk-entity` exercises the named entity/shape pair directly. `validate` also exercises target selection. Both checks are useful when developing a shape: an empty result from `validate` could mean that no shape was selected.
+
+## Check the negative case
+
+For this audit exercise, use the class-level update API to store a blank description, then evaluate the shape explicitly:
+
+```clojure
+(dt/update-entity! decision {:mm.memory/description "   "})
+
+(shape/validate (db/db) (:db/id decision) :audit)
+;; the description shape fails its :pattern check
+
+(try
+  (shape/validate (db/db) (:db/id decision) :strict)
+  (catch clojure.lang.ExceptionInfo e
+    (:violations (ex-data e))))
+;; returns the violation findings caught from the exception
+
+(dt/update-entity! decision
+  {:mm.memory/description "Readers need the newly accepted value."})
+```
+
+This demonstrates auditing already stored data. `shape/validate` does not undo a write. For a strict MCP mutation, use the mutation tool's `validation-mode` so the accepting boundary can reject a violating proposal before commit. See [boundary integration](../concepts/shape-validation.md#boundary-integration).
+
+## Use MCP for an audit
+
+This is the parameter object for `tools/call`:
 
 ```json
 {
-  "name": "sandbar.shape.create",
+  "name": "sandbar_shape_validate",
   "arguments": {
-    "format": "markdown",
-    "source": "---\nname: ...\n---\n..."
+    "entity": ":memory.examples/explained-refresh",
+    "mode": "audit"
   }
 }
 ```
 
-## A first shape, in EDN
+The payload includes `entity`, `mode`, `result-count`, and `results`. Inspect transport errors and the MCP `isError` field before treating the payload as an ordinary result. `mode` belongs to this audit tool; entity create/update use the distinct argument `validation-mode`.
 
-For inline construction (REPL, fixture, programmatic seeding):
-
-```clojure
-(require '[sandbar.db.datatype :as dt])
-
-(dt/make :mm/Shape
-  {:mm.shape/shape-id          :event-booking/required
-   :mm.shape/applies-to        :event/Booking
-   :mm.shape/description       "Every booking carries title, starts-at, ends-at, owner"
-   :mm.shape/required-property [:event.booking/title
-                                :event.booking/starts-at
-                                :event.booking/ends-at
-                                :event.booking/owner]
-   :mm.shape/severity          :violation})
-```
-
-`dt/make` validates the shape itself (the metacircular check: `:mm/Shape` has a shape-of-shapes) and transacts.
-
-## Cardinality + pattern + datatype constraints
-
-These three slots take **sub-entities** — first-class instances of `:mm.shape/CardinalityConstraint`, `:mm.shape/PatternConstraint`, and `:mm.shape/DatatypeConstraint`.  Each names the target property plus the constraint specifics.
-
-```clojure
-(dt/make :mm/Shape
-  {:mm.shape/shape-id          :user/profile
-   :mm.shape/applies-to        :model/User
-   :mm.shape/description       "User profile invariants"
-   :mm.shape/required-property [:user/login]
-   :mm.shape/cardinality-constraints
-   [{:mm.shape.cardinality/property :user/login
-     :mm.shape.cardinality/min      1
-     :mm.shape.cardinality/max      1}
-    {:mm.shape.cardinality/property :user/email
-     :mm.shape.cardinality/min      0
-     :mm.shape.cardinality/max      -1}]    ; -1 means unbounded
-   :mm.shape/pattern-constraints
-   [{:mm.shape.pattern/property :user/login
-     :mm.shape.pattern/regex    "^[a-z][a-z0-9_-]{2,31}$"
-     :mm.shape.pattern/flags    ""}]
-   :mm.shape/datatype-constraints
-   [{:mm.shape.datatype/property          :user/login
-     :mm.shape.datatype/expected-datatype :db.type/string}]
-   :mm.shape/severity :violation})
-```
-
-Pattern flag chars are the standard Java regex flags: `i` (case-insensitive), `m` (multiline), `s` (dotall), `x` (comments).
-
-## Closed shapes (no extra slots permitted)
-
-```clojure
-(dt/make :mm/Shape
-  {:mm.shape/shape-id   :ontology/strictly-closed
-   :mm.shape/applies-to :ontology/Term
-   :mm.shape/required-property [:ontology.term/preferred-label]
-   :mm.shape/closed?    true
-   :mm.shape/severity   :warning})
-```
-
-With `:mm.shape/closed? true`, instances may carry only the declared properties plus the substrate-permitted slots (`:db/id`, `:db/ident`, `:dt/type`, `:dt/context`, `:dt/label`).  Anything else surfaces as a `:closed` check failure.
-
-## Custom validator functions
-
-When the constraint requires logic beyond the declarative primitives, attach a `:mm.shape/validator-fn` pointing at a `:mm/Fn` memorial whose `:dt.fn/source-ns` + `:dt.fn/source-var` resolve to a peer-side function:
-
-```clojure
-;; First, register the validator fn as a :mm/Fn memorial
-(require '[sandbar.db.fn :refer [defdbfn]])
-
-(defdbfn check-booking-starts-before-ends [db entity-eid shape-eid]
-  {:dt.fn/purpose      :validate
-   :dt.fn/purity       :pure-total
-   :dt.fn/cost-class   :cheap
-   :dt.fn/installed-as :classpath-fn
-   :dt.fn/description  "Booking starts-at must precede ends-at."
-   :dt.fn/version      "1.0.0"}
-  (let [e   (datomic.api/entity db entity-eid)
-        sa  (:event.booking/starts-at e)
-        ea  (:event.booking/ends-at   e)]
-    (if (and sa ea (.before sa ea))
-      {:status :pass :check :starts-before-ends}
-      {:status :fail :check :starts-before-ends
-       :starts-at sa :ends-at ea
-       :severity  :violation})))
-
-;; Then attach it to a shape
-(dt/make :mm/Shape
-  {:mm.shape/shape-id     :event-booking/temporal-coherence
-   :mm.shape/applies-to   :event/Booking
-   :mm.shape/validator-fn (dt/find-by :db/ident
-                                      :my.app.shape/check-booking-starts-before-ends)
-   :mm.shape/severity     :violation})
-```
-
-The `defdbfn` macro dual-emits — the Clojure function is callable from peer-side code AND a `:mm/Fn` memorial entity is transacted so the shape can reference it by `:db/ident`.  See `memory/decisions/dt_fn_existing_state_reconciliation_dual_emit_defdbfn_legacy_migration_2026_05_23.md` for the dual-emit design.
-
-## Validating one entity
-
-```clojure
-(require '[sandbar.shape :as shape]
-         '[datomic.api :as d]
-         '[sandbar.db :as db])
-
-(def conn (db/conn))
-
-;; Audit mode (default) — returns a vector of per-shape walk results
-(shape/validate (d/db conn) [:db/ident :decisions/example])
-;; =>
-;; [{:status :pass :entity 17592186 :shape 17592345 :checks-passed 6}
-;;  {:status :fail :entity 17592186 :shape 17592355
-;;   :failures [{:status :fail :check :pattern
-;;               :pattern-violations [{:property :decisions/title
-;;                                     :regex "^[A-Z]"
-;;                                     :non-matching-values ["lowercase title"]}]
-;;               :severity :violation}]}]
-
-;; Strict mode — throws ex-info on any :violation-severity failure
-(shape/validate (d/db conn) [:db/ident :decisions/example] :strict)
-```
-
-## Validating one entity via MCP
-
-```bash
-curl -X POST http://localhost:8080/mcp \
-  -H "Authorization: Bearer $SANDBAR_TOKEN" \
-  -d '{
-    "jsonrpc": "2.0",
-    "id": 1,
-    "method": "tools/call",
-    "params": {
-      "name": "sandbar.shape.validate",
-      "arguments": {"entity": ":decisions/example", "mode": "audit"}
-    }
-  }'
-```
-
-The response (unwrap `content[0].text`):
+For a class report:
 
 ```json
 {
-  "entity": ":decisions/example",
-  "mode": "audit",
-  "result-count": 2,
-  "results": [
-    {"status": "pass", "entity": 17592186, "shape": 17592345, "checks-passed": 6},
-    {"status": "fail", "entity": 17592186, "shape": 17592355,
-     "failures": [{"status": "fail", "check": "pattern",
-                   "pattern-violations": [...],
-                   "severity": "violation"}]}
-  ]
+  "name": "sandbar_shape_conformance-report",
+  "arguments": {"class": ":mm/Decision"}
 }
 ```
 
-## Batch conformance for a whole class
+The equivalent Clojure call is `(shape/conformance-report (db/db) :mm/Decision)`. Read `instance-count`, `shape-count`, and `total-checks` alongside the failures. `total-checks` counts entity/shape pairs; a report with no evaluated pairs does not establish that the intended population passed.
+
+This report selects direct `:mm/Decision` instances and shapes targeting that exact class. A specialized decision class needs its own target declaration and report; a parent-targeted shape is not inherited by the current selector.
+
+## Add a different requirement
+
+| Requirement | Representation |
+| --- | --- |
+| At least one value | `:mm.shape/required-property`, or a cardinality minimum |
+| Between two and five values | A `:mm.shape/CardinalityConstraint` with minimum `2`, maximum `5` |
+| A ticket matches a complete format | A `:mm.shape/PatternConstraint` with an anchored expression |
+| A stored value has the required primitive type | Declare the Datomic attribute type; the additional shape datatype check currently has a false-pass defect |
+| Exactly one of two properties is populated | A `:mm.shape/XorConstraint` |
+| A rule needs application logic | A deployed custom validator, after verifying the reference resolves and the negative case fails |
+
+Inspect these classes with the schema tools before constructing them. As in the first example, create the constraint entity and attach its reference to the corresponding shape slot. Pattern flags are strings using the supported Java-regex options `i`, `m`, `s`, and `x`; do not assume another regex dialect has identical behavior.
+
+Leave the shape open unless the requirement is specifically to constrain all present properties. A closed shape's allowed set is assembled from the properties it declares, plus a small set of substrate fields. It does not automatically admit every inherited memory slot. See the [constraint meanings](../concepts/shape-validation.md#what-each-constraint-means) before enabling `:mm.shape/closed?`.
+
+## Custom validator functions
+
+A shape's `:mm.shape/validator-fn` refers to a function entity carrying `:dt.fn/source-ns` and `:dt.fn/source-var`. The intended callback interface is shown below; this is a signature sketch, not a complete validator registration example:
 
 ```clojure
-(require '[sandbar.shape :as shape]
-         '[datomic.api :as d]
-         '[sandbar.db :as db])
-
-;; Walks every instance of :mm/Decision against every applicable :mm/Shape
-(shape/conformance-report (d/db (db/conn)) :mm/Decision)
-;; =>
-;; {:class           :mm/Decision
-;;  :instance-count  847
-;;  :shape-count     3
-;;  :total-checks    2541
-;;  :passes          2533
-;;  :failures        8
-;;  :error-count     2
-;;  :warning-count   6
-;;  :failure-details [<walk-entity-result> ...]}
+(defn check-example [database entity-eid shape-eid]
+  ;; Read the supplied database value and evaluate the actual requirement.
+  {:status :pass})
 ```
 
-Or via MCP:
+The function must already be available to the running process. The metadata points to its implementation; it does not install code. A failure result uses `:status :fail`, includes useful details, and supplies a severity such as `:violation`. An exception is captured as a failed validator check.
 
-```bash
-curl -X POST http://localhost:8080/mcp \
-  -H "Authorization: Bearer $SANDBAR_TOKEN" \
-  -d '{
-    "jsonrpc": "2.0",
-    "id": 2,
-    "method": "tools/call",
-    "params": {
-      "name": "sandbar.shape.conformance-report",
-      "arguments": {"class": ":mm/Decision"}
-    }
-  }'
-```
+The current resolver fails on an ident-bearing function reference before invoking it. An unnamed reference can invoke the same function, but that difference is a defect rather than a recommended authoring convention. Until it is repaired, do not make a named custom callback the sole acceptance check. Confirm actual invocation and inspect failure details; see [shape limitations](../concepts/shape-validation.md#what-each-constraint-means).
 
-The conformance report is the canonical surface for class-wide invariant audits — substrate-quality, governance, drift detection.
+The custom check runs alongside the built-in checks. It does not replace the whole walker. Keep validation free of external side effects: an audit may invoke it repeatedly, and evaluation against a database value should not itself perform the operation being validated.
 
-## Validation modes
+This signature differs from the class-level `:dt/validator`, whose function accepts one entity and returns `nil` or an error value. Use the contract for the extension point you are implementing.
 
-Three modes resolved at the call boundary:
+## Choose severity and mode deliberately
 
-| Mode        | Behavior                                                                |
-|-------------|-------------------------------------------------------------------------|
-| `:audit`    | Default. Returns all results; caller decides what to do.                |
-| `:strict`   | Throws `ex-info` on any `:violation`-severity failure.                  |
-| `:disabled` | Skips validation; returns `[]`.  Escape hatch; opt-in only.             |
+Use `:violation` for a requirement that must prevent strict acceptance. Use `:warning` or `:info` for findings the application may act on without refusing the operation. Strict mode still returns those findings; it does not turn them into passes. Disabled evaluation returns `[]` and establishes no conformance result.
 
-`sandbar.entity.create` and `sandbar.entity.update` auto-invoke shape validation as a post-step after class-required-slot checks; the create-call's `:mode` argument controls how failures are handled (Stage E of the SHACL arc).
-
-## Severity discipline
-
-A SOUND `:violation`-severity shape never produces a false negative — if a check passes, the entity really conforms (per the Cousot-Cousot abstract-interpretation framing; the walker IS abstract interpretation).
-
-A `:warning`-severity shape may admit false positives — useful for "tightening over time" workflows where you want to surface candidates without rejecting them at create-time.
-
-`:info`-severity is fully informational; never rejects, never warns aggressively.
-
-When in doubt, start at `:warning` and promote to `:violation` once the false-positive rate is zero against the existing corpus.
-
-## A note on metacircularity
-
-`:mm/Shape` itself has a shape — a `:mm/Shape` memorial called `:sandbar.shape/shape-shape` that targets `:mm/Shape` and declares its own invariants.  This is the metacircular closure: the substrate validates the validators by its own substrate primitives.  Run `(shape/conformance-report (d/db (db/conn)) :mm/Shape)` to confirm the shape-of-shapes passes.
+Before relying on a shape, exercise one pass and one failure, every concrete target class, an overlapping shape if relevant, and the actual write boundary used by the application. These checks verify different parts of the contract. Do not infer target coverage from a zero-failure report.
 
 ## See also
 
-- [`doc/concepts/shape-validation.md`](../concepts/shape-validation.md) — thesis + abstract-interpretation framing
-- [`doc/concepts/metamodel.md`](../concepts/metamodel.md) — the `:dt/*` substrate the shape vocabulary builds on
-- [`writing-a-clojure-client.md`](writing-a-clojure-client.md) — embedding the shape API in a Clojure consumer
-- [`writing-an-mcp-client.md`](writing-an-mcp-client.md) — invoking shape verbs over MCP
-- [`writing-a-rest-client.md`](writing-a-rest-client.md) — invoking shape endpoints over REST
-- [`doc/api/dt-star.md`](../api/dt-star.md) — `sandbar.shape` namespace reference
+- [Shape validation](../concepts/shape-validation.md)
+- [Defining classes](defining-new-classes.md)
+- [First-class functions](../concepts/first-class-fn.md)
+- [MCP reference](../api/mcp-verbs.md)

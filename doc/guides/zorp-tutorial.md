@@ -1,456 +1,171 @@
 # Tutorial — Zorp's Galactic Footwear Emporium
 
-> "If it doesn't fit your tentacles, we'll grow you new ones!"
-> — Zorp the Magnificent, Proprietor
+Zorp sells footwear for customers with varied numbers of feet, uncertain gravity, and occasional disagreements with their shoes. His inventory needs a model that shares ordinary product properties while leaving room for specialized ones.
 
-A complete worked example: defining a class hierarchy in EDN, creating validated instances, and querying the metamodel through `dt/*` and the REST API.  For the theoretical background see [`doc/concepts/metamodel.md`](../concepts/metamodel.md); for the more general "how to add new classes" walkthrough see [`defining-new-classes.md`](defining-new-classes.md).
+In this tutorial you will load a small class hierarchy, add three products, and query them at different levels of the hierarchy. You will also meet Kevin, a philosophical flip-flop.
 
-## Introduction
+## Load the example model
 
-Meet Zorp, a three-eyed, seven-tentacled entrepreneur from the Kepler-442b system who runs the most successful footwear shop on Pluto's dark side. Business is booming ever since the Interstellar Tourism Board declared Pluto a "must-visit destination for beings with 3+ appendages."
-
-Zorp's inventory has grown chaotic. He's got anti-gravity sneakers mixed with methane-resistant boots, and last week a customer accidentally bought a pair of sentient sandals that now refuse to leave.
-
-It's time to organize this mess with a proper **ontology**.
-
-## The Footwear Ontology
-
-Zorp needs to classify his inventory. After consulting with the Galactic Standards Bureau (and bribing a few officials with imported Earth chocolate), he's designed this hierarchy:
-
-```
-                          dt/Resource
-                               |
-                           dt/Ref
-                               |
-                      zorp/Footwear [abstract]
-              ________________|________________
-             |                |                |
-        zorp/Sneaker     zorp/Boot       zorp/Sandal
-        _____|_____       ____|____          |
-       |           |     |         |    zorp/FlipFlop
-  zorp/HighTop  zorp/LowTop  |    |
-                    zorp/SpaceBoot  zorp/MoonBoot
-```
-
-### Property Inheritance
-
-Each class defines its own slots (properties), which are inherited by subclasses:
-
-```
-dt/Resource
-│   ├── db/doc           : string     "Documentation"
-│   ├── db/ident         : keyword    "Unique identifier"
-│   ├── dt/label         : string     "Display label"
-│   ├── dt/context     : string     "Namespace"
-│   └── dt/type          : ref->Class "Type reference"
-│
-└── dt/Ref
-    │   (no additional slots)
-    │
-    └── zorp/Footwear [abstract]
-        │   ├── footwear/name           : string   "Product name"
-        │   ├── footwear/size           : string   "Galactic size (e.g., '7-tentacle')"
-        │   ├── footwear/color          : string   "Color (UV/IR supported)"
-        │   ├── footwear/tentacle-count : long     "Number of appendages"
-        │   ├── footwear/gravity-rating : double   "Optimal gravity in Gs"
-        │   ├── footwear/price          : bigdec   "Price in Plutonian Credits"
-        │   └── footwear/sentient?      : boolean  "Has it achieved consciousness?"
-        │
-        ├── zorp/Sneaker
-        │   │   ├── sneaker/bounce-factor  : double  "Bounce height in meters"
-        │   │   ├── sneaker/glow-in-dark?  : boolean "Visible on Pluto's dark side"
-        │   │   ├── sneaker/squeak-volume  : long    "Decibels per step (0=silent, 140=spacecraft)"
-        │   │   ├── sneaker/lace-type      : string  "Lace style (self-tying, magnetic, tentacle-knot)"
-        │   │   └── sneaker/air-pump?      : boolean "Has 1990s-style air pump (Earth retro)"
-        │   │
-        │   ├── zorp/HighTop
-        │   │       (no additional slots - extra ankle support)
-        │   │
-        │   └── zorp/LowTop
-        │           (no additional slots - classic style)
-        │
-        ├── zorp/Boot
-        │   │   ├── boot/vacuum-rated?    : boolean "Safe for spacewalks"
-        │   │   └── boot/temperature-range : string "Operating temp range"
-        │   │
-        │   ├── zorp/SpaceBoot
-        │   │       (no additional slots - magnetic soles)
-        │   │
-        │   └── zorp/MoonBoot
-        │           (no additional slots - retro style)
-        │
-        └── zorp/Sandal
-            │   (no additional slots)
-            │
-            └── zorp/FlipFlop
-                    ├── flipflop/flop-frequency    : double  "Flops per meter walked"
-                    ├── flipflop/toe-separator-count : long  "Number of toe dividers (species-dependent)"
-                    ├── flipflop/escape-velocity   : double  "Top speed in m/s (sentient units only)"
-                    └── flipflop/mood              : string  "Current emotional state (sentient units only)"
-```
-
-### Effective Slots by Class
-
-Here's what each concrete class actually has available (inherited + direct):
-
-| Class | Effective Slots |
-|-------|-----------------|
-| `zorp/HighTop` | *From Resource:* db/doc, db/ident, dt/label, dt/context, dt/type<br>*From Footwear:* footwear/name, footwear/size, footwear/color, footwear/tentacle-count, footwear/gravity-rating, footwear/price, footwear/sentient?<br>*From Sneaker:* sneaker/bounce-factor, sneaker/glow-in-dark?, sneaker/squeak-volume, sneaker/lace-type, sneaker/air-pump?<br>**Total: 17 slots** |
-| `zorp/LowTop` | *(Same as HighTop)*<br>**Total: 17 slots** |
-| `zorp/SpaceBoot` | *From Resource:* db/doc, db/ident, dt/label, dt/context, dt/type<br>*From Footwear:* footwear/name, footwear/size, footwear/color, footwear/tentacle-count, footwear/gravity-rating, footwear/price, footwear/sentient?<br>*From Boot:* boot/vacuum-rated?, boot/temperature-range<br>**Total: 14 slots** |
-| `zorp/MoonBoot` | *(Same as SpaceBoot)*<br>**Total: 14 slots** |
-| `zorp/FlipFlop` | *From Resource:* db/doc, db/ident, dt/label, dt/context, dt/type<br>*From Footwear:* footwear/name, footwear/size, footwear/color, footwear/tentacle-count, footwear/gravity-rating, footwear/price, footwear/sentient?<br>*From FlipFlop:* flipflop/flop-frequency, flipflop/toe-separator-count, flipflop/escape-velocity, flipflop/mood<br>**Total: 16 slots** |
-
-### Schema Definition
-
-Here's how Zorp defines his footwear ontology in EDN (see [schema/zorp.edn](../schema/zorp.edn)):
+Use a disposable development database with Sandbar's required schemas loaded and a connected Clojure REPL. The example schema is included in [schema/zorp.edn](../../schema/zorp.edn), but is not part of the default schema set.
 
 ```clojure
-;; schema/zorp.edn
-[
- ;; Pre-declare entities
- [{:db/id #db/id[:db.part/user -1]
-   :db/ident :zorp/Footwear}
-  {:db/id #db/id[:db.part/user -2]
-   :db/ident :zorp/Sneaker}
-  {:db/id #db/id[:db.part/user -3]
-   :db/ident :zorp/Boot}
-  {:db/id #db/id[:db.part/user -4]
-   :db/ident :zorp/Sandal}]
+(require '[sandbar.db.datomic :as db]
+         '[sandbar.db.datatype :as dt])
 
- ;; Properties for all footwear
- [{:db/ident :footwear/name
-   :db/valueType :db.type/string
-   :db/cardinality :db.cardinality/one
-   :dt/type :dt/Property
-   :dt/domain :zorp/Footwear
-   :dt/range :db.type/string
-   :db/doc "The product name"
-   :db.install/_attribute :db.part/db}
-
-  {:db/ident :footwear/size
-   :db/valueType :db.type/string
-   :db/cardinality :db.cardinality/one
-   :dt/type :dt/Property
-   :dt/domain :zorp/Footwear
-   :dt/range :db.type/string
-   :db/doc "Size in Galactic Standard Units (e.g., '7-tentacle', 'juvenile-blob')"
-   :db.install/_attribute :db.part/db}
-
-  ;; ... more properties ...
-  ]
-
- ;; Class definitions
- [{:db/ident :zorp/Footwear
-   :dt/type :dt/Class
-   :dt/abstract? true
-   :dt/subclass-of :dt/Ref
-   :dt/context "zorp"
-   :dt/label "Footwear"
-   :db/doc "Abstract base class for all galactic footwear"
-   :dt/slots [:footwear/name :footwear/size :footwear/color
-              :footwear/tentacle-count :footwear/gravity-rating
-              :footwear/price :footwear/sentient?]}
-
-  {:db/ident :zorp/Sneaker
-   :dt/type :dt/Class
-   :dt/subclass-of :zorp/Footwear
-   :dt/context "zorp"
-   :dt/label "Sneaker"
-   :db/doc "Casual athletic footwear for low-gravity sports"
-   :dt/slots [:sneaker/bounce-factor :sneaker/glow-in-dark?
-              :sneaker/squeak-volume :sneaker/lace-type
-              :sneaker/air-pump?]}
-
-  ;; ... more classes ...
-  ]
-]
+(db/load-schema :zorp)
 ```
 
-## Creating Inventory with dt/make
+This loads the example into the configured development database. Start with an empty inventory so the counts below have their stated meaning.
 
-Now Zorp can add products to his inventory using the type-safe `dt/make` function:
+Use a fresh development process and load this model before creating inventory or warming type queries. Single-file schema loading does not clear previously cached type relations. The tutorial does not establish safe hot editing of an already used inheritance graph.
+
+## Explore the hierarchy
+
+```text
+Footwear (abstract)
+├── Sneaker
+│   ├── HighTop
+│   └── LowTop
+├── Boot
+│   ├── SpaceBoot
+│   └── MoonBoot
+└── Sandal
+    └── FlipFlop
+```
+
+The root describes common properties: name, size, color, tentacle count, gravity rating, price, and sentience. Sneakers add bounce and laces; boots add vacuum and temperature properties; flip-flops add mood and a few practical concerns such as escape velocity.
 
 ```clojure
-(require '[sandbar.db.datatype :as dt])
+(set (dt/direct-subclasses-of :zorp/Footwear))
+;; => #{:zorp/Sneaker :zorp/Boot :zorp/Sandal}
 
-;; The flagship product: Anti-Gravity Dunks
+(count (dt/subclasses-of :zorp/Footwear))
+;; => 8
+
+(contains? (dt/slots-of :zorp/HighTop) :footwear/price)
+;; => true
+
+(contains? (dt/slots-of :zorp/HighTop) :sneaker/bounce-factor)
+;; => true
+```
+
+`HighTop` declares no extra slots. Its effective slots include those inherited from `Sneaker`, `Footwear`, and the substrate's resource classes. Declaring the hierarchy once lets the query machinery recover those consequences.
+
+With the bundled schema, the effective slot counts are:
+
+| Class | Effective slots | Explanation |
+| --- | --- | --- |
+| Footwear | 12 | Seven footwear properties plus five inherited substrate properties |
+| Sneaker, HighTop, LowTop | 17 | Footwear plus five sneaker properties |
+| Boot, SpaceBoot, MoonBoot | 14 | Footwear plus two boot properties |
+| Sandal | 12 | Footwear's properties |
+| FlipFlop | 16 | Sandal plus four flip-flop properties |
+
+Use `dt/slots-of` to inspect the actual set. The counts are observations of this example schema, not limits on a class.
+
+## Add inventory
+
+Give each product an explicit ident so later examples can refer to it:
+
+```clojure
 (dt/make :zorp/HighTop
-  {:footwear/name "Anti-Gravity Dunks 3000"
-   :footwear/size "7-tentacle"
-   :footwear/color "Ultraviolet Sparkle"
-   :footwear/tentacle-count 7
-   :footwear/gravity-rating 0.063
-   :footwear/price 299.99M
-   :footwear/sentient? false
-   :sneaker/bounce-factor 47.5    ;; You'll bounce 47.5 meters!
-   :sneaker/glow-in-dark? true    ;; Essential for Pluto's eternal night
-   :sneaker/squeak-volume 45      ;; Moderate squeak, won't wake the neighbors
-   :sneaker/lace-type "tentacle-knot"
-   :sneaker/air-pump? true})      ;; Retro Earth cool
+  {:db/ident :zorp.product/orbit-high-top
+   :footwear/name "Orbit High Top"
+   :footwear/price 79.95M
+   :sneaker/bounce-factor 4.2})
 
-;; Budget option for the frugal blob
-(dt/make :zorp/LowTop
-  {:footwear/name "Blob Runner Basics"
-   :footwear/size "juvenile-blob"
-   :footwear/color "Transparent"
-   :footwear/tentacle-count 0
-   :footwear/gravity-rating 0.1
-   :footwear/price 49.99M
-   :footwear/sentient? false
-   :sneaker/bounce-factor 12.0
-   :sneaker/glow-in-dark? false   ;; Blobs generate their own light
-   :sneaker/squeak-volume 0       ;; Silent - blobs hate noise
-   :sneaker/lace-type "psychic"   ;; No appendages needed
-   :sneaker/air-pump? false})
-
-;; Professional spacewalk equipment
-(dt/make :zorp/SpaceBoot
-  {:footwear/name "Void Walker Pro"
-   :footwear/size "5-tentacle"
-   :footwear/color "Infrared Black"
-   :footwear/tentacle-count 5
-   :footwear/gravity-rating 0.0
-   :footwear/price 1299.99M
-   :footwear/sentient? false
-   :boot/vacuum-rated? true
-   :boot/temperature-range "-270C to +150C"})
-
-;; The problematic inventory item
-(dt/make :zorp/FlipFlop
-  {:footwear/name "Kevin"
-   :footwear/size "2-foot"
-   :footwear/color "Existential Dread Gray"
-   :footwear/tentacle-count 2
-   :footwear/gravity-rating 1.0
-   :footwear/price 19.99M
-   :footwear/sentient? true            ;; Oh no, Kevin achieved consciousness
-   :flipflop/flop-frequency 3.7        ;; Flops pensively
-   :flipflop/toe-separator-count 1     ;; Standard Earth configuration
-   :flipflop/escape-velocity 8.2       ;; Can outrun most customers
-   :flipflop/mood "philosophical"})    ;; Currently pondering free will
-
-;; Retro Earth fashion
 (dt/make :zorp/MoonBoot
-  {:footwear/name "1970s Earth Replica"
-   :footwear/size "earth-medium"
-   :footwear/color "Silver Metallic"
-   :footwear/tentacle-count 2
-   :footwear/gravity-rating 0.166
-   :footwear/price 89.99M
-   :footwear/sentient? false
-   :boot/vacuum-rated? false
-   :boot/temperature-range "-40C to +40C"})
+  {:db/ident :zorp.product/lunar-boot
+   :footwear/name "Lunar Boot"
+   :footwear/price 119.95M})
+
+(dt/make :zorp/FlipFlop
+  {:db/ident :zorp.product/kevin
+   :footwear/name "Kevin"
+   :footwear/price 29.95M
+   :footwear/sentient? true
+   :flipflop/mood "philosophical"})
 ```
 
-## Querying the Store API
+The `M` suffix creates a Clojure decimal value, matching the price attribute's `:db.type/bigdec`. Other properties use their declared value types. `dt/make` checks the class data before transacting.
 
-With his inventory properly organized, Zorp can use the REST API to answer important business questions.
+The example schema leaves these product properties optional. The lunar boot therefore does not need a temperature range to be created. If Zorp needs that rule before listing boots for sale, it must be declared as a requirement and enforced by the accepting operation.
 
-### "What types of footwear do I sell?"
+## Query the right population
 
-```bash
-curl http://localhost:8080/api/store/classes/zorp/Footwear/subclasses
-```
-
-**Response:**
 ```clojure
-{:class :zorp/Footwear
- :count 7
- :subclasses [:zorp/Boot
-              :zorp/FlipFlop
-              :zorp/HighTop
-              :zorp/LowTop
-              :zorp/MoonBoot
-              :zorp/Sandal
-              :zorp/Sneaker
-              :zorp/SpaceBoot]}
+(count (dt/all-instances-of :zorp/Footwear))
+;; => 3
+
+(count (dt/direct-instances-of :zorp/Footwear))
+;; => 0
+
+(set (dt/named-idents-of :zorp/Sneaker))
+;; => #{:zorp.product/orbit-high-top}
 ```
 
-### "What's the full class hierarchy?"
+There are three pieces of footwear, even though none declares its type as the abstract root. The sneaker query includes the high-top through inheritance. The direct-instance query asks a different question and returns no root instances.
 
-```bash
-curl http://localhost:8080/api/store/classes/zorp/HighTop/hierarchy
-```
+Choose `dt/named-idents-of` when the names are sufficient. Choose `dt/named-entities-of` or `dt/all-instances-of` when you need the product values. These return different shapes deliberately.
 
-**Response:**
+## Inspect one product and its model
+
 ```clojure
-{:class :zorp/HighTop
- :parents [:zorp/Sneaker]
- :ancestors [:zorp/Sneaker :zorp/Footwear :dt/Ref :dt/Resource]
- :direct-subclasses []
- :all-subclasses []}
+(def kevin (dt/find-by-ident :zorp.product/kevin))
+
+(:flipflop/mood kevin)
+;; => "philosophical"
+
+(dt/class-ident-of kevin)
+;; => :zorp/FlipFlop
+
+(dt/instance-of? :zorp/Footwear kevin)
+;; => true
+
+(dt/type-isa? :zorp/Footwear :zorp/FlipFlop)
+;; => true
+
+(dt/range-of :footwear/price)
+;; => :db.type/bigdec
 ```
 
-Zorp notes with satisfaction that his HighTops properly inherit from Sneaker, which inherits from Footwear, all the way up to dt/Resource.
+The first predicate asks about a stored entity; the second asks about two classes. Notice the argument order: the broader class comes first. `dt/class-entity-of` retrieves metadata for a class ident if you want to inspect its declaration.
 
-### "What properties can I set on a SpaceBoot?"
+The model is ordinary queryable data. A client can discover which slots a class supports and what range a property has without a separate handwritten inventory of the schema.
 
-```bash
-curl http://localhost:8080/api/store/classes/zorp/SpaceBoot/slots
-```
+## Ask a small business question
 
-**Response:**
+Which sentient products need a conversation before a sale?
+
 ```clojure
-{:class :zorp/SpaceBoot
- :count 11
- :slots [{:ident :db/doc :domain :dt/Resource :range :db.type/string}
-         {:ident :db/ident :domain :dt/Resource :range :db.type/keyword}
-         {:ident :dt/label :domain :dt/Resource :range :db.type/string}
-         {:ident :dt/context :domain :dt/Resource :range :db.type/string}
-         {:ident :dt/type :domain :dt/Resource :range :dt/Class}
-         {:ident :footwear/name :domain :zorp/Footwear :range :db.type/string}
-         {:ident :footwear/size :domain :zorp/Footwear :range :db.type/string}
-         {:ident :footwear/color :domain :zorp/Footwear :range :db.type/string}
-         {:ident :footwear/tentacle-count :domain :zorp/Footwear :range :db.type/long}
-         {:ident :footwear/gravity-rating :domain :zorp/Footwear :range :db.type/double}
-         {:ident :footwear/price :domain :zorp/Footwear :range :db.type/bigdec}
-         {:ident :footwear/sentient? :domain :zorp/Footwear :range :db.type/boolean}
-         {:ident :boot/vacuum-rated? :domain :zorp/Boot :range :db.type/boolean}
-         {:ident :boot/temperature-range :domain :zorp/Boot :range :db.type/string}]}
+(->> (dt/all-instances-of :zorp/Footwear)
+     (filter :footwear/sentient?)
+     (mapv #(select-keys % [:db/ident :footwear/name :flipflop/mood])))
+;; => [{:db/ident :zorp.product/kevin,
+;;      :footwear/name "Kevin",
+;;      :flipflop/mood "philosophical"}]
 ```
 
-SpaceBoots inherit slots from Boot (vacuum-rated?, temperature-range), Footwear (name, size, color, etc.), and all the way up to dt/Resource.
+This small example filters the enumerated entities in Clojure. Larger inventories can push structural predicates into the query layer; the [aggregation chapter](../concepts/aggregation.md) explains those operations.
 
-### "Which slots are specific to boots vs inherited?"
+Kevin's mood is data. It has no automatic effect on sale eligibility until the application defines and invokes that policy. This is the same distinction that separates declaring a class from deploying a workflow or enforcing a shape.
 
-```bash
-curl http://localhost:8080/api/store/classes/zorp/Boot/slots/direct
-```
+## Try an invalid construction
 
-**Response:**
+The root class is abstract:
+
 ```clojure
-{:class :zorp/Boot
- :count 2
- :slots [:boot/vacuum-rated? :boot/temperature-range]}
+(try
+  (dt/make :zorp/Footwear {:footwear/name "Abstract shoe"})
+  (catch clojure.lang.ExceptionInfo e
+    (:errors (ex-data e))))
+;; includes {:type :abstract-class, :class :zorp/Footwear, ...}
 ```
 
-### "Show me all the sneakers in stock"
+This refusal concerns the class model. A content rule such as “a sentient product has a recorded mood” belongs in a shape or application validator, with tests for both its positive and negative cases. [Authoring shapes](authoring-shapes.md) develops that next step.
 
-```bash
-curl http://localhost:8080/api/store/classes/zorp/Sneaker/instances
-```
+## Bring the model to a client
 
-**Response:**
-```clojure
-{:class :zorp/Sneaker
- :count 2
- :instances [{:db/ident :product/anti-gravity-dunks
-              :dt/type :zorp/HighTop
-              :footwear/name "Anti-Gravity Dunks 3000"
-              :footwear/size "7-tentacle"
-              :footwear/color "Ultraviolet Sparkle"
-              :footwear/tentacle-count 7
-              :sneaker/bounce-factor 47.5}
-             {:db/ident :product/blob-runner
-              :dt/type :zorp/LowTop
-              :footwear/name "Blob Runner Basics"
-              :footwear/size "juvenile-blob"
-              :footwear/color "Transparent"
-              :footwear/tentacle-count 0
-              :sneaker/bounce-factor 12.0}]}
-```
+The tutorial uses the Clojure API so you can see modeling and query behavior directly. The MCP catalog provides stable schema-inspection operations, but a newly introduced domain namespace also needs an explicit instance-exposure policy before an external client can read it. Adding a class does not grant access to its data.
 
-Notice this returns both HighTops and LowTops since they're subclasses of Sneaker.
-
-### "What about just direct instances of Sandal (not subclasses)?"
-
-```bash
-curl http://localhost:8080/api/store/classes/zorp/Sandal/instances/direct
-```
-
-**Response:**
-```clojure
-{:class :zorp/Sandal
- :count 0
- :instances []}
-```
-
-No plain sandals - they're all specialized as FlipFlops (like Kevin).
-
-### "Tell me everything about the :footwear/sentient? property"
-
-```bash
-curl http://localhost:8080/api/store/properties/footwear/sentient%3F
-```
-
-**Response:**
-```clojure
-{:property :footwear/sentient?
- :description {:db/ident :footwear/sentient?
-               :db/valueType :db.type/boolean
-               :db/cardinality :db.cardinality/one
-               :dt/type :dt/Property
-               :dt/domain :zorp/Footwear
-               :dt/range :db.type/boolean
-               :db/doc "Whether this footwear has achieved consciousness (handle with care)"}
- :domain :zorp/Footwear
- :range :db.type/boolean
- :cardinality :db.cardinality/one
- :cardinality-one? true
- :cardinality-many? false}
-```
-
-### "Is Kevin really a FlipFlop?"
-
-```bash
-curl http://localhost:8080/api/store/types/instance-of/zorp/FlipFlop/product/kevin
-```
-
-**Response:**
-```clojure
-{:class :zorp/FlipFlop
- :entity :product/kevin
- :instance-of? true}
-```
-
-Unfortunately, yes. Kevin is indeed a sentient flip-flop.
-
-### "Are FlipFlops a type of Footwear?"
-
-```bash
-curl http://localhost:8080/api/store/types/subclass-of/zorp/Footwear/zorp/FlipFlop
-```
-
-**Response:**
-```clojure
-{:parent :zorp/Footwear
- :child :zorp/FlipFlop
- :subclass-of? true}
-```
-
-The inheritance chain: FlipFlop -> Sandal -> Footwear -> dt/Ref -> dt/Resource
-
-## Business Insights
-
-With his ontology in place, Zorp can now answer complex business questions:
-
-| Question | API Query |
-|----------|-----------|
-| "How many types of boots do I carry?" | `GET /api/store/classes/zorp/Boot/subclasses` |
-| "What's special about sneakers vs other footwear?" | `GET /api/store/classes/zorp/Sneaker/slots/direct` |
-| "Can I sell SpaceBoots to customers shopping for Boots?" | `GET /api/store/types/subclass-of/zorp/Boot/zorp/SpaceBoot` |
-| "List every product in my store" | `GET /api/store/classes/zorp/Footwear/instances` |
-| "What class hierarchy does MoonBoot belong to?" | `GET /api/store/classes/zorp/MoonBoot/ancestors` |
-
-## Epilogue
-
-Zorp's Galactic Footwear Emporium is now the most well-organized shop on Pluto. The ontology helps him:
-
-* **Validate inventory** - Can't accidentally create a Boot without a temperature-range
-* **Answer customer questions** - "Do you have anything for 7 tentacles?" is now a simple query
-* **Track sentient merchandise** - Kevin gets his own shelf (and a small salary)
-* **Inheritance saves effort** - New boot types automatically get vacuum-rating support
-
-> "I didn't ask to become self-aware, but I must admit the employee discount is nice."
-> — Kevin the Sentient FlipFlop
-
-## See also
-
-- [`doc/concepts/metamodel.md`](../concepts/metamodel.md) — the theoretical foundations of the type system
-- [`doc/concepts/codec-layer.md`](../concepts/codec-layer.md) — how external representations bind to the model
-- [`defining-new-classes.md`](defining-new-classes.md) — generalizes the pattern Zorp used
-- [`writing-a-rest-client.md`](writing-a-rest-client.md) — full REST surface reference
-- [`writing-an-mcp-client.md`](writing-an-mcp-client.md) — same metamodel projected as MCP
-- [`authoring-shapes.md`](authoring-shapes.md) — add `:mm/Shape` invariants to the Zorp ontology (e.g., sentient flip-flops must have a `:flipflop/mood`)
-- [`doc/api/dt-star.md`](../api/dt-star.md) — every `dt/*` function signature
+To build your own domain, follow [Defining new classes](defining-new-classes.md). For the mechanics behind inherited slots and broader populations, read [the metamodel](../concepts/metamodel.md) and [inference](../concepts/rdfs-entailment.md). The [`dt/*` reference](../api/dt-star.md) gives the operation signatures used here.

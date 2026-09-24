@@ -1,144 +1,78 @@
-# Fulltext Search
+# Fulltext search: rank the fields that carry meaning
 
-> Sandbar layers BM25F multi-field weighted scoring on top of Datomic's native Lucene-backed `:db/fulltext` indexing.  The analyzer (Unicode-aware tokenizer + Porter stemmer) is metamodel-driven; per-class `:dt/bm25f-weights` declare slot weights at the schema layer.  Result projection (snippets, facets, structural composition via `:where` Datalog) composes through one verb.  The search axis of the four-axis retrieval surface.
+**An entity's name, explanation, body, and vocabulary can contribute differently to finding it.** Sandbar makes those choices part of the model: a class declares its searchable fields and their relative weights, and one search operation applies that declaration to its instances.
 
-## Thesis
+A decision with “cache freshness” in its title and supporting discussion in its body is a useful match even when neither field tells the whole story. BM25F combines that evidence while accounting for field length and repeated terms. The result is a ranked route into the graph. Identity, provenance, and supersession remain explicit relationships to inspect after discovery.
 
-A retrieval substrate ought to answer **"find by content, ranked"** as a first-class question, not as a bolt-on feature.  Sandbar's fulltext-search primitive — `sandbar.search/search-bm25f` — is the answer: one verb, opts-shaped, composes with the rest of the substrate via shared `:where` Datalog clauses and shared `:include` projection options.
+## Combine evidence before saturation
 
-The implementation choice is settled.  Lucene's tokenization, term-frequency indexing, and inverted-list traversal are battle-tested at every scale that matters.  Sandbar uses Lucene through Datomic's native `:db/fulltext` integration for the indexing layer.  Scoring is **canonical Robertson-Zaragoza BM25F** (Robertson, Zaragoza & Taylor 2004) — the multi-field weighted form that single-field Lucene Similarity doesn't natively express.  Substrate-quality discipline: the analyzer is class-agnostic; per-class weights are declared at the metamodel, not hardcoded in the substrate.
+For each distinct analyzed query term, Sandbar normalizes its frequency within each field, adds those frequencies with their field weights, then applies one saturation curve. This follows the multi-stream construction in [Robertson and Zaragoza, §3.6](https://www.staff.city.ac.uk/~sbrp622/papers/foundations_bm25_review.pdf). Adding separately saturated field scores is a different ranking function.
 
-## Lineage
+The implemented calculation is:
 
-### Lucene (Cutting, 1999-present)
+```text
+combined_tf(t, d) = sum over fields f of
+  weight[f] * tf(t, d[f]) / (1 - b + b * length(d[f]) / average_length[f])
 
-Doug Cutting's Lucene is the canonical fulltext-indexing library — segment-based inverted indexes, term dictionaries with skip lists, positional information for phrase queries, BKD trees for numeric/spatial.  Used by Solr, Elasticsearch, OpenSearch, and (relevantly) Datomic's `:db/fulltext` attributes.  Sandbar inherits Lucene's tokenization + inverted-list traversal directly; it does not reimplement them.
+idf(t) = log(1 + (N - df(t) + 0.5) / (df(t) + 0.5))
 
-### Datomic `:db/fulltext` (Hickey 2012-present)
-
-Datomic attributes declared with `:db/fulltext true` are indexed by Lucene at transact time.  Querying is via `(fulltext $ <attribute> <query>)` — a Datalog form that returns `[eid value text score]` tuples.  Sandbar's `dt/search-fulltext` is a thin wrapper over this primitive.  Per `decisions/datomic_primary_backend_elevation_2026_05_11.md`, native Lucene integration is one of the five reasons Datomic was elevated to primary backend.
-
-### BM25F (Robertson, Zaragoza & Taylor 2004)
-
-BM25 is the canonical IR relevance function — Robertson & Spärck-Jones 1976 / Robertson, Walker, Beaulieu et al 1995-1998 / Spärck-Jones, Walker & Robertson 2000.  Three terms: term frequency (saturating), inverse document frequency (rarity prior), and document-length normalization.
-
-BM25**F** (Robertson, Zaragoza & Taylor 2004; SIGIR) is the multi-field extension.  Each document has multiple fields (title, body, tags); per-field weights amplify or attenuate the contribution of each field; field-level length normalization respects each field's average length independently.  Per `decisions/bm25f_canonical_robertson_zaragoza_form.md`, Sandbar's implementation is canonical Robertson-Zaragoza form (not a Lucene-Similarity composition approximation).
-
-### Porter stemming (Porter 1980)
-
-The Porter Stemmer (Porter 1980, "An algorithm for suffix stripping") is the canonical algorithmic English stemmer.  Five-step rewrite pipeline that conflates morphological variants (`running` / `runs` / `ran` → stem `run`).  Sandbar's analyzer ships the Porter stemmer ported byte-for-byte from the corpus's reference implementation (`etc/lib/analysis.clj`); the ported form is used at index time AND query time so the stems match.
-
-### Unicode-aware tokenization
-
-Plain whitespace-tokenization fails on real text — diacritics, ligatures, mixed-script content, contraction apostrophes.  Sandbar's tokenizer uses Java's `java.text.BreakIterator` for word-boundary detection, with Unicode normalization (NFD) and combining-mark stripping for diacritic folding.  Same form as the corpus's `etc/lib/analysis.clj`; ported to Sandbar substrate at Stage 4a of the fulltext arc.
-
-## The search verb
-
-```clojure
-(sandbar.search/search-bm25f
-  {:class           :mm/Memory
-   :query           "datomic recursive rules"
-   :field-weights   {:mm.memory/name        12.0   ; optional override
-                     :mm.memory/description  8.0
-                     :mm.memory/body-raw     1.0}
-   :limit           20
-   :include         [:snippets :scores :facets]
-   :where           '[[?e :mm.memory/memory-type :decision]]   ; optional Datalog
-   :facet-by        [:mm.memory/memory-type :mm.memory/scope]  ; optional
-   })
-
-;; => {:hits [{:entity <entity-map> :score <num>
-;;             :field-scores {:mm.memory/name 8.2 :body-raw 3.1 ...}
-;;             :snippets    {:mm.memory/body-raw "...**datomic** **recursive** ..."}}
-;;            ...]
-;;     :total <int>
-;;     :facets {:mm.memory/memory-type {:decision 12 :plan 7 :observation 4 ...}}
-;;     :timing {:tokenize-ms 1 :score-ms 12 :total-ms 14}}
+score(q, d) = sum over distinct analyzed query terms t of
+  idf(t) * (k1 + 1) * combined_tf(t, d) / (k1 + combined_tf(t, d))
 ```
 
-Three opts power the composition contract:
+Sandbar uses `k1 = 1.2` and a shared `b = 0.75`. Document frequency counts each entity once across its analyzed fields. Statistics describe the full queried class population, including subclasses. Missing fields contribute no terms; average field lengths include entities that lack that field. Zero average length falls back to the unnormalized term frequency.
 
-- **`:where`** — Datalog clauses that filter the candidate set BEFORE ranking.  Fulltext ∩ structured filter as one query.
-- **`:facet-by`** — slot idents over which to compute facet counts on the matched set.  Aggregation composed with search.
-- **`:include`** — projection opts: `:snippets` (approximate regex-based highlight windows), `:scores` (per-field score breakdown), `:facets` (the histogram emission).
+The class's effective `:dt/bm25f-weights` map selects the fields. Inherited declarations combine, with the more specific class overriding a shared field's weight. A query can override weights. Weight changes express retrieval priorities; they do not confer importance, validity, or authority on the matching records.
 
-### Schema-declared weights
+## Scoring and execution are separate decisions
 
-Per-class weights live at the metamodel layer:
+Sandbar caches analyzed entity populations and scores them with its own analyzer and kernel. The analyzer lowercases, extracts runs of Unicode letters and numbers, and applies Porter stemming to eligible ASCII tokens. It does not perform accent folding or general Unicode normalization. For example, `running` and `runs` become `run`, while `ran` remains `ran`.
 
-```edn
-;; schema/mm.edn
-{:db/ident   :mm/Memory
- :dt/type    :dt/Class
- :dt/subclass-of :dt/Resource
- :dt/slots   [:mm.memory/name :mm.memory/description :mm.memory/body-raw ...]
- :dt/bm25f-weights [[:mm.memory/name        12.0]
-                    [:mm.memory/description  8.0]
-                    [:mm.memory/body-raw     1.0]]}
-```
+The BM25F query is a bag of words. Quoting, `AND`, wildcards, and field prefixes do not introduce a Lucene query language; they are handled as ordinary text by this analyzer. Repeated analyzed query terms contribute once.
 
-The substrate reads weights from the class entity at search time via `dt/bm25f-weights-of` — no consumer hardcoding.  Weights are caller-overridable via the `:field-weights` opt; the metamodel declaration is the default.
+Datomic's native fulltext index serves a separate single-attribute operation. Its results carry a Datomic/Lucene relevance score. The native query returns entity, matching value, transaction, and score; it should not be described as Sandbar's BM25F kernel. See [Datomic's fulltext contract](https://docs.datomic.com/query/query-data-reference.html#fulltext).
 
-### Snippet generation
+When a read principal is bound, Sandbar filters native fulltext candidates using current-store visibility before sorting, totals and the result limit. Returned entities use the same database value as that visibility decision. The rule covers document-owned content such as sections as well as the documents themselves; the scoring algorithm remains Datomic's.
 
-`:include [:snippets]` emits per-slot snippet windows centered on the first query-term hit, with `**term**` markdown highlighting of all matched-term occurrences within a ~240-char window.  Implementation is approximate (regex-based, not Lucene-position-aware) — Lucene's native positional highlighter is a Phase-2 optimization deferred per `decisions/query_engine_architectural_cornerstone_2026_05_11.md`.
+Why not use that index to prune BM25F candidates? An initial filter must recognize every term that the scorer would match. Datomic's native analysis and Sandbar's Porter-based analysis differ; a mismatched filter can discard a valid result before scoring. The cached population provides an exhaustive scoring baseline. An indexed optimization must preserve its candidate recall as well as improve measured cost.
 
-## The dt/* primitive surface
+## Compose a question without changing its meaning
 
-Substrate primitives in `sandbar.db.datatype`:
+`sandbar.search/search-bm25f` accepts a map with `:class` and `:query`. The MCP operation is advertised as `sandbar_search_bm25f`; use your server's discovered wire name.
 
-| Primitive                  | What it does                                                      |
-|----------------------------|-------------------------------------------------------------------|
-| `dt/search-fulltext`       | Single-attribute Lucene search; returns `[[eid score] ...]` pairs |
-| `dt/bm25f-weights-of`      | Read declared weights for a class; returns `{slot weight}` map    |
-| `dt/fulltext-indexed?`     | Predicate: does this attribute have `:db/fulltext true`?          |
+| Option | Role |
+| --- | --- |
+| `:where` | Restrict eligible entities with Datalog clauses using `?e` |
+| `:from` and `:via` | Restrict eligible entities to a graph path's reachable set |
+| `:rank-by` | Choose pure relevance, degree, backlink density, recency, or freshness ordering |
+| `:temporal-slot` | Supply the timestamp field for recency or freshness ordering |
+| `:facet-by` | Count field values over the matching population before the result limit |
+| `:limit` | Bound returned hits; default 20, zero means no cap |
+| `:projection` | Choose full entities, frontmatter, or identity/type metadata |
+| `:include` | Add snippets or diagnostic field scores |
 
-The `sandbar.search` namespace composes these primitives + the analyzer + Datomic class-walking into the consumer-facing verb.
+Structural and path filters intersect. They narrow the eligible hits without recalculating the class statistics. Reranking applies to all positive matches before limiting; `:score` becomes the structural value and `:relevance-score` retains BM25F.
 
-## Composition with the rest of the retrieval surface
+When a read principal is bound, BM25F also checks each candidate's visibility against the current store, rather than trusting cached entity labels. Unreadable candidates are removed before hit scoring, snippets, field-score diagnostics, totals, facets and the result limit. Authorized hits carry the current entity from that decision's database value into their payloads, snippets and scalar facets, so those fields do not expose an older cached entity representation.
 
-Search is one axis of four (search / aggregate / navigate / orient).  The composition contract per `decisions/multi_axis_search_composition_2026_05_08.md`:
+Analyzed terms, frequencies and class statistics remain cached. Until refresh, a hit can still match a removed term or receive a score based on earlier text. Class-wide document frequencies and average lengths also remain shared, so unreadable class members can affect scores. Current payloads and filtered hits do not establish that hidden records have no observable effect; aggregation, listing and counting have separate [open boundaries](../known-gaps-0.2.0.md#project-separation-has-several-boundaries). Verify the deployed build and its [read boundary](../firewall-and-projects.md#four-distinct-enforcement-questions).
 
-- **Search ∩ Aggregate** — `:facet-by` slot list on `search-bm25f` emits per-slot value counts over the match set.
-- **Search ∩ Filter** — `:where` Datalog clauses constrain the candidate set BEFORE BM25F scoring.
-- **Search ∩ Navigate** — `:from` + `:via` accept a seed entity + path-grammar expression as a PRE-FILTER restricting the candidate set to a graph-walk neighborhood (same path-grammar dialect as `navigate.path-via`; EDN-string form `"[:REP+ :cites]"`).  Composes with `:where` by intersection.
-- **Search ∩ Structural rank** — re-rank by `:degree` / `:backlink-density` / `:recency` / `:freshness` over the BM25F-scored set via `:rank-by` (with `:temporal-slot` required for `:recency` / `:freshness`).
-- **Search ∩ Tag tokenization** — ref-typed slots whose `:dt/range` is `:mm/Tag` automatically resolve to the target tag's weighted text content during scoring (value + alt-label + definition + scope-note + hidden-label + example).  Tagged memorials are findable through the tag's vocabulary without explicit indirection at the query layer.
+With no `:rank-by`, class declarations can add a status and recency policy. A hit marked as superseded orders at half its raw BM25F score, then equal ordering weights are resolved by recency. The returned `:score` remains the unscaled BM25F value, and demoted hits carry `:superseded? true`. Set `:rank-by :relevance` for score-only order. This policy can improve discovery of a current successor, while a much more relevant historical record can still lead; neither status nor recency establishes authority by itself.
 
-## What fulltext search is NOT for
+The MCP default projection is `metadata-only`; the in-process default is full. Request full entities for interpretation, or use returned IDs for exact reads. Snippets are approximate text windows, not evidence of an exact phrase match. Diagnostic `:field-scores` score fields separately and do not sum to the combined score.
 
-- **Exact-string matching** — that's a Datalog `[?e :slot "exact string"]` clause, not a BM25F query.  Fulltext stems and tokenizes; exact match doesn't survive.
-- **Substring matching on idents** — that's `:FILTER` on the navigation axis, or a Datalog clause with `clojure.string/includes?`.
-- **Vector / semantic similarity** — outside scope.  Future Sandbar may add an embedding-based axis; today's search is lexical BM25F.
-- **Relevance feedback / query expansion** — outside scope.  Consumers do this above the substrate.
+## References and multiple populations
 
-## Performance characteristics
+A weighted reference field can include primitive text selected from its declared target class's searchable fields. Expansion is bounded to one hop. At this boundary, target text is combined into the referring field; the referring field's weight applies. This does not imply recursive graph search or propagation of the target's numerical weights.
 
-Per `decisions/query_engine_architectural_cornerstone_2026_05_11.md` §12:
+A class vector searches two to eight populations, each with its own weights and statistics, then merges results. Raw scores from different populations are only approximately comparable. Choose disjoint populations when the intended result is one hit per entity; overlapping class scopes require an explicit identity and counting policy. A relevance threshold across such populations is not a calibrated confidence estimate.
 
-- **Indexing** — Lucene segment-based; transact time + segment-merge cost.  Production-scale fine.
-- **Query (single-field)** — Lucene's inverted-list traversal; O(matching documents) at the index level.
-- **Query (multi-field BM25F)** — Sandbar walks each weighted field, scores per-field, merges.  Linear in number of fields per query; modest constant.
-- **Snippet generation** — regex-based; O(slot-text-length) per slot in match set.  Approximate; Phase-2 optimization is Lucene Highlighter for position-aware highlighting.
-- **Facet counting** — Datalog aggregate over match set; O(match-set size) per facet.
+Use a single class for temporal reranking or faceting in this revision. Multi-class temporal ranking can fail when it compares date values numerically, and multi-class facets can lose fields when projection occurs before counting. A weight override is reliable only for fields the class cache already analyzes; selecting a new field through the override alone does not add it to that cache. These option-composition defects remain [release work](../known-gaps-0.2.0.md). Many-valued facets currently use the whole collection as a bucket key rather than counting each member separately.
 
-Profiling cliffs we know about: high-frequency stop-words on a corpus of mostly-similar documents can produce large match sets where BM25F's discrimination is weak.  Mitigation: stop-word filtering at index time (Lucene-standard); enable per consumer demand.
+## Freshness and cost are observable contracts
 
-## References
+Accepted writes and analyzed search state have distinct completion boundaries. MCP search waits for pending refresh work for a bounded interval. A quiet refresh queue alone does not establish that every refresh succeeded or that every class population is complete. Read exact entities to inspect accepted state, and use operator health and release tests to establish retrieval freshness.
 
-- Cutting, Doug.  *"Apache Lucene"*.  https://lucene.apache.org.  1999-present.
-- Robertson, Stephen & Spärck-Jones, Karen.  *"Relevance weighting of search terms"*.  JASIST 27(3), 1976.  The probabilistic relevance framework underlying BM25.
-- Robertson, Stephen E., Walker, S., Beaulieu, M., et al.  *"Okapi at TREC-7"*.  TREC-7 Proceedings, 1998.  BM25's emergence into the modern form.
-- Spärck-Jones, Karen, Walker, S. & Robertson, S.E.  *"A probabilistic model of information retrieval: development and comparative experiments"*.  Information Processing & Management 36(6), 2000.  Two-part synthesis paper.
-- Robertson, Stephen, Zaragoza, Hugo & Taylor, Michael.  *"Simple BM25 extension to multiple weighted fields"*.  CIKM '04.  The canonical BM25F derivation.
-- Porter, M.F.  *"An algorithm for suffix stripping"*.  Program 14(3), 1980.  The Porter stemmer.
-- Hickey, Rich.  *"Datomic"*.  https://docs.datomic.com.  2012-present.  Native `:db/fulltext` integration.
+Measure cold analysis, warm scoring, post-write refresh, filtering, reranking, and enrichment separately. Report the class population, query set, revision, cache state, and whether authentication and transport are included. A historical small-corpus timing is not a latency guarantee for another deployment.
 
-## See also
-
-- `doc/concepts/aggregation.md` — the sibling axis that `:facet-by` composes with
-- `doc/concepts/navigation.md` — the sibling axis that future `:from` + `:via` composition will compose with
-- `doc/guides/searching-the-corpus.md` — task-oriented worked examples
-- `doc/api/mcp-verbs.md` — `sandbar.search.bm25f` MCP entry (forthcoming at Stage 27)
-- `doc/api/dt-star.md` — `dt/search-fulltext` / `dt/bm25f-weights-of` / `dt/fulltext-indexed?` substrate primitives
-- The corpus's `decisions/bm25f_canonical_robertson_zaragoza_form.md` — ADR locking the canonical form
+Try the [search guide](../guides/searching-the-corpus.md), then use [navigation](navigation.md) to inspect the relationships behind a result. Implementation: [`search.clj`](../../src/sandbar/search.clj), [`BM25F kernel`](../../src/sandbar/search/bm25f.clj), and [`analyzer`](../../src/sandbar/search/analysis.clj).

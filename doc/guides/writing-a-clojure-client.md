@@ -1,349 +1,129 @@
-# Writing a Clojure Client
+# Writing a Clojure client
 
-> How to embed Sandbar in your Clojure application — `dt/*` idioms for introspection, creation, validation, and query.  This guide assumes you're consuming Sandbar in-process (same JVM); for an HTTP-based Clojure client, see [`writing-a-rest-client.md`](writing-a-rest-client.md); for embedding Sandbar as a substrate inside your own application, see [`sandbar-as-substrate.md`](sandbar-as-substrate.md).
+Use Sandbar in the same JVM when your application needs direct access to typed entities, model inspection, and Datalog. This guide starts with a disposable database and then explains the boundaries an embedded application must own. For a remote service, use the [MCP](writing-an-mcp-client.md) or [REST](writing-a-rest-client.md) guide instead.
 
 ## Adding Sandbar to your project
 
-Sandbar publishes to Clojars.  In your `project.clj`:
+Start from a source checkout and run `lein repl` at its root. Its `project.clj` supplies the Clojure, Datomic Peer and other dependencies, and places the schema resources on the classpath. See the [development guide](../development.md) for setup.
 
-```clojure
-:dependencies [[org.clojure/clojure "1.12.0"]
-               [com.danlentz/sandbar "0.2.0"]]
-```
-
-Or `deps.edn`:
-
-```clojure
-{:deps {com.danlentz/sandbar {:mvn/version "0.2.0"}}}
-```
-
-You will also need a Datomic Peer (transactor + library).  Sandbar does not bundle Datomic; bring your own per its license terms.
-
-## The principal namespaces
-
-```clojure
-(ns my.app
-  (:require [sandbar.db.datatype :as dt]
-            [sandbar.codec       :as codec]
-            [sandbar.projection  :as projection]
-            [sandbar.util.workflow :as wf]
-            [sandbar.shape       :as shape]
-            [sandbar.logging     :as sb-log]
-            [sandbar.reactive    :as reactive]))
-```
-
-| Namespace                  | Role                                                                |
-|----------------------------|---------------------------------------------------------------------|
-| `sandbar.db.datatype`      | The `dt/*` API — introspection, creation, validation, queries.      |
-| `sandbar.codec`            | Codec mediator — parse + emit between wire format and entity.       |
-| `sandbar.projection`       | Bidirectional projection between DB state and a filesystem hierarchy.|
-| `sandbar.util.workflow`    | Workflow + process operations (`:mm/Workflow` definitions; `:workflow/Process` runs). |
-| `sandbar.shape`            | SHACL-style shape validation — `validate`, `walk-entity`, `conformance-report`. |
-| `sandbar.logging`          | Six-macro observability API (`info` / `warn` / `error` / `debug` / `trace` / `profile`). |
-| `sandbar.reactive`         | Reactive-projection substrate (hook + callback registry for downstream sinks). |
-
-For a complete API surface see [`doc/api/dt-star.md`](../api/dt-star.md).
+When packaging an application, pin a reviewed Sandbar source revision or an actually published artifact and retain its schema/configuration resources. A server's reported version is not evidence that a matching Maven artifact has been published. Use the coordinates in the selected revision's `project.clj`.
 
 ## Connecting
 
-If you embed Sandbar in-process, the database connection is created by Sandbar's core during startup:
+This complete example creates a uniquely named in-memory database, loads Sandbar's configured schema, creates and updates a Tag, and deletes the database afterward. It needs no external transactor or HTTP server.
 
 ```clojure
-(require '[sandbar.core :as sb])
+(require '[datomic.api :as d]
+         '[sandbar.db.datomic :as db]
+         '[sandbar.db.datatype :as dt]
+         '[sandbar.reactive :as reactive])
 
-(sb/go)                ; starts the HTTP + nREPL servers + schema load
-;; or
-(sb/init-no-server)   ; schema-only — no HTTP, no nREPL (suitable for batch jobs)
+(defn try-sandbar []
+  (let [uri (str "datomic:mem://sandbar-example-" (java.util.UUID/randomUUID))]
+    (d/create-database uri)
+    (try
+      (binding [db/**conn* (atom (d/connect uri))
+                reactive/*reactive-projection-enabled?* false]
+        (db/initialize-db! uri)
+        (let [tag (dt/make :mm/Tag {:mm.tag/value "cache-policy"})
+              updated (dt/update-entity! tag
+                         {:mm.tag/scope-note "Decisions about cache freshness."})]
+          {:value (:mm.tag/value updated)
+           :scope-note (:mm.tag/scope-note updated)
+           :tag? (boolean (dt/instance-of? :mm/Tag updated))
+           :valid? (dt/valid? updated)
+           :has-value-slot? (contains? (dt/slots-of :mm/Tag) :mm.tag/value)}))
+      (finally
+        (d/delete-database uri)))))
+
+(try-sandbar)
 ```
 
-After this, `dt/*` operations work against the running system.  All `dt/*` functions implicitly use the connection registered by `sb/go`.
+The returned map contains the value and scope note above, with the three predicates true. The entity itself exists only during the call.
 
-For tests, use the test fixture in `sandbar.test.fixture` — it sets up an in-memory database with schema loaded.
+`db/**conn*` holds an atom containing the connection. Bind it to a new atom for a bounded operation; resetting its process-wide root would change the database seen by other callers. `db/initialize-db!` takes a URI, loads the configured schema and declared functions, and applies initialization checks. It does not install that connection as the current one. The binding does that separately.
+
+The reactive binding suppresses projection callbacks for this database exercise. A production application that wants projected files must configure the codecs, destinations and worker lifecycle explicitly. Creating a connection does not start those services.
 
 ## Reading the metamodel
 
+Run these forms inside a connection binding such as the one above:
+
 ```clojure
-;; All registered classes
 (dt/all-classes)
-;; => (:dt/Class :dt/Property :dt/Resource :mm/Memory ...)
-
-;; All properties
-(dt/all-properties)
-;; => (:db/doc :db/ident :dt/domain ...)
-
-;; Effective slots (inherited + direct)
-(dt/slots-of :mm/Memory)
-;; => #{:db/ident :dt/type :mm.memory/title ...}
-
-;; Direct slots only (without ancestors)
-(dt/direct-slots-of :mm/Memory)
-;; => ({:db/ident :mm.memory/title ...} ...)
-
-;; Required slots
-(dt/required-slots-of :event/Booking)
-;; => #{:event.booking/title :event.booking/starts-at ...}
-
-;; Class ancestry
-(dt/ancestors-of :event/Booking)
-;; => (:dt/Resource)
-
-;; Direct subclasses
-(dt/direct-subclasses-of :event/Booking)
-;; => (:event/RecurringBooking ...)
-
-;; All subclasses (transitive)
-(dt/subclasses-of :dt/Resource)
-;; => every class
+(dt/slots-of :mm/Decision)
+(dt/direct-slots-of :mm/Decision)
+(dt/ancestors-of :mm/Decision)
+(dt/range-of :mm.memory/name)
+(dt/cardinality-of :mm.memory/name)
 ```
 
-## Reading a property
+`slots-of` returns the effective slot identifiers, including inherited slots. `direct-slots-of` returns property entities declared directly on the class; it is not the same result shape. The [API reference](../api/dt-star.md) distinguishes identifier sets, entity collections, predicates and validation results.
 
-```clojure
-;; Where this property is defined
-(dt/domain-of :event.booking/owner)
-;; => :event/Booking
+Load the complete schema before ordinary application work. Configured full schema loading invokes model-cache callbacks; single-file loading and hot class/inheritance edits still have an invalidation gap. See the [class guide](defining-new-classes.md#load-and-inspect-it) before relying on dynamic model extension.
 
-;; What value type the property holds
-(dt/range-of :event.booking/owner)
-;; => :model/User
-
-;; Cardinality
-(dt/cardinality-of :event.booking/owner)
-;; => :db.cardinality/one
-
-(dt/cardinality-many? :event.booking/tags)
-;; => true
-
-;; Is it required?
-(dt/required? :event.booking/title)
-;; => true
-```
-
-## Type predicates
-
-```clojure
-;; Is X an instance of Class?
-(dt/instance-of? :event/Booking my-booking)
-;; => true
-
-;; Is Child a subclass of Parent?
-(dt/subclass-of? :dt/Resource :event/Booking)
-;; => true
-```
+Type predicates take the class first: `(dt/instance-of? :mm/Tag entity)`. The subclass predicate also puts the ancestor first: `(dt/subclass-of? :mm/Memory :mm/Decision)`.
 
 ## Creating entities
 
-```clojure
-;; Create with validation
-(def b
-  (dt/make :event/Booking
-    {:event.booking/title     "Weekly Sync"
-     :event.booking/starts-at #inst "2026-05-14T15:00:00Z"
-     :event.booking/ends-at   #inst "2026-05-14T16:00:00Z"
-     :event.booking/owner     (dt/find-by :user/login "alice")}))
+`dt/make` validates the candidate's class, required slots and declared slot types before committing. It returns the created entity. `dt/update-entity!` accepts an entity, ID or ident and returns a refreshed entity after updating it. Cardinality-many updates replace the supplied slot's prior members by default; `{:additive? true}` requests union behavior.
 
-;; Without validation (escape hatch — use sparingly)
-(dt/make* :event/Booking {...})
-
-;; With validation override
-(dt/make :event/Booking {...} {:validate? false})
-```
-
-`dt/make` returns the entity map (including `:db/id`) after transacting.
+Use `dt/validate-data` to inspect a candidate without writing it. Its success result is nil; a failure is an error map. `dt/validate` checks an existing entity, and `dt/valid?` turns that result into a boolean. Declared shape checks are a separate surface; see [authoring shapes](authoring-shapes.md).
 
 ### Codec-mediated creation
 
-If the source-of-truth is a string in a codec format (markdown, JSON, ...):
+For memories, use `sandbar.store/create-memory!` so creation includes the durable identity and path conventions. It delegates typed creation to `dt/make` and accepts the same third-argument representation options. Register the Markdown codec before use, then run this inside a disposable connection binding:
 
 ```clojure
-(dt/make :mm/Memory
-  {:format "markdown"
-   :source "---\nname: Foo\n---\n# Context\n..."})
+(require '[sandbar.codec.markdown :as markdown]
+         '[sandbar.store :as store])
+
+(markdown/register!)
+(store/create-memory! :mm/Observation
+  {:mm.memory/rel-path "examples/cache-observation.md"}
+  {:format :markdown
+   :source "---\nname: Cache observation\ntype: observation\n---\n\nA warm lookup returned an old value.\n"})
 ```
 
-The codec mediator routes through `:dt/native-codec` on the class.  See [`implementing-a-codec.md`](implementing-a-codec.md) for adding a new codec.
-
-## Validation
-
-```clojure
-;; Validate an entity already in the DB
-(dt/validate some-entity)
-;; => nil (valid) or {:errors [{:slot :foo :error :missing-required ...}]}
-
-(dt/valid? some-entity)
-;; => true / false
-
-;; Validate a candidate map (before transacting)
-(dt/validate-data :event/Booking {:event.booking/title "Foo"})
-;; => {:errors [...]}  (because required slots are missing)
-```
-
-Validation results are pure data; consumers can inspect, summarize, or render them.
+The relative path is part of the memory's model identity, not a request to read that file from disk. The [getting-started guide](getting-started.md) exercises the same creation boundary through MCP; the [codec guide](implementing-a-codec.md) explains representation registration.
 
 ## Queries
 
-`dt/*` queries are projections of Datomic Datalog queries against typed entities.  For ad-hoc queries, drop to Datomic directly:
+Prefer typed operations for the questions they already answer. Use Datomic for an application-specific query, with an explicit database value:
 
 ```clojure
-(require '[datomic.api :as d])
-(require '[sandbar.db :as db])
-
-;; A typical query — bookings owned by alice, ordered by start
-(d/q '[:find ?b ?starts
-       :in $ ?login
-       :where
-       [?u :user/login ?login]
-       [?b :event.booking/owner ?u]
-       [?b :event.booking/starts-at ?starts]]
-     (d/db (db/conn))
-     "alice")
+(let [snapshot (db/db)]
+  (d/q '[:find ?tag ?value
+         :where
+         [?tag :dt/type :mm/Tag]
+         [?tag :mm.tag/value ?value]]
+       snapshot))
 ```
 
-The convention: use `dt/*` for typed operations against the metamodel; drop to `d/q` for application-specific predicate queries.
+This query asks for directly asserted `:mm/Tag` instances. `dt/all-instances-of` includes the inferred subclass population. Choose deliberately; writing raw Datalog does not automatically add Sandbar's inheritance rules to the query.
+
+Datomic entity values belong to the database value from which they were obtained. Read a fresh entity after a mutation when you need current state. Numeric IDs are local to a database; use the model's durable identity when storing a reference outside it.
 
 ## Working with workflows
 
-```clojure
-;; Start a process — :validation/Workflow is a :mm/Workflow definition
-(def p
-  (wf/start-process! :validation/Workflow
-    {:target-class :event/Booking}))
+The engine is `sandbar.util.workflow`: define a workflow, start a process with a persisted subject entity, and request a transition by action name. A process is an execution instance, separate from its workflow definition. The [workflow guide](designing-workflows.md) provides a complete definition and subject, and the [workflow concept](../concepts/workflow-substrate.md) explains state, history and effects.
 
-;; Check status
-(:workflow/current-state p)
-;; => :running
+Do not infer that a callback's external actions are rolled back by a failed database transaction. Design the acceptance and retry policy for those actions explicitly.
 
-;; Fire a transition
-(wf/transition! p :workflow.transition/complete)
+## Other application boundaries
 
-;; Cancel (if the workflow allows it at the current state)
-(when (wf/can-cancel? p)
-  (wf/cancel-process! p))
-```
-
-Workflow definitions are `:mm/Workflow` memorials (per the 2026-05-23 naming-convention ADR); running processes are `:workflow/Process` substrate-runtime entities.  For the full design, see [`doc/concepts/workflow-substrate.md`](../concepts/workflow-substrate.md) and [`designing-workflows.md`](designing-workflows.md).
-
-## Shape validation
-
-`sandbar.shape` provides SHACL-style validation against `:mm/Shape` memorials:
-
-```clojure
-(require '[sandbar.shape :as shape]
-         '[datomic.api :as d]
-         '[sandbar.db :as db])
-
-(def db (d/db (db/conn)))
-
-;; Validate one entity against all applicable shapes (audit mode — never throws)
-(shape/validate db [:db/ident :decisions/example])
-;; => [{:status :pass :entity 1234 :shape 5678 :checks-passed 6}]
-
-;; Strict mode throws ex-info on any :violation-severity failure
-(shape/validate db [:db/ident :decisions/example] :strict)
-```
-
-For authoring shape memorials and a guided walk through the validator types (required-property, cardinality, pattern, datatype, closed, validator-fn), see [`authoring-shapes.md`](authoring-shapes.md).
-
-## Logging
-
-`sandbar.logging` is Sandbar's single public observability API — six macros built over Telemere + Tufte:
-
-```clojure
-(require '[sandbar.logging :as sb-log])
-
-(sb-log/info ::booking-created {:booking-id 42})
-(sb-log/warn "queue depth high" {:depth 4096})        ; human-string shorthand
-(sb-log/error ::tx-failed ex {:tx-id 17592186})       ; typed error
-(sb-log/info ::session-handoff {:summary "..."} :first-class)  ; memorial-flag
-
-(sb-log/profile :search-hot-path
-  (do-the-search ...))
-```
-
-See [`using-logging.md`](using-logging.md) for the full surface, the memorial-flag positional, and the discipline.
-
-## Projection operations
-
-```clojure
-(require '[sandbar.projection :as projection])
-
-;; Project all entities to a filesystem hierarchy
-(projection/project-graph (d/db (db/conn)) "/tmp/sandbar-export"
-  {:classes #{:mm/Memory :mm/Decision}})
-
-;; Ingest a hierarchy back into the DB
-(projection/ingest-graph (db/conn) "/tmp/sandbar-export")
-```
-
-See [`doc/concepts/projection.md`](../concepts/projection.md) for the design and [`sandbar-as-substrate.md`](sandbar-as-substrate.md) for the embedding pattern.
+| Need | Namespace or guide |
+| --- | --- |
+| Typed creation, inspection and validation | `sandbar.db.datatype`; [`dt/*` reference](../api/dt-star.md) |
+| Representation parsing and emission | `sandbar.codec`; [codec guide](implementing-a-codec.md) |
+| Memory identity and creation | `sandbar.store`; [memory model](../concepts/memory-model.md) |
+| Shape reports | `sandbar.shape`; [shape guide](authoring-shapes.md) |
+| Workflow processes | `sandbar.util.workflow`; [workflow guide](designing-workflows.md) |
+| Events and logging | [event subscriptions](subscribing-to-events.md), [logging](using-logging.md) |
+| File export and reconstruction | [projection](../concepts/projection.md), [operations](../operations.md) |
 
 ## Testing
 
-Sandbar provides a test fixture that creates a fresh in-memory database with schema loaded:
+Use a unique in-memory database per independent test and keep the connection binding around the whole operation. Join asynchronous work before deleting its database. The repository's `sandbar.test-util` helpers live on the test classpath; they are not a production client API. The [development guide](../development.md#testing) shows their actual fixture interface and the test-profile database fence.
 
-```clojure
-(ns my.test
-  (:require [clojure.test :refer :all]
-            [sandbar.test.fixture :as fixture]
-            [sandbar.db.datatype :as dt]))
-
-(use-fixtures :each fixture/with-memdb)
-
-(deftest booking-validation
-  (testing "missing required slot is caught"
-    (is (some? (:errors
-                 (dt/validate-data :event/Booking
-                   {:event.booking/title "Foo"}))))))
-```
-
-For tests that need a transactor (rare — most tests should use the memdb), see [`doc/development.md`](../development.md).
-
-## Patterns
-
-### Reflection-driven UI
-
-Walk `dt/all-classes` and `dt/slots-of` to build a generic admin/CRUD interface that adapts to any class:
-
-```clojure
-(defn render-class-form [class-ident]
-  (for [slot (dt/slots-of class-ident)
-        :let [range (dt/range-of slot)]]
-    (render-input-for-range slot range)))
-```
-
-This pattern works because the metamodel introspects itself; the UI reflects the model state.
-
-### Idents as stable references
-
-Always reference entities by `:db/ident` for cross-instance stability:
-
-```clojure
-;; Brittle — :db/id is instance-local
-(my-config :booking-id 12345)
-
-;; Stable — :db/ident survives database recreation
-(my-config :booking-id :event/canonical-weekly-sync)
-```
-
-### Schema-on-startup
-
-Register your application's schema with Sandbar's `:required-schema`:
-
-```clojure
-;; config/config.edn
-{:required-schema [:meta :literal :ref :fn :any :workflow :mm :event]}
-```
-
-`:event` here refers to `schema/event.edn`.  Sandbar loads it at startup.
-
-## See also
-
-- [`quickstart.md`](quickstart.md) — getting Sandbar running locally
-- [`zorp-tutorial.md`](zorp-tutorial.md) — worked example using `dt/*`
-- [`defining-new-classes.md`](defining-new-classes.md) — adding your domain's schema
-- [`designing-workflows.md`](designing-workflows.md) — workflow + process API
-- [`authoring-shapes.md`](authoring-shapes.md) — declarative validation via `:mm/Shape`
-- [`using-logging.md`](using-logging.md) — the `sandbar.logging` six-macro API
-- [`subscribing-to-events.md`](subscribing-to-events.md) — event substrate API (in-design)
-- [`sandbar-as-substrate.md`](sandbar-as-substrate.md) — embedding Sandbar in your own application
-- [`doc/api/dt-star.md`](../api/dt-star.md) — full `dt/*` reference
+An embedded client runs inside the trusted process. It does not acquire MCP or REST authorization merely by calling the same underlying functions. The embedding application owns who may invoke those functions and which connection and output destinations they can reach.

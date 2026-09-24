@@ -1,6 +1,8 @@
-# Computation Model (Historical)
+# Historical computation model
 
-> **Note:** This document contains historical design notes from the original development. For current documentation, see [Development Guide](development.md) and [System Architecture](architecture.md).
+> **Historical — superseded.** For current use, see [metamodel](../concepts/metamodel.md), [RDFS entailment](../concepts/rdfs-entailment.md), and [first-class rules](../concepts/first-class-rule.md).
+>
+> This note preserves the move from host-language traversal to reusable query rules. Names such as `:dt/dt` and `:dt/parent` belong to the early model. The illustrative functional ancestor helper only follows two levels, so the examples do not prove equivalence for arbitrary-depth hierarchies. Examples and reported results below have not been revalidated for 0.2.0; abbreviated payloads are schematic.
 
 ## Datalog Rules
 

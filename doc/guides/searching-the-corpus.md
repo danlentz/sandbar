@@ -1,228 +1,215 @@
-# Searching the corpus
+# Find relevant records, then establish their context
 
-> Hands-on walkthrough of Sandbar's fulltext-search surface — BM25F multi-field weighted scoring over Datomic + Lucene.  When to use which verb.  Worked examples for `:where` composition, `:facet-by` aggregation, and `:include` projection options.  For the algebraic theory + lineage, see [`doc/concepts/fulltext-search.md`](../concepts/fulltext-search.md).
+This guide uses the three synthetic records from [the navigation guide](navigating-with-paths.md): a cache observation, an initial refresh decision, and its successor. Run those creation examples in a development database first. For MCP, complete [initialization](quickstart.md) and discover the advertised search tool.
 
-## Pick the right primitive
+## Start with the question
 
-| Question                                                  | Primitive                              |
-|-----------------------------------------------------------|----------------------------------------|
-| "Single-field search; return matches"                     | `sandbar.search/search-attribute`      |
-| "Multi-field weighted search across a class's slots"      | `sandbar.search/search-bm25f`          |
-| "Facet counts over a search result set"                   | `:facet-by` on `search-bm25f` |
-| "Snippets / highlights"                                   | `:include [:snippets]` on `search-bm25f` |
-| "Combine fulltext + structured filter"                    | `:where` opt on `search-bm25f`         |
+| Question | Operation |
+| --- | --- |
+| Which decisions discuss refresh? | BM25F over `:mm/Decision` |
+| What concept covers these different words? | Tag lookup, definition and scope |
+| Which records carry the selected concept? | Tag/theme membership query |
+| Which record has this exact identifier? | Entity lookup |
+| What replaced this decision? | Inbound `supersedes` navigation |
+| How many decisions have this property? | Aggregation with a structural filter |
+| Which names match a native fulltext query? | Single-attribute search |
 
-The substrate primitives live in `sandbar.db.datatype`:
+Search finds a starting point. It does not determine whether the first match is the current decision.
 
-- `dt/search-fulltext` — single Lucene-backed attribute query
-- `dt/bm25f-weights-of` — read declared weights from class entity
-- `dt/fulltext-indexed?` — predicate; is this attribute `:db/fulltext true`?
+## Use vocabulary to find a concept and its records
 
-## Declaring `:db/fulltext` slots
+When terminology is uncertain, inspect the vocabulary before settling on search words. These are `tools/call` parameter objects, using a fictional `cache-policy` concept that must exist in your collection to return members:
 
-A class's string slots that should be searchable need `:db/fulltext true` in the schema:
-
-```edn
-;; schema/mm.edn excerpt
-{:db/ident :mm.memory/name
- :db/valueType :db.type/string
- :db/cardinality :db.cardinality/one
- :db/fulltext true                ; ← required for fulltext indexing
- :dt/required? true}
-
-{:db/ident :mm.memory/body-raw
- :db/valueType :db.type/string
- :db/cardinality :db.cardinality/one
- :db/fulltext true}
+```json
+{
+  "name": "sandbar_tag_lookup",
+  "arguments": {
+    "concept": "cache-policy",
+    "limit": 5,
+    "projection": "full"
+  }
+}
 ```
 
-Datomic builds the Lucene index at transact time for `:db/fulltext` slots.  Without this flag, `(fulltext ...)` queries return empty.  Use `dt/fulltext-indexed?` to assert at runtime.
+Lookup combines exact values and alternative/hidden labels with conceptual BM25F matches over typed Tags. Its `full` projection is a meaning summary: each match has an `eid`, value and match reason, plus its recorded definition, scope and lifecycle when present. An exact lightweight value can be found even without a Tag type or ident. Read those fields before choosing a concept; a missing `canonical?` value differs from explicit `false`.
 
-## Declaring per-class BM25F weights
+The limit bounds the conceptual pass; additional exact matches can make `returned` larger. The reported `match-total` can overcount identities shared by the two passes, so use returned identities for inspection and a separately enumerated population for evaluation. Neither that count nor `gap?` proves a concept is absent from the collection.
 
-Per-class slot weights live in the schema layer:
+For a selected match, pass its numeric `eid` to `sandbar.entity.find` as `id`, with `projection: "full"`, to read the complete entity. Then follow the two classification roles together. Replace the illustrative `42` with the selected match's eid:
 
-```edn
-;; schema/mm.edn
-{:db/ident   :mm/Memory
- :dt/type    :dt/Class
- :dt/subclass-of :dt/Resource
- :dt/slots   [:mm.memory/name
-              :mm.memory/description
-              :mm.memory/body-raw
-              :mm.memory/tags]
- :dt/bm25f-weights [[:mm.memory/name        12.0]    ; ← high weight on titles
-                    [:mm.memory/description  8.0]
-                    [:mm.memory/body-raw     1.0]    ; ← unit weight on body
-                    [:mm.memory/tags         6.0]]}
+```json
+{
+  "name": "sandbar_navigate_inbound-edges",
+  "arguments": {
+    "entity": 42,
+    "predicate": [":mm.memory/tags", ":mm.memory/themes"],
+    "source-type": ":mm/Memory",
+    "projection": "metadata-only",
+    "limit": 0
+  }
+}
 ```
 
-At query time, the substrate reads weights from the class entity via `dt/bm25f-weights-of`.  Callers may override via the `:field-weights` opt, but the schema declaration is the default.
+Each edge retains its qualified `predicate` and the member under `source`. Deduplicate sources by `db/id` for reading while preserving their roles. `total` counts edges, `distinct-total` counts member identities, and `returned` counts returned edges. A member without an ident is still readable by its eid. Zero limit requests the whole selected neighborhood; use a bounded limit when exploring a large concept, while retaining the distinction between the page and total counts.
 
-## Pattern 1 — Single-attribute search
+Handle a `blocked` edge before extracting its source: policy-blocked entries omit the endpoint and do not contribute to `distinct-total`.
 
-The simplest form.  One `:db/fulltext` attribute, ranked by Lucene's single-field BM25:
+Discover the tool schema first. Clients holding an older string-only predicate schema can pass the same array encoded as a JSON string; refresh discovery when possible. For a scalar-property summary or an explicitly named-only list, aggregation remains useful:
+
+```json
+{
+  "name": "sandbar_aggregate_group-by",
+  "arguments": {
+    "class": ":mm/Memory",
+    "group-by": ":db/ident",
+    "where": "[[?e :mm.memory/tags ?t] [?t :mm.tag/value \"cache-policy\"]]"
+  }
+}
+```
+
+The group keys are memory identifiers to read with `entity.find`. This query covers the tags role only; substitute `:mm.memory/themes` for a separate theme summary. Grouping by ident omits unnamed records, so use the eid-based navigation above when the task is to enumerate all members. Do not infer that records with the same title are interchangeable.
+
+Membership finds records carrying the concept even when their text uses different words. BM25F with the same `where` filter adds a lexical requirement and ranking; it does not enumerate every member.
+
+When the target is already known, a reference filter can use its readable keyword
+ident, eid, or lookup ref directly, such as
+`[[?e :mm.memory/tags [:mm.tag/value "cache-policy"]]]`.
+Citation, author and owning-project references use the same contract. Missing or
+unreadable explicit targets return `filter-identity-unavailable`, not an empty
+hit set. This checks explicit targets and BM25F checks returned entities; it does
+not close the remaining [query privacy limits](../known-gaps-0.2.0.md#project-separation-has-several-boundaries).
+
+Choose the next step according to what the vocabulary tells you:
+
+| Observation | Next step |
+| --- | --- |
+| A candidate's definition and scope fit | Inspect its members, then read the relevant records and relationships. |
+| Only broad candidates mention the query words | Refine the concept or inspect a known exact value before choosing a label. |
+| Lookup returns no candidates | Check content search and known membership; this does not establish a new concept is needed. |
+| The tool reports an error | Resolve the failure before interpreting the result as an absence. |
+| Content search finds a useful record outside the member set | Read it and consider whether classification would help future readers. |
+
+Vocabulary membership is an authored relationship. It can be incomplete, and its presence does not establish that a record is current or authoritative. A theme relationship alone also does not prove that its target has a reviewed definition. The [memory model](../concepts/memory-model.md#give-concepts-a-shared-vocabulary) explains why lightweight and curated vocabulary both have a place. Finish the journey by reading the selected evidence, not by accepting the first matching label.
+
+## Search the declared fields
 
 ```clojure
-(require '[sandbar.search :as search])
+(require '[sandbar.search :as search]
+         '[sandbar.db.datatype :as dt])
 
-(search/search-attribute
-  {:attribute :mm.memory/name
-   :query     "datomic"
-   :limit     20})
-;; => {:hits [{:entity <entity-map> :score 5.42} ...]
-;;     :total <int>}
+(search/search-bm25f
+  {:class :mm/Decision
+   :query "refresh"
+   :limit 10
+   :projection :full})
 ```
 
-**Use when:** the search is field-specific (titles only, body only) and per-field weighting isn't needed.
+On the isolated three-record fixture, both decisions match. The result contains `:hits`, `:total`, `:returned`, and `:timing`. Each hit carries `:eid`, `:entity`, and `:score`. Timing reports total elapsed search time; no per-stage timing fields are promised.
 
-## Pattern 2 — Multi-field BM25F
+Use ordinary query words. `"refresh AND cache"` includes the word `AND`; BM25F does not parse it as a Boolean operator. See the [search concept](../concepts/fulltext-search.md) for the formula and analyzer.
 
-The general form.  Walks all `:dt/bm25f-weights` slots, scores per field, combines via the Robertson-Zaragoza canonical formula:
+The same call after MCP initialization is:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 20,
+  "method": "tools/call",
+  "params": {
+    "name": "sandbar_search_bm25f",
+    "arguments": {
+      "class": ":mm/Decision",
+      "query": "refresh",
+      "limit": 10,
+      "projection": "full"
+    }
+  }
+}
+```
+
+Check the JSON-RPC error and tool `isError` before parsing the payload. If the result is unexpected, inspect its scope and errors before interpreting an empty hit list. The MCP default is metadata-only; this example requests the bodies explicitly.
+
+## Restrict by a known property
 
 ```clojure
 (search/search-bm25f
-  {:class :mm/Memory
-   :query "datomic recursive rules"
-   :limit 20})
-;; => {:hits [{:entity <entity-map> :score 12.34} ...]
-;;     :total <int>
-;;     :timing {:tokenize-ms 1 :score-ms 12 :total-ms 14}}
-```
-
-Override declared weights:
-
-```clojure
-(search/search-bm25f
-  {:class :mm/Memory
-   :query "datomic"
-   :field-weights {:mm.memory/name 20.0     ; boost titles further
-                   :mm.memory/body-raw 0.5}  ; dampen body
+  {:class :mm/Decision
+   :query "refresh"
+   :where '[[?e :mm.memory/supersedes _]]
    :limit 10})
 ```
 
-**Use when:** ranking quality matters across multiple slots — titles + body + tags weighted distinctly.
+The fixture returns the successor, because it has a recorded `supersedes` relationship. The filter is a fact about the graph, rather than a word added to the query. In MCP, encode the clauses as an EDN string in `where`.
 
-## Pattern 3 — Compose with `:where` Datalog
+For a known reference value, resolve its entity ID first and use that numeric ID where the read-plane query policy requires it. A supported query grammar does not imply that every attribute namespace or keyword literal is exposed to every caller.
 
-Fulltext ∩ structured filter.  The `:where` clauses constrain the candidate set BEFORE BM25F scoring:
-
-```clojure
-;; Search only :decision-typed memories
-(search/search-bm25f
-  {:class :mm/Memory
-   :query "datomic recursive rules"
-   :where '[[?e :mm.memory/memory-type :decision]]
-   :limit 20})
-
-;; Search only memories tagged "architecture"
-(search/search-bm25f
-  {:class :mm/Memory
-   :query "datomic"
-   :where '[[?e :mm.memory/tags ?tag]
-            [?tag :mm.tag/value "architecture"]]
-   :limit 20})
-
-;; Combine multiple filters
-(search/search-bm25f
-  {:class :mm/Memory
-   :query "BM25F"
-   :where '[[?e :mm.memory/memory-type :decision]
-            [?e :mm.memory/scope :global]]
-   :limit 20})
-```
-
-`?e` is the conventional variable name for the entity at the head of the BM25F walk; bind to it in your `:where` clauses to filter the candidate set.
-
-## Pattern 4 — Snippets + highlights
-
-`:include [:snippets]` emits per-slot snippet windows centered on the first query-term hit:
+You can also combine search with a path restriction:
 
 ```clojure
 (search/search-bm25f
-  {:class   :mm/Memory
-   :query   "datomic recursive rules"
-   :limit   10
-   :include [:snippets]})
-;; => {:hits [{:entity <entity-map>
-;;             :score  12.34
-;;             :snippets {:mm.memory/name "...**datomic** **recursive** **rules**..."
-;;                        :mm.memory/body-raw "...the **datomic** layer handles **recursive** ..."}}
-;;            ...]}
+  {:class :mm/Decision
+   :query "refresh"
+   :from :memory.examples/timed-refresh
+   :via [:INV :mm.memory/supersedes]})
 ```
 
-Highlighting is `**term**` markdown syntax.  Snippet window ~240 chars centered on the first match, with ellipsis pre/suffix when text continues beyond edges.  Approximate (regex-based); Lucene's native positional highlighter is a Phase-2 optimization.
+This asks for matching decisions reachable as recorded successors of the initial decision. `:where` and path restrictions intersect when both are supplied.
 
-## Pattern 5 — Facets
-
-`:facet-by` emits per-slot value counts over the full BM25F match set (before `:limit`):
+## Inspect why a result matched
 
 ```clojure
 (search/search-bm25f
-  {:class    :mm/Memory
-   :query    "datomic"
-   :limit    20
-   :facet-by [:mm.memory/memory-type :mm.memory/scope]})
-;; => {:hits   [...]
-;;     :facets {:mm.memory/memory-type {:decision 12 :plan 7 :observation 4 :pattern 2}
-;;              :mm.memory/scope       {:global 18 :scoped 7}}}
+  {:class :mm/Decision
+   :query "refresh"
+   :include [:snippets :field-scores]
+   :facet-by [:mm.memory/memory-type]
+   :limit 1})
 ```
 
-**Use when:** the consumer needs both ranked results AND aggregated counts over the same query — saves a round-trip vs separate `search` + `aggregate` calls.
+On this fixture, the total is two even though one hit is returned. The scalar facet counts two decisions. Snippets show approximate matching windows; field scores show what each field would score independently. Those diagnostics are not additive components of the canonical combined score.
 
-## Pattern 6 — Per-field score breakdown
+Single-class facets describe the matching population before the limit. A small hit list therefore need not have the same counts as its facet map. Select a scalar facet such as memory type: a many-valued slot is currently grouped as a collection value. Multi-class faceting has a separate projection defect; keep this example single-class.
 
-`:include [:field-scores]` exposes the per-field score contributions for debugging or relevance tuning:
+For BM25F requests carrying a read principal, that population contains only candidates readable under the current store's authority. The check precedes scores, snippets, totals, facets and limiting. Payloads, snippets and scalar facets use the current entity from the same database value as the visibility decision. Analyzed terms and frequencies remain cached, so matching and scores can lag a content change even when returned text is current. Class-wide statistics remain shared; scores do not prove isolation from unreadable records. Check the deployed build using the intended account, and inspect hits and enrichments as well as counts. A fully cleared operator's results do not establish a restricted client's view. See the [search contract](../concepts/fulltext-search.md#compose-a-question-without-changing-its-meaning).
+
+## Change the ranking deliberately
+
+The default weights come from the model:
 
 ```clojure
+(dt/effective-bm25f-weights-of :mm/Decision)
+
 (search/search-bm25f
-  {:class :mm/Memory
-   :query "datomic"
-   :limit 5
-   :include [:field-scores]})
-;; => {:hits [{:entity <entity-map>
-;;             :score 12.34
-;;             :field-scores {:mm.memory/name        8.2
-;;                            :mm.memory/description 3.1
-;;                            :mm.memory/body-raw    1.04
-;;                            :mm.memory/tags        0.0}}
-;;            ...]}
+  {:class :mm/Decision
+   :query "refresh"
+   :field-weights {:mm.memory/name 20.0
+                   :mm.memory/description 8.0
+                   :mm.memory/body-raw 1.0}})
 ```
 
-**Use when:** tuning weights or diagnosing why a result ranked unexpectedly.
+This example reweights fields already declared for memories. Evaluate changes against queries with expected useful results; a higher score alone is not improved retrieval.
 
-## Through MCP
+The ordinary default also considers class-declared supersession and recency: superseded hits receive half weight for ordering, with recency breaking equal ordering weights. Their reported score remains raw BM25F. Add `:rank-by :relevance` to measure score-only order. Compare both policies on current and historical questions before changing a retrieval policy.
 
-The `sandbar.search.bm25f` MCP verb is live — it is the corpus's primary retrieval verb.  It accepts the same opts as the in-process form: `query` + `class` (required; `class` also accepts a JSON array of 2–8 class idents for multi-class strategic-subgroup retrieval), plus optional `limit`, `where` (EDN-string Datalog clauses over `?e`), `facet-by`, `include` (`"snippets"` / `"field-scores"`), `field-weights`, the Stage-29 composition opts `from` + `via` / `rank-by` / `temporal-slot`, and `projection` (defaults to `metadata-only` at the MCP boundary — opt into `"full"` when you need slot bodies):
+To order matching records by time, add `:rank-by :recency` with `:temporal-slot :mm.memory/created`. `:freshness` orders the older values first, which is useful for identifying material to revisit. Choose records that have the named timestamp. Structural ordering replaces the primary score and retains BM25F as `:relevance-score`. Use one class for this operation until the multi-class temporal-comparison defect is repaired.
 
-```bash
-curl -X POST http://localhost:8080/mcp \
-  -H "Authorization: Bearer $SANDBAR_TOKEN" \
-  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{
-        "name":"sandbar.search.bm25f",
-        "arguments":{
-          "class":":mm/Memory",
-          "query":"datomic recursive rules",
-          "limit":20,
-          "facet-by":[":mm.memory/memory-type"],
-          "include":["snippets"]}}}'
+## Use native single-attribute search when it fits
+
+```clojure
+(dt/fulltext-indexed? :mm.memory/name)
+
+(search/search-attribute
+  {:attribute :mm.memory/name
+   :query "refresh"
+   :limit 10})
 ```
 
-## Cross-axis composition
+This path requires the attribute's `:db/fulltext` index and uses Datomic's native fulltext query behavior. Its Datomic/Lucene score has a different meaning from Sandbar's multi-field score. A `:db/fulltext` flag is not what makes a field participate in Sandbar's cached BM25F analyzer; the class weight declaration does that.
 
-Search composes with aggregation directly via `:facet-by`.  Stage 29 composition with navigation is live: `:from` + `:via` (path-grammar restriction) makes a graph-walk neighborhood the candidate set for BM25F ranking, and `:rank-by` (`:degree` / `:backlink-density` / `:recency` / `:freshness`, the latter two requiring `:temporal-slot`) re-ranks the top-K by a structural axis while preserving the BM25F score as `:relevance-score`.
+With a read principal bound, unreadable candidates are removed before sorting, totals and limiting, including private documents and their owned sections. A hidden match therefore does not consume a result slot. Returned entities come from the same current database value used for the visibility decision. This search rule does not supply a compartment filter for separate aggregate, list or count operations.
 
-## Performance notes
+## Finish by reading relationships
 
-- **Indexing** — Lucene segment-based at transact time; segment-merge cost amortized across transactions.
-- **Query at small corpora (≤10k memories)** — sub-millisecond per single-field query; ~10-20ms for multi-field BM25F.
-- **Query at large corpora** — Lucene's inverted-list traversal dominates; per-field BM25F adds linear cost in number of weighted slots.  Stop-word filtering at index time is the standard mitigation for high-frequency-token sets (enable per consumer demand).
-- **Snippet generation** — O(slot-text-length) per slot in result set; bounded by `:limit`.
+Read the returned decisions in full. From the initial decision, follow inbound `supersedes`; from the successor, follow outbound `cites`. The [navigation guide](navigating-with-paths.md) performs both steps and shows a path witness.
 
-## See also
-
-- [`doc/concepts/fulltext-search.md`](../concepts/fulltext-search.md) — lineage, theory, references
-- [`doc/concepts/aggregation.md`](../concepts/aggregation.md) — the `:facet-by` composition pattern
-- [`doc/guides/navigating-with-paths.md`](navigating-with-paths.md) — composing search + path-grammar (Stage 29, live on the search axis)
-- [`doc/api/dt-star.md`](../api/dt-star.md) — `dt/search-fulltext` / `dt/bm25f-weights-of` / `dt/fulltext-indexed?` substrate primitives
-- The corpus's `decisions/bm25f_canonical_robertson_zaragoza_form.md` — ADR locking the canonical form
+Do not turn a rank or an arbitrary score cutoff into a statement that no governing record exists. Evaluate abstention separately, with questions whose answers are present, absent, superseded, and outside the search scope. Measure freshness separately from relevance quality.

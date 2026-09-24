@@ -1,367 +1,92 @@
-# Writing a REST Client
+# Writing a REST client
 
-> How to consume Sandbar over HTTP REST — the protocol shape, content negotiation, common operations, and patterns.  This is a *client-side* guide focused on practical usage; for the mechanical endpoint catalog see [`doc/api/http-rest.md`](../api/http-rest.md); for the AI-client alternative see [`writing-an-mcp-client.md`](writing-an-mcp-client.md).
+Sandbar's REST API is useful for applications that already speak HTTP and want direct JSON or EDN responses. Its store routes expose model inspection, instances and type predicates; other route families expose aggregation, navigation, orientation, events and workflows. It shares the underlying model with MCP, but the two APIs have different routes, authentication headers and response envelopes.
 
-## Why REST
+## Base URL and authentication
 
-REST is right when:
+The usual local base URL is `http://127.0.0.1:8389/api`. Use your deployment's address and port. The `/api` routes require authentication, including `/api/status`.
 
-- The consumer is a traditional HTTP client (browser, mobile app, server-to-server integration).
-- You want browser-rendered exploration (links / forms).
-- You don't need reflection-driven invocation (the AI-client use case MCP is designed for).
-- Content negotiation (EDN / JSON / Transit) matters to you.
+A service account uses the **`X-API-Key`** header with the credential in `service-name:api-key` form. MCP uses that credential as a Bearer token instead. Obtain the credential and permissions through the [authentication setup](../auth.md).
 
-For AI clients that prefer reflection-driven discovery, use MCP instead.  Both projections come from the same metamodel — no parallel state to keep in sync.
+```sh
+: "${SANDBAR_TOKEN:?Set SANDBAR_TOKEN to your service-account credential}"
+SANDBAR_API_URL="http://127.0.0.1:8389/api"
 
-## Base URL
+sandbar_get() {
+  curl --silent --show-error --fail-with-body \
+    --header "X-API-Key: $SANDBAR_TOKEN" \
+    --header 'Accept: application/json' \
+    "$SANDBAR_API_URL$1"
+}
 
-```
-http://localhost:8080/api/
-```
-
-Two top-level resource groups:
-
-- `/api/status` — health and version
-- `/api/store/*` — metamodel and instance operations
-
-## Authentication
-
-Same bearer-token scheme as MCP:
-
-```bash
-curl http://localhost:8080/api/store/classes \
-  -H "Authorization: Bearer $SANDBAR_TOKEN"
+sandbar_get /store/classes/mm/Decision/slots
 ```
 
-Endpoints that read are typically unauthenticated; endpoints that write or expose sensitive entities require a service-account token.  See [`auth.md`](../auth.md) for issuance.
+This request needs no example instances. It returns the decision class's effective slots, including inherited properties. The JSON object has `class`, `count`, and `slots`; each slot description contains `ident`, `domain`, `range`, `cardinality`, and `required?`.
+
+The authentication layer also supports login sessions. For an unattended integration, prefer the deployment's service-account mechanism rather than placing a human password in the client. A successful authenticated read is not proof that the same account has the intended restrictions on every route; deployment access policy must cover each exposed API.
 
 ## Content negotiation
 
-```bash
-# Default — EDN
-curl http://localhost:8080/api/store/classes
+Set `Accept` explicitly. The service supports JSON and EDN, with EDN as its fallback encoding; JSON examples should request `application/json`. A request with a body also needs a matching `Content-Type`.
 
-# Request JSON
-curl http://localhost:8080/api/store/classes \
-  -H "Accept: application/json"
-
-# Request Transit
-curl http://localhost:8080/api/store/classes \
-  -H "Accept: application/transit+json"
-```
-
-| Accept                       | Response shape                      |
-|------------------------------|-------------------------------------|
-| `application/edn` (default)  | Clojure EDN — preserves keywords, sets, custom types |
-| `application/json`           | Standard JSON                       |
-| `application/transit+json`   | Transit-encoded JSON (Cognitect)    |
+REST responses contain the endpoint payload directly. They have neither a JSON-RPC envelope nor an MCP `result.content` wrapper. JSON encodes Clojure keyword values such as `:mm/Decision` as strings such as `"mm/Decision"`; EDN retains keyword syntax. Do not make one decoder guess both representations.
 
 ## URL conventions
 
-Clojure keywords map directly to URL paths:
+The store API splits namespaced identifiers into two path segments:
 
-| Clojure         | URL fragment   |
-|-----------------|----------------|
-| `:dt/Resource`  | `dt/Resource`  |
-| `:model/User`   | `model/User`   |
+| Model identifier | Path fragment |
+| --- | --- |
+| `:mm/Decision` | `mm/Decision` |
+| `:mm.memory/name` | `mm.memory/name` |
 | `:db.type/string` | `db.type/string` |
 
-Special characters in keywords (`?`, `*`) are percent-encoded: `:user/active?` becomes `user/active%3F`.
+Keep case, dots and hyphens intact, omit the leading colon, and URL-encode each segment separately. The slash between namespace and name belongs to the route. Numeric database IDs and model identifiers are different reference forms; use the form the endpoint declares.
 
 ## Walking the metamodel
 
-```bash
-# Health
-curl http://localhost:8080/api/status
+Start with a class, then follow the question you need to answer:
 
-# All classes
-curl http://localhost:8080/api/store/classes
-
-# Schema summary
-curl http://localhost:8080/api/store/schema
-
-# One class
-curl http://localhost:8080/api/store/classes/model/User
-
-# Slots (effective — inherited + direct)
-curl http://localhost:8080/api/store/classes/model/User/slots
-
-# Direct slots only
-curl http://localhost:8080/api/store/classes/model/User/slots/direct
-
-# Required slots
-curl http://localhost:8080/api/store/classes/model/User/slots/required
-
-# Class hierarchy
-curl http://localhost:8080/api/store/classes/model/User/hierarchy
-
-# Direct subclasses
-curl http://localhost:8080/api/store/classes/dt/Ref/subclasses
+```sh
+sandbar_get /store/classes/mm/Decision
+sandbar_get /store/classes/mm/Decision/slots
+sandbar_get /store/classes/mm/Decision/slots/required
+sandbar_get /store/classes/mm/Decision/ancestors
+sandbar_get /store/properties/mm.memory/name/range
 ```
 
-Example response for `/api/store/classes/model/User`:
+| Route under `/api` | Result |
+| --- | --- |
+| `/store/schema` | Overview of classes, properties and types |
+| `/store/classes` | Class descriptions |
+| `/store/classes/:ns/:name` | One class description |
+| `/store/classes/:ns/:name/slots` | Effective slot descriptions |
+| `/store/classes/:ns/:name/slots/direct` | Direct slot identifiers |
+| `/store/classes/:ns/:name/instances` | Inherited class population |
+| `/store/classes/:ns/:name/instances/direct` | Directly asserted instances |
+| `/store/properties/:ns/:name` | One property description |
+| `/store/properties/:ns/:name/domain` | Declared domain |
+| `/store/properties/:ns/:name/range` | Declared range |
 
-```clojure
-{:class :model/User
- :description {:db/doc "Application user accounts" ...}
- :abstract? false
- :context "model"
- :label "User"
- :parents [:dt/Ref]
- :ancestors [:dt/Ref :dt/Resource]
- :slots [:db/doc :db/ident :dt/label :dt/context :dt/type
-         :user/login :user/secret :user/uuid]
- :direct-slots [:user/login :user/secret :user/uuid]
- :required-slots [:user/login :user/secret]
- :direct-subclasses []
- :all-subclasses []}
-```
+The distinction between effective and direct results matters. A specialized decision inherits memory properties; an instance of a specialized class can belong to the broader class population through the inference rules. The effective-slots route returns description maps, while the direct-slots route returns identifiers. See the [metamodel](../concepts/metamodel.md) and [API reference](../api/http-rest.md).
 
 ## Reading instances
 
-```bash
-# All instances of a class
-curl http://localhost:8080/api/store/classes/model/User/instances
+Class instance routes are useful for small, known populations. They currently realize the class population in one response; do not assume that adding a `limit` parameter supplies pagination. For broad discovery, use a supported aggregate or focused navigation operation before loading entities.
 
-# Direct instances only (no subclass instances)
-curl http://localhost:8080/api/store/classes/dt/Ref/instances/direct
-
-# One instance by ident
-curl http://localhost:8080/api/store/entities/model/user.alice
-```
-
-## Reading properties
-
-```bash
-# All properties
-curl http://localhost:8080/api/store/properties
-
-# One property
-curl http://localhost:8080/api/store/properties/user/login
-
-# Domain / range / cardinality
-curl http://localhost:8080/api/store/properties/user/login/domain
-curl http://localhost:8080/api/store/properties/user/login/range
-curl http://localhost:8080/api/store/properties/user/login/cardinality
-```
-
-## Type predicates
-
-```bash
-# Is Child a subclass of Parent?
-curl http://localhost:8080/api/store/types/subclass-of/dt/Resource/model/User
-# => {:parent :dt/Resource :child :model/User :subclass-of? true}
-
-# Is Entity an instance of Class?
-curl http://localhost:8080/api/store/types/instance-of/model/User/model/user.alice
-# => {:class :model/User :entity :model/user.alice :instance-of? true}
-```
-
-## Creating instances (POST)
-
-```bash
-curl -X POST http://localhost:8080/api/store/classes/event/Booking/instances \
-  -H "Authorization: Bearer $SANDBAR_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "event.booking/title": "Weekly Sync",
-    "event.booking/starts-at": "2026-05-14T15:00:00Z",
-    "event.booking/ends-at": "2026-05-14T16:00:00Z",
-    "event.booking/owner": "model/user.alice"
-  }'
-```
-
-Successful creation returns the entity:
-
-```json
-{
-  "entity": {
-    "db/id": 12345,
-    "event.booking/title": "Weekly Sync",
-    "event.booking/starts-at": "2026-05-14T15:00:00Z",
-    ...
-  }
-}
-```
-
-Validation failures return 422 Unprocessable Entity with structured error data:
-
-```json
-{
-  "errors": [
-    {"slot": "event.booking/owner", "error": "missing-required"}
-  ]
-}
-```
-
-## Updating instances (PATCH)
-
-```bash
-curl -X PATCH http://localhost:8080/api/store/entities/event/booking.weekly \
-  -H "Authorization: Bearer $SANDBAR_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"event.booking/location": "Conference Room A"}'
-```
-
-Only the provided slots are updated; others remain untouched.  Validation runs after the merge — including any applicable `:mm/Shape` invariants (see [`authoring-shapes.md`](authoring-shapes.md)).
-
-## Shape validation
-
-The metamodel surface mirrors the MCP shape verbs.
-
-```bash
-# List all shapes
-curl http://localhost:8080/api/store/shapes
-
-# Shapes that apply to a class
-curl "http://localhost:8080/api/store/shapes?applies-to=mm/Decision"
-
-# Validate one entity against its applicable shapes
-curl -X POST http://localhost:8080/api/store/shapes/validate \
-  -H "Content-Type: application/json" \
-  -d '{"entity": ":decisions/foo", "mode": "audit"}'
-
-# Batch conformance for a class
-curl http://localhost:8080/api/store/shapes/conformance-report/mm/Decision
-```
+The store route family is an inspection API. It does not currently define generic `POST` entity creation or `PATCH` entity update endpoints. Use the documented [MCP entity tools](writing-an-mcp-client.md) or [embedded Clojure API](writing-a-clojure-client.md) for those operations. BM25F search is exposed through MCP, not through a REST BM25F route. Route-specific workflow, job and event mutations have their own contracts.
 
 ## Error handling
 
-| HTTP status | Meaning                                                                |
-|-------------|------------------------------------------------------------------------|
-| `200 OK`            | Request succeeded                                              |
-| `400 Bad Request`   | Malformed request (parse error, missing body, etc.)            |
-| `401 Unauthorized`  | Missing or invalid bearer token                                |
-| `403 Forbidden`     | Authenticated but not permitted                                |
-| `404 Not Found`     | The requested class / property / entity doesn't exist          |
-| `409 Conflict`      | Constraint violation (e.g., uniqueness)                        |
-| `422 Unprocessable` | Validation failed — response body has structured `:errors`     |
-| `500 Internal`      | Server-side error                                              |
+Check the HTTP status before treating a body as the requested value, then decode the declared content type. Keep the status and error body together in diagnostics. A valid JSON error object is not a successful query returning no instances.
 
-Always inspect the response body for error details — error structure is consistent across endpoints.
+Missing or invalid authentication produces an authentication failure. Unknown model entities can produce `404`, and unsupported `Accept` values can produce `406`. Do not assign one universal validation or conflict status to all route families; follow the endpoint's documented contract. Retry reads according to your connection policy, and reconcile an uncertain mutation before repeating it.
 
-## Example clients
+## Building a client around these routes
 
-### curl (the canonical lingua franca)
+Keep the base URL, credential injection, status checking, and decoding in one small HTTP boundary. Keep model-specific operations above it: a function for decision slots should return slot data, rather than requiring every caller to assemble headers and parse HTTP errors.
 
-```bash
-TOKEN="<your-token>"
-BASE="http://localhost:8080/api"
+A reflection-driven editor can use class slots to label fields and show declared ranges and cardinalities. That metadata helps construct a request; server-side validation remains authoritative. Refresh model metadata when the model changes. A stable MCP tool list is not proof that class definitions stayed unchanged.
 
-# Walk the metamodel
-curl -s "$BASE/store/classes" | jq
-
-# Read one entity
-curl -s -H "Accept: application/json" \
-  "$BASE/store/entities/model/user.alice" | jq
-
-# Create
-curl -s -X POST -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"event.booking/title":"Foo",...}' \
-  "$BASE/store/classes/event/Booking/instances" | jq
-```
-
-### Python (httpx)
-
-```python
-import httpx
-
-class SandbarREST:
-    def __init__(self, base_url, token=None):
-        self.base = base_url
-        self.headers = {"Accept": "application/json"}
-        if token:
-            self.headers["Authorization"] = f"Bearer {token}"
-
-    def classes(self):
-        return httpx.get(f"{self.base}/store/classes",
-                         headers=self.headers).json()
-
-    def class_details(self, ns, name):
-        return httpx.get(f"{self.base}/store/classes/{ns}/{name}",
-                         headers=self.headers).json()
-
-    def create(self, ns, name, attributes):
-        return httpx.post(f"{self.base}/store/classes/{ns}/{name}/instances",
-                          headers={**self.headers,
-                                   "Content-Type": "application/json"},
-                          json=attributes).json()
-
-# Usage
-s = SandbarREST("http://localhost:8080/api", token="...")
-print(s.classes())
-```
-
-### TypeScript (fetch)
-
-```typescript
-class SandbarREST {
-  constructor(
-    private base: string,
-    private token: string,
-  ) {}
-
-  private headers(): Record<string, string> {
-    return {
-      'Accept': 'application/json',
-      'Authorization': `Bearer ${this.token}`,
-    };
-  }
-
-  async classes() {
-    const r = await fetch(`${this.base}/store/classes`, {
-      headers: this.headers(),
-    });
-    return r.json();
-  }
-
-  async create(ns: string, name: string, attributes: object) {
-    const r = await fetch(`${this.base}/store/classes/${ns}/${name}/instances`, {
-      method: 'POST',
-      headers: { ...this.headers(), 'Content-Type': 'application/json' },
-      body: JSON.stringify(attributes),
-    });
-    if (!r.ok) {
-      throw new Error(`Sandbar error ${r.status}: ${await r.text()}`);
-    }
-    return r.json();
-  }
-}
-```
-
-## Patterns
-
-### Reflection-driven UI
-
-Walk `/api/store/classes` and `/api/store/classes/<class>/slots` to render forms for any class.  The same pattern that works in [`writing-a-clojure-client.md`](writing-a-clojure-client.md) works through REST — Sandbar's REST surface is the metamodel projected; no separate schema artifact.
-
-### Caching
-
-Class metadata changes only when the schema evolves (rarely).  Aggressive client-side caching of `/api/store/classes/*` is safe — listen for `notifications/tools/list_changed` over MCP (if you maintain both connections) or use a short-TTL refresh.
-
-### Streaming via SSE for live updates
-
-Sandbar's MCP endpoint provides resource subscriptions over SSE; the REST surface today is request/response only.  If you need live updates, use the MCP transport for that subset.
-
-## Comparison with MCP
-
-| Concern                       | REST                              | MCP                              |
-|-------------------------------|-----------------------------------|----------------------------------|
-| Wire format                   | EDN / JSON / Transit             | JSON-RPC over HTTP+SSE          |
-| Discovery                     | URL traversal                     | `tools/list`, `resources/list`   |
-| Subscriptions                 | None (today)                     | Per-URI over SSE                 |
-| Long-running operations       | Synchronous (or 202+polling)     | First-class Tasks                |
-| Schema reflection             | Per-class endpoint                | `tools/list` returns JSON Schema |
-| Ideal consumer                | Browser / traditional HTTP client | AI agent / reflective consumer   |
-
-Both project from the same metamodel.  Pick by consumer fit.
-
-## See also
-
-- [`doc/api/http-rest.md`](../api/http-rest.md) — complete endpoint reference
-- [`writing-an-mcp-client.md`](writing-an-mcp-client.md) — MCP alternative
-- [`writing-a-clojure-client.md`](writing-a-clojure-client.md) — in-process Clojure access
-- [`authoring-shapes.md`](authoring-shapes.md) — `:mm/Shape` authoring + validation
-- [`auth.md`](../auth.md) — token issuance + management
-- [`zorp-tutorial.md`](zorp-tutorial.md) — worked example using REST queries
+Choose MCP when you want advertised tool schemas, content search, resources or prompts. Choose REST when an explicit route and ordinary HTTP payload fit the application. See [MCP clients](writing-an-mcp-client.md), [the REST reference](../api/http-rest.md), and [projects and boundaries](../firewall-and-projects.md) for the surrounding contracts.

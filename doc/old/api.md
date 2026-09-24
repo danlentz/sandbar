@@ -1,4 +1,8 @@
-# REST API Reference
+# Historical REST API reference
+
+> **Historical — superseded.** For current use, see [REST API reference](../api/http-rest.md) and [REST client guide](../guides/writing-a-rest-client.md).
+>
+> This is an early endpoint and response catalog. Its port, authentication assumptions, shapes, and instance counts are historical examples. Examples and reported results below have not been revalidated for 0.2.0; abbreviated payloads are schematic.
 
 Reference for REST API.
 

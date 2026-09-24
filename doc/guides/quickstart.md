@@ -1,163 +1,136 @@
-# Quick Start
+# Quickstart: inspect Sandbar through MCP
 
-> A 5-minute hands-on tour of Sandbar.  Gets a server running, makes a few requests, exercises the metamodel in the REPL.  For the next level of detail, follow the [zorp-tutorial](zorp-tutorial.md) (worked example) or one of the client guides ([Clojure](writing-a-clojure-client.md) / [MCP](writing-an-mcp-client.md) / [REST](writing-a-rest-client.md)).
+This guide takes you from a running Sandbar service to a first useful model query. You will initialize an MCP connection, discover the server's tools, and inspect the vocabulary of a decision. The requests read schema, so they work without importing an example knowledge collection.
 
-## Prerequisites
+## Before you begin
 
-- **Java 11 or later** (`java -version`)
-- **Leiningen** — https://leiningen.org
-- **Datomic Peer** — `datomic-pro` jars; transactor running locally on `:4334`
+You need a configured Sandbar service, a service-account token that permits the inspection tools, and `curl`. The usual local endpoint is `http://127.0.0.1:8389/mcp`. Use the address and port of your deployment.
 
-> A vanilla `datomic-pro` developer edition is sufficient.  The default config expects `datomic:dev://localhost:4334/sandbar`.
+For a new service, begin with the [operator guide](../operations.md) and [authentication setup](../auth.md). For a source checkout, use the [development guide](../development.md). Sandbar's repository is [danlentz/sandbar](https://github.com/danlentz/sandbar).
 
-## Clone and install
+The examples below use a POSIX-compatible shell. Set `SANDBAR_TOKEN` through your deployment's credential setup, then check that it is present without displaying it:
 
-```bash
-git clone <repository-url> && cd sandbar
-lein deps
+```sh
+: "${SANDBAR_TOKEN:?Set SANDBAR_TOKEN to your service-account token}"
+SANDBAR_MCP_URL="http://127.0.0.1:8389/mcp"
 ```
 
-## Start the transactor
+A token establishes the caller. Its permissions and the read surface's exposure rules still determine which operations and data are available.
 
-In a separate terminal:
+## Initialize the connection
 
-```bash
-cd /path/to/datomic-pro
-bin/transactor config/dev-transactor.properties
+Send the protocol version and a small client identity:
+
+```sh
+curl --silent --show-error --fail-with-body "$SANDBAR_MCP_URL" \
+  --header "Authorization: Bearer $SANDBAR_TOKEN" \
+  --header 'Content-Type: application/json' \
+  --header 'Accept: application/json, text/event-stream;q=0.9' \
+  --data-binary @- <<'JSON'
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "initialize",
+  "params": {
+    "protocolVersion": "2025-11-25",
+    "capabilities": {},
+    "clientInfo": {"name": "sandbar-quickstart", "version": "1"}
+  }
+}
+JSON
 ```
 
-Verify it's up:
+Check that the response has a `result` containing `protocolVersion`, `serverInfo`, and `capabilities`. Sandbar's implemented version is `2025-11-25`; continue only if your client supports the returned version. An outer `error` is a failed exchange.
 
-```bash
-nc -zv localhost 4334
+The following helper keeps the same address, token, and protocol headers on subsequent requests. It reads a JSON message from standard input:
+
+```sh
+sandbar_mcp() {
+  curl --silent --show-error --fail-with-body "$SANDBAR_MCP_URL" \
+    --header "Authorization: Bearer $SANDBAR_TOKEN" \
+    --header 'Content-Type: application/json' \
+    --header 'Accept: application/json, text/event-stream;q=0.9' \
+    --header 'MCP-Protocol-Version: 2025-11-25' \
+    --data-binary @-
+}
+
+sandbar_mcp <<'JSON'
+{"jsonrpc":"2.0","method":"notifications/initialized"}
+JSON
 ```
 
-## Start Sandbar
+The initialized notification has no request ID and no JSON-RPC response. Sandbar's HTTP handler returns no content for it. The server's ordinary request/response path returns JSON; an application that consumes streaming notifications also needs the corresponding streaming client behavior.
 
-```bash
-lein repl
+## Discover the operation
+
+Ask for the advertised tools:
+
+```sh
+sandbar_mcp <<'JSON'
+{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}
+JSON
 ```
 
-Once at the REPL prompt:
+Find `sandbar_class_describe` in `result.tools`. Its `inputSchema` describes the arguments. Use advertised wire names exactly: underscores separate name components, and hyphens within a leaf name remain intact. For example, the grouping tool is `sandbar_aggregate_group-by`.
 
-```clojure
-(require '[sandbar.core :refer [go stop]])
-(go)
+The catalog contains operations that accept class identifiers. Adding an application class does not create a new family of tools for that class.
+
+## Inspect a decision
+
+Describe the built-in decision class:
+
+```sh
+sandbar_mcp <<'JSON'
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "method": "tools/call",
+  "params": {
+    "name": "sandbar_class_describe",
+    "arguments": {"class": ":mm/Decision"}
+  }
+}
+JSON
 ```
 
-You should see startup logs.  The system is now serving:
+A successful tool result contains the class description, including its effective slots. Those slots include properties inherited from the memory hierarchy. You have inspected both an application concept and a consequence of Sandbar's inference rules.
 
-- **HTTP** on `:8389` (REST + MCP endpoints)
-- **nREPL** on `:28888` (connect from your editor)
+Tool calls have an additional failure boundary. Check the outer JSON-RPC `error`, then `result.isError`. Only after both checks should you read `result.structuredContent`, when supplied, or parse the JSON payload in the text content. A valid JSON error payload is still an error.
 
-## Sanity check
+To request just the effective slots:
 
-In another shell:
-
-```bash
-curl http://localhost:8389/api/status
+```sh
+sandbar_mcp <<'JSON'
+{
+  "jsonrpc": "2.0",
+  "id": 4,
+  "method": "tools/call",
+  "params": {
+    "name": "sandbar_class_slots",
+    "arguments": {"class": ":mm/Decision"}
+  }
+}
+JSON
 ```
 
-```json
-{"time":"2026-05-13T16:30:00.000Z","clojure":{"major":1,"minor":12,"incremental":4}}
-```
+## Diagnose a failed first request
 
-## Walk the metamodel
+| Observation | Check |
+| --- | --- |
+| Connection refused | The process, listening address, and configured HTTP port |
+| HTTP 401 | The token and the service account that issued it |
+| An authorization refusal | Whether that account can call the requested operation |
+| Unknown method or tool | The negotiated protocol and the exact name advertised by `tools/list` |
+| A tool error despite successful HTTP | `result.isError` and the tool's returned error details |
+| A class or property is absent | The loaded schema and the read surface's exposure policy |
 
-```clojure
-(require '[sandbar.db.datatype :as dt])
+For configuration problems, the primary deployment override is `<client-directory>/.sandbar/config.edn`. The relevant keys are `:port` and `:db {:url ... :sid ...}`. Environment overrides include `SANDBAR_PORT`, `SANDBAR_DB_URL`, and `SANDBAR_DB_SID`. Set `SANDBAR_CLIENT_DIR` explicitly for the deployment you intend to operate; see the [operator guide](../operations.md) for precedence and lifecycle commands.
 
-;; All classes registered in the running metamodel
-(dt/all-classes)
-;; => (:dt/Class :dt/Property :dt/Resource :mm/Memory :mm/Section :mm/Workflow ...)
+## Continue with a useful task
 
-;; Class ancestry — :model/User → :dt/Ref → :dt/Resource
-(dt/ancestors-of :model/User)
-;; => (:dt/Ref :dt/Resource)
+- [Getting started](getting-started.md) builds and retrieves a small collection.
+- [The metamodel example](../concepts/metamodel.md#a-class-extension-in-practice) introduces a specialized decision class.
+- [Writing an MCP client](writing-an-mcp-client.md) develops response handling and client integration.
+- [Zorp's Galactic Footwear Emporium](zorp-tutorial.md) teaches modeling through a complete application.
 
-;; Effective slots — including inherited
-(dt/slots-of :model/User)
-;; => #{:db/doc :db/ident :user/login :user/secret :user/uuid ...}
-
-;; Type predicates
-(dt/instance-of? :dt/Class :model/User)
-;; => true (User is an instance of Class)
-
-(dt/subclass-of? :dt/Resource :model/User)
-;; => true (User is a subclass of Resource)
-```
-
-## Create a validated entity
-
-```clojure
-(def alice
-  (dt/make :model/User
-    {:user/login "alice"
-     :user/secret "$2a$10$..."}))
-
-;; The entity is transacted — validation passed
-(:dt/type alice)
-;; => :model/User
-
-;; You can find it again by ident or query
-(dt/find-by :user/login "alice")
-;; => entity map
-```
-
-## Try the MCP surface
-
-Sandbar serves MCP on the same port at `/mcp`.  Get a service-account token (see [auth.md](../auth.md)) and:
-
-```bash
-curl -X POST http://localhost:8389/mcp \
-  -H "Authorization: Bearer $SANDBAR_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
-```
-
-You should see the verb catalog — `sandbar.entity.create`, `sandbar.schema.classes`, …
-
-## Try the REST surface
-
-```bash
-# List all classes
-curl http://localhost:8389/api/store/classes
-
-# One class's details
-curl http://localhost:8389/api/store/classes/model/User
-```
-
-Both projections — MCP and REST — surface the same metamodel; the protocol differs.  See [`mcp-protocol.md`](../concepts/mcp-protocol.md) for the discipline.
-
-## Stop the system
-
-```clojure
-(stop)
-```
-
-## What's next
-
-| Goal                                            | Read                                                     |
-|-------------------------------------------------|----------------------------------------------------------|
-| See a complete worked example                   | [`zorp-tutorial.md`](zorp-tutorial.md)                    |
-| Add a new domain class                          | [`defining-new-classes.md`](defining-new-classes.md)      |
-| Embed Sandbar in your Clojure code              | [`writing-a-clojure-client.md`](writing-a-clojure-client.md) |
-| Connect Claude or another AI client             | [`writing-an-mcp-client.md`](writing-an-mcp-client.md)    |
-| Consume Sandbar over HTTP                       | [`writing-a-rest-client.md`](writing-a-rest-client.md)    |
-| Understand the design                           | [`doc/concepts/`](../concepts/)                          |
-
-## Troubleshooting
-
-**Cannot connect to Datomic.**  Confirm the transactor is up (`nc -zv localhost 4334`).  If your transactor is on a different host or port, override `:datomic-uri` in `config/config.edn`.
-
-**Port 8389 already in use.**  Change `:http-port` in `config/config.edn`.
-
-**Schema not loaded.**  Verify `:required-schema` in `config/config.edn` lists every schema file you need (`:meta :literal :ref :fn :any :workflow :mm :user :twit`).
-
-## What's new in 0.2.0
-
-The 0.2.0 release adds three substrate surfaces worth knowing about at orientation time:
-
-- **`sandbar.logging`** — the six-macro observability API (`info` / `warn` / `error` / `debug` / `trace` / `profile`).  See [`using-logging.md`](using-logging.md).
-- **`sandbar.shape`** — SHACL-style shape validation; shapes are first-class `:mm/Shape` memorials and the walker is a family of `:mm/Fn` instances.  See [`authoring-shapes.md`](authoring-shapes.md).
-- **`sandbar.event`** (partially landed) — a substrate-native event surface: `subscribe!` / `unsubscribe!` / `fire!` with class-hierarchical dispatch (Phase 2, built), plus the `sandbar.reactive.tx-source` wrapper over Datomic's `tx-report-queue` (Phase 1, built; not yet boot-wired).  The γ scheduler is its first production consumer.  See [`subscribing-to-events.md`](subscribing-to-events.md) for the landed surface and what remains design-only.
+For the conceptual account, read [Sandbar's MCP surface](../concepts/mcp-protocol.md). The [MCP lifecycle specification](https://modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle) defines the initialization sequence.

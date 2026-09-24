@@ -1,6 +1,10 @@
-# Workflow, Process, and Job API
+# Historical workflow, process, and job API
 
-This document describes the REST API for managing workflows, processes, and background jobs in Sandbar.
+> **Historical — superseded.** For current use, see [workflow substrate](../concepts/workflow-substrate.md), [workflow guide](../guides/designing-workflows.md), [temporal substrate](../concepts/temporal-substrate.md), and [REST reference](../api/http-rest.md).
+>
+> This is an earlier API snapshot. The job scheduling, cancellation, authentication, and task response examples are historical contracts, not current release acceptance. Examples and reported results below have not been revalidated for 0.2.0; abbreviated payloads are schematic.
+
+The original REST workflow and job reference follows.
 
 ## Table of Contents
 
@@ -86,7 +90,7 @@ GET /api/workflows/workflow/order-fulfillment
 
 **Response:**
 
-```json
+```text
 {
   "workflow": {
     "id": 17592186045421,
@@ -126,7 +130,7 @@ Content-Type: application/edn
 
 **Response (201 Created):**
 
-```json
+```text
 {
   "created": true,
   "workflow": {
@@ -565,11 +569,9 @@ The underlying functions are in `sandbar.util.workflow`:
 ;; Returns the updated process entity (in its terminal :cancelled state)
 ```
 
-Stage C.7.4 of the Sandbar-as-MCP-Server arc landed these primitives upstream so that `sandbar.mcp.tasks/handle-cancel` could delegate rather than reach for raw `datomic.api` — preserving the layer-targeting discipline (see [doc/mcp-server.md](mcp-server.md#layer-targeting-discipline)).
-
 ### MCP Tasks composition
 
-Long-running workflow processes are also exposed via the **MCP Tasks** primitive — see [doc/tasks-api.md](tasks-api.md). The task-id IS the workflow process's `:db/id` (stringified); `tasks/get` projects current state; `tasks/cancel` calls `workflow/cancel-process!`. There is no parallel registry — the workflow process is the durable source of truth for both REST and MCP consumers.
+The early MCP adapter mapped long-running workflow processes to task handles; see the [historical task design](tasks-api.md). The task-id IS the workflow process's `:db/id` (stringified); `tasks/get` projects current state; `tasks/cancel` calls `workflow/cancel-process!`. There is no parallel registry — the workflow process is the durable source of truth for both REST and MCP consumers.
 
 ---
 
@@ -726,7 +728,7 @@ Returns scheduled jobs that are ready for execution (run-at <= now).
 
 **Response:**
 
-```json
+```text
 {
   "count": 3,
   "jobs": [
@@ -750,7 +752,7 @@ GET /api/jobs/running
 
 **Response:**
 
-```json
+```text
 {
   "count": 2,
   "jobs": [
@@ -839,7 +841,7 @@ Triggered jobs execute in response to events.
 
 **Response (201 Created):**
 
-```json
+```text
 {
   "created": true,
   "job": {
@@ -884,7 +886,7 @@ Recurring jobs run on a schedule.
 
 **Response (201 Created):**
 
-```json
+```text
 {
   "created": true,
   "job": {
@@ -915,7 +917,7 @@ POST /api/jobs/17592186045600/cancel
 
 **Response:**
 
-```json
+```text
 {
   "success": true,
   "job": {
@@ -952,7 +954,7 @@ POST /api/jobs/17592186045620/pause
 
 **Response:**
 
-```json
+```text
 {
   "success": true,
   "job": {
@@ -980,7 +982,7 @@ POST /api/jobs/17592186045620/resume
 
 **Response:**
 
-```json
+```text
 {
   "success": true,
   "job": {
@@ -1008,7 +1010,7 @@ POST /api/jobs/17592186045600/execute
 
 **Response:**
 
-```json
+```text
 {
   "executed": true,
   "success": true,
@@ -1025,7 +1027,7 @@ POST /api/jobs/17592186045600/execute
 
 **Error Response (execution failed):**
 
-```json
+```text
 {
   "executed": true,
   "success": false,
@@ -1060,7 +1062,7 @@ All endpoints return standard HTTP status codes:
 
 Error response format:
 
-```json
+```text
 {
   "error": "Description of the error",
   "details": {...}

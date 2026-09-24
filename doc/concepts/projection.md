@@ -1,166 +1,96 @@
 # Projection
 
-> Sandbar's bidirectional projection primitive between database state and a filesystem hierarchy of native-format files.  The `project-graph` + `ingest-graph` operations are the verb-form pair; this `sandbar.projection` namespace is their home.  Borrows the shape (and the function names) from James Anderson's `de.setf.rdf:project-graph` — the boundary-layer primitive lives between the high-level generic consumer (filesystem tools; humans editing in their preferred text editor) and the low-level database concern (Datomic transactions and queries).  The filesystem format is **canonical ground-truth**; the database is one of multiple stores that comply with it.
+> Readable documents and queryable entities can carry the same knowledge. Projection makes the mapping explicit, including what it preserves and where another operation must take over.
 
 ## Thesis
 
-A Sandbar instance is not the database alone.  It is the *pair* — database state and filesystem hierarchy — held in coherence by `project-graph` (DB → FS) and `ingest-graph` (FS → DB).
+A decision is useful both as a document someone can review and as an entity a program can find and connect to its evidence. Sandbar's projection layer connects these uses. It writes selected memory entities and their sections as Markdown files; ingestion parses files back into entity specifications.
 
-The filesystem hierarchy is the canonical ground-truth representation.  Any backend complies with the filesystem format.  Today the production backend is Datomic Peer; tomorrow's may be Datomic Cloud, XTDB, raw JSON-on-disk, or something not yet built.  All are equivalent if they round-trip through the canonical FS hierarchy.
+The important contract is preservation. A reader should be able to tell which identity, text, metadata, and relationships survive this passage, which details are normalized, and which parts of a running system live outside the document representation.
 
-This is **not** an export/import feature.  Project-graph is the *boundary layer* — the level of abstraction at which translation between in-memory entities and on-disk files is the right concern.  The codec layer is one realization within this frame; project-graph operates at the granularity of entire collections rather than individual entities.
+## One decision, two useful views
 
-## Lineage
+Consider a fictional decision at `decisions/cache-refresh.md`. It records a cache-refresh policy, explains its rationale, and cites a measurement that informed it.
 
-### James Anderson's `de.setf.rdf`
+As a file, the decision has frontmatter and a readable body. An editor can open it, and a version-control diff can show a change to its reasoning. In Sandbar, its type identifies it as a decision, its metadata can be queried, and its citation is a relationship that a client can follow. Headings and their content can also be represented as section entities.
 
-The pattern is Anderson's.  `de.setf.rdf` was a Common Lisp CLOS-metaclass RDF graph framework developed during the Datagraph / Dydra era.  Its `project-graph` operation took the raw triple state of an RDF graph and projected it into a *native-representation hierarchy* — filesystem layouts, rendered output, structured external storage.  `ingest-graph` did the inverse — accepting a hierarchy and re-deriving the triple state.
+| Document concern | Entity concern |
+| --- | --- |
+| Name and description | Searchable metadata on the memory |
+| A reference to the measurement | A typed citation relationship |
+| A rationale heading and its text | Sections attached to their containing memory |
+| The document's location | A relative path used by the projection hierarchy |
+| Identity carried by the representation | A way to recognize the same knowledge after reconstruction |
 
-The discipline Anderson articulated was: **representation translation is a boundary concern**, not a model concern and not a consumer concern.  Put it between the generic high-level (what consumers see) and the low-level specific (what the database stores).  Make it bidirectional.  Make the FS form be a stable shape that consumers can edit with their existing tools (vim, git, find, grep) without knowing the model.
+The graph supports questions that a document view does not answer by itself: which decisions cite this measurement, or which sections belong to this decision? The file supports familiar reading and review. Keeping the mapping in one layer lets clients use both views without each inventing a serializer.
 
-Sandbar adopts this wholesale, one layer up: instead of triples ↔ hierarchies, it is *typed entities* ↔ *hierarchies of codec-encoded files*.  The codec layer (see [`codec-layer.md`](codec-layer.md)) operates on individual entities; project-graph operates on directory trees of entity-files.
+## The implemented boundary
 
-### Filesystem-canonical discipline
-
-The filesystem-canonical commitment is a deliberate choice with two consequences:
-
-1. **External tooling becomes immediately available.**  `git log memory/decisions/foo.md` works because the file is the canonical form.  `grep -r 'cancel-process'` works.  Editors open files; humans review diffs; CI/CD systems detect changes.  None of this would be true if the canonical form were a Datomic transaction log.
-
-2. **The backend becomes pluggable.**  Sandbar's contract with the backend is: *project to this filesystem shape; ingest from this filesystem shape*.  A backend that round-trips faithfully through that shape is interchangeable.  Today's Datomic Peer is one such backend; tomorrow's alternatives are first-class possibilities.
-
-This commitment is captured in [`interaction/filesystem_native_format_is_canonical_backend_compliance_required_hybrid_backend_experimentation_essential_2026_05_13`](../../memory/interaction/filesystem_native_format_is_canonical_backend_compliance_required_hybrid_backend_experimentation_essential_2026_05_13.md) as the standing directive.
-
-## Operations
-
-Two primitives in `sandbar.projection`:
+The current `sandbar.projection` implementation works with memory entities and their sections. It emits Markdown documents. Its collection API is:
 
 ```clojure
-(project-graph db path opts)   ; DB state → filesystem hierarchy at `path`
-(ingest-graph  conn path opts) ; filesystem hierarchy at `path` → DB transactions
+;; entities is a collection of realized memory and section specifications.
+(projection/project-graph entities {:to output-directory})
+
+;; Parse documents into a flat collection of entity specifications.
+(projection/ingest-graph input-directory)
 ```
 
-The semantics:
+Here `projection` is an alias for `sandbar.projection`. These expressions describe the boundary; a caller supplies the entities and directories.
 
-### `project-graph`
+For projection, the caller first selects and realizes the data, including the sections needed to reconstruct each body. `project-graph` groups the entities by their containing memory, derives a relative path, emits the document, and writes it beneath the requested directory. The default hierarchy uses `:mm.memory/rel-path`. Supported filters narrow the selected memories, with their associated sections carried along.
 
-- Walks all instances of declared classes (`:dt/Class` entities with a non-nil `:dt/native-codec`).
-- For each entity, resolves the codec, calls `codec/emit codec entity`, and writes the result to a path derived from the entity's `:db/ident` and class.
-- Maintains the directory hierarchy: classes occupy top-level subdirectories; entity files within them.
-- Idempotent — projecting twice produces the same filesystem state for the same DB state.
-- Filterable — see "Filtering primitives" below.
+For ingestion, `ingest-graph` walks Markdown files and parses them into entity specifications. A directory walk skips configured basenames, including `README.md` and `MEMORY.md` by default. It can also parse a specified file directly. Validation, conflict handling, and database persistence belong to the caller that consumes those specifications.
 
-### `ingest-graph`
+This boundary matters when using the higher-level MCP operations: an export handler can fetch the entities before calling the projector, and an import handler can transact after parsing. Those surrounding steps have their own contracts. The [codec protocol reference](../api/codec-protocol.md) describes per-representation operations; the [Markdown concept](markdown-as-canonical.md) describes the document model.
 
-- Walks the filesystem hierarchy at `path`.
-- For each file, infers the class from the directory hierarchy and the codec from the class's `:dt/native-codec`.
-- Calls `codec/parse codec source` to obtain the entity map.
-- Transacts the resulting entities — creating or updating as appropriate.
-- Returns the transaction report.
+## What a round trip establishes
 
-The pair is the bidirectional projection.
+For the supported document model, the intended preservation contract concerns the represented knowledge. Database-local entity IDs need not survive reconstruction. Normalized Markdown need not preserve every original byte. A location used to find a file also needs to be distinguished from the entity's durable identity: moving or renaming a document is an identity-sensitive operation, not merely a different spelling of the same path.
 
-## Chunk addressability and sibling-chain navigation
+The current `projection/round-trip-test` writes a supplied collection to a temporary directory, ingests it, and compares normalized entity specifications. It removes `:db/id` before comparison and omits redundant `:mm.memory/body-raw` where a section tree supplies that body. A passing result therefore establishes this particular comparison for the supplied collection.
 
-Inside an individual document (an `mm/Memory` markdown file, for example), the codec produces a *section tree* — `:mm/Section` entities, each addressable, each linked via sibling-chain navigation.
+A useful fidelity check must cover the data the application actually uses: identity carriers, metadata, typed references, section structure, and supported frontmatter values. The contract must distinguish supported fields from extras carried on a best-effort basis, and state what happens when a carrier is unavailable. Fields essential to reconstruction need preservation or a visible failure. The [known boundaries](../known-gaps-0.2.0.md#documents-preserve-a-defined-model) describe the emitter's narrower configurable critical-key protection; arbitrary extra fields do not acquire a stronger guarantee merely by appearing in frontmatter.
 
-The sibling chain is a deliberate departure from RDFS `rdf:List` cons-cells.  Cons-cell lists (`:dt/first` / `:dt/rest`) are awkward for editing — inserting a section in the middle requires rewriting every subsequent cell.  Pairwise siblings (`:mm.section/previous-sibling` / `:mm.section/next-sibling`) are SIOC-flavored (Breslin & Decker 2007) and allow local mutation: inserting a section updates two pointers.
+The scope of the document representation is distinct from a complete service backup. Database history, credentials, and runtime state belong in the appropriate backup and recovery procedures. The [operator guide](../operations.md) distinguishes reconstruction of represented knowledge from recovery of the running service.
 
-The trade-off: pairwise siblings cannot represent a list as a single first-class entity (there is no "list of sections" handle; only "first section, walk siblings"); but the editing ergonomics are dramatically better, and the address — `mcp://sandbar/mm/Memory/<rel-path>#<section-path>` — points to a stable entity rather than a moving cons-cell.
+<a id="use-cases"></a>
 
-See [`decisions/mm_section_schema_path_derived_idents_sibling_chain_navigation_2026_05_13`](../../memory/decisions/mm_section_schema_path_derived_idents_sibling_chain_navigation_2026_05_13.md) for the decision discussion that landed the pairwise design.
+## Files, commits, and current state
 
-## Filtering primitives
+The release design uses a shared knowledge database and separate project document trees. A successfully projected tree preserves the supported document model, not every database fact. Import into the existing store for maintenance so established entity identities and incoming references remain intact. Reconstruction in an empty store needs its own identity and reference comparison; a readable export alone does not establish that it will work.
 
-`project-graph` accepts a `:filter` option — a predicate-shaped map that constrains which entities project.  Today's filter forms (see `sandbar.projection/project-graph` docstring for the canonical list):
+For changes accepted through the running database, file projection can occur afterward through the [reactive subsystem](reactive-substrate.md). There can be a period during which the database contains a committed change and a file still contains its earlier form. An operator needs evidence of projection completion before relying on the files as a current copy.
 
-```clojure
-{:classes #{:mm/Memory :decisions/Decision}}     ; only these classes
-{:idents #{:decisions/foo :decisions/bar}}       ; only these specific entities
-{:where  '[?e :foo/bar ?v] [(< ?v 100)]}         ; Datalog predicate
-{:since  inst}                                   ; entities modified since
-```
+The default import replaces the source-owned representation of an existing document: supplied values replace previous values, omitted source-owned fields are removed, and sections and frontmatter carriers are reconciled. The host identity, incoming references and attributes owned by the store are retained. Class or durable-ID disagreement and references from outside the document to removed sections produce conflicts. Import reports each file's outcome; it does not run the interactive shape-validation path.
 
-`ingest-graph` accepts the symmetric `:filter` — limiting which files ingest.
+Basis and source-hash guards detect changes during an import attempt. They do not decide whether an unchanged file is already older than accepted database content. Stop all writers before editing canonical files, preserve before-images, review differences, and keep writers stopped through preview, import and audit. Hold ambiguous files outside the selected input. Follow the [maintenance procedure](../operations.md); there is no automatic merge or general newer-state restore guard.
 
-This filterability is the precondition for **hybrid filesystem/database topology** experimentation (see [`multi-store-architecture.md`](multi-store-architecture.md)).  Some classes may be FS-canonical with full DB mirror; others may be FS-canonical with DB index only; others may be DB-resident with on-demand FS materialization.  The partition is an empirical question — filtering lets us draw the line and measure.
+Sharing a projected directory between two instances also requires a synchronization policy. File diffs help a person review changes; they do not establish which instance has accepted them or when an import is safe.
 
-## Why the boundary layer matters
+This distinction keeps the benefits of an editable representation while making freshness and recovery observable rather than assumed.
 
-Without project-graph, an FS-canonical commitment leaks model concerns into every consumer.  A consumer that wants "show me all my memories as files" has to query the database, materialize entities, render markdown, write to disk — every consumer reinvents the projection.  A consumer that wants to ingest a directory of edits has to walk the directory, parse each file, validate, transact — every consumer reinvents the ingestion.
+<a id="filtering-primitives"></a>
 
-Project-graph centralizes both into a single boundary-layer primitive.  Consumers get `(project-graph db path)` and `(ingest-graph conn path)`.  The discipline of "the FS is canonical" is enforceable because the projection is mechanical.
+## Selection and disclosure
 
-## Relationship to the codec layer
+Selecting entities for projection is also a disclosure decision. A caller's filter expresses what is wanted. It is not a principal-clearance check or a destination disclosure policy.
 
-Codecs handle *one entity at a time* at the wire-format boundary.
-Project-graph handles *collections of entities* at the filesystem boundary.
+The MCP project exporter plans from one immutable database value and selects only the explicitly enrolled project's memories. Caller clearance and the operator-authorized destination apply before staging output is created. All supported emitted references are checked, including author and structural references that can have different authoring-time rules. Unknown carriers, unsafe references, body/section disagreements and failed identity/content round trips hold the whole document; no field is silently redacted. The low-level `projection/project-graph` function remains a rendering primitive, not this guarded export contract.
 
-The two are layered:
+Preview persists exact reasons in a private audit and returns counts and a plan token. Execution requires that token, fresh staging and the unchanged basis; the completion manifest is published after files, hash verification and the ready audit. Optional provenance still requires both per-call and server enablement. A failed export may leave partial staging for inspection. The supported operator procedure keeps other writers stopped throughout; it is not a concurrency lock or an automatic publication decision.
 
-- `project-graph` walks the DB, selects entities, and delegates per-entity emission to the codec layer.
-- `ingest-graph` walks the filesystem, parses each file via the codec layer, and accumulates a transaction.
+A complete accepted subset is not a database backup or a claim that all source documents were represented. Private details about holds remain audit-side. Free prose, code and external URLs retain the author's classification; automatic semantic declassification and field redaction are unbuilt. Review the files and manifest before publication, and retain historical ambiguities instead of guessing which version is authoritative.
 
-Codec selection is per-class via `:dt/native-codec`.  Project-graph does not own codec routing; it asks the codec mediator to handle it.
+The [project-boundary chapter](../firewall-and-projects.md) explains the policy, and the [operator guide](../operations.md) explains the export and restore procedures. Keeping selection, disclosure, provenance, and publication explicit makes the readable representation usable across appropriately scoped projects.
 
-## Use cases
+## Design lineage
 
-1. **Memory-corpus mirroring.**  The corpus's `memory/` tree is itself an `ingest-graph` target.  The Sandbar instance holds the canonical entity state; the filesystem holds the canonical user-editable form.  Edits in either flow through the projection.
+James Anderson's [`de.setf.resource`](https://github.com/lisp/de.setf.resource) is a useful antecedent: it projects RDF repositories into CLOS object models through a mediator, and its [API](https://raw.githubusercontent.com/lisp/de.setf.resource/master/api.lisp) includes `de.setf.rdf:project-graph`. Sandbar uses a related separation between the model and its external representation. The Markdown layout, preservation rules, and synchronization behavior described here are Sandbar's own contracts.
 
-2. **Backup / version control.**  `project-graph` to a clean directory, commit to git.  The diff is meaningful — each file is a self-contained, human-readable entity.  Backup restoration is `ingest-graph` from the directory.
+## Where to go next
 
-3. **Multi-instance synchronization.**  Two Sandbar instances can synchronize through a shared filesystem projection.  Each does `project-graph` to a shared location and `ingest-graph` from it.  Conflict resolution is delegated to whatever owns the filesystem (typically git, with merge semantics suited to text files).
-
-4. **External tooling.**  `find memory/decisions -name 'sandbar_*' -mtime -1` works.  `grep -r 'project-graph' memory/` works.  These are not custom-built features of Sandbar; they are consequences of the FS being canonical.
-
-5. **Hybrid FS/DB experimentation.**  Use filters to partition which classes live primarily on disk versus primarily in the DB; measure performance and ergonomics; revisit the partition.  This experimentation is what filters were designed for.
-
-6. **Reactive `:mm/EventLog` projection.**  Per-event-firing memorials flagged `:memorial :first-class` flow from the event substrate's in-process bus (see [`event-substrate.md`](event-substrate.md)) through a projection sink that materializes them as `memory/event-logs/<name>.md` files.  The sink IS a subscriber on `sandbar.reactive.tx-source`; it composes through the same `project-graph` discipline (entity → codec → file path) without a separate code path.  High-volume runtime events stay `:db-only` in `:dt/Event` substrate-runtime instances; the `:mm/EventLog` corpus tier holds only the narratively-significant signals.  This is the reactive corpus-projection arc — see `plans/sse_reactive_corpus_projection_arc_2026_05_23.md`.
-
-## Comparison with adjacent patterns
-
-### vs. database backup/restore
-
-A backup is a serialization of the database for the purpose of reconstruction.  Project-graph is a *projection* — the filesystem form is itself canonical, not a derivative.  An ingest-graph from the projection produces an equivalent database state; the projection is not lossy by design.
-
-### vs. ORMs with file-backed storage
-
-ORMs with file-backed storage (CodeIgniter Files; Rails fixtures) treat each file as a record.  Project-graph treats each file as an *entity in the model* — typed, validated, hierarchically organized.  The shape is the metamodel's, not the storage backend's.
-
-### vs. ipfs / merkle-graph projection
-
-IPFS-style projections (Benet 2014; IPLD content-addressing) produce content-addressed graphs where the file location is derived from the content hash.  Project-graph produces *path-addressed* projections — locations are derived from the entity's ident and class.  The two are complementary: a content-addressed projection over the path-addressed form would be straightforward to add.
-
-### vs. RDF graph serialization (Turtle / N-Triples)
-
-An RDF serialization produces a single (often large) file containing the graph as triples.  Project-graph produces a *hierarchy* of files, each holding one entity in the consumer's native form.  The trade-off is locality: editing one entity in an RDF serialization requires understanding the whole file; editing one entity in a project-graph hierarchy requires understanding only that file.
-
-## References
-
-**Anderson's `de.setf.rdf` lineage**
-
-- Anderson, J.M. (2008–). *de.setf.rdf — CLOS-metaclass RDF graph framework for Common Lisp.*  Datagraph / Dydra-era source; see project archives and Anderson's design notes on `project-graph` / `ingest-graph` as boundary-layer primitives.
-
-**SIOC / pairwise siblings**
-
-- Breslin, J.G. & Decker, S. (2007). *The SIOC Project — Semantically-Interlinked Online Communities.* Linking online community sites with RDF, including the `sioc:has_next_sibling` predicate that informed Sandbar's `:mm.section/next-sibling`.
-
-**Filesystem-canonical / external-tool integration**
-
-- Raymond, E.S. (1999). *The Art of Unix Programming.* Pearson Education.  Particularly the "rule of composition" and "rule of separation."
-
-**IPFS / content addressing (for contrast)**
-
-- Benet, J. (2014). *IPFS — Content Addressed, Versioned, P2P File System.*  https://ipfs.io/ipfs/QmR7GSQM93Cx5eAg6a6yRzNde1FQv7uL6X1o4k7zrJa3LX/ipfs.draft3.pdf
-
-**Bidirectional projection / lenses**
-
-- Foster, J.N., Greenwald, M.B., Moore, J.T., Pierce, B.C. & Schmitt, A. (2007). *Combinators for Bidirectional Tree Transformations: A Linguistic Approach to the View-Update Problem.* ACM TOPLAS 29(3).  Theoretical underpinning for bidirectional projections like project-graph / ingest-graph.
-
-## See also
-
-- [`metamodel.md`](metamodel.md) — the typed entities project-graph projects
-- [`codec-layer.md`](codec-layer.md) — per-entity wire-format translation that project-graph delegates to
-- [`markdown-as-canonical.md`](markdown-as-canonical.md) — why markdown is the Layer-1 corpus format
-- [`event-substrate.md`](event-substrate.md) — the reactive bus from which `:mm/EventLog` projections are driven
-- [`multi-store-architecture.md`](multi-store-architecture.md) — hybrid FS/DB topology built on project-graph filtering
-- [`doc/guides/sandbar-as-substrate.md`](../guides/sandbar-as-substrate.md) — using project-graph in your own application
+- [Markdown as canonical](markdown-as-canonical.md) explains the document representation and its preservation rules.
+- [The codec layer](codec-layer.md) explains representation boundaries for individual values and entities.
+- [Reactive substrate](reactive-substrate.md) explains propagation after accepted changes.
+- [Sandbar as a substrate](../guides/sandbar-as-substrate.md) shows how an application uses these layers.

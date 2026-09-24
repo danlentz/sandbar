@@ -1,6 +1,8 @@
-# Metamodel Concepts (Historical)
+# Historical metamodel concepts
 
-> **Note:** This document contains historical design notes from the original development. For current documentation, see [Metamodel Reference](meta.md).
+> **Historical — superseded.** For current use, see [metamodel](../concepts/metamodel.md), [first-class functions](../concepts/first-class-fn.md), and [`dt/*` reference](../api/dt-star.md).
+>
+> This note preserves early ideas about describing classes, functions, and aggregates as data. Its original schema and claims about automatic aggregate creation and function composition are design history, not current construction or validation guarantees. Examples and reported results below have not been revalidated for 0.2.0; abbreviated payloads are schematic.
 
 ## Datatype System Evolution
 
@@ -98,4 +100,4 @@ This enables typed collection handling within the metamodel.
 ]
 ```
 
-See [Metamodel Reference](meta.md) for current schema documentation.
+See the [current metamodel](../concepts/metamodel.md) for schema documentation.

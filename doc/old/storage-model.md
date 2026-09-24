@@ -1,6 +1,8 @@
-# Storage Model (Historical)
+# Historical storage model
 
-> **Note:** This document contains historical design notes about Datomic's storage internals. For current documentation, see [Metamodel Reference](meta.md) and [System Architecture](architecture.md).
+> **Historical — superseded.** For current use, see [metamodel](../concepts/metamodel.md), [codec layer](../concepts/codec-layer.md), and [`dt/*` reference](../api/dt-star.md).
+>
+> This exploratory note examined storage metadata. Its suggestion that assigning a Fressian tag suffices to add a Datomic literal type must not be used as an extension procedure. Application classes, wire codecs, and database storage types are distinct extension boundaries. Examples and reported results below have not been revalidated for 0.2.0; abbreviated payloads are schematic.
 
 ## Fressian Tags and Value Types
 

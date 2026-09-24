@@ -1,327 +1,202 @@
-# `dt/*` API Reference
-
-> Layer 4 — mechanical reference for every public function in `sandbar.db.datatype`.  Organized by concern, not by source order.  For practical usage see [`doc/guides/writing-a-clojure-client.md`](../guides/writing-a-clojure-client.md); for theoretical background see [`doc/concepts/metamodel.md`](../concepts/metamodel.md).
-
-All functions live in `sandbar.db.datatype`; the conventional alias is `dt`.
+# `dt/*` API reference
 
 ```clojure
 (require '[sandbar.db.datatype :as dt])
 ```
 
+This reference covers the modeling, validation, representation, and query entry points used by the guides. Functions operate through Sandbar's configured Datomic connection unless their signature says otherwise. It is a curated reference; the namespace also exports implementation and cache-management helpers.
+
+In the signatures below, `class` and `property` are keyword idents. An entity result is a Datomic entity view, not necessarily a plain persistent map. Use `(into {} entity)` when a consumer requires a plain map; that conversion does not recursively realize every reference.
+
 ## Class introspection
 
-### `(dt/all-classes)`
+| Call | Result |
+| --- | --- |
+| `(dt/all-classes)` | Class idents from the metamodel's class population |
+| `(dt/all-properties)` | Property idents from the property population |
+| `(dt/all-datatypes)` | Idents of entities declared directly as `:dt/Class` |
+| `(dt/class-ident-of entity)` | The entity's declared class ident |
+| `(dt/class-entity-of class)` | The entity describing that class |
+| `(dt/find-by-ident ident)` | The named entity, or `nil` if absent |
+| `(dt/abstract? class)` | The declared abstract flag; absent is falsey |
 
-Returns the `:db/ident` keywords of all classes in the metamodel.
+`class-entity-of` takes a class ident; it does not follow an instance's type. To obtain an instance's class metadata, compose `class-ident-of` with `class-entity-of`.
 
-```clojure
-(dt/all-classes)
-;; => (:dt/Class :dt/Property :dt/Resource :mm/Memory :model/User ...)
-```
-
-### `(dt/all-properties)`
-
-Returns the `:db/ident` keywords of all properties in the metamodel.
-
-```clojure
-(dt/all-properties)
-;; => (:db/doc :db/ident :dt/domain :dt/range :user/login ...)
-```
-
-### `(dt/all-datatypes)`
-
-Returns a sequence of all class idents in the database (entities where `:dt/type` is `:dt/Class`).
-
-### `(dt/class-of e)`
-
-Returns the class (`:dt/type`) of entity `e`.  Works with entity maps, entity IDs, or idents.
-
-```clojure
-(dt/class-of :model/user.alice)
-;; => :model/User
-```
-
-### `(dt/abstract? dt)`
-
-Returns `true` if class `dt` is marked abstract.
-
-```clojure
-(dt/abstract? :dt/Literal)
-;; => true
-```
+`class-of` is a deprecated alias for `class-ident-of`. Its result is an ident, not the class entity. There is no general `dt/find-by` function in this interface.
 
 ## Hierarchy navigation
 
-### `(dt/parents-of dt)`
+| Call | Meaning |
+| --- | --- |
+| `(dt/parents-of class)` | Direct parent class idents |
+| `(dt/ancestors-of class)` | Transitive ancestor class idents |
+| `(dt/direct-subclasses-of class)` | Direct child class idents |
+| `(dt/subclasses-of class)` | Transitive subclass idents |
+| `(dt/descendants-of class)` | Set containing the class itself and all transitive subclass idents, via the cached class-relation path |
+| `(dt/subclass-of? parent child)` | Whether `child` is a transitive subclass of `parent` |
+| `(dt/type-isa? parent candidate)` | Whether the class `candidate` is `parent` or a subclass |
+| `(dt/instance-of? class entity)` | Whether the entity belongs to the class or a subclass |
 
-Returns the direct parent classes of class `dt` (immediate `:dt/subclass-of` values).
+Keep the broader class first in these predicates. Do not infer query result order from the hierarchy; sort when a stable presentation is needed. For the distinction between these core operations and explicitly requested property entailment, see [inference](../concepts/rdfs-entailment.md).
 
-### `(dt/ancestors-of dt)`
-
-Returns all ancestor classes of class `dt` (parents, grandparents, …).  Recursive traversal.
-
-```clojure
-(dt/ancestors-of :model/User)
-;; => (:dt/Ref :dt/Resource)
-```
-
-### `(dt/direct-subclasses-of dt)`
-
-Returns idents of classes that directly extend `dt`.  Only immediate children.
-
-### `(dt/subclasses-of dt)`
-
-Returns idents of all transitive subclasses of `dt`.
-
-```clojure
-(dt/subclasses-of :dt/Resource)
-;; => (:dt/Class :dt/Property :dt/List ...)
-```
-
-### `(dt/subclass-of? dt c)`
-
-Returns `true` if `c` is a subclass of `dt` (direct or transitive).
-
-```clojure
-(dt/subclass-of? :dt/Resource :model/User)
-;; => true
-```
-
-### `(dt/instance-of? dt e)`
-
-Returns `true` if entity `e` is an instance of class `dt` (transitive — counts subclass instances).
-
-```clojure
-(dt/instance-of? :dt/Class :model/User)
-;; => true (User is an instance of Class)
-```
+`type-isa?`, `subclass-of?`, `instance-of?` and `descendants-of` use cached relations. `db/load-all-schema!` invokes registered cache-clear callbacks; a single `db/load-schema` or ordinary class/inheritance mutation does not. Prefer loading the complete model before application work; do not use a stale cached answer to adjudicate a dynamic model change. Fresh instance queries and cached type predicates have different freshness boundaries in this revision.
 
 ## Instance enumeration
 
-### `(dt/direct-instances-of dt)`
+| Call | Population and return shape |
+| --- | --- |
+| `(dt/direct-instances-of class)` | Entity views with exactly that declared class |
+| `(dt/all-instances-of class)` | Entity views including subclass instances |
+| `(dt/named-idents-of class)` | Idents of named instances, including subclasses |
+| `(dt/named-entities-of class)` | Entity views for that named population |
 
-Returns entities whose `:dt/type` is exactly `dt` — no subclass instances.
+`all-named-instances-of` is a deprecated alias for `named-idents-of`. Migrate according to the result shape the caller needs.
 
-### `(dt/all-instances-of dt)`
+## Slot and property queries
 
-Returns entities that are instances of `dt` or any subclass.  Uses the Datalog `instance-of` rule for recursive subclass traversal.
+| Call | Result |
+| --- | --- |
+| `(dt/direct-slots-of class)` | The directly declared `:dt/slots` values |
+| `(dt/slots-of class)` | Set of effective property idents, including inherited slots |
+| `(dt/required-slots-of class)` | Sequence of effective slot idents marked required |
+| `(dt/domain-of property)` | Declared domain |
+| `(dt/range-of property)` | Declared modeled range |
+| `(dt/cardinality-of property)` | Datomic cardinality ident, or `nil` when absent |
+| `(dt/cardinality-one? property)` | Whether cardinality is one |
+| `(dt/cardinality-many? property)` | Whether cardinality is many |
+| `(dt/required? property)` | The declared required flag, or `nil` when absent |
+| `(dt/properties-with-domain class)` | Property idents whose domain is the class or an ancestor |
+| `(dt/validator-of class)` | Resolved custom-validator var, or `nil` when unavailable |
 
-### `(dt/all-named-instances-of dt)`
+Effective slots follow `:dt/slots` declarations through inheritance. A property's domain is related metadata, not a substitute for a class slot declaration. `validator-of` resolves the class's `:dt/validator` symbol; it does not return that symbol as its result.
 
-Returns the `:db/ident` keywords of all named entities that are instances of `dt` (or subclass).  Useful for finding class and property idents.
+## Entity creation and update
 
-## Slot queries
-
-### `(dt/slots-of dt)`
-
-Returns all effective slots for class `dt` (inherited + direct).
-
-```clojure
-(dt/slots-of :model/User)
-;; => #{:db/doc :db/ident :user/login :user/secret ...}
-```
-
-### `(dt/direct-slots-of dt)`
-
-Returns properties directly declared on class `dt` — no inherited slots.
-
-### `(dt/required-slots-of dt)`
-
-Returns all required slots for class `dt` (including inherited).  A required slot has `:dt/required? true`.
-
-## Property queries
-
-### `(dt/domain-of prop)`
-
-Returns the domain class of property `prop` — the class instances may carry it.
-
-### `(dt/range-of prop)`
-
-Returns the range type of property `prop` — the allowed type of its values.
-
-### `(dt/cardinality-of prop)`
-
-Returns the property's Datomic cardinality (`:db.cardinality/one` or `:db.cardinality/many`).
-
-### `(dt/cardinality-one? prop)`
-
-Returns `true` if `prop` is cardinality-one.
-
-### `(dt/cardinality-many? prop)`
-
-Returns `true` if `prop` is cardinality-many.
-
-### `(dt/required? prop)`
-
-Returns `true` if property `prop` has `:dt/required?` set to `true`.
-
-### `(dt/validator-of dt)`
-
-Returns the custom validator function symbol for class `dt`, or `nil` if none.
-
-### `(dt/properties-with-domain dt)`
-
-Returns idents of all properties whose domain is `dt` or an ancestor of `dt`.  Useful for finding all properties applicable to instances of a class.
-
-## Entity creation
-
-### `(dt/make class attrs)` / `(dt/make class attrs opts)`
-
-Creates a typed instance with pre-transaction validation.
-
-- `class` — class ident (e.g., `:model/User`)
-- `attrs` — a map of slot values, or a `{:format ... :source ...}` codec input
-- `opts` — optional map; supports `:validate?` (default `true`)
-
-Returns the transacted entity.  Throws on validation failure.
+### `make`
 
 ```clojure
-(dt/make :model/User
-  {:user/login "alice"
-   :user/secret "$2a$10$..."})
-
-;; With codec-mediated source
-(dt/make :mm/Memory
-  {:format "markdown"
-   :source "---\nname: Foo\n---\n# Context\n..."})
+(dt/make class)
+(dt/make class properties)
+(dt/make class properties options)
 ```
 
-### `(dt/make* class attrs)`
+Returns the created entity view. By default, the prepared data is checked for an abstract class, required slots, modeled ranges, and cardinality before transaction. Memory defaults and reference normalization are part of preparation. The operation notifies the reactive change mechanism after creation.
 
-Creates a typed instance **without validation**.  Escape hatch — use sparingly.
+| Option | Meaning |
+| --- | --- |
+| `:validate?` | Defaults to `true`; `false` skips class data validation |
+| `:format` | Codec format used with a source representation |
+| `:source` | Representation to parse; explicit properties override parsed values |
+| `:project?` | Per-call participation in reactive projection policy |
 
-### `(dt/realize-with seed walk-fn)`
+Codec options belong in the third argument:
 
-General-purpose entity realization helper.  Given a seed entity and a `walk-fn`, returns a vector of entity-spec maps including the seed and any related entities the walker produces.  Used by codecs for tree-shaped entity realization (e.g., `mm/Memory` + its section tree).
+```clojure
+(dt/make :mm/Decision properties
+  {:format :markdown :source markdown-text})
+```
 
-### `(dt/emit-entity entity)` / `(dt/emit-entity entity opts)`
+`dt/make`'s class validation is distinct from a shape evaluation or a stored-entity custom-validator call. Do not interpret the name “validated creation” as a promise that every registered validation mechanism runs here.
 
-Emits an entity in its native representation via the codec mediator.  Resolves the class's `:dt/native-codec`, delegates to `sandbar.codec/emit`.
+### `update-entity!`
+
+```clojure
+(dt/update-entity! entity slot-updates)
+(dt/update-entity! entity slot-updates options)
+```
+
+Accepts an entity view, ident, or entity id and returns the refreshed entity. By default it validates the merged class data before transacting. Cardinality-many updates replace the supplied slot's value set; `:additive? true` requests union instead. Options also include `:validate?` and `:project?`.
+
+For a Memory class whose native body is `:mm.memory/body-raw`, replacing that slot reconciles the section tree in the same transaction. Surviving section identities and unrelated host slots are retained. Removing a section cited from outside the document, colliding with another document's section identity, or changing the host ident in the same body edit refuses the update. An identless memory can receive a plain body, but a sectioned edit requires an existing stable ident. A body-edit plan is valid at one database basis only. If that basis changes before acceptance, the call refuses with `:body-update/basis-moved` and `:retryable? true`; reread the memory and retry. The fixed plan is neither reused nor automatically replanned at a new basis. This does not add section decomposition to `make` or reconcile class-specific native body slots.
+
+### Batch and lower-level creation
+
+| Call | Contract |
+| --- | --- |
+| `(dt/make-all entity-specs)` or `(dt/make-all entity-specs options)` | Validate the prepared batch, then transact it together; options include `:project?` |
+| `(dt/make* class)` or `(dt/make* class properties)` | Lower-level construction without class data validation |
+| `(dt/make-all* entity-specs)` | Lower-level batch transaction without the validated wrapper |
+
+Batch entity specifications carry their own `:dt/type`. The batch APIs return a Datomic transaction result, not a vector of created entities. The internal second arity of `make-all*` accepts a specification index for reference handling; ordinary callers should use the validated wrapper.
+
+Lower-level APIs are useful for controlled schema and import work. Their existence does not establish the strict acceptance guarantees of an external mutation boundary.
 
 ## Validation
 
-### `(dt/validate e)`
+| Call | Success | Failure | Coverage |
+| --- | --- | --- | --- |
+| `(dt/validate-data class properties)` | `nil` | `{:errors [...]}` | Class data checks on a plain map; does not add creation defaults |
+| `(dt/validate entity)` | `nil` | `{:entity ..., :errors [...]}` | Stored entity's class checks and custom class validator |
+| `(dt/valid? entity)` | `true` | `false` | Boolean wrapper around `validate` |
+| `(dt/validate-all-instances class)` | A summary map | The same map with invalid entries | Stored validation across the class and subclass population |
 
-Validates entity `e` against its class.
+Error entries use `:type`, with values such as `:no-class`, `:abstract-class`, `:missing-required`, `:invalid-type`, `:cardinality-violation`, `:custom-validation`, or `:validator-error`. Data-validation failure during `make` or validated update throws `ExceptionInfo`; inspect `ex-data` for the errors.
 
-Returns `nil` if valid, or a map of validation errors:
+A class validator accepts one entity and returns `nil` for success or an error value. Shape validators use another interface. None of the validation calls above is a substitute for `sandbar.shape/validate`; see [Shape validation](../concepts/shape-validation.md) for target selection, modes, and the acceptance boundary.
 
-```clojure
-{:entity entity-id
- :errors [{:slot :user/login
-           :error :missing-required
-           :message "..."}
-          ...]}
-```
-
-Error types:
-
-| `:error` value           | Meaning                                                |
-|--------------------------|--------------------------------------------------------|
-| `:no-class`              | Entity has no `:dt/type` attribute                     |
-| `:abstract-class`        | Attempted to instantiate an abstract class             |
-| `:missing-required`      | Required slot has no value                             |
-| `:invalid-type`          | Slot value doesn't match expected `:dt/range`          |
-| `:custom-validator-failed` | Class's `:dt/validator` returned errors              |
-
-### `(dt/valid? e)`
-
-Returns `true` if entity passes validation.
-
-### `(dt/validate-data class props)`
-
-Pre-transaction validation.  Takes a class and a props map; returns `nil` if valid or an error map.  Useful for validating *before* calling `dt/make`.
+## Representation and inherited metadata
 
 ```clojure
-(dt/validate-data :model/User {:user/login "alice"})
-;; => nil (valid) or {:errors [...]}
+(dt/realize-with seed walk-fn)
+(dt/emit-entity entity)
+(dt/emit-entity entity options)
 ```
 
-### `(dt/validate-all-instances dt)`
+`realize-with` performs a breadth-first traversal defined by `walk-fn`, deduplicates by entity id, and returns a vector of entity specification maps including the seed. The walk function chooses which relationships form the representation; this is not an automatic dump of every reachable reference.
 
-Validates all instances of class `dt` (including subclass instances).
+`emit-entity` passes a realized entity representation to the codec mediator and returns the emitted value, normally text. Pass an entity view, plain map, or numeric id. Options include `:format` and codec-specific settings; resolve an ident with `find-by-ident` before emission. See [codecs](../concepts/codec-layer.md) and [projection](../concepts/projection.md) for format and preservation contracts.
 
-Returns:
+| Direct declaration | Effective form including inheritance |
+| --- | --- |
+| `codec-aliases-of` | `effective-codec-aliases-of` |
+| `codec-slot-order-of` | `effective-codec-slot-order-of` |
+| `bm25f-weights-of` | `effective-bm25f-weights-of` |
+| `memorial-policy-of` | `effective-memorial-policy-of` |
 
-```clojure
-{:class dt
- :total <count>
- :valid <count>
- :invalid <count>
- :errors [{:entity <id> :errors [...]} ...]}
-```
+Each accepts one class ident. Effective methods apply their metadata-specific inheritance policy. `native-codec-of-class`, `codec-type-keywords-of`, and `class-for-codec-type-keyword` support codec selection and lookup. `corpus-document-class?` reports the class-level policy used for document projection; it does not prove a particular entity has a complete document representation.
 
-For large classes, prefer the workflow-backed `sandbar.validation.start` MCP verb — it's cancellable and produces a queryable history.
+## Fulltext and aggregation primitives
 
-## Fulltext search primitives
+| Call | Result |
+| --- | --- |
+| `(dt/fulltext-indexed? property)` | Whether the Datomic fulltext flag is enabled |
+| `(dt/search-fulltext property query)` | Raw `[entity-id score]` tuples from single-attribute fulltext search |
+| `(dt/count-of class)` or `(dt/count-of class where-clauses)` | Count including subclasses |
+| `(dt/group-by-of class property)` or `(dt/group-by-of class property where-clauses)` | Map from present slot values to counts; missing values omitted |
+| `(dt/degree-of entity)` or `(dt/degree-of entity options)` | Count of reference-attribute edges |
+| `(dt/backlink-density-of entity)` or `(dt/backlink-density-of entity predicates)` | Inbound edge count |
+| `(dt/recency-rank-of class temporal-slot)` | `[entity temporal-value]` pairs, newest first |
+| `(dt/freshness-rank-of class temporal-slot)` | The same shape, oldest first |
 
-The substrate-level fulltext search surface.  See [`fulltext-search.md`](../concepts/fulltext-search.md) for the BM25F formulation + analyzer lineage.
+Single-attribute fulltext search is distinct from Sandbar's multi-field BM25F search API. Do not assume their scores have the same scale. Structural `where-clauses` refer to `?e` and pass through the supported query sanitizer; they are not an arbitrary Clojure evaluation surface.
 
-### `(dt/search-fulltext attribute query)`
-Single-attribute Lucene fulltext search.  Returns `[[eid score] ...]` tuples for entities whose `attribute` value matches `query` per Lucene's tokenization + single-field BM25.  `attribute` must be declared `:db/fulltext true` in the schema.
-
-### `(dt/bm25f-weights-of class-ident)`
-Read declared BM25F per-slot weights for a class.  Returns `{slot weight}` map.  Empty map if no `:dt/bm25f-weights` declared.
-
-### `(dt/fulltext-indexed? attribute)`
-Predicate: does this attribute have `:db/fulltext true`?  Use to assert before calling `dt/search-fulltext`.
-
-## Aggregation primitives
-
-See [`aggregation.md`](../concepts/aggregation.md) for the substrate-quality discipline + axis semantics.
-
-### `(dt/count-of class-ident)` / `(dt/count-of class-ident where-clauses)`
-Count instances of class (including subclass instances) matching optional Datalog where-clauses.  Returns integer.
-
-### `(dt/group-by-of class-ident group-slot)` / `(dt/group-by-of class-ident group-slot where-clauses)`
-Group instances by slot value; returns `{value count}` map.  Skips entities where the slot is unset.
-
-### `(dt/degree-of entity-ident)` / `(dt/degree-of entity-ident opts)`
-Total ref-attribute count for an entity.  Opts: `:direction :forward|:inverse|:bidirectional` (default `:bidirectional`); `:predicates [...]` for predicate-set restriction.
-
-### `(dt/backlink-density-of entity-ident)` / `(dt/backlink-density-of entity-ident predicates)`
-Inbound ref-attribute count.  Equivalent to `(degree-of entity {:direction :inverse :predicates predicates})`; named separately because backlink-density is a distinct retrieval axis per `decisions/multi_axis_search_catalog_2026_05_08.md` axes 6 vs 7.
-
-### `(dt/recency-rank-of class-ident temporal-slot)`
-Return instances of class ordered by `temporal-slot` value DESCENDING (most-recent first).  Caller supplies the temporal slot — substrate is class-agnostic.
-
-### `(dt/freshness-rank-of class-ident temporal-slot)`
-Return instances of class ordered by `temporal-slot` value ASCENDING (stalest first).
+`degree-of` options include `:direction` (`:forward`, `:inverse`, or default `:bidirectional`) and `:predicates`. It counts edges, so several predicates can connect the same pair of entities. The supplied temporal slot determines what “recent” or “stale” means; these functions do not establish a record's authority.
 
 ## Navigation primitives
 
-See [`navigation.md`](../concepts/navigation.md) for the surface overview.
+| Call | Result and options |
+| --- | --- |
+| `(dt/outbound-edges-of entity)` or with an options map | Maps with `:predicate` and `:target`; filters `:predicate`, `:target-type` |
+| `(dt/inbound-edges-of entity)` or with an options map | Maps with `:predicate` and `:source`; filters `:predicate`, `:source-type` |
+| `(dt/graph-walk-from seed)` or with an options map | Maps with `:entity` and `:hop`, excluding the seed |
+| `(dt/library-card-of entity axis-specs)` | Entity plus an `:axes` map of requested edge views |
+| `(dt/siblings-of entity path-slot)` | Peers sharing a directory prefix in the chosen path slot |
 
-### `(dt/outbound-edges-of entity-ident)` / `(dt/outbound-edges-of entity-ident opts)`
-`:db.type/ref` attribute pairs originating FROM the entity.  Returns vec of `{:predicate <pred-ident> :target <entity-map>}`.  Opts: `:predicate <kw-or-coll>` (predicate-set filter); `:target-type <class-ident>` (target instance-of filter via the `instance-of` rule).
+`graph-walk-from` supports `:hops` (default `4`), `:predicates`, and `:direction` (default `:forward`). `:include [:paths]` adds the traversed predicate/direction steps. Enumeration and traversal follow their API's visibility rules; schema reachability is not permission to disclose everything a graph contains.
 
-### `(dt/inbound-edges-of entity-ident)` / `(dt/inbound-edges-of entity-ident opts)`
-`:db.type/ref` attribute pairs pointing AT the entity.  Returns vec of `{:predicate <pred-ident> :source <entity-map>}`.  Opts: `:predicate`, `:source-type` (analogous).
+The higher-level `sandbar.navigate.edges` wrappers accept an eid as the anchor, resolve qualified or bare predicate names, and report `distinct-total` separately from the edge count. Use those wrappers for concept membership where records can lack idents or appear through both tags and themes.
 
-### `(dt/graph-walk-from seed-ident)` / `(dt/graph-walk-from seed-ident opts)`
-BFS reachable-neighborhood walk from `seed-ident` up to `:hops` levels.  Returns vec of `{:entity <entity-map> :hop <int> [:path [...]]}`.  Opts:
-- `:hops` (default 4) — max distance
-- `:predicates` — keyword or coll; restricts to predicate set
-- `:direction` — `:forward` (default) / `:inverse` / `:bidirectional`
-- `:include` — coll; `:paths` attaches shortest-path step sequence
+See [navigation](../concepts/navigation.md), [aggregation](../concepts/aggregation.md), and [search](../concepts/fulltext-search.md) for choosing a query by the question being asked.
 
-Implemented as Clojure-side iterative BFS (one Datalog query per hop) per `decisions/sandbar_graph_walk_clojure_bfs_over_datomic_recursive_rules_2026_05_14.md`.
+## Errors and execution costs
 
-## Error and exception conventions
+Validation errors, missing lookups, and transaction exceptions have different return conventions. Handle the documented case instead of treating every falsey value as an empty successful query. MCP adds its own error envelope around the corresponding operation.
 
-`dt/make` throws `ex-info` with `:validation/errors` on validation failure.  The exception's `ex-data` contains the same shape `dt/validate` returns.
-
-`dt/*` functions never silently coerce — passing a non-existent class to `dt/instance-of?` throws.  Passing a non-existent ident to `dt/slots-of` returns `nil`.
-
-## Performance notes
-
-- `dt/all-classes` / `dt/all-properties` / `dt/all-instances-of` are Datalog queries.  For hot paths, cache the result.
-- `dt/slots-of` walks the inheritance chain.  Caching is generally safe (schema rarely changes).
-- `dt/validate` is N-slot-typed checks plus an optional custom validator invocation.  Validation of large entities is O(slot count); for very wide entities, prefer `dt/valid?` if you only need the boolean.
+Enumeration, graph walks, and conformance reports can visit substantial populations. Restrict the class, predicates, and traversal depth to the question. There is no blanket complexity guarantee for this namespace; cost depends on the query, the indexes and caches it uses, and the size of the selected graph.
 
 ## See also
 
-- [`doc/concepts/metamodel.md`](../concepts/metamodel.md) — theoretical background
-- [`doc/guides/writing-a-clojure-client.md`](../guides/writing-a-clojure-client.md) — practical patterns
-- [`doc/guides/defining-new-classes.md`](../guides/defining-new-classes.md) — schema authoring
-- [`doc/api/codec-protocol.md`](codec-protocol.md) — codec mediator that `dt/emit-entity` delegates to
+- [Class-authoring guide](../guides/defining-new-classes.md)
+- [Shape-authoring guide](../guides/authoring-shapes.md)
+- [Zorp tutorial](../guides/zorp-tutorial.md)
+- [Clojure client guide](../guides/writing-a-clojure-client.md)

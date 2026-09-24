@@ -1,4 +1,8 @@
-# Event System
+# Historical event system
+
+> **Historical — superseded.** For current use, see [event substrate](../concepts/event-substrate.md), [logging](../concepts/logging-substrate.md), and [operations](../operations.md).
+>
+> This design combined application events and persistent request logging. The automatic logging claims below predate the current separation of operational telemetry from durable domain events. Examples and reported results below have not been revalidated for 0.2.0; abbreviated payloads are schematic.
 
 Sandbar includes a comprehensive event logging system that persists events to Datomic. Events are first-class entities with full metamodel support, enabling powerful queries, correlation tracking, and historical analysis.
 

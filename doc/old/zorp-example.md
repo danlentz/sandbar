@@ -1,4 +1,8 @@
-# Zorp's Galactic Footwear Emporium
+# Historical Zorp tutorial
+
+> **Historical — superseded.** For current use, see [current Zorp tutorial](../guides/zorp-tutorial.md) and [defining classes](../guides/defining-new-classes.md).
+>
+> This synthetic example preserves the original teaching narrative. Its sample counts are inconsistent: the subclasses response lists eight entries but says seven, and the SpaceBoot slot response lists fourteen but says eleven. The final claim that a Boot requires a temperature range is not established by the shown property declarations. Examples and reported results below have not been revalidated for 0.2.0; abbreviated payloads are schematic.
 
 > "If it doesn't fit your tentacles, we'll grow you new ones!"
 > — Zorp the Magnificent, Proprietor
@@ -101,7 +105,7 @@ Here's what each concrete class actually has available (inherited + direct):
 
 ### Schema Definition
 
-Here's how Zorp defines his footwear ontology in EDN (see [schema/zorp.edn](../schema/zorp.edn)):
+Here's how Zorp defines his footwear ontology in EDN (see [schema/zorp.edn](../../schema/zorp.edn)):
 
 ```clojure
 ;; schema/zorp.edn
@@ -447,4 +451,4 @@ Zorp's Galactic Footwear Emporium is now the most well-organized shop on Pluto. 
 
 * [Metamodel Reference](meta.md) - Full documentation of the type system
 * [REST API Reference](api.md) - Complete API documentation
-* [Development Guide](development.md) - How to define your own schemas
+* [Development Guide](../development.md) - How to define your own schemas

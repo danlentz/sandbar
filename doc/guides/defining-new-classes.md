@@ -1,304 +1,135 @@
-# Defining New Classes
+# Defining new classes
 
-> How to extend Sandbar's metamodel with new domain classes — `:dt/Property` declarations, `:dt/Class` definitions, slot composition, validation, and registration with `:required-schema`.  For the worked example, see [`zorp-tutorial.md`](zorp-tutorial.md); for the theoretical background see [`doc/concepts/metamodel.md`](../concepts/metamodel.md).
+This guide adds a specialized decision with a required review ticket. You will declare its schema, create an instance, inspect inherited properties, and check how a client discovers it.
 
-## When to add a class
+Use a disposable development database with Sandbar's required schemas loaded. The [quickstart](quickstart.md) covers service setup; this guide assumes a connected Clojure REPL. All example names are fictional.
 
-Add a class when:
+## Decide what the class adds
 
-- You have a stable noun in your domain (`:order/Order`, `:inventory/Item`, `:event/Booking`).
-- The noun has multiple properties that travel together.
-- Instances should be discoverable, validatable, or queryable as a group.
+Our `:mm.example/ReviewDecision` is a kind of `:mm/Decision`. It inherits the common memory properties and adds `:mm.example.decision/ticket`, a required string. That distinction is useful if applications query for reviewed decisions or require a ticket before accepting one.
 
-Do **not** add a class for one-off computed values, ephemeral per-request shapes, or anything that maps better to an attribute on an existing class.
+If the difference were only a topic, an ordinary decision with a tag could be sufficient. A class should earn its place through a meaningful query, vocabulary, or constraint.
 
-## The shape of a class definition
+## Declare the schema
 
-A class is an entity satisfying these constraints:
-
-```clojure
-{:db/ident       :your-ns/YourClass
- :dt/type        :dt/Class
- :dt/subclass-of :dt/Resource   ; or any other :dt/Class
- :dt/abstract?   false           ; optional — true forbids direct instantiation
- :dt/slots       [:your-ns/slot1 :your-ns/slot2 ...]
- :dt/context     "your-ns"       ; namespace label
- :dt/label       "Human-Readable Name"
- :db/doc         "Short description of the class."}
-```
-
-A property is also an entity:
-
-```clojure
-{:db/ident       :your-ns/slot1
- :db/valueType   :db.type/string
- :db/cardinality :db.cardinality/one
- :dt/type        :dt/Property
- :dt/domain      :your-ns/YourClass
- :dt/range       :db.type/string
- :dt/required?   true            ; optional — required slots must be present on instances
- :db/doc         "Documentation for the slot."}
-```
-
-## Walkthrough — an `:event/Booking` class
-
-A worked example: model a calendar booking with required fields and validation.
-
-### Step 1 — Plan the slots
-
-```
-:event/Booking
-  ├── :event.booking/title       (string, required)
-  ├── :event.booking/starts-at   (instant, required)
-  ├── :event.booking/ends-at     (instant, required)
-  ├── :event.booking/owner       (ref → :model/User, required)
-  ├── :event.booking/location    (string, optional)
-  └── :event.booking/description (string, optional)
-```
-
-### Step 2 — Write the EDN
-
-Create `schema/event.edn`:
+Create a new file named `schema/example-review.edn`. Schema files contain a vector of transaction batches. Predeclare the class, install its property, then give the class its full definition:
 
 ```clojure
 [
- ;; Forward declaration (avoids order-of-load issues)
- [{:db/id #db/id[:db.part/user -1]
-   :db/ident :event/Booking}]
+ [{:db/ident :mm.example/ReviewDecision}]
 
- ;; Properties
- [{:db/ident :event.booking/title
+ [{:db/ident :mm.example.decision/ticket
    :db/valueType :db.type/string
    :db/cardinality :db.cardinality/one
    :dt/type :dt/Property
-   :dt/domain :event/Booking
+   :dt/domain :mm.example/ReviewDecision
    :dt/range :db.type/string
-   :dt/required? true
-   :db/doc "Short title for the booking"
-   :db.install/_attribute :db.part/db}
+   :dt/required? true}]
 
-  {:db/ident :event.booking/starts-at
-   :db/valueType :db.type/instant
-   :db/cardinality :db.cardinality/one
-   :dt/type :dt/Property
-   :dt/domain :event/Booking
-   :dt/range :db.type/instant
-   :dt/required? true
-   :db/doc "Booking start time (UTC)"
-   :db.install/_attribute :db.part/db}
-
-  {:db/ident :event.booking/ends-at
-   :db/valueType :db.type/instant
-   :db/cardinality :db.cardinality/one
-   :dt/type :dt/Property
-   :dt/domain :event/Booking
-   :dt/range :db.type/instant
-   :dt/required? true
-   :db/doc "Booking end time (UTC)"
-   :db.install/_attribute :db.part/db}
-
-  {:db/ident :event.booking/owner
-   :db/valueType :db.type/ref
-   :db/cardinality :db.cardinality/one
-   :dt/type :dt/Property
-   :dt/domain :event/Booking
-   :dt/range :model/User
-   :dt/required? true
-   :db/doc "The user who owns this booking"
-   :db.install/_attribute :db.part/db}
-
-  {:db/ident :event.booking/location
-   :db/valueType :db.type/string
-   :db/cardinality :db.cardinality/one
-   :dt/type :dt/Property
-   :dt/domain :event/Booking
-   :dt/range :db.type/string
-   :db/doc "Optional location string"
-   :db.install/_attribute :db.part/db}
-
-  {:db/ident :event.booking/description
-   :db/valueType :db.type/string
-   :db/cardinality :db.cardinality/one
-   :dt/type :dt/Property
-   :dt/domain :event/Booking
-   :dt/range :db.type/string
-   :db/doc "Optional free-form description"
-   :db.install/_attribute :db.part/db}]
-
- ;; Class definition (after properties so :dt/slots can reference them)
- [{:db/ident :event/Booking
+ [{:db/ident :mm.example/ReviewDecision
    :dt/type :dt/Class
-   :dt/subclass-of :dt/Resource
-   :dt/context "event"
-   :dt/label "Booking"
-   :db/doc "A calendar booking owned by a user"
-   :dt/slots [:event.booking/title
-              :event.booking/starts-at
-              :event.booking/ends-at
-              :event.booking/owner
-              :event.booking/location
-              :event.booking/description]}]
+   :dt/subclass-of :mm/Decision
+   :dt/slots [:mm.example.decision/ticket]}]
 ]
 ```
 
-### Step 3 — Register the schema
+The property declaration has two jobs. `:db/valueType` and `:db/cardinality` install the underlying Datomic attribute. The `:dt/*` fields describe it in Sandbar's metamodel. The class's `:dt/slots` makes it an effective slot alongside inherited properties. A domain declaration alone is not a replacement for listing the slot on the class.
 
-In `config/config.edn`, add `:event` to `:required-schema`:
+Separating the batches makes referenced identities available before later definitions use them. For storage-level details, see [Datomic's schema reference](https://docs.datomic.com/schema/schema-reference.html).
 
-```clojure
-{:datomic-uri "datomic:dev://localhost:4334/sandbar"
- :http-port 8080
- :required-schema [:meta :literal :ref :fn :any :workflow :mm :user :event]}
-```
+## Load and inspect it
 
-### Step 4 — Reload
-
-In the REPL:
+From the development REPL, with the new schema resource available:
 
 ```clojure
-(stop)
-(go)
+(require '[sandbar.db.datomic :as db]
+         '[sandbar.db.datatype :as dt])
+
+(db/load-schema :example-review)
+
+(dt/parents-of :mm.example/ReviewDecision)
+;; includes :mm/Decision
+
+(contains? (dt/slots-of :mm.example/ReviewDecision) :mm.memory/name)
+;; => true
+
+(set (dt/required-slots-of :mm.example/ReviewDecision))
+;; includes :mm.example.decision/ticket
 ```
 
-The schema loads as part of startup.  Verify:
+For subsequent service starts, add `:example-review` after its dependencies in the deployment's `:required-schema` configuration. Preserve the required schemas already there; a partial replacement list can remove prerequisites. See [configuration and development](../development.md) for the environment being used.
+
+Load model extensions before application work. Full configured schema loading invokes cache-clear callbacks; the single-file `load-schema` above and ad hoc class/inheritance edits do not. Use this example in a fresh development process, and configure the schema for startup in a deployed service. Fresh instance queries can otherwise disagree with a previously cached `type-isa?` answer. The [metamodel](../concepts/metamodel.md#a-class-extension-in-practice) describes this remaining dynamic-extension limit.
+
+## Create and retrieve an instance
 
 ```clojure
-(dt/all-classes)
-;; => (... :event/Booking ...)
+(dt/make :mm.example/ReviewDecision
+  {:db/ident :memory.examples/reviewed-refresh
+   :mm.memory/name "Reviewed refresh policy"
+   :mm.memory/memory-type :decision
+   :mm.memory/scope :project
+   :mm.example.decision/ticket "REVIEW-42"})
 
-(dt/slots-of :event/Booking)
-;; => #{:event.booking/title :event.booking/starts-at ...}
+(dt/find-by-ident :memory.examples/reviewed-refresh)
 
-(dt/required-slots-of :event/Booking)
-;; => #{:event.booking/title :event.booking/starts-at
-;;      :event.booking/ends-at :event.booking/owner}
+(contains? (set (dt/named-idents-of :mm/Decision))
+           :memory.examples/reviewed-refresh)
+;; => true
 ```
 
-### Step 5 — Create an instance
+The broader decision query includes the specialized instance. `dt/direct-instances-of` selects only entities whose declared class matches exactly; `dt/all-instances-of` includes subclasses.
+
+The explicit ident makes this small example easy to retrieve. Document import has additional path and project identity rules; do not derive production identities by copying this example namespace. See [projection](../concepts/projection.md).
+
+## Exercise the requirement
+
+Try creating another instance without its ticket:
 
 ```clojure
-(dt/make :event/Booking
-  {:event.booking/title       "Weekly Sync"
-   :event.booking/starts-at   #inst "2026-05-14T15:00:00.000Z"
-   :event.booking/ends-at     #inst "2026-05-14T16:00:00.000Z"
-   :event.booking/owner       (dt/find-by :user/login "alice")
-   :event.booking/location    "Conference Room B"})
-;; => entity; validation passed; transacted
+(try
+  (dt/make :mm.example/ReviewDecision
+    {:mm.memory/name "Missing ticket"
+     :mm.memory/memory-type :decision
+     :mm.memory/scope :project})
+  (catch clojure.lang.ExceptionInfo e
+    (:errors (ex-data e))))
+;; includes {:type :missing-required,
+;;           :slot :mm.example.decision/ticket, ...}
 ```
 
-Try omitting a required slot:
+`dt/make` performs class data validation before transacting. A present ticket must also satisfy the property's modeled range. “Required string” still allows an empty string; add a [shape](authoring-shapes.md) if the ticket must follow a particular format.
 
-```clojure
-(dt/make :event/Booking
-  {:event.booking/title "Weekly Sync"})
-;; throws — :missing-required for starts-at, ends-at, owner
+`dt/validate-data` accepts an ordinary property map and returns `nil` when it passes, or an error map. It does not add the defaults supplied by `dt/make`. `dt/validate` checks an existing entity and also invokes its class-level custom validator. Neither call is the same operation as `shape/validate`.
+
+## Inspect through a client
+
+An MCP client can discover the class through the existing operational tools. This `tools/call` parameter object asks for its effective slots:
+
+```json
+{
+  "name": "sandbar_class_slots",
+  "arguments": {"class": ":mm.example/ReviewDecision"}
+}
 ```
 
-### Step 6 — Query
+Read the instance with `sandbar_entity_find` and its ident. Adding a class does not add a new MCP tool; the catalog's schema-aware operations handle the extension.
 
-The class is immediately surfaced through every projection:
+This example uses the memory-model namespace exposed by the MCP read surface. An independent domain namespace, such as the [Zorp tutorial's](zorp-tutorial.md), also needs an explicit exposure policy to make its instances available through a client. Schema discovery and access to instance data are distinct capabilities.
 
-```clojure
-;; Clojure
-(dt/all-instances-of :event/Booking)
+## Extend only the behavior you need
 
-;; REST
-;; GET /api/store/classes/event/Booking/instances
+An abstract class, declared with `:dt/abstract? true`, can supply vocabulary without being directly instantiated through validated creation. Multiple subclasses can then share its slots.
 
-;; MCP
-;; tools/call sandbar.class.instances {class: "event/Booking"}
-```
+A class-level `:dt/validator` names a deployed Clojure function that accepts an entity and returns `nil` or an error value. That is the stored-entity validation extension point. Check the accepting API's coverage before relying on it for write refusal. A shape's custom validator has a different signature and result format, described in [Authoring shapes](authoring-shapes.md).
 
-No code change, no restart, no registration table.  The class is in the metamodel; the surface reflects it.
+A codec binding describes a representation understood by an installed codec. Merely naming a format on a class does not implement a codec. Likewise, inheriting a memorial policy does not establish a complete document representation for new slots. Verify the round trip when the new class needs readable persistence.
 
-## Patterns
-
-### Inheritance
-
-A new class that *subtypes* an existing class declares it via `:dt/subclass-of`:
-
-```clojure
-{:db/ident :event/RecurringBooking
- :dt/type :dt/Class
- :dt/subclass-of :event/Booking
- :dt/context "event"
- :dt/label "RecurringBooking"
- :dt/slots [:event.recurrence/rule]}
-```
-
-Slot inheritance is transitive: `:event/RecurringBooking` automatically inherits every slot from `:event/Booking` (and every ancestor up to `:dt/Resource`).
-
-### Abstract classes
-
-Mark a class abstract when it exists to share slots/structure but should never be directly instantiated:
-
-```clojure
-{:db/ident :event/AbstractBooking
- :dt/type :dt/Class
- :dt/subclass-of :dt/Resource
- :dt/abstract? true
- :dt/slots [...]}
-```
-
-`dt/make :event/AbstractBooking {...}` throws `:abstract-class`.
-
-### Custom validators
-
-For class-specific validation logic that the slot system doesn't express:
-
-```clojure
-;; In your Clojure code
-(defn validate-booking [entity]
-  (when (and (:event.booking/starts-at entity)
-             (:event.booking/ends-at entity)
-             (.before (:event.booking/ends-at entity)
-                      (:event.booking/starts-at entity)))
-    {:slot :event.booking/ends-at
-     :error :ends-before-starts
-     :message "Booking end must be after start"}))
-
-;; In schema
-{:db/ident :event/Booking
- :dt/type :dt/Class
- :dt/validator 'my.namespace/validate-booking
- ...}
-```
-
-The validator is a fully-qualified symbol; `dt/validate-data` invokes it after structural checks.
-
-### Path-derived idents (for mm/* classes)
-
-If your class produces hierarchical content (sections, sub-resources), consider path-derived idents as `:mm/Section` uses.  See [`doc/concepts/markdown-as-canonical.md`](../concepts/markdown-as-canonical.md) for the discipline.
-
-### Codec binding
-
-If your class has a canonical wire format (markdown? RDF? custom IDL?), bind a codec via `:dt/native-codec`:
-
-```clojure
-{:db/ident :event/Booking
- :dt/type :dt/Class
- :dt/native-codec :codec/json
- ...}
-```
-
-Then `sandbar.entity.create :event/Booking {format: "json", source: "..."}` routes through `sandbar.codec.json`.  Authoring a new codec is covered in [`implementing-a-codec.md`](implementing-a-codec.md).
-
-## Common pitfalls
-
-**Forgetting `:db.install/_attribute :db.part/db`.**  Properties need this transaction-time directive to install as Datomic attributes; missing it produces silent non-installation.
-
-**Forward-declaring without backfilling.**  If you declare an ident first and then reference it in `:dt/domain` / `:dt/range` of another property, that's fine — but you must transact the *full* class definition in a later transaction.  Half-declared classes pass schema loading but fail validation.
-
-**Skipping `:dt/context` and `:dt/label`.**  These power presentational projections (REST descriptions, MCP titles).  They're optional but most consumers expect them.
-
-**Required ref-typed slots without resolution.**  If `:event.booking/owner` requires a `:model/User`, ensure your `dt/make` call passes a fully-resolved user entity (looked up by `dt/find-by`) rather than a bare ident or string login.
-
-**Cardinality-many slots stored as scalars.**  If a slot is `:db.cardinality/many`, the value must be a vector or set, even with one element: `{:event.booking/tags ["work"]}`, not `{:event.booking/tags "work"}`.
+Finish the extension by checking the consequence that motivated it: an instance is accepted or refused as intended, appears in the right broader queries, is inspectable by its client, and survives its supported representation. Those observations make the schema addition useful.
 
 ## See also
 
-- [`zorp-tutorial.md`](zorp-tutorial.md) — a full worked example with inheritance
-- [`doc/concepts/metamodel.md`](../concepts/metamodel.md) — the theoretical foundations
-- [`implementing-a-codec.md`](implementing-a-codec.md) — binding a wire format to a new class
-- [`designing-workflows.md`](designing-workflows.md) — when your class's lifecycle is workflow-shaped
-- [`doc/api/dt-star.md`](../api/dt-star.md) — every `dt/*` function for introspection + creation
+- [Metamodel](../concepts/metamodel.md)
+- [Shape validation](../concepts/shape-validation.md)
+- [`dt/*` reference](../api/dt-star.md)
+- [Zorp's Galactic Footwear Emporium](zorp-tutorial.md)

@@ -1,566 +1,169 @@
-# Writing an MCP Client
+# Writing an MCP client
 
-> How to connect Claude (or any MCP-capable AI client) to Sandbar — initialize handshake, discover tools, invoke them, read resources, subscribe to updates, work with long-running Tasks.  This is a *client-side* guide; for the *server-side* design see [`doc/concepts/mcp-protocol.md`](../concepts/mcp-protocol.md); for the full verb catalog see [`doc/api/mcp-verbs.md`](../api/mcp-verbs.md).
+An MCP client can discover Sandbar's operations, inspect the model, and retrieve or change typed knowledge without embedding the database. This guide builds a small shell client to make the exchange visible, then explains the contracts a longer-lived client must preserve.
 
 ## What you'll need
 
-- A running Sandbar instance (see [`quickstart.md`](quickstart.md)).
-- A service-account bearer token — see [`auth.md`](../auth.md) for issuance.
-- An HTTP client capable of:
-  - POSTing JSON
-  - reading a Server-Sent Events stream (for notifications + subscriptions)
+Use the endpoint and service-account token supplied by the operator. The usual local endpoint is `http://127.0.0.1:8389/mcp`. The token must have permission for the operations you intend to call; successful authentication alone does not grant that permission. See [authentication](../auth.md) for account setup.
 
-The transport is *Streamable HTTP* — POST opens the request channel; the server's chunked-streaming response delivers SSE-framed notifications back.  Single endpoint: `/mcp`.
+The examples use `curl`, a POSIX-compatible shell, and `jq` for inspecting tool results. Set the token through your credential setup, without putting its value in source code:
 
-## The protocol envelope
+```sh
+: "${SANDBAR_TOKEN:?Set SANDBAR_TOKEN to your service-account token}"
+SANDBAR_MCP_URL="http://127.0.0.1:8389/mcp"
 
-Every message is a JSON-RPC 2.0 envelope:
-
-```json
-{"jsonrpc": "2.0", "id": <number-or-string>, "method": "<method-name>", "params": {...}}
+sandbar_http() {
+  curl --silent --show-error --fail-with-body "$SANDBAR_MCP_URL" \
+    --header "Authorization: Bearer $SANDBAR_TOKEN" \
+    --header 'Content-Type: application/json' \
+    --header 'Accept: application/json, text/event-stream;q=0.9' \
+    --data-binary @- "$@"
+}
 ```
 
-Responses pair via `id`:
-
-```json
-{"jsonrpc": "2.0", "id": <same>, "result": {...}}
-{"jsonrpc": "2.0", "id": <same>, "error": {"code": <number>, "message": "...", "data": {...}}}
-```
-
-Notifications omit `id` (server pushes; no client response):
-
-```json
-{"jsonrpc": "2.0", "method": "notifications/tasks/status", "params": {...}}
-```
+This helper sends one JSON-RPC message from standard input. Both response media types are accepted, with JSON preferred for these shell examples. A general client must also handle an SSE response according to its `Content-Type`. [MCP HTTP transport](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports).
 
 ## Initialization handshake
 
-The first call on any new session is `initialize`:
+Initialize before calling tools:
 
-```bash
-curl -X POST http://localhost:8389/mcp \
-  -H "Authorization: Bearer $SANDBAR_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "jsonrpc": "2.0",
-    "id": 1,
-    "method": "initialize",
-    "params": {
-      "protocolVersion": "2025-11-25",
-      "clientInfo": {"name": "my-client", "version": "0.2.0"},
-      "capabilities": {}
-    }
-  }'
-```
-
-Response:
-
-```json
+```sh
+sandbar_http <<'JSON'
 {
   "jsonrpc": "2.0",
   "id": 1,
-  "result": {
+  "method": "initialize",
+  "params": {
     "protocolVersion": "2025-11-25",
-    "serverInfo": {"name": "sandbar", "version": "0.2.0"},
-    "capabilities": {
-      "tools": {},
-      "resources": {"subscribe": true},
-      "prompts": {},
-      "tasks": {}
-    }
+    "capabilities": {},
+    "clientInfo": {"name": "sandbar-example", "version": "1"}
   }
 }
+JSON
 ```
 
-After the response, send `notifications/initialized` (a notification, no `id`):
+Check the outer response for an `error`. On success, inspect `result.protocolVersion`, `result.capabilities`, and `result.serverInfo`. Continue only if the returned protocol version is supported by your client. The current Sandbar implementation returns `2025-11-25`. Capabilities describe the optional protocol facilities available on this connection; do not infer them from a server version string. [MCP lifecycle](https://modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle).
 
-```json
-{"jsonrpc": "2.0", "method": "notifications/initialized"}
+After checking that response, retain the returned version and send the initialized notification:
+
+```sh
+SANDBAR_PROTOCOL_VERSION="2025-11-25"
+
+sandbar_mcp() {
+  sandbar_http --header "MCP-Protocol-Version: $SANDBAR_PROTOCOL_VERSION"
+}
+
+sandbar_mcp <<'JSON'
+{"jsonrpc":"2.0","method":"notifications/initialized"}
+JSON
 ```
 
-The session is now ready.
+A notification has no `id` and no JSON-RPC response to parse. The current Sandbar handler returns HTTP **204 with an empty body**; the protocol's specified acknowledgment is **202 with an empty body**. The client should distinguish this empty acknowledgment from a request that requires a response. Notification status alignment is part of the 0.2.0 transport contract.
+
+Send the negotiated `MCP-Protocol-Version` on subsequent HTTP requests. If a server issues an `MCP-Session-Id`, retain and return it too. Sandbar's current handler does not issue that session header. Each request needs its own ID so that a client can associate responses with outstanding work.
 
 ## Discovering tools
 
-```bash
-curl -X POST http://localhost:8389/mcp \
-  -H "Authorization: Bearer $SANDBAR_TOKEN" \
-  -d '{"jsonrpc":"2.0","id":2,"method":"tools/list"}'
+```sh
+sandbar_mcp <<'JSON'
+{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}
+JSON
 ```
 
-Response contains the operational verb catalog with input schemas:
+Use the returned `result.tools` names and `inputSchema` values. Do not hard-code a tool count or translate a displayed host function name back into a guessed wire name.
 
-```json
-{
-  "jsonrpc": "2.0",
-  "id": 2,
-  "result": {
-    "tools": [
-      {
-        "name": "sandbar_schema_classes",
-        "title": "List classes",
-        "description": "Enumerate every class registered in the metamodel.",
-        "inputSchema": {"type": "object", "properties": {}}
-      },
-      {
-        "name": "sandbar_entity_create",
-        "title": "Create entity",
-        "description": "Create a new entity of the given class.",
-        "inputSchema": {
-          "type": "object",
-          "properties": {
-            "class": {"type": "string"},
-            "format": {"type": "string", "enum": ["markdown", "json"]},
-            "source": {"type": "string"},
-            "attributes": {"type": "object"}
-          },
-          "required": ["class"]
-        }
-      },
-      ...
-    ]
-  }
-}
-```
+| Catalog name | MCP wire name |
+| --- | --- |
+| `sandbar.class.describe` | `sandbar_class_describe` |
+| `sandbar.entity.find-by-rel-path` | `sandbar_entity_find-by-rel-path` |
+| `sandbar.aggregate.group-by` | `sandbar_aggregate_group-by` |
 
-The verb catalog is **operational, not per-class**.  `sandbar_entity_create` works for any class; pass `{"class": "..."}` as an argument.  See [`doc/concepts/mcp-protocol.md`](../concepts/mcp-protocol.md#the-verb-catalog-operational-not-per-class) for the rationale.
+Underscores separate catalog components; hyphens within a component stay intact. Model names such as `:mm/Decision` are arguments to these operations. Adding a model class makes it available to the existing class operations; it does not generate a new family of tools.
 
-**Tool naming — the wire contract.**  Wire names are underscore-joined
-(`sandbar_entity_create`); dots in the internal catalog identity project to
-underscores at the wire boundary, while hyphens *inside* leaf tokens are
-preserved (`sandbar_navigate_path-via`, `sandbar_class_validate-all-instances`).
-`tools/list` advertises only the underscore names.  The older dotted spellings
-(`sandbar.entity.create`) are still accepted by `tools/call` for **one release**
-as a never-advertised deprecation alias — new clients must send the underscore
-form.
-
-The 0.2.0 catalog (82 verbs) includes among others:
-
-- **Schema introspection** — `sandbar_schema_classes`, `sandbar_class_describe`, `sandbar_class_slots`, `sandbar_property_domain`, `sandbar_property_range`
-- **Entity CRUD** — `sandbar_entity_create`, `sandbar_entity_update`, `sandbar_entity_find`, `sandbar_entity_validate`
-- **Navigation** — `sandbar_navigate_outbound-edges`, `sandbar_navigate_inbound-edges`, `sandbar_navigate_path-via`, `sandbar_navigate_siblings-of`
-- **Search + aggregation** — `sandbar_search_bm25f`, `sandbar_aggregate_count`, `sandbar_aggregate_group-by`, `sandbar_aggregate_rank-by`, `sandbar_aggregate_tag-histogram`
-- **Shape validation** — `sandbar_shape_list`, `sandbar_shape_validate`, `sandbar_shape_conformance-report`, `sandbar_shape_create`, `sandbar_shape_update`
-- **Workflow** — `sandbar_workflow_define`, `sandbar_workflow_start-process`, `sandbar_workflow_transition`, `sandbar_workflow_process-state` (workflow *definitions* are `:mm/Workflow` memorials; runs are `:workflow/Process` substrate-runtime instances)
-- **Reactive** — `sandbar_reactive_health`
+`sandbar_tools_search` helps find a relevant operation, and `sandbar_tools_describe` explains a known operation. The latter's `verb` argument takes a catalog reference such as `"sandbar.entity.find"`, even though the enclosing `tools/call` uses the underscore wire name `sandbar_tools_describe`. Use their advertised argument schemas. The [verb reference](../api/mcp-verbs.md) is useful for browsing; the running server establishes what this connection can call.
 
 ## Calling a tool
 
-```bash
-curl -X POST http://localhost:8389/mcp \
-  -H "Authorization: Bearer $SANDBAR_TOKEN" \
-  -d '{
-    "jsonrpc": "2.0",
-    "id": 3,
-    "method": "tools/call",
-    "params": {
-      "name": "sandbar_entity_create",
-      "arguments": {
-        "class": "mm/Memory",
-        "format": "markdown",
-        "source": "---\nname: Foo\ntype: idea\n---\n# Context\n\nA quick thought.\n"
-      }
-    }
-  }'
-```
+Inspect the decision class:
 
-Response is wrapped per the MCP spec — the payload is in the `content` array as a stringified JSON:
-
-```json
+```sh
+sandbar_mcp <<'JSON'
 {
   "jsonrpc": "2.0",
   "id": 3,
-  "result": {
-    "content": [
-      {"type": "text", "text": "{\"entity-id\":12345,\"ident\":\"mm/foo\",...}"}
-    ]
+  "method": "tools/call",
+  "params": {
+    "name": "sandbar_class_describe",
+    "arguments": {"class": ":mm/Decision"}
   }
 }
+JSON
 ```
 
-**Important — unwrap the content.**  Clients must extract `content[0].text` and parse it as JSON to get the tool's actual payload.  This is a spec compliance discipline; clients that don't unwrap receive a string when they expect an object.  See the discussion in [`doc/concepts/mcp-protocol.md`](../concepts/mcp-protocol.md#wire-shape--concrete) for the asymmetry that surfaced during corpus migration.
+This reads schema, so it does not depend on an imported example collection. The result describes the class and its effective slots, including inherited properties.
 
-## Listing and reading resources
-
-```bash
-# List all resources surfaced from the metamodel
-curl -X POST http://localhost:8389/mcp \
-  -H "Authorization: Bearer $SANDBAR_TOKEN" \
-  -d '{"jsonrpc":"2.0","id":4,"method":"resources/list"}'
-```
-
-Resources are addressable read-only content.  Sandbar surfaces every instance of every class that has `:dt/native-codec` declared:
-
-```json
-{
-  "result": {
-    "resources": [
-      {
-        "uri": "mcp://sandbar/mm/Memory/decisions/foo",
-        "name": "decisions/foo",
-        "mimeType": "text/markdown",
-        "description": "..."
-      },
-      ...
-    ]
-  }
-}
-```
-
-Read one:
-
-```bash
-curl -X POST http://localhost:8389/mcp \
-  -H "Authorization: Bearer $SANDBAR_TOKEN" \
-  -d '{
-    "jsonrpc": "2.0",
-    "id": 5,
-    "method": "resources/read",
-    "params": {"uri": "mcp://sandbar/mm/Memory/decisions/foo"}
-  }'
-```
-
-The response includes the rendered native-format content:
-
-```json
-{
-  "result": {
-    "contents": [
-      {
-        "uri": "mcp://sandbar/mm/Memory/decisions/foo",
-        "mimeType": "text/markdown",
-        "text": "---\nname: Foo\n...\n---\n# Context\n..."
-      }
-    ]
-  }
-}
-```
-
-## Subscribing to resource updates
-
-Open a long-lived connection and subscribe:
-
-```bash
-# In one connection — subscribe to a URI
-curl -N -X POST http://localhost:8389/mcp \
-  -H "Authorization: Bearer $SANDBAR_TOKEN" \
-  -H "Accept: text/event-stream" \
-  -d '{
-    "jsonrpc": "2.0",
-    "id": 6,
-    "method": "resources/subscribe",
-    "params": {"uri": "mcp://sandbar/mm/Memory/decisions/foo"}
-  }'
-```
-
-The server replies, then keeps the connection open to push SSE-framed notifications when the resource changes:
-
-```
-data: {"jsonrpc":"2.0","method":"notifications/resources/updated","params":{"uri":"mcp://sandbar/mm/Memory/decisions/foo"}}
-```
-
-When you no longer want the updates:
-
-```json
-{"jsonrpc":"2.0","id":7,"method":"resources/unsubscribe","params":{"uri":"..."}}
-```
-
-## Long-running operations (Tasks)
-
-Some tools kick off workflow-backed processes and return a **process handle**, not a generic task envelope — the shapes differ per verb:
-
-- `sandbar_validation_start` returns `{"validation": <process-entity>}` — the process entity, with its eid in `:db/id`.
-- `sandbar_workflow_start-process` returns `{"process-id": "<eid>", "workflow": "<ident>", "state": "<current-state-ident>"}`.
-
-```json
-{
-  "result": {
-    "process-id": "12345",
-    "workflow": ":workflow/validation",
-    "state": ":validation/queued"
-  }
-}
-```
-
-The `process-id` (equivalently the validation process's `:db/id`, as a string) is the id you poll `tasks/get` with.  **The parameter is `taskId` (camelCase)** — a `task-id` key is ignored and the call errors `tasks/get requires :taskId parameter`:
-
-```bash
-curl -X POST http://localhost:8389/mcp \
-  -H "Authorization: Bearer $SANDBAR_TOKEN" \
-  -d '{
-    "jsonrpc": "2.0",
-    "id": 8,
-    "method": "tasks/get",
-    "params": {"taskId": "12345"}
-  }'
-```
-
-Response for a running process:
-
-```json
-{
-  "result": {
-    "taskId": "12345",
-    "status": "running",
-    "state": ":validation/in-progress"
-  }
-}
-```
-
-A terminal process additionally carries a `content` array:
-
-```json
-{
-  "result": {
-    "taskId": "12345",
-    "status": "completed",
-    "state": ":validation/done",
-    "content": [{"type": "text", "text": "Task in state: :validation/done ..."}]
-  }
-}
-```
-
-`status` is one of `"running"` / `"completed"` / `"failed"` / `"cancelled"` (or `"missing"`) — projected from the current workflow state's `:workflow/terminal-kind` classification (`:success` → `"completed"`, `:failure` → `"failed"`, `:cancel` → `"cancelled"`); there is no separate `kind` field on the task response.  See [`doc/concepts/workflow-substrate.md`](../concepts/workflow-substrate.md#terminal-kind-classification) for the design.
-
-Or subscribe to status notifications via SSE:
-
-```
-data: {"jsonrpc":"2.0","method":"notifications/tasks/status","params":{"taskId":"12345","status":"running"}}
-data: {"jsonrpc":"2.0","method":"notifications/tasks/status","params":{"taskId":"12345","status":"completed"}}
-```
-
-Cancel a running task:
-
-```json
-{"jsonrpc":"2.0","id":9,"method":"tasks/cancel","params":{"taskId":"12345"}}
-```
-
-The cancel is honored only if the workflow's current state allows it (see workflow design).  If not, the response is a JSON-RPC error with `:code -32602`.
+When looking up a known entity, ask for `"projection": "full"` if you need its body. Compact discovery results are useful for choosing a record; they are not a substitute for reading it. The [getting-started guide](getting-started.md) creates a small observation and reads it back by its actual relative path.
 
 ## Error handling
 
-Errors follow JSON-RPC 2.0 conventions:
+Treat success as a sequence of checks:
 
-| Code      | Meaning                                                                   |
-|-----------|---------------------------------------------------------------------------|
-| `-32700`  | Parse error — malformed JSON                                              |
-| `-32600`  | Invalid request — missing `jsonrpc`, `method`, etc.                       |
-| `-32601`  | Method not found                                                          |
-| `-32602`  | Invalid params (including: unknown tool name, bad arguments, can't cancel)|
-| `-32603`  | Internal error                                                            |
-| `-32000`  | Application-defined — auth failure, validation failure, business logic    |
+1. Check the HTTP status and response media type. A connection failure is not an empty search result.
+2. Check the outer JSON-RPC `error` and match the response ID to the request.
+3. For `tools/call`, check `result.isError` before using its content.
+4. Use `result.structuredContent` when present. For Sandbar tools returning JSON in a text content block, parse that JSON as the fallback.
 
-Inspect `error.data` for structured details.  For example, an unknown tool:
+For the JSON tool responses in this guide, this helper makes failures visible:
 
-```json
-{
-  "error": {
-    "code": -32602,
-    "message": "Unknown tool: foo_bar_baz",
-    "data": {"available-tools": ["sandbar_entity_create", ...]}
-  }
+```sh
+sandbar_tool_payload() {
+  jq -e '
+    if .error then error(.error | tojson)
+    elif .result.isError == true then error(.result | tojson)
+    elif .result.structuredContent != null then .result.structuredContent
+    else ([.result.content[]? | select(.type == "text")][0].text | fromjson)
+    end'
 }
+
+sandbar_mcp <<'JSON' | sandbar_tool_payload
+{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"sandbar_class_slots","arguments":{"class":":mm/Decision"}}}
+JSON
 ```
 
-## Example clients
+The helper is for tool results, not initialization, resource results, or SSE framing. Preserve the complete error envelope in application diagnostics, with credentials and sensitive content redacted. An exact lookup may return a successful payload saying the entity is missing; interpret that according to the operation's contract.
 
-### Python (anthropic SDK + httpx)
+After a lost response to a write, reconcile the intended entity or operation before retrying. A timeout does not establish that the write failed, and a JSON-RPC request ID is not a general idempotency key.
 
-```python
-import httpx
-import json
+Explicit slot writes refuse keyword spellings that cannot be read back as the same EDN keyword. This includes reference identities supplied as strings or in a `{"db/ident": "..."}` map. For this refusal, `result.isError` is true and the tool payload names the offending slot, value and, for a list, member index. No part of that request is written; correct the value deliberately and resubmit. `entity.validate` applies the same check without writing. Unicode and punctuation that survive the reader are allowed; this is not a rule to strip punctuation or guess a replacement identity.
 
-class SandbarMCP:
-    def __init__(self, url, token):
-        self.url = url
-        self.token = token
-        self._id = 0
+## Listing and reading resources
 
-    def _next_id(self):
-        self._id += 1
-        return self._id
+Resources provide URI-addressed content. Discover the URI instead of constructing it from a filename:
 
-    def call(self, method, params=None):
-        # JSON-RPC notifications (method under "notifications/") carry NO id;
-        # the server acknowledges them with 204 No Content and an empty body.
-        is_notification = method.startswith("notifications/")
-        body = {"jsonrpc": "2.0", "method": method}
-        if not is_notification:
-            body["id"] = self._next_id()
-        if params is not None:
-            body["params"] = params
-        r = httpx.post(self.url,
-                       headers={"Authorization": f"Bearer {self.token}"},
-                       json=body)
-        r.raise_for_status()
-        # A 204 (notification ack) has no body — nothing to parse.
-        if r.status_code == 204 or not r.content:
-            return None
-        return r.json()
-
-    def tool_call(self, name, **arguments):
-        resp = self.call("tools/call", {"name": name, "arguments": arguments})
-        if "error" in resp:
-            raise RuntimeError(resp["error"])
-        # Unwrap the MCP content envelope
-        return json.loads(resp["result"]["content"][0]["text"])
-
-# Usage
-mcp = SandbarMCP("http://localhost:8389/mcp", token)
-mcp.call("initialize", {"protocolVersion": "2025-11-25",
-                        "clientInfo": {"name": "py-client", "version": "0.2.0"},
-                        "capabilities": {}})
-mcp.call("notifications/initialized")
-print(mcp.call("tools/list"))
-print(mcp.tool_call("sandbar_entity_create",
-                    **{"class": "mm/Memory",
-                       "format": "markdown",
-                       "source": "---\nname: Foo\n---\n..."}))
+```sh
+sandbar_mcp <<'JSON'
+{"jsonrpc":"2.0","id":5,"method":"resources/list","params":{}}
+JSON
 ```
 
-### Clojure (clj-http)
+Choose a returned `uri` and send `resources/read` with `params: {"uri": "<the advertised URI>"}`. Its success payload is `result.contents`, whose entries carry resource content and media information; it is not a `tools/call` content envelope. Authorization still applies to the read. Prompts similarly have their own `prompts/list` and `prompts/get` result shapes.
 
-```clojure
-(require '[clj-http.client :as http])
+## Subscribing to resource updates
 
-(defn mcp-call [token method params]
-  (-> (http/post "http://localhost:8389/mcp"
-        {:headers {"Authorization" (str "Bearer " token)}
-         :content-type :json
-         :as :json
-         :form-params {:jsonrpc "2.0"
-                       :id 1
-                       :method method
-                       :params params}})
-      :body))
+Sandbar currently provides a separate notification stream at `GET /mcp/sse`. Its first event is `notifications/sandbar/sse-ready`, with a `params["subscriber-id"]`. A subscription request then supplies `resources/subscribe` with the resource's `uri` and that value as **`subscriberId`**. Subscription requests are ordinary POST exchanges; their response is not the ongoing event stream.
 
-(mcp-call token "tools/list" {})
-```
+This endpoint and subscriber identifier are Sandbar-specific transport behavior. They should not be presented as the standard Streamable HTTP session mechanism. Use a client adapter that explicitly supports this deployment's behavior; the 0.2.0 transport work must establish the supported standard transport before claiming generic streaming-client compatibility.
 
-### Claude Code, end to end
+Treat an update notification as a reason to refresh an authorized resource. It does not replace the resource body or prove that every intermediate change was delivered. Reconnect and refresh deliberately after a broken stream, and unsubscribe when the view no longer needs updates.
 
-The complete connect flow — server up, token minted, token exported in the
-*launching* shell, project-scoped `.mcp.json` with env-expansion in place
-**before** the client launches.  Five steps, in this order:
+## Long-running operations
 
-**1. Start the server.**
+Some tools start workflow processes. Follow the tool's returned process identity and documented observation contract; a returned process is different from a completed business operation. See [workflows](../concepts/workflow-substrate.md).
 
-```bash
-bin/sandbar start     # launches the JVM, polls /mcp until ready (~30s cold)
-bin/sandbar status    # expect: RUNNING — port 8389 (PID ...)
-```
+The current server also implements `tasks/get`, `tasks/list` and `tasks/cancel` compatibility methods; `tasks/get` and `tasks/cancel` use a camel-case `taskId`. Their presence does not establish support for the standard MCP Tasks feature: the initialization capabilities do not currently advertise it. Clients should require the appropriate capability and result contract before using a portable Tasks implementation.
 
-**2. Mint a service-account token** (once per client identity; `rotate-token`
-also persists it to `~/claude/.sandbar/token`, mode 600):
+## Permissions and client policy
 
-```bash
-bin/sandbar rotate-token corpus my-key
-# under the hood: lein issue-mcp-token corpus my-key --rotate
-```
+Keep three decisions separate. Server authentication establishes the principal, server roles and permissions govern operations, and disclosure policy governs the data the principal may receive. A host's allowed-tool list adds a client-side restriction; it does not change the server account's role or establish a project-data boundary.
 
-**3. Export the token in the shell that will launch Claude Code.**  This is
-the classic footgun: `.mcp.json` env-expansion resolves `${SANDBAR_TOKEN}`
-from the environment of the `claude` *process* — so the export must happen in
-the launching shell **before** you start Claude Code (step 5), and a token
-rotated mid-session is not picked up until you relaunch.
-
-```bash
-export SANDBAR_TOKEN="$(cat ~/claude/.sandbar/token)"
-```
-
-**4. Register the server in the project's `.mcp.json`** (committed to the
-repo, so every consumer of the project shares the registration; the token
-itself never enters version control — only the env reference does).  The file
-must exist **before** you launch — the client reads it at startup, so there is
-nothing to discover if registration comes after:
-
-```json
-{
-  "mcpServers": {
-    "sandbar": {
-      "type": "http",
-      "url": "http://localhost:8389/mcp",
-      "headers": {
-        "Authorization": "Bearer ${SANDBAR_TOKEN:-disabled}"
-      }
-    }
-  }
-}
-```
-
-The `:-disabled` default keeps the registration inert (auth simply fails
-closed) when the env-var is absent, instead of breaking client startup.
-
-**5. Launch Claude Code** from the project directory, with the export from
-step 3 in effect:
-
-```bash
-claude
-```
-
-Claude Code discovers Sandbar's tools and resources on session start and
-surfaces them as `mcp__sandbar__*` capabilities — e.g. the
-`sandbar_search_bm25f` verb appears as `mcp__sandbar__sandbar_search_bm25f`.
-
-For Claude Desktop the same `url` + `headers` block goes in
-`claude_desktop_config.json`; the launching-shell rule applies to however the
-desktop app inherits its environment.
-
-## Patterns
-
-### Discovery-driven invocation
-
-The AI client should call `tools/list` once per session, cache the schema, and use it to validate arguments before invoking.  This is the reflection-driven discipline MCP was designed for.
-
-### Idempotent retries
-
-`sandbar_entity_create` returns `{:entity-id ...}` on success.  If a retry is needed (network failure, etc.), use the entity's `:db/ident` (if provided) for idempotency — re-creating with the same ident is a no-op.
-
-### Subscription cleanup
-
-Always `resources/unsubscribe` when you no longer need updates.  Server-side subscription state grows with active subscriptions; cleanup is the client's responsibility.
-
-### Task polling cadence
-
-For tasks expected to complete in seconds, poll every 500ms.  For minute-scale tasks, every 5s.  For longer, prefer SSE subscription over polling.
-
-### Shape-driven validation as a tool-call
-
-```bash
-# Validate one entity against its applicable shapes (audit mode)
-curl -X POST http://localhost:8389/mcp \
-  -H "Authorization: Bearer $SANDBAR_TOKEN" \
-  -d '{
-    "jsonrpc": "2.0",
-    "id": 10,
-    "method": "tools/call",
-    "params": {
-      "name": "sandbar_shape_validate",
-      "arguments": {"entity": ":decisions/foo", "mode": "audit"}
-    }
-  }'
-```
-
-The response (unwrapped from `content[0].text`):
-
-```json
-{
-  "entity": ":decisions/foo",
-  "mode": "audit",
-  "result-count": 1,
-  "results": [
-    {"status": "pass", "entity": 17592186, "shape": 17592345, "checks-passed": 6}
-  ]
-}
-```
-
-For batch class-wide conformance use `sandbar_shape_conformance-report`.  For authoring shapes (`sandbar_shape_create` / `sandbar_shape_update`) see [`authoring-shapes.md`](authoring-shapes.md).
-
-## See also
-
-- [`doc/concepts/mcp-protocol.md`](../concepts/mcp-protocol.md) — server-side design and rationale
-- [`doc/api/mcp-verbs.md`](../api/mcp-verbs.md) — complete verb reference
-- [`writing-a-rest-client.md`](writing-a-rest-client.md) — REST alternative for non-AI consumers
-- [`authoring-shapes.md`](authoring-shapes.md) — author `:mm/Shape` constraints + invoke shape verbs
-- [`subscribing-to-events.md`](subscribing-to-events.md) — event substrate subscription API (in-design)
-- [`auth.md`](../auth.md) — issuing service-account tokens
+Tool annotations are planning hints. Confirm an operation's actual effects before offering it as a harmless preview: an export, for example, can write files. Use [authentication](../auth.md) and [projects and boundaries](../firewall-and-projects.md) when designing access, and the [MCP concept](../concepts/mcp-protocol.md) for the relationship between discovery and model semantics.

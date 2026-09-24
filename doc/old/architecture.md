@@ -1,6 +1,10 @@
-# System Architecture
+# Historical system architecture
 
-This document describes the architecture and design of the Sandbar system.
+> **Historical — superseded.** For current use, see [metamodel](../concepts/metamodel.md), [reactive substrate](../concepts/reactive-substrate.md), and [development guide](../development.md).
+>
+> The component graph, configuration, and performance assertions below describe an earlier design. They are not a specification of the current boot graph or measured performance. Examples and reported results below have not been revalidated for 0.2.0; abbreviated payloads are schematic.
+
+The original architecture overview follows.
 
 ## Overview
 

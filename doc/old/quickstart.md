@@ -1,6 +1,10 @@
-# Quick Start Guide
+# Historical quick start
 
-This guide will get you up and running with Sandbar in minutes.
+> **Historical — superseded.** For current use, see [current quick start](../guides/quickstart.md) and [getting started tutorial](../guides/getting-started.md).
+>
+> The installation instructions below are retained as history. In particular, the Java 8 prerequisite, port 8080, configuration shape, and authentication assumptions are not supported setup instructions for the current release. Examples and reported results below have not been revalidated for 0.2.0; abbreviated payloads are schematic.
+
+The original setup guide follows.
 
 ## Prerequisites
 
@@ -87,7 +91,7 @@ curl http://localhost:8080/api/store/classes
 ```
 
 Expected response:
-```json
+```text
 {
   "count": 42,
   "classes": ["db.type/bigdec", "db.type/bigint", "db.type/boolean", ...]
@@ -101,7 +105,7 @@ curl http://localhost:8080/api/store/classes/dt/Resource
 ```
 
 Expected response:
-```json
+```text
 {
   "class": "dt/Resource",
   "description": {...},
@@ -177,7 +181,7 @@ lein test sandbar.api-store-test
 * Read the [Architecture Guide](architecture.md) to understand the system design
 * Explore the [Metamodel Reference](meta.md) for the complete type hierarchy
 * Check the [REST API Reference](api.md) for all available endpoints
-* Review the [Development Guide](development.md) for extending the system
+* Review the [Development Guide](../development.md) for extending the system
 
 ## Troubleshooting
 

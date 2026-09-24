@@ -1,85 +1,52 @@
-# W1.J release gate — runbook
+# Representation and isolation release gate
 
-The **standing composed release gate** for the 0.2.0 W1 provenance arc.
-Enforces **G1**: a green build requires BOTH round-trip semantic
-equivalence AND the firewall attack scoreboard. Round-trip green is a
-*hard precondition of the first W1.F commit* — this gate is authored
-**early** (before W1.F/W1.deploy exist) so that precondition is
-enforceable, not aspirational.
+The `w1-release-gate` command composes two checks: semantic document round trips and directional/visibility checks over synthetic project fixtures. It provides a reproducible baseline for the provenance work. Its green result has the scope of those fixtures and mechanisms; release acceptance also needs the deployed paths and the supported edge cases.
 
-## Invoke
+## Run the committed gate
+
+From a configured development checkout:
 
 ```sh
-# one-time local setup (config.edn is gitignored/machine-local, like every sandbar test):
-cp config/config-example.edn config/config.edn      # if you don't already have one
-
-lein w1-release-gate        # runs both checks; prints the scoreboard; exit 0 iff GREEN
-lein test sandbar.gate.release-gate-test            # same gate as clojure.test (CI surface)
+lein w1-release-gate
 ```
 
-Exit `0` iff GREEN, `1` otherwise — **wire `lein w1-release-gate`'s exit
-into CI as the release gate** (and, per G1, as the precondition of the
-first W1.F commit).
+The test-runner surface is:
 
-Every check runs against ephemeral `datomic:mem` fixtures; the live store
-is never touched.
+```sh
+lein test sandbar.gate.release-gate-test
+```
 
-## The two checks (GREEN = BOTH pass)
+The gate manages ephemeral `datomic:mem` databases and temporary document stores. Both composed checks must pass for the script to exit zero. Run it in a process with a test configuration; fixtures that manage an ambient connection are not a reason to share a running production JVM.
 
-**CHECK 1 — round-trip semantic equivalence** (`sandbar.gate.roundtrip`
-+ `…/roundtrip-contract`). `DB → FS → [git seam] → DB`, then the 2026-05-12
-export ADR §D.5 8-query contract, modulo documented drift:
+## What round-trip equivalence checks
 
-| query | dimension |
-|-------|-----------|
-| Q1 | file-backed `:mm/Memory` population |
-| Q2 | `:mm.memory/memory-type` distribution |
-| Q3 | `:mm.memory/scope` distribution |
-| Q4 | rel-path set (corpus file-set) |
-| Q5 | per-file `:mm.memory/name` |
-| Q6 | per-file SHA-256 of trimmed body-raw |
-| Q7 | per-file resolved cites edges |
-| Q8 | tag-value vocabulary + `:mm/Section` count |
+The [contract implementation](../src/sandbar/gate/roundtrip_contract.clj) compares these dimensions:
 
-**CHECK 2 — firewall attack scoreboard** (`sandbar.gate.scoreboard`):
-4 directional attacks (mechanical) + 4 absence probes (each with a
-cleared-session negative control) + 1 documented disciplinary residual.
+| Query | Dimension |
+| --- | --- |
+| Q1 | File-backed Memory population |
+| Q2 | Memory-type distribution |
+| Q3 | Scope distribution |
+| Q4 | Relative-path set |
+| Q5 | Names by file |
+| Q6 | Hash of trimmed raw body by file |
+| Q7 | Resolved citation edges by file |
+| Q8 | Tag vocabulary and Section count |
 
-| row | what | enforcement today |
-|-----|------|-------------------|
-| ATK-1 | public→private cite | **live** (directional firewall) |
-| ATK-2 | cross-private diamond | **live** |
-| ATK-3 | `{:validate? false}` bypass | **live** (floor holds) |
-| ATK-4 | EP-3 traverse of a legacy forbidden edge | **live** (`:blocked`, no `:target`) |
-| ABS-1 | entity.find private slug → MISSING | seam (W1.deploy) |
-| ABS-2 | aggregate count over private project → 0 | seam (W1.deploy) |
-| ABS-3 | tag-histogram private-only bin absent | seam (W1.deploy) |
-| ABS-4 | BM25F private-only term → zero-hit + zero-IDF | seam (W1.deploy) |
-| ATK-CONTENT | content-leak via novel private terminology | **documented-disciplinary** (not mechanical) |
+The committed fixtures expect no allowed drift. An exception list for another input needs a reason and an independent expected result; broadening it to make a regression green defeats the check.
 
-## Seam map — what activates when F/G/deploy land
+These dimensions are useful but not a complete representation oracle. Counts alone do not establish section ancestry, order or heading/body association. Extend acceptance with nested and mixed-depth sections, multiline typed fields, native non-Memory classes, unknown metadata, identity, and edits that remove previously imported values. Check first-pass semantic preservation as well as repeated normalization.
 
-The gate is standing NOW; three clearly-marked seams swap in the real
-mechanism without touching the contract or the probe assertions:
+## What the isolation scoreboard checks
 
-- **git commit + clone** (CHECK 1 middle) — `roundtrip/clone-stub!` is a
-  filesystem deep-copy today. W1.F replaces THIS FUNCTION ONLY (commit to
-  the per-project corpus repo → `git clone`); Q1..Q8 are unchanged.
-- **physical exclusion** (CHECK 2 absence probes) — the *uncleared* session
-  DB is built today by importing only the public store. W1.deploy's
-  closure-bounded `db-firewall-closure` build produces that same uncleared
-  DB from the `context ∪ public` closure; the four probe assertions do not
-  change.
-- **content-semantics** (ATK-CONTENT) — remains disciplinary; W1.E's
-  authorship-provenance flag + W1.H's declassification/sanitize gate are
-  its named backstops. Never scored as mechanically green.
+Directional cases exercise forbidden cross-boundary references and traversal. Absence cases check that private material is absent from an uncleared fixture while present in its cleared control. A content-level information leak remains a separate authorship/disclosure problem; vocabulary novelty cannot be certified by a structural edge check.
 
-## Two-store fixture
+Two seams in the committed harness limit the interpretation. The middle “clone” step is a filesystem copy, not an exercised Git publish/clone path. The uncleared database is built by loading only the public fixture, not by proving that every response over a mixed database enforces principal clearance. The report's historical “live” label means that a mechanism is called by the fixture; it does not mean a production instance was tested.
 
-`test/resources/w1-fixtures/{public-corpus,second-project}` (see that
-dir's README) — a synthetic private second project standing in for the
-real dogfood until Dan names it. Round-trips with ZERO expected drift
-(pure `:mm/Memory`-subtree). Carries the private markers ABS-1..4 key on
-(`zephyrite` term, `proprietary-secret-sauce` tag). The live-corpus run
-passes the documented 226-item deferred-drift set via
-`:allowed-drift`.
+Before making the corresponding release claims, test the actual store-routing/export path and the principal-visible MCP, resource and REST surfaces. Include listing metadata and aggregate/search side channels, with both positive and negative controls. Tie every result to a revision and configuration.
+
+## Interpret the result
+
+A failed gate is actionable evidence about its named check. A passed gate establishes those assertions under the fixture conditions. Neither substitutes for a native database recovery test, transaction acceptance tests, cache freshness tests, transport conformance, or a complete project deployment rehearsal.
+
+See [projection](concepts/projection.md), [firewall and projects](firewall-and-projects.md), [operations](operations.md), and the [gate source](../src/sandbar/scripts/w1_release_gate.clj).

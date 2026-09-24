@@ -1,17 +1,5 @@
-# Toolchain (Historical)
+# Historical toolchain
 
-> **Note:** This document contains historical notes from the original development. For current tooling guidance, see [Development Guide](development.md).
+> **Historical — superseded.** Use the [development guide](../development.md) for current tools, supported versions, and build instructions.
 
-## Historical Tools
-
-This section describes tools used during the original development of the project.
-
-### Datomic Console
-
-The Datomic Console provides a web-based interface for exploring Datomic databases.
-
-### AsciiDoctor
-
-Documentation was originally written in AsciiDoc format. The lein-asciidoctor plugin was used to generate HTML output.
-
-See the [Development Guide](development.md) for current development setup instructions.
+Early development used Datomic Console to explore database contents. Documentation was written in AsciiDoc and rendered through the `lein-asciidoctor` plugin. These notes record the tooling used at that stage; they do not define the present build or publication process.

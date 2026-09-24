@@ -1,222 +1,67 @@
-# Sandbar's MCP Surface
+# Sandbar's MCP surface
 
-> Sandbar exposes its metamodel through the Model Context Protocol (MCP) — an Anthropic-originated JSON-RPC 2.0 protocol designed for AI clients consuming structured services.  This document explains how Sandbar's MCP surface bootstraps from the metamodel (`tools/list` walks `dt/all-classes`), why the verb catalog is *operational* (one verb per operation kind) rather than *per-class* (one verb per class), and how MCP Tasks compose with Sandbar's workflow substrate.  For the mechanical verb catalog see [`doc/api/mcp-verbs.md`](../api/mcp-verbs.md); for client patterns see [`doc/guides/writing-an-mcp-client.md`](../guides/writing-an-mcp-client.md).
+> A client needs to discover both what it can do and what the data means. Sandbar exposes operational tools alongside an inspectable model, so those two kinds of discovery can work together.
 
 ## Thesis
 
-MCP is a protocol surface designed for AI clients that want to reflect over a service before invoking it.  Its discovery primitives — `tools/list`, `resources/list`, `prompts/list` — return rich JSON Schema fragments that let an AI client understand the available operations without out-of-band documentation.
+A useful client should be able to approach an unfamiliar knowledge collection in stages: establish a connection, discover the available operations, inspect the relevant classes, and retrieve enough context to act. Sandbar's MCP surface supports that sequence through stable verbs whose arguments refer to the live model.
 
-Sandbar's commitment: **the MCP surface is a function of the metamodel state**.  No hand-curated tool registry.  No mapping table between MCP names and Sandbar internals.  Adding a class to the metamodel adds the class to the MCP surface; removing a class removes it; modifying a slot changes the JSON Schema fragment that `tools/list` reports.
+The operation catalog and the application schema change for different reasons. A new decision class extends the model; the existing class-inspection and entity tools can work with it. A new kind of operation requires a tool implementation and a catalog entry. Keeping those distinctions explicit makes discovery manageable as the knowledge model grows.
 
-This is *bootstrap-by-discovery*.  The MCP surface and the metamodel evolve together because they are the same surface.
+## Two complementary kinds of discovery
 
-## Lineage
+`tools/list` returns Sandbar's operational catalog, including input schemas and tool annotations. Its entries describe operations such as inspecting a class, finding an entity, searching, counting, or following relationships. The catalog is authored with the implementation.
 
-### Model Context Protocol (Anthropic, 2024)
+Schema discovery happens through tools in that catalog:
 
-MCP (Anthropic 2024) is the AI-client-facing protocol Sandbar targets.  Its design borrows from Language Server Protocol (Microsoft 2016) — both use JSON-RPC 2.0 (Bauer 2010) over a long-lived stream — but adapts it for AI consumers rather than text editors.  The three primary surfaces are:
+| Step | Tool | Question |
+| --- | --- | --- |
+| Find the vocabulary | `sandbar_schema_classes` | Which classes are available? |
+| Understand a class | `sandbar_class_describe` | What are its parents, descendants, and effective slots? |
+| Inspect a property | `sandbar_property_range` and related tools | What values does this slot accept? |
+| Find instances | `sandbar_class_instances` | Which entities belong to this class? |
+| Read one entity | `sandbar_entity_find` | What does this known entity contain? |
 
-- **Tools** — invocable operations with JSON Schema-described inputs and outputs.  An AI client examines `tools/list`, plans which tool to invoke, calls `tools/call`, and reads the result.
-- **Resources** — addressable read-only content.  An AI client examines `resources/list`, fetches via `resources/read uri`, optionally subscribes to changes.
-- **Prompts** — parameterizable prompt templates.  An AI client examines `prompts/list`, fetches a specific prompt with arguments, and uses the result as context.
+Class membership and effective slots use the metamodel's inference rules. That is why discovering a specialized class can reveal inherited properties, and why broader class queries can include specialized instances. See [Inference and entailment](rdfs-entailment.md) for the precise boundaries.
 
-The protocol's discovery primitives are heavily JSON-Schema-shaped — every tool, every resource, every prompt carries a schema fragment that describes its interface.
+Sandbar also provides `sandbar_tools_search` and `sandbar_tools_describe` to help select a tool and inspect its usage and composition information. These are ordinary tools exposed by the server. They are useful after protocol discovery has established which names and schemas are actually available.
 
-### JSON-RPC 2.0
+## Connection lifecycle
 
-JSON-RPC 2.0 (Bauer et al, 2010) is the wire envelope: numbered requests, paired responses, error codes from a defined enumeration (`-32600` to `-32699` reserved for protocol-level errors; `-32000` to `-32099` reserved for application-level).  Sandbar conforms strictly — every MCP message is a JSON-RPC envelope; every error is a numbered code with a structured `:data` payload.
+Sandbar's implemented protocol version is `2025-11-25`. A client begins with `initialize`, checks the returned version and capabilities, then sends `notifications/initialized` before ordinary operation. The server advertises its identity, capabilities, and a short orientation in the initialization result. Use the negotiated capabilities when deciding which optional operations to call. [MCP lifecycle specification](https://modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle).
 
-### Server-Sent Events (SSE)
+This is the logical sequence; the [client guide](../guides/writing-an-mcp-client.md) supplies the transport and authentication details:
 
-MCP's transport for long-lived connections is the *Streamable HTTP* binding: an HTTP POST establishes the request channel; a server-pushed SSE stream (Hickson 2009; HTML Living Standard) carries notifications back to the client.  Sandbar's MCP transport is implemented on top of Pedestal's chunked-streaming response, with SSE framing.
-
-### Language Server Protocol (sibling)
-
-LSP (Microsoft 2016–) is the closest sibling protocol — designed for IDE clients consuming language analysis services.  LSP's discovery primitives (`textDocument/hover`, `workspace/symbol`) are method-style rather than tool-style, but the architectural intent matches: the server reflects its capability surface; the client adapts.  MCP's tools/resources/prompts taxonomy is roughly equivalent to LSP's request/notification distinction adapted for the AI-consumer use case.
-
-## The verb catalog — operational, not per-class
-
-A naive bootstrap would emit one tool per class: `sandbar.order.create`, `sandbar.order.find`, `sandbar.order.update`, … `sandbar.user.create`, `sandbar.user.find`, `sandbar.user.update`, …  This is the *per-class* shape.
-
-Sandbar deliberately rejects this for an *operational verb catalog* — one verb per *operation kind*, parameterized by class.  The catalog (declared in `sandbar.mcp.tools`):
-
-| Group         | Verbs                                                                                  |
-|---------------|----------------------------------------------------------------------------------------|
-| `schema.*`    | `classes`, `properties`, `datatypes`, `entities` (batch)                              |
-| `class.*`     | `describe`, `slots`, `direct-slots`, `required-slots`, `instances`, `subclasses`, `parents`, `validate-all-instances` |
-| `types.*`     | `instance-of`, `subclass-of`                                                          |
-| `property.*`  | `domain`, `range`, `cardinality`                                                      |
-| `entity.*`    | `create`, `find`, `find-by-rel-path`, `update`, `validate`                            |
-| `search.*`    | `bm25f`, `attribute`                                                                  |
-| `aggregate.*` | `count`, `group-by`, `rank-by`, `tag-histogram`                                       |
-| `navigate.*`  | `outbound-edges`, `inbound-edges`, `path-via`, `siblings-of`                          |
-| `orient.*`    | `library-card`, `tree`, `type-tree`                                                   |
-| `shape.*`     | `list`, `create`, `update`, `validate`, `conformance-report`                          |
-| `workflow.*`  | `define`, `find`, `start-process`, `transition`, `process-state`, `process-history`, `active-processes` |
-| `validation.*`| `start`, `run`, `cancel`, `retry`, `results`, `history`                              |
-| `tag.*`       | `lookup`, `define`, `audit`, `consolidate`, `consolidate-all`, `split`, `rename`, `align`, `harmonize` |
-| `reactive.*`  | `health` (in-process event-substrate buffer / dispatch health)                        |
-| `codec.*`     | `list`                                                                                |
-| `project.*`   | `export`, `import`                                                                    |
-| `ground`      | 4-axis type-scoped grounding for predicate / type / pattern / ADR introduction         |
-
-A consumer calling `sandbar.entity.create` provides `{class, format, source}` (or `{class, attributes}`) — the class is an argument, not part of the verb name.  This is the resolution recorded in [`decisions/sandbar_mcp_tool_surface_resolution_operational_verb_catalog_per_adr_b13_2026_05_12`](../../memory/decisions/sandbar_mcp_tool_surface_resolution_operational_verb_catalog_per_adr_b13_2026_05_12.md) — captured as F-B-001's design decision.
-
-### The schema-introspection verbs are load-bearing
-
-`schema.classes` / `schema.properties` / `schema.datatypes` / `class.describe` / `class.slots` / `class.subclasses` / `class.parents` / `property.domain` / `property.range` / `property.cardinality` together constitute the **reflection surface** AI clients use to understand what they're operating on before invoking a state-changing verb.  This is bootstrap-by-discovery's concrete shape: the consumer never receives a separate JSON Schema artifact; instead, every shape-question is answerable through these introspection verbs, computed live from the metamodel.
-
-`ground` is the orientation verb for grounding new concepts — an AI authoring a new ADR, predicate, type, or pattern reaches for `ground` to check whether the concept already exists under another name and to discover the canonical neighbors.  Type-scoped across the four retrieval axes; deterministic across runs for the same DB value.
-
-### Why operational, not per-class
-
-1. **Catalog stability.**  A per-class catalog grows linearly with the number of classes.  Adding a domain class adds N new tools.  AI clients with limited tool budgets would have to enumerate or filter.  An operational catalog grows in O(1) with respect to class count.
-
-2. **Schema-as-argument vs schema-as-name.**  When the class is an argument, the JSON Schema for `sandbar.entity.create.arguments.class` reflects `dt/all-classes` and the operation's per-class shape is reflected from `dt/range-of` on the class's slots.  The schema is *runtime-computable* rather than statically baked into the catalog.
-
-3. **Composition with reflection.**  A consumer that wants to discover *what classes exist* uses `sandbar.schema.classes`; a consumer that wants to *operate on a class* uses `sandbar.entity.create class=...`.  The two compose: walk the classes, decide which to act on, call the operational verb.  Per-class catalogs force the same composition implicitly but with less visibility.
-
-4. **Matches the metamodel's shape.**  The metamodel itself is "Classes have slots; slots have ranges; operations are kinds applied to a class."  The verb catalog mirrors this structure.
-
-### When per-class verbs would be right
-
-The operational shape is right when operations are *uniform across classes* — every class can be created, found, updated, validated.  When operations are *class-specific* (e.g., `sandbar.order.refund`, which only makes sense for `:order/Order`), the per-class shape returns.  Sandbar's substrate verbs are uniform; domain extensions may add per-class verbs as needed.
-
-## Bootstrap-by-discovery
-
-The flow:
-
-```
-Client                          Sandbar
-  |                               |
-  |--- initialize -------------> |
-  |                               |  (auth check; protocol version)
-  |<-- initialize result -------- |
-  |                               |
-  |--- tools/list ------------->  |
-  |                               |  walk verb-catalog
-  |                               |  for each verb, reflect JSON Schema
-  |                               |   from class slots if class-parameterized
-  |<-- tools list ---------------|
-  |                               |
-  |--- resources/list --------->  |
-  |                               |  walk dt/all-classes with :dt/native-codec
-  |                               |  for each instance, derive uri + mime
-  |<-- resources list -----------|
-  |                               |
-  |--- tools/call entity.create  |
-  |    {class, source, format}-> |
-  |                               |  resolve class; route to codec
-  |                               |  parse + dt/make; transact
-  |<-- result -------------------|
+```text
+client → initialize
+server → protocol version, capabilities, server information
+client → notifications/initialized
+client → tools/list
+server → tool names, descriptions, input schemas, annotations
+client → tools/call: inspect a class
+client → tools/call: retrieve or operate on its instances
 ```
 
-The key moves:
+The normal HTTP endpoint is `/mcp` on the configured server port. An authenticated connection carries the service-account token in the `Authorization` header. Authentication establishes the caller; authorization still determines which operations and data that caller can use.
 
-1. **`tools/list` is computed at request time.**  No precomputed registry; the response reflects the live metamodel.
-2. **JSON Schema is reflected from `:dt/range`.**  For each slot on a relevant class, the schema fragment is computed via `tools/datomic-type->json-schema`.  Datomic value-types map to canonical JSON Schema (`:db.type/long` → `"integer"`; `:db.type/instant` → `{type: string, format: date-time}`; etc.).
-3. **`resources/list` walks classes with a codec declared.**  Any class with `:dt/native-codec` is exposed as a resource collection; instances are walked, URIs derived, MIME types computed from the codec.
-4. **`tools/call` routes through the codec mediator when `:format` is present.**  See [`codec-layer.md`](codec-layer.md) for the mediator design.
+## Wire names and model names
 
-## MCP Tasks composition
+Use the tool name returned by `tools/list`. Sandbar's wire names use underscores between the catalog's dotted components, while hyphens within an operation name remain intact:
 
-Long-running tools (`sandbar.validation.start`, `sandbar.workflow.start-process`, etc.) return a *task* envelope — a typed Process from Sandbar's workflow substrate:
+| Catalog name | Wire tool name |
+| --- | --- |
+| `sandbar.entity.find` | `sandbar_entity_find` |
+| `sandbar.class.describe` | `sandbar_class_describe` |
+| `sandbar.aggregate.group-by` | `sandbar_aggregate_group-by` |
+| `sandbar.navigate.path-via` | `sandbar_navigate_path-via` |
 
-```json
-{
-  "task-id": "12345",
-  "status": "pending",
-  "kind": null
-}
-```
+An MCP host may display or normalize these names further in its own programming interface. The server's advertised wire name is the one to use in a raw `tools/call` request.
 
-The MCP client uses `tasks/get task-id` to poll status; `tasks/cancel task-id` to abort.  Status transitions are driven by the underlying workflow process — when the process reaches a terminal state, the task's `status` becomes `complete` and `kind` becomes one of `:success` / `:failure` / `:cancel`.
+Model identifiers are arguments. For example, `":mm/Decision"` identifies a class; it is not a tool name. Use namespaced slot names in JSON objects when supplying attributes so that their meaning is unambiguous.
 
-The composition is direct:
+## Inspect, then read
 
-- `task-id` IS `:db/id` of the `:workflow/Process` entity.
-- `status` is a projection of `:workflow/current-state`.
-- `kind` is the state's `:workflow/terminal-kind`.
-
-No parallel registry.  No mapping.  See [`workflow-substrate.md`](workflow-substrate.md) for the full discipline.
-
-## Resource subscriptions
-
-MCP supports *resource subscriptions* — a client subscribes to a URI; the server pushes update notifications when the resource changes.  Sandbar implements this on the event substrate (see [`event-substrate.md`](event-substrate.md)):
-
-1. The MCP `resources/subscribe` handler records the subscription against the URI as a class-hierarchical subscriber on the in-process event bus.
-2. Every committed transaction reaches the bus through `sandbar.reactive.tx-source` — a boundary primitive that wraps Datomic's `d/tx-report-queue` and translates `TxReport` maps into typed `:mm/Event` (or subclass) values.  No Datomic types leak past the wrap.
-3. Subscribers see events filtered through the class-hierarchical dispatch cache (per `dt/type-isa?`).  An MCP client subscribed to a URI for an `:mm/Memory` instance receives notifications when any descendant class of the entity's class mutates in a way that addresses the URI.
-4. The notification routes over the client's SSE channel.
-
-Subscriptions are **per-session**, not per-client-instance — when the SSE connection closes, the subscriptions associated with that session are cleaned up from the dispatch cache.  The full per-subscriber routing (bound to a concrete SSE subscriber identity rather than the legacy broadcast sentinel) is in active landing as part of the event-substrate migration; see `bugs/resource_subscriptions_are_broadcast_only_and_unwired_2026_05_12.md` for the cutover status.
-
-## Authentication
-
-Sandbar's MCP transport accepts a Bearer token (`Authorization: Bearer <token>`).  Tokens are verified against service-account records using buddy-hashers (BCrypt-shaped); see [`auth.md`](../auth.md) for the auth scheme details.
-
-Failed auth produces a JSON-RPC error with the standard `-32000` application-error code; the response carries no internal-state details.
-
-A planned future is to model service-account issuance as a workflow process — see `ideas/service_account_issuance_rotation_should_be_first_class_workflow` — which would integrate auth lifecycle with the workflow substrate.
-
-## Notifications
-
-MCP supports server-pushed notifications for several event types:
-
-| Notification                       | Trigger                                                |
-|------------------------------------|--------------------------------------------------------|
-| `notifications/initialized`        | Connection setup complete                              |
-| `notifications/tools/list_changed` | Tool catalog changed (e.g., new class added)           |
-| `notifications/resources/list_changed` | Resource catalog changed                            |
-| `notifications/resources/updated`  | A specific subscribed resource changed                 |
-| `notifications/tasks/status`       | A task transitioned to a new status                    |
-
-Notifications are JSON-RPC notification envelopes (no `id` field) delivered over the SSE channel.  Subscribing clients receive them in real time; non-subscribing clients see only request/response.
-
-## Wire shape — concrete
-
-A minimal `tools/list` exchange:
-
-```http
-POST /mcp HTTP/1.1
-Authorization: Bearer <token>
-Content-Type: application/json
-
-{"jsonrpc":"2.0","id":1,"method":"tools/list"}
-```
-
-```http
-HTTP/1.1 200 OK
-Content-Type: application/json
-
-{
-  "jsonrpc": "2.0",
-  "id": 1,
-  "result": {
-    "tools": [
-      {
-        "name": "sandbar.entity.create",
-        "title": "Create entity",
-        "description": "Create a new entity of the given class.",
-        "inputSchema": {
-          "type": "object",
-          "properties": {
-            "class": {"type": "string"},
-            "format": {"type": "string", "enum": ["markdown", "json"]},
-            "source": {"type": "string"},
-            "attributes": {"type": "object"}
-          },
-          "required": ["class"],
-          "oneOf": [{"required": ["source", "format"]}, {"required": ["attributes"]}]
-        }
-      },
-      ...
-    ]
-  }
-}
-```
-
-A `tools/call` for entity creation:
+After initializing a connection, inspect the decision class:
 
 ```json
 {
@@ -224,82 +69,70 @@ A `tools/call` for entity creation:
   "id": 2,
   "method": "tools/call",
   "params": {
-    "name": "sandbar.entity.create",
+    "name": "sandbar_class_describe",
+    "arguments": {"class": ":mm/Decision"}
+  }
+}
+```
+
+For the fictional entity created in the [metamodel example](metamodel.md), request its complete contents explicitly:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "method": "tools/call",
+  "params": {
+    "name": "sandbar_entity_find",
     "arguments": {
-      "class": "mm/Memory",
-      "format": "markdown",
-      "source": "---\nname: Foo\n---\n# Context\n..."
+      "ident": ":memory.examples/cache-refresh",
+      "projection": "full"
     }
   }
 }
 ```
 
-The result envelope wraps the payload in the MCP `content` array as required by spec:
+Discovery and search often need a compact result. A decision about the content usually needs a full read. Projection options belong to each tool's contract; inspect that contract instead of assuming every operation returns the same default shape.
 
-```json
-{
-  "jsonrpc": "2.0",
-  "id": 2,
-  "result": {
-    "content": [{"type": "text", "text": "{\"entity-id\":12345,...}"}]
-  }
-}
-```
+For larger collections, choose a question before enumerating everything. Search finds relevant content, aggregation describes a population, navigation follows relationships, and orientation produces a useful overview. The [retrieval map](../../README.md#retrieval-starts-with-the-question) helps select among them.
 
-This wrapping is a spec compliance discipline — see Stage G Signal 9 (the wrap-vs-unwrap asymmetry that surfaced during corpus migration).  Clients that don't unwrap will receive the inner JSON as a string; the correct read is to unwrap the `content` array and parse the inner JSON.
+<a id="wire-shape--concrete"></a>
 
-## Comparison with adjacent protocols
+## Responses have two levels of success
 
-### vs. REST
+JSON-RPC supplies the outer response envelope. MCP tool results carry their content inside `result`, and a tool can report failure with `result.isError` even when the surrounding protocol exchange succeeded.
 
-REST clients enumerate URIs; MCP clients enumerate operations.  REST is well-suited to resource-oriented consumers (browsers, mobile apps); MCP is well-suited to reflection-oriented consumers (AI agents that compose operations dynamically).  Sandbar exposes both — see [`doc/api/http-rest.md`](../api/http-rest.md) for the REST surface — projected from the same metamodel.
+A client should:
 
-### vs. GraphQL
+1. Check transport status and the outer JSON-RPC `error` field.
+2. Check `result.isError` before interpreting tool content as successful data.
+3. Consume `structuredContent` when supplied; otherwise parse the JSON in the text content for tools that return a JSON payload.
+4. Interpret an empty or missing result according to that tool's contract.
 
-GraphQL clients submit ad-hoc queries against a typed schema.  MCP clients invoke predeclared operations with typed arguments.  GraphQL is more flexible at the query-shape level; MCP is more predictable at the operation level.  Both are reflection-oriented; both could project from Sandbar's metamodel.  Sandbar implements MCP first because the consumer (AI agents) better matches MCP's invocation model.
+An error payload can be perfectly valid JSON. Parsing it successfully does not turn it into a successful query with no matches. This distinction matters for writes as well as reads: a client should preserve the server's failure information rather than continue on a guessed success path.
 
-### vs. gRPC
+## Tools, resources, and prompts
 
-gRPC uses Protocol Buffers for IDL and HTTP/2 for transport.  Schema is compiled into client stubs; reflection is a separate gRPC reflection service.  MCP uses JSON Schema with live runtime reflection; no client stubs.  The trade-off is tooling (gRPC has rich tooling and codegen; MCP is younger and tooling is emerging) versus runtime adaptability (MCP can describe a new operation without a code change in the client).
+Tools perform named operations. Resources provide URI-addressed content through the resource methods the server advertises. Prompts supply templates for a client to use. These protocol surfaces serve different purposes, even when they refer to the same underlying entities.
 
-### vs. LSP
+Use the URI returned by `resources/list` when reading a resource. Its class component must match the resolved entity; a mismatch receives the same not-found response as an absent or inaccessible resource. The catalog's MIME type describes the class's declared default. Use the MIME type in `resources/read` for the returned content: it follows the representation actually produced, including `application/edn` when rendering falls back to EDN. A custom codec without a declared MIME type leaves that optional field absent.
 
-LSP and MCP are sibling protocols for different consumer kinds.  LSP serves editor clients with text-document-shaped operations; MCP serves AI clients with arbitrary tool-shaped operations.  Both use JSON-RPC 2.0; both rely on dynamic capability negotiation.  Both have a similar shape — `tools/list` is to MCP what `capabilities` are to LSP.
+A model change does not necessarily change the tool list. An entity change may affect a resource's content without adding a new operation. Clients should respond to the notification type they actually receive and use the relevant method to refresh their view.
 
-## References
+Some work also has an execution lifecycle, represented by Sandbar's workflow and task facilities. Discovery and the operation's result contract determine how a client observes or cancels it. The [workflow chapter](workflow-substrate.md) explains the underlying model; the reference specifies the supported protocol methods and payloads.
 
-**Model Context Protocol**
+## A tool description is useful evidence, not a permission grant
 
-- Anthropic (2024–). *Model Context Protocol Specification.*  https://modelcontextprotocol.io/
-- Anthropic (2024–). *MCP Concepts — Tools, Resources, Prompts.*  https://modelcontextprotocol.io/docs/concepts/
+Tool annotations help a client plan calls, but permissions come from enforcement. A tool described as read-only with respect to the database can still produce output elsewhere; an export is an important example. The caller also needs the operation's effect and disclosure contract.
 
-**JSON-RPC**
+Likewise, access to a schema or a tool does not establish permission to receive every entity. Project scope, resource access, and export policy have distinct responsibilities. See [authentication](../auth.md) and [projects and boundaries](../firewall-and-projects.md) for those contracts.
 
-- Bauer, A. & contributors (2010). *JSON-RPC 2.0 Specification.*  https://www.jsonrpc.org/specification
+## Where to go next
 
-**Server-Sent Events**
+- [Write an MCP client](../guides/writing-an-mcp-client.md): initialization, transport, authentication, calls, and errors.
+- [MCP verb reference](../api/mcp-verbs.md): exact inputs and results from the catalog.
+- [MCP composition map](../mcp-affordance-map.md): relationships among operations.
+- [Metamodel](metamodel.md): the vocabulary exposed through inspection.
+- [Memory model](memory-model.md): the knowledge an application stores and retrieves.
 
-- Hickson, I. (2009). *Server-Sent Events — HTML Living Standard.*  https://html.spec.whatwg.org/multipage/server-sent-events.html
-
-**Language Server Protocol (sibling)**
-
-- Microsoft (2016–). *Language Server Protocol Specification.*  https://microsoft.github.io/language-server-protocol/
-
-**JSON Schema**
-
-- Wright, A., Andrews, H., Hutton, B. & Dennis, G. (2020–). *JSON Schema 2020-12.*  https://json-schema.org/draft/2020-12/
-
-**Pedestal architecture (Clojure HTTP server)**
-
-- Cognitect (2013–). *Pedestal — A Clojure-based platform for building services.*  https://pedestal.io/
-
-## See also
-
-- [`metamodel.md`](metamodel.md) — what the MCP surface bootstraps from
-- [`codec-layer.md`](codec-layer.md) — how MCP `tools/call` routes through codecs
-- [`workflow-substrate.md`](workflow-substrate.md) — how MCP Tasks compose with workflow processes
-- [`event-substrate.md`](event-substrate.md) — the `sandbar.reactive.tx-source` substrate that powers `resources/subscribe`
-- [`fulltext-search.md`](fulltext-search.md) / [`aggregation.md`](aggregation.md) / [`navigation.md`](navigation.md) — the four-axis retrieval surface exposed by the `search.*` / `aggregate.*` / `navigate.*` / `orient.*` verb groups
-- [`shape-validation.md`](shape-validation.md) — the `shape.*` verb group
-- [`doc/api/mcp-verbs.md`](../api/mcp-verbs.md) — every MCP verb's mechanical reference
-- [`doc/guides/writing-an-mcp-client.md`](../guides/writing-an-mcp-client.md) — hands-on client patterns
+Protocol reference: [Model Context Protocol, 2025-11-25](https://modelcontextprotocol.io/specification/2025-11-25).

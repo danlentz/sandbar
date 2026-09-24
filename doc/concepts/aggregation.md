@@ -1,145 +1,78 @@
-# Aggregation
+# Aggregation: ask about the population
 
-> Sandbar treats `count` / `group-by` / structural-rank as **substrate-layer primitives**, not application-layer concerns.  Three opts-shaped verbs (`count-by` / `group-by` / `rank-by`) compose with the rest of the four-axis retrieval surface via shared `:where` Datalog clauses.  Four ranking axes — `degree`, `backlink-density`, `recency`, `freshness` — cover the structural-prominence retrieval space.  Class-agnostic substrate discipline: temporal slots are caller-supplied; no hardcoded knowledge of `:mm.memory/last-touched` or any other consumer-specific attribute.
+**A knowledge graph should answer questions about its contents without making a client download every entity.** Counts, groups, and structural rankings describe a population from different angles. They complement text relevance: “how many decisions cite evidence?” is a structural question even when none of those decisions contains the word *evidence*.
 
-## Thesis
+Sandbar's aggregation operations take class and property identifiers from the [metamodel](metamodel.md). Class populations include subclass instances. This lets an application use the same operations for decisions, library records, or its own classes.
 
-A retrieval substrate ought to answer four orthogonal aggregation questions:
+## Choose the question before the operation
 
-1. **"How many?"** — `count-by`
-2. **"How many of each kind?"** — `group-by`
-3. **"What's most-cited / most-edged?"** — `rank-by :degree` / `:backlink-density`
-4. **"What changed recently / what's stalest?"** — `rank-by :recency` / `:freshness`
+| Question | Operation | Result |
+| --- | --- | --- |
+| How many instances satisfy these clauses? | `sandbar.aggregate.count` | `count` |
+| How are those instances distributed by a property? | `sandbar.aggregate.group-by` | `groups`, `total` |
+| Which instances have the most connections or newest dates? | `sandbar.aggregate.rank-by` | `hits`, `total`, `returned` |
+| Which tags have the most referring entities? | `sandbar.aggregate.tag-histogram` | `histogram`, `total` |
+| How are text matches distributed? | `sandbar.search.bm25f` with `facet-by` | Search hits and facets |
 
-Each is reducible to the others in theory; in practice each emerges as a distinct retrieval question, deserving its own verb at the substrate.  Sandbar's aggregation surface ships them as substrate-layer primitives composing through one verb each — `count-by`, `group-by`, `rank-by`.
+These operations have different option sets. Count and group accept `where` clauses. Structural rank accepts its ranking and projection options; it is not a general filtered-query wrapper. The tag histogram enumerates typed `:mm/Tag` instances and counts distinct referring entities across predicates and classes. It does not accept an arbitrary class population, and a histogram of typed tags is not a census of every tag value introduced by imports. Use an explicit membership filter when the question concerns `:mm.memory/tags` or `:mm.memory/themes` specifically. Consult [MCP reference](../api/mcp-verbs.md) for the exact schema.
 
-The structural-rank axes (`degree`, `backlink-density`, `recency`, `freshness`) are recognized retrieval-surface elements per `decisions/multi_axis_search_catalog_2026_05_08.md` axes 6-7-12.  Sandbar inherits the catalog and exposes each as a `rank-by` axis keyword.
+For membership around one concept, [inbound navigation](navigation.md) accepts its eid and both qualified predicates. It reports edge count and distinct member count separately, including members without idents. Keep that population distinct from tag lookup's lexical candidate count; the latter currently has an overlapping-total defect and is unsuitable as an evaluation denominator.
 
-## Lineage
+## Count and group
 
-### Datalog aggregation (Ullman, Garcia-Molina, Widom)
-
-Datalog's aggregate functions (`count`, `sum`, `avg`, `min`, `max`) and group-by semantics are foundational — Ullman 1989, Garcia-Molina/Ullman/Widom *Database Systems: The Complete Book* (2008).  Datomic's Datalog dialect ships these; Sandbar's `dt/count-of` and `dt/group-by-of` are thin wrappers that supply Datomic-shaped aggregation queries.
-
-### Structural ranking in IR + graph systems
-
-PageRank (Brin & Page 1998), HITS (Kleinberg 1999), and their successors established degree-centrality and link-density as retrieval signals.  Sandbar's `:degree` and `:backlink-density` axes are simpler — direct edge counts, not eigenvector-derived — but the principle is shared: structural prominence is information.
-
-### Temporal recency / freshness in retrieval
-
-Temporal axes are recognized retrieval-surface elements — "most-recently-updated" and "stalest" are distinct ranking questions.  Sandbar's `:recency` axis returns entities ordered by descending temporal-slot value (most-recent first); `:freshness` returns ascending order (stalest first) for "candidates meriting attention or review."
-
-## The verb surface
-
-Three consumer-facing verbs in `sandbar.aggregate`:
-
-### `count-by`
+In Clojure, clauses are data and `?e` denotes the candidate entity:
 
 ```clojure
-(sandbar.aggregate/count-by
+(require '[sandbar.aggregate :as aggregate])
+
+(aggregate/count-by
+  {:class :mm/Decision
+   :where '[[?e :mm.memory/cites _]]})
+
+(aggregate/group-by
   {:class :mm/Memory
-   :where '[[?e :mm.memory/memory-type :decision]]})  ; optional Datalog filter
-;; => {:count 312}
+   :group-by :mm.memory/memory-type
+   :where '[[?e :mm.memory/scope :project]]})
 ```
 
-Count entities of a class matching an optional `:where` filter.  Single integer result wrapped in `:count` key for projection consistency.
+The MCP form carries `where` as an EDN string. It is a restricted query fragment, not arbitrary executable Clojure. Use known property identifiers and keep the entity variable consistent.
 
-### `group-by`
+For a reference property, name a readable target by its keyword ident, eid or
+lookup ref. For example, `[[?e :mm.memory/owning-project [:mm.project/ident :proj/demo]]]`
+selects members of an existing readable project. The same rule applies to citation,
+author and tag references. A missing or unreadable target produces
+`filter-identity-unavailable`; it is not an empty result. Attribute names and
+non-reference values retain the namespace restrictions. A keyword under
+`db/ident` stays a literal keyword; the filter does not convert scalar values.
+
+Readability of an explicit target does **not** make the counted population
+private: count and group-by can still include unreadable source records, and
+variable joins can test a hidden target's attributes. Use these operations only
+within the [documented project boundaries](../known-gaps-0.2.0.md#project-separation-has-several-boundaries).
+
+A missing grouping value contributes no bucket. A property with several values contributes to several buckets. Consequently, `group-by`'s `total` is the sum of visible bucket counts; it need not equal the number of distinct entities. Use count when that distinction matters.
+
+## Ranking gives an order, not a judgment
+
+`degree` ranks by graph connections; `backlink-density` ranks by incoming connections. These are counts of relationships in the graph, not measures of truth, importance, or independent supporting sources. A frequently referenced obsolete decision can rank highly.
+
+`recency` puts newer temporal values first. `freshness` puts older values first, useful for finding records that may need attention. Both require an explicit `temporal-slot`; the caller decides which date matters. An authored date and a database transaction time answer different questions.
 
 ```clojure
-(sandbar.aggregate/group-by
-  {:class    :mm/Memory
-   :group-by :mm.memory/memory-type})
-;; => {:groups {:decision 87 :observation 42 :plan 31 :pattern 18 ...}
-;;     :total  312}
+(aggregate/rank-by
+  {:class :mm/Decision
+   :rank-by :recency
+   :temporal-slot :mm.memory/created
+   :limit 10
+   :projection :metadata-only})
 ```
 
-Group instances by slot value; count per group.  Includes `:total` for cross-check.  Optional `:where` Datalog filter constrains the candidate set before grouping.
+Each hit contains `entity` and `rank-score`. A temporal score is a temporal value, so consumers should not assume every ranking produces a floating-point relevance score. `limit` defaults to 20; zero returns the full ranked population. A result limit bounds the response, not the amount of work needed to construct the ranking.
 
-### `rank-by`
+The optional `memorial-policy` filter uses the class's effective policy, inherited through the metamodel. This is useful when selecting first-class records separately from operational or inline data. It does not confer authority on a result.
 
-```clojure
-(sandbar.aggregate/rank-by
-  {:class :mm/Memory
-   :rank-by :backlink-density
-   :limit 20})
-;; => {:hits [{:entity <entity-map> :rank-score 142}
-;;            {:entity <entity-map> :rank-score 89}
-;;            ...]
-;;     :total 312
-;;     :returned 20}
-```
+## Combine the answers deliberately
 
-Re-order instances by a structural-rank axis.  Four axes:
+For a text query with facets, start with [single-class BM25F search](fulltext-search.md) and a scalar facet: it covers positive matches before the result limit. Many-valued facets use a collection bucket, and multi-class projection can remove facet fields before counting in this revision. For relationships around a specific result, use [navigation](navigation.md). To decide whether a returned decision still governs a question, read its body and inspect its successor relationships. Aggregation supplies evidence about the graph; application policy supplies the interpretation.
 
-- **`:degree`** — total ref-attribute count (outbound + inbound by default; `:direction :forward` for outbound-only, `:inverse` for inbound-only)
-- **`:backlink-density`** — inbound ref-attribute count (a distinct retrieval axis per `decisions/multi_axis_search_catalog_2026_05_08.md` axes 6 vs 7; what cites this entity?)
-- **`:recency`** — descending order by temporal-slot value (most-recent first)
-- **`:freshness`** — ascending order by temporal-slot value (stalest first)
-
-For `:recency` / `:freshness`, `:temporal-slot` is REQUIRED — substrate does not hardcode class-specific temporal axes.  Caller passes e.g. `:mm.memory/last-touched`.
-
-## Substrate-quality discipline
-
-Per `interaction/target_sandbar_introspection_api_layer_not_raw_datomic_2026_05_12.md` and `interaction/improve_abstraction_not_bypass.md` — substrate primitives do NOT hardcode consumer-specific attribute knowledge.  Concretely:
-
-- The aggregate namespace knows about `:dt/Class` and `:db.type/ref` (substrate vocabulary).
-- It does NOT know about `:mm.memory/memory-type`, `:mm.memory/last-touched`, or any other `:mm/*` attribute.
-- All consumer-specific slot references are caller-supplied via opts.
-
-This makes the aggregate surface composable with future class hierarchies the substrate doesn't yet know about — including consumer hierarchies that don't exist yet.
-
-## The dt/* primitive surface
-
-Substrate primitives in `sandbar.db.datatype`:
-
-| Primitive                  | What it does                                                          |
-|----------------------------|-----------------------------------------------------------------------|
-| `dt/count-of`              | Count instances of class with optional Datalog filter                 |
-| `dt/group-by-of`           | Group-by-count facet aggregation; returns `{value count}` map         |
-| `dt/degree-of`             | Total ref-attribute count for an entity (direction-configurable)      |
-| `dt/backlink-density-of`   | Inbound ref-attribute count (named separately per retrieval axis)     |
-| `dt/recency-rank-of`       | Class instances ordered by temporal-slot value descending             |
-| `dt/freshness-rank-of`     | Class instances ordered by temporal-slot value ascending              |
-
-The `sandbar.aggregate` namespace composes these primitives into opts-shaped verbs with result-shape projection.
-
-## Composition with the rest of the retrieval surface
-
-Aggregation is one axis of four (search / aggregate / navigate / orient).  Composition patterns:
-
-- **Aggregate ∩ Search** — `:facet-by` opt on `search-bm25f` emits per-slot value counts over the BM25F match set (search-then-aggregate).
-- **Aggregate ∩ Filter** — `:where` Datalog clauses on `count-by` / `group-by` / `rank-by` constrain the candidate set before aggregation.
-- **Aggregate ∩ Navigate** — `:from` + `:via` accept a seed entity + path-grammar expression as a PRE-FILTER restricting the candidate set to a graph-walk neighborhood.
-- **Aggregate ∩ Tags** — `aggregate.tag-histogram` is a tag-specific specialization that computes the per-tag distribution over a class (or filter); the substrate routes through the tag-vocabulary projection so harmonized tags fold in correctly.
-
-## What aggregation is NOT for
-
-- **Numeric arithmetic over slot values** — `sum`, `avg`, `min`, `max` on a slot are outside the current verb surface; reach for Datomic Datalog directly (composing with `:where`).  Future extension is straightforward but not yet shipped.
-- **Cross-class aggregation** — `count-by` / `group-by` / `rank-by` operate over instances of one class.  Cross-class aggregation requires composing multiple calls.
-- **Eigenvector-based ranking** (PageRank, HITS) — the structural-rank axes use direct edge counts, not iterative centrality measures.  Not in scope.
-
-## Performance characteristics
-
-- **`count-by`** — O(matching instances) via Datalog `count` aggregate; near-zero overhead beyond the `:where` filter.
-- **`group-by`** — O(matching instances) via Datalog `count` + group; one pass.
-- **`rank-by :degree` / `:backlink-density`** — O(matching instances × average degree); the `dt/degree-of` per-instance query is two Datalog queries (outbound + inbound).  Profile if the matching set is large.
-- **`rank-by :recency` / `:freshness`** — O(matching instances × log(matching instances)) — one Datalog query for `[?e ?slot ?t]` then sort.
-
-For large corpora, the `:limit` opt is applied AFTER ranking — the full sort runs.  If post-sort top-K projection is the only concern, Datomic's pull-with-limit form can be composed at a follow-on optimization stage.
-
-## References
-
-- Ullman, Jeffrey D.  *"Principles of Database and Knowledge-Base Systems"*, Vol. 1 + 2.  Computer Science Press, 1989.  Datalog aggregation foundations.
-- Garcia-Molina, Hector, Ullman, Jeffrey D. & Widom, Jennifer.  *"Database Systems: The Complete Book"* (2nd ed.).  Prentice Hall, 2008.
-- Brin, Sergey & Page, Lawrence.  *"The anatomy of a large-scale hypertextual Web search engine"*.  WWW7 1998.  PageRank; degree-as-prominence lineage.
-- Kleinberg, Jon.  *"Authoritative sources in a hyperlinked environment"*.  JACM 46(5), 1999.  HITS; backlink-density signal.
-
-## See also
-
-- `doc/concepts/fulltext-search.md` — the sibling axis that `:facet-by` composes with
-- `doc/concepts/navigation.md` — the sibling axis that future `:from` + `:via` composition will compose with
-- `doc/api/mcp-verbs.md` — `sandbar.aggregate.count` / `.group-by` / `.rank-by` MCP entries
-- `doc/api/http-rest.md` — `GET /api/aggregate/count` / `/group-by` / `/rank-by` REST endpoints
-- `doc/api/dt-star.md` — the six `dt/*` aggregation primitives
-- The corpus's `decisions/multi_axis_search_catalog_2026_05_08.md` — 12-axis retrieval-surface catalog
+Implementation: [`sandbar.aggregate`](../../src/sandbar/aggregate.clj), with model primitives in [`sandbar.db.datatype`](../../src/sandbar/db/datatype.clj).
